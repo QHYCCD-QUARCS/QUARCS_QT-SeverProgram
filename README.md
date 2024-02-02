@@ -1,8 +1,10 @@
-# QUARCS_QT-SeverProgram
+QUARCS_QT-SeverProgram
+=====================
 
 Ubuntu 22.04
 
 1、安装必要的库：
+-
 
 	sudo apt-get update
 	sudo apt-get upgrade
@@ -18,9 +20,10 @@ Ubuntu 22.04
 	sudo apt-get install astrometry-data-tycho2
 
 2、安装OPENCV
+-
 从源码编译opencv并安装。（opencv版本建议使用3.4.14 或者3.4.16）
 环境配置:
- 
+
 		sudo apt-get install build-essential 
 		sudo apt-get install cmake git libgtk2.0-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev
 		sudo apt-get install python-dev python-numpy libtbb2 libtbb-dev libjpeg-dev libpng-dev libtiff-dev libjasper-dev libdc1394-22-dev
@@ -66,9 +69,11 @@ Ubuntu 22.04
 	pkg-config opencv --modversion
 		
 3、安装Visual Studio Code
+-
 用VSCODE可作为本工程的编辑器。
 
 4、安装INDI和INDI三方驱动库
+-
 	
 	
 
