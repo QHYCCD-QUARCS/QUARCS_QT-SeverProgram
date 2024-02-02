@@ -38,7 +38,6 @@ Ubuntu 22.04
 		sudo make install
 		
 添加路径:
-打开文件：
   
   	sudo gedit /etc/ld.so.conf
   
@@ -50,8 +49,7 @@ Ubuntu 22.04
 
 	sudo ldconfig
 
-配置环境:
-打开.bashrc文件：
+配置环境:（打开.bashrc文件）
  
  	sudo gedit /etc/bash.bashrc 
    
