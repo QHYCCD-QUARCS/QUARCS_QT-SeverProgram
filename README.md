@@ -70,8 +70,14 @@ Ubuntu 22.04
 -
 用VSCODE可作为本工程的编辑器。
 
-4、安装INDI和INDI三方驱动库
+4、安装SDK
+
+5、安装INDI和INDI三方驱动库
 -
+具体安装可访问以下GitHub库：
+
+	https://github.com/indilib/indi.git
+	https://github.com/indilib/indi-3rdparty.git
 	
 	
 
