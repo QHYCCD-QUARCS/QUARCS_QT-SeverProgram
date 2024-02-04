@@ -65,21 +65,28 @@ Ubuntu 22.04
 输入以下命令，可以查看所安装opencv的版本:
 
 	pkg-config opencv --modversion
-		
-3、安装Visual Studio Code
+
+3、安装QHYCCD SDK
 -
-用VSCODE可作为本工程的编辑器。
+压缩包下载链接：https://www.qhyccd.com/file/repository/publish/SDK/240109/sdk_linux64_24.01.09.tgz
 
-4、安装SDK
+	tar xvf sdk_linux64_24.01.09.tgz
+	cd sdk_linux64_24.01.09
+	sudo bash install.sh
 
-5、安装INDI和INDI三方驱动库
+4、安装INDI和INDI三方驱动库
 -
 具体安装可访问以下GitHub库：
 
 	https://github.com/indilib/indi.git
 	https://github.com/indilib/indi-3rdparty.git
 	
-	
+5、安装Visual Studio Code
+-
+用VSCODE可作为本工程的编辑器.
+在VScode的Extensions中安装C/C++ Extension Pack.	
+打开QUARCS_QT-SeverProgram文件夹，用Cmake对项目进行配置，选择/src/CmakeLists.txt，然后选择CXX 11.4.0
+之后可以直接在VScode里运行QT-SeverProgram.
 
 
 
