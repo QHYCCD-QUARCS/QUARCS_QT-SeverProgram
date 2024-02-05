@@ -22,6 +22,10 @@ Ubuntu 22.04
 2、安装OPENCV
 -
 从源码编译opencv并安装。（opencv版本建议使用3.4.14 或者3.4.16）
+3.4.14版本下载链接：
+
+	https://codeload.github.com/opencv/opencv/zip/refs/tags/3.4.14
+
 环境配置:
 
 		sudo apt-get install build-essential 
