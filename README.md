@@ -80,6 +80,14 @@ Ubuntu 22.04
 
 	https://github.com/indilib/indi.git
 	https://github.com/indilib/indi-3rdparty.git
+
+5、安装QT组件：
+-
+	sudo apt install qtcreator \                                                          
+                 qtbase5-dev qtscript5-dev libqt5svg5-dev qttools5-dev-tools qttools5-dev libqt5opengl5-dev \
+                 qtmultimedia5-dev libqt5multimedia5-plugins libqt5serialport5 libqt5serialport5-dev \
+                 qtpositioning5-dev libgps-dev libqt5positioning5 libqt5positioning5-plugins \
+                 qtwebengine5-dev libqt5charts5-dev libqt5websockets5-dev
 	
 5、安装Visual Studio Code
 -
