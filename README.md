@@ -22,9 +22,7 @@ Ubuntu 22.04
 2、Install OPENCV:
 -
 Compile opencv from source and install it. (Recommended opencv version: 3.4.14 or 3.4.16)
-Download link for version 3.4.14:：
-
-	https://codeload.github.com/opencv/opencv/zip/refs/tags/3.4.14
+Download link for version 3.4.14: https://codeload.github.com/opencv/opencv/zip/refs/tags/3.4.14
 
 1.Environment configuration:
 
