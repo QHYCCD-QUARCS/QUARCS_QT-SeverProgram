@@ -169,10 +169,10 @@ Installation steps:
 	
 5、Install Visual Studio Code
 -
--VSCODE can be used as the editor for this project.
--Install C/C++ Extension Pack in VScode's Extensions.	
--Open the QUARCS_QT-SeverProgram folder, configure the project with Cmake, select /src/CmakeLists.txt, and then select CXX 11.4.0.
--You can then run QT-SeverProgram directly in VScode.
+- VSCODE can be used as the editor for this project.
+- Install C/C++ Extension Pack in VScode's Extensions.	
+- Open the QUARCS_QT-SeverProgram folder, configure the project with Cmake, select /src/CmakeLists.txt, and then select CXX 11.4.0.
+- You can then run QT-SeverProgram directly in VScode.
 
 
 
