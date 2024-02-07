@@ -82,7 +82,8 @@ Installation steps:
 -
 
 Installation steps:
-1. indi: \n
+1. indi:
+   
    Install Pre-requisites
    
 		  sudo apt-get install -y \
@@ -131,6 +132,7 @@ Installation steps:
 		sudo make install
 
 2. indi-3rdparty:
+   
    Install Pre-requisites
    
 		  sudo apt-get -y install libnova-dev libcfitsio-dev libusb-1.0-0-dev zlib1g-dev libgsl-dev build-essential cmake git libjpeg-dev libcurl4-gnutls-dev libtiff-dev libfftw3-dev libftdi-dev libgps-dev libraw-dev libdc1394-dev libgphoto2-dev libboost-dev libboost-regex-dev librtlsdr-dev liblimesuite-dev libftdi1-dev libavcodec-dev libavdevice-dev libindi-dev
