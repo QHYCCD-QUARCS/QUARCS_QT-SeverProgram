@@ -182,6 +182,14 @@ public:
 
     int FocuserControl_getPosition();
 
+    bool TelescopeControl_Park();
+
+    bool TelescopeControl_Track();
+
+    void TelescopeControl_Home();
+
+    void TelescopeControl_SYNCHome();
+
 private slots:
     void onMessageReceived(const QString &message);
     // void sendMessage(QString message);

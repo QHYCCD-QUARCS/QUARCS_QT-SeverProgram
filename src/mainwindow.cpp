@@ -151,41 +151,99 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         disconnectIndiServer();
     }
-    else if (message == "W")
+    else if (message == "MountMoveWest")
     {
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveWE(dpMount, "WEST");
         }
     }
-    else if (message == "E")
+    else if (message == "MountMoveEast")
     {
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveWE(dpMount, "EAST");
         }
     }
-    else if (message == "N")
+    else if (message == "MountMoveNorth")
     {
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveNS(dpMount, "NORTH");
         }
     }
-    else if (message == "S")
+    else if (message == "MountMoveSouth")
     {
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveNS(dpMount, "SOUTH");
         }
     }
-    else if (message == "A")
+    else if (message == "MountMoveAbort")
     {
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeAbortMotion(dpMount);
         }
     }
+    else if (message == "MountPark")
+    {
+        if (dpMount != NULL)
+        {
+            bool isPark = TelescopeControl_Park();
+            if(isPark)
+            {
+                emit wsThread->sendMessageToClient("TelescopePark:ON");
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("TelescopePark:OFF");
+            }
+        }
+    }
+    else if (message == "MountTrack")
+    {
+        if (dpMount != NULL)
+        {
+            bool isTrack = TelescopeControl_Track();
+            if(isTrack)
+            {
+                emit wsThread->sendMessageToClient("TelescopeTrack:ON");
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("TelescopeTrack:OFF");
+            }
+        }
+    }
+    else if (message == "MountHome")
+    {
+        if (dpMount != NULL)
+        {
+            indi_Client->setTelescopeHomeInit(dpMount,"SLEWHOME");
+        }
+    }
+    else if (message == "MountSYNC")
+    {
+        if (dpMount != NULL)
+        {
+            indi_Client->setTelescopeHomeInit(dpMount,"SYNCHOME");
+        }
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "MountSpeedSet")
+    {
+        int Speed = parts[1].trimmed().toInt();
+        qDebug() << "MountSpeedSet:" << Speed;
+        if (dpMount != NULL)
+        {
+            indi_Client->setTelescopeSlewRate(dpMount,Speed-1);
+            int Speed_;
+            indi_Client->getTelescopeSlewRate(dpMount,Speed_);
+            emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(Speed_));
+        }
+    }
+
 }
 
 void MainWindow::initINDIServer()
@@ -446,74 +504,13 @@ void MainWindow::disconnectIndiServer()
     qDebug("--------------------------------------------------disconnectServer");
 }
 
-// void MainWindow::connectDevice(int x)
-// {
-//     if (indi_Client->GetDeviceCount() != 0)
-//     {
-//         qDebug("<<<<<< Devices >>>>>>");
-//         for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-//         {
-//             qDebug() << "|" << i << "|" << indi_Client->GetDeviceFromList(i)->getDeviceName() << "|";
-//         }
-
-//         indi_Client->connectDevice(indi_Client->GetDeviceFromList(x)->getDeviceName());
-//         dpMount = indi_Client->GetDeviceFromList(x);
-
-//         if (dpMount != NULL)
-//         {
-//             QString DevicePort; // add by CJQ 2023.3.3
-//             indi_Client->getDevicePort(dpMount, DevicePort);
-//             //   indi_Client->setLocation(dpMount,RadToDegree(glLatitude_radian),RadToDegree(glLongitude_radian),10);
-//             QDateTime datetime = QDateTime::currentDateTime();
-//             // qDebug()<<datetime;
-//             indi_Client->setTimeUTC(dpMount, datetime);
-//             qDebug() << "AfterAllConnected_setTimeUTC |" << datetime;
-//             indi_Client->getTimeUTC(dpMount, datetime);
-//             qDebug() << "AfterAllConnected_getTimeUTC |" << datetime.currentDateTimeUtc();
-
-//             double a, b, c, d;
-//             indi_Client->getTelescopeInfo(dpMount, a, b, c, d);
-//             qDebug() << "AfterAllConnected_TelescopeInfo |" << a << b << c << d;
-
-//             indi_Client->getTelescopeRADECJ2000(dpMount, a, b);
-//             indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
-
-//             bool isPark;
-//             indi_Client->getTelescopePark(dpMount, isPark);
-
-//             int maxspeed, minspeed, speedvalue, total;
-
-//             indi_Client->getTelescopeTotalSlewRate(dpMount, total);
-//             indi_Client->getTelescopeMaxSlewRateOptions(dpMount, minspeed, maxspeed, speedvalue);
-//             indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
-//             indi_Client->setTelescopeSlewRate(dpMount, total - 1);
-//             indi_Client->setTelescopeTrackEnable(dpMount, true);
-
-//             indi_Client->setTelescopeTrackRate(dpMount, "SIDEREAL");
-//             QString side;
-//             indi_Client->getTelescopePierSide(dpMount, side);
-//             qDebug() << "AfterAllConnected_TelescopePierSide |" << side;
-//         }
-
-//         int TotalRate;
-//         indi_Client->getTelescopeTotalSlewRate(dpMount, TotalRate);
-
-//         indi_Client->setTelescopeSlewRate(dpMount, TotalRate-1);
-
-//         int SlewRateValue_ = 0;
-//         indi_Client->getTelescopeSlewRate(dpMount, SlewRateValue_);
-//         qDebug() << "AfterAllConnected_getSlewRate |" << SlewRateValue_;
-//     }
-// }
-
 void MainWindow::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
                                           std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from)
 {
     QFile file(QString::fromStdString(filename));
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-        // 处理打开文件失败的情况
-        qDebug() << "打开文件失败";
+        qDebug() << "Open File Faild";
         return;
     }
     QXmlStreamReader xml(&file);
@@ -523,12 +520,10 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
         if (xml.isStartElement() && xml.name() == "devGroup")
         {
             DevGroup dev_group;
-            // dev_group.group = xml.attributes().value("group").toString().toStdString();
             dev_group.group = xml.attributes().value("group").toString().toUtf8().constData();
             drivers_list_from.dev_groups.push_back(dev_group);
         }
     }
-    // qDebug() << "Read_XML_1";
     DIR *dir = opendir("/usr/share/indi");
     std::string DirPath = "/usr/share/indi/";
     std::string xmlpath;
@@ -568,7 +563,6 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
                 QFile file(QString::fromStdString(xmlpath));
                 if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
                 {
-                    // 处理打开文件失败的情况
                     qDebug() << "Open File faild!!!";
                 }
 
@@ -612,7 +606,6 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
                 }
             }
         }
-        // qDebug() << "Read_XML_3";
         for (int i = 0; i < drivers_list_xmls.dev_groups.size(); i++)
         {
             for (int j = 0; j < drivers_list_from.dev_groups.size(); j++)
@@ -1134,45 +1127,31 @@ void MainWindow::AfterDeviceConnect()
         int maxspeed, minspeed, speedvalue, total;
 
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
+        emit wsThread->sendMessageToClient("TelescopeTotalSlewRate:" + QString::number(total));
         indi_Client->getTelescopeMaxSlewRateOptions(dpMount, minspeed, maxspeed, speedvalue);
         indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
         indi_Client->setTelescopeSlewRate(dpMount, total - 1);
+        int speed;
+        indi_Client->getTelescopeSlewRate(dpMount,speed);
+        emit wsThread->sendMessageToClient("TelescopeCurrentSlewRate:" + QString::number(speed));
         indi_Client->setTelescopeTrackEnable(dpMount, true);
+
+        bool isTrack = false;
+        indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+
+        if (isTrack)
+        {
+            emit wsThread->sendMessageToClient("TelescopeTrack:ON");
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("TelescopeTrack:OFF");
+        }
 
         indi_Client->setTelescopeTrackRate(dpMount, "SIDEREAL");
         QString side;
         indi_Client->getTelescopePierSide(dpMount, side);
         qDebug() << "AfterAllConnected | TelescopePierSide: " << side;
-
-        // // 显示赤道仪指向
-        // MountTimer.setSingleShot(true);
-        // connect(&MountTimer, &QTimer::timeout, [this]() {
-        //   if(dpMount->isConnected())
-        //   {
-        //     if(isGETSTELMODULE == false)
-        //     {
-        //       isGETSTELMODULE = true;
-        //       Marker_mvmgr = GETSTELMODULE(MarkerMgr);
-        //     }
-        //     int SIZE = 20;
-        //     QString ra  = "0";
-        //     QString dec = "0";
-        //     unsigned char R = 0;
-        //     unsigned char G = 128;
-        //     unsigned char B = 0;
-        //     Vec3i RGB;
-        //     RGB[0] = R;
-        //     RGB[1] = G;
-        //     RGB[2] = B;
-        //     QString color = RGB.toHtmlColor();
-        //     ra =  QString::number(glCurrentRA_Degree, 'g', 6);
-        //     dec = QString::number(glCurrentDEC_Degree, 'g', 6);
-        //     Marker_mvmgr->markerEquatorial(ra, dec, true, true, "circled-plus", color, (float)SIZE, true, 500);
-        //     MountTimer.start(1000);
-        //   }
-        // });
-
-        // MountTimer.start(1000);
     }
 
     if (dpFocuser != NULL)
@@ -2237,4 +2216,45 @@ int MainWindow::FocuserControl_getPosition()
     indi_Client->getFocuserAbsolutePosition(dpFocuser, value);
     return value;
   }
+}
+
+bool MainWindow::TelescopeControl_Park()
+{
+  bool isPark = false;
+  if(dpMount!=NULL)
+  {
+    indi_Client->getTelescopePark(dpMount,isPark);
+    if(isPark == false)
+    {
+      indi_Client->setTelescopePark(dpMount,true);
+    }
+    else
+    {
+      indi_Client->setTelescopePark(dpMount,false);
+    }
+    indi_Client->getTelescopePark(dpMount,isPark);
+    qDebug()<<"isPark???:"<<isPark;
+  }
+
+  return isPark;
+}
+
+bool MainWindow::TelescopeControl_Track()
+{
+  bool isTrack = true;
+  if(dpMount!=NULL)
+  {
+    indi_Client->getTelescopeTrackEnable(dpMount,isTrack);
+    if(isTrack == false)
+    {
+      indi_Client->setTelescopeTrackEnable(dpMount,true);
+    }
+    else
+    {
+      indi_Client->setTelescopeTrackEnable(dpMount,false);
+    }
+    indi_Client->getTelescopeTrackEnable(dpMount,isTrack);
+    qDebug()<<"isTrack???:"<<isTrack;
+  }
+  return isTrack;
 }
