@@ -82,7 +82,7 @@ Installation steps:
 -
 
 Installation steps:
-1. indi:
+1. indi: \n
    Install Pre-requisites
    
 		  sudo apt-get install -y \
