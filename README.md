@@ -3,7 +3,7 @@ QUARCS_QT-SeverProgram
 
 Ubuntu 22.04
 
-1、安装必要的库：
+1、Install Pre-requisites:
 -
 
 	sudo apt-get update
@@ -19,20 +19,20 @@ Ubuntu 22.04
 	sudo apt-get install astrometry.net
 	sudo apt-get install astrometry-data-tycho2
 
-2、安装OPENCV
+2、Install OPENCV:
 -
-从源码编译opencv并安装。（opencv版本建议使用3.4.14 或者3.4.16）
-3.4.14版本下载链接：
+Compile opencv from source and install it. (Recommended opencv version: 3.4.14 or 3.4.16)
+Download link for version 3.4.14:：
 
 	https://codeload.github.com/opencv/opencv/zip/refs/tags/3.4.14
 
-环境配置:
+1.Environment configuration:
 
 		sudo apt-get install build-essential 
 		sudo apt-get install cmake git libgtk2.0-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev
 		sudo apt-get install python-dev python-numpy libtbb2 libtbb-dev libjpeg-dev libpng-dev libtiff-dev libjasper-dev libdc1394-dev
 	
- 编译安装：
+ 2.Compile and install:
   
 		cd opencv-3.4.14
 		mkdir build
@@ -41,60 +41,138 @@ Ubuntu 22.04
 		sudo make	// sudo make -j4 
 		sudo make install
 		
-添加路径:
+3.Add path:
   
   	sudo gedit /etc/ld.so.conf
   
-在文件中添加如下代码：
+4.Add the following line to the file:
 
   	/usr/loacal/lib
 		
-保存关闭，运行下面代码：
+5.Save and close, then run:
 
 	sudo ldconfig
 
-配置环境:（打开.bashrc文件）
+6.Configure environment: (Open .bashrc file)
  
  	sudo gedit /etc/bash.bashrc 
    
-添加下面两行代码，放到最后面即可：
+7.Add the following two lines at the end:
 
 	PKG_CONFIG_PATH=$PKG_CONFIG_PATH:/usr/local/lib/pkgconfig
 	export PKG_CONFIG_PATH
  
-保存退出，终端输入：
+8.Save and exit, then in the terminal:
 
 	source /etc/bash.bashrc
 
-输入以下命令，可以查看所安装opencv的版本:
+9.Enter the following command to check the installed opencv version:
 
 	pkg-config opencv --modversion
 
-3、安装QHYCCD SDK
+3、Install QHYCCD SDK
 -
-压缩包下载链接：https://www.qhyccd.com/file/repository/publish/SDK/240109/sdk_linux64_24.01.09.tgz
+Download link for the compressed package: https://www.qhyccd.com/file/repository/publish/SDK/240109/sdk_linux64_24.01.09.tgz
+
+Installation steps:
 
 	tar xvf sdk_linux64_24.01.09.tgz
 	cd sdk_linux64_24.01.09
 	sudo bash install.sh
 
-4、安装INDI和INDI三方驱动库
+4、Install indi and indi-3rdparty driver library
 -
-具体安装可访问以下GitHub库：
 
-	https://github.com/indilib/indi.git
-	https://github.com/indilib/indi-3rdparty.git
+Installation steps:
+1. indi:
+   Install Pre-requisites
+   
+		  sudo apt-get install -y \
+		  git \
+		  cdbs \
+		  dkms \
+		  cmake \
+		  fxload \
+		  libev-dev \
+		  libgps-dev \
+		  libgsl-dev \
+		  libraw-dev \
+		  libusb-dev \
+		  zlib1g-dev \
+		  libftdi-dev \
+		  libjpeg-dev \
+		  libkrb5-dev \
+		  libnova-dev \
+		  libtiff-dev \
+		  libfftw3-dev \
+		  librtlsdr-dev \
+		  libcfitsio-dev \
+		  libgphoto2-dev \
+		  build-essential \
+		  libusb-1.0-0-dev \
+		  libdc1394-dev \
+		  libboost-regex-dev \
+		  libcurl4-gnutls-dev \
+		  libtheora-dev
+   
+   Create Project Directory
+   
+		mkdir -p ~/Projects
+		cd ~/Projects
 
-5、安装QT组件：
+   Get the code
+   
+		git clone https://github.com/indilib/indi.git
+
+   Build indi-core (cmake)
+
+		mkdir -p ~/Projects/build/indi-core
+		cd ~/Projects/build/indi-core
+		cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug ~/Projects/indi
+		make -j4
+		sudo make install
+
+2. indi-3rdparty:
+   Install Pre-requisites
+   
+		  sudo apt-get -y install libnova-dev libcfitsio-dev libusb-1.0-0-dev zlib1g-dev libgsl-dev build-essential cmake git libjpeg-dev libcurl4-gnutls-dev libtiff-dev libfftw3-dev libftdi-dev libgps-dev libraw-dev libdc1394-dev libgphoto2-dev libboost-dev libboost-regex-dev librtlsdr-dev liblimesuite-dev libftdi1-dev libavcodec-dev libavdevice-dev libindi-dev
+   
+   Create Project Directory(It can be in the same folder as the first step of installing indi)
+   
+		mkdir -p ~/Projects
+		cd ~/Projects
+
+   Get the code
+   
+		git clone https://github.com/indilib/indi-3rdparty
+
+   Building all the 3rd Party Libraries
+
+		mkdir -p ~/Projects/build/indi-3rdparty-libs
+		cd ~/Projects/build/indi-3rdparty-libs
+		cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug -DBUILD_LIBS=1 ~/Projects/indi-3rdparty
+		make -j4
+		sudo make install
+
+   Building all the 3rd Party Drivers
+
+		mkdir -p ~/Projects/build/indi-3rdparty
+		cd ~/Projects/build/indi-3rdparty
+		cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug ~/Projects/indi-3rdparty
+		make -j4
+		sudo make install
+   
+
+5、Install QT components:
 -
 	sudo apt install qtcreator qtbase5-dev qtscript5-dev libqt5svg5-dev qttools5-dev-tools qttools5-dev libqt5opengl5-dev qtmultimedia5-dev libqt5multimedia5-plugins libqt5serialport5 libqt5serialport5-dev qtpositioning5-dev libgps-dev libqt5positioning5 libqt5positioning5-plugins qtwebengine5-dev libqt5charts5-dev libqt5websockets5-dev
 	
-5、安装Visual Studio Code
+5、Install Visual Studio Code
 -
-用VSCODE可作为本工程的编辑器.
-在VScode的Extensions中安装C/C++ Extension Pack.	
-打开QUARCS_QT-SeverProgram文件夹，用Cmake对项目进行配置，选择/src/CmakeLists.txt，然后选择CXX 11.4.0
-之后可以直接在VScode里运行QT-SeverProgram.
+-VSCODE can be used as the editor for this project.
+-Install C/C++ Extension Pack in VScode's Extensions.	
+-Open the QUARCS_QT-SeverProgram folder, configure the project with Cmake, select /src/CmakeLists.txt, and then select CXX 11.4.0.
+-You can then run QT-SeverProgram directly in VScode.
 
 
 
