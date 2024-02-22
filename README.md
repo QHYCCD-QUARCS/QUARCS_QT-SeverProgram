@@ -166,18 +166,33 @@ Installation steps:
 5、Install QT components:
 -
 	sudo apt install qtcreator qtbase5-dev qtscript5-dev libqt5svg5-dev qttools5-dev-tools qttools5-dev libqt5opengl5-dev qtmultimedia5-dev libqt5multimedia5-plugins libqt5serialport5 libqt5serialport5-dev qtpositioning5-dev libgps-dev libqt5positioning5 libqt5positioning5-plugins qtwebengine5-dev libqt5charts5-dev libqt5websockets5-dev
-	
-5、Install Visual Studio Code
--
+
+6、Download QUARCS_QT-ServerProgram
+
+   You can fork the this project into your own repositories and download it into workspace folder(lets assume it is in ~/workspace)
+
+7、Compile and Run in VSCODE
+
 - VSCODE can be used as the editor for this project.
 - Install C/C++ Extension Pack in VScode's Extensions.	
 - Open the QUARCS_QT-SeverProgram folder, configure the project with Cmake, select /src/CmakeLists.txt, and then select CXX 11.4.0.
 - You can then run QT-SeverProgram directly in VScode.
 
+8、Compile and Run in Terminal (assume the project in ~/workspace/QUARCS_QT-SeverProgram)
+
+	cd ~/workspace/QUARCS_QT-SeverProgram/src
+	make build
+	cd build
+	cmake ..
+	make 
+	make install
+   
+   the compiled filename is "client"  by default it is be installed in /usr/local/bin  you can run it
+
+	client
 
 
 
-		
 
-
-
+   
+   
