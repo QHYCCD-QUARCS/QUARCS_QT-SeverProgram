@@ -12,7 +12,7 @@ DriversListNew drivers_list_new;
 SystemDevice systemdevice;
 SystemDeviceList systemdevicelist;
 
-QUrl websocketUrl(QStringLiteral("ws://192.168.2.104:8600"));
+QUrl websocketUrl(QStringLiteral("ws://192.168.2.31:8600"));
 
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
 {
@@ -107,9 +107,13 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             FocuserControl_Move(true,Steps);
         }
-        else
+        else if(LR == "Right")
         {
             FocuserControl_Move(false,Steps);
+        }
+        else if(LR == "Target")
+        {
+            FocusMoveToPosition(Steps);
         }
     }
     else if (parts.size() == 5 && parts[0].trimmed() == "RedBox")

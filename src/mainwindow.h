@@ -111,7 +111,7 @@ public:
     QString glMainCameraStatu;
     QElapsedTimer glMainCameraCaptureTimer;
 
-    std::string vueDirectoryPath = "/home/astro/workspace/GitClone/stellarium-web-engine_qscope/apps/web-frontend/dist/img/";
+    std::string vueDirectoryPath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
 
     bool AutoStretch = true;
 

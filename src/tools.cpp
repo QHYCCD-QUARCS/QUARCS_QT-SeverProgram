@@ -424,7 +424,7 @@ void Tools::printSystemDeviceList(SystemDeviceList s){
 
 void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
 {
-  std::string filename = "/home/astro/device_connect.dat";
+  std::string filename = "/home/quarcs/device_connect.dat";
   std::ofstream outfile(filename, std::ios::binary);
 
   if (!outfile.is_open()) {
@@ -467,7 +467,7 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
 SystemDeviceList Tools::readSystemDeviceList()
 {
   SystemDeviceList deviceList;
-  std::string filename = "/home/astro/device_connect.dat";
+  std::string filename = "/home/quarcs/device_connect.dat";
   std::ifstream infile(filename, std::ios::binary);
 
   if (!infile.is_open()) {
