@@ -12,10 +12,13 @@ DriversListNew drivers_list_new;
 SystemDevice systemdevice;
 SystemDeviceList systemdevicelist;
 
-QUrl websocketUrl(QStringLiteral("ws://192.168.2.31:8600"));
+// QUrl websocketUrl(QStringLiteral("ws://192.168.2.31:8600"));
+QUrl websocketUrl;
 
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
 {
+    getHostAddress();
+
     wsThread = new WebSocketThread(websocketUrl);
     connect(wsThread, &WebSocketThread::receivedMessage, this, &MainWindow::onMessageReceived);
     wsThread->start();
@@ -59,6 +62,32 @@ MainWindow::~MainWindow()
     wsThread->quit();
     wsThread->wait();
     delete wsThread;
+}
+
+void MainWindow::getHostAddress()
+{
+    QList<QNetworkInterface> interfaces = QNetworkInterface::allInterfaces();
+    foreach (const QNetworkInterface &interface, interfaces) {
+        // 排除回环接口和非活动接口
+        if (interface.flags() & QNetworkInterface::IsLoopBack || !(interface.flags() & QNetworkInterface::IsUp))
+            continue;
+
+        QList<QNetworkAddressEntry> addresses = interface.addressEntries();
+        foreach (const QNetworkAddressEntry &address, addresses) {
+            if (address.ip().protocol() == QAbstractSocket::IPv4Protocol) {
+                QString localIpAddress = address.ip().toString();
+                qDebug() << "Local IP Address:" << address.ip().toString();
+
+                if (!localIpAddress.isEmpty()) {
+                    QUrl getUrl(QStringLiteral("ws://%1:8600").arg(localIpAddress));
+                    qDebug() << "WebSocket URL:" << getUrl.toString();
+                    websocketUrl = getUrl;
+                } else {
+                    qDebug() << "Failed to get local IP address.";
+                }
+            }
+        }
+    }
 }
 
 void MainWindow::onMessageReceived(const QString &message)
@@ -248,6 +277,18 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainR")
+    {
+        ImageGainR = parts[1].trimmed().toDouble();
+        qDebug() << "GainR is set to " << ImageGainR;
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainB")
+    {
+        ImageGainB = parts[1].trimmed().toDouble();
+        qDebug() << "GainB is set to " << ImageGainB;
+    }
+
 }
 
 void MainWindow::initINDIServer()
@@ -387,8 +428,8 @@ void MainWindow::saveFitsAsJPG(QString filename)
 
 int MainWindow::saveFitsAsPNG(QString fitsFileName)
 {
-    cv::Mat image;
-    int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
+    cv::Mat image_;
+    int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image_);
 
     if (status != 0)
     {
@@ -396,16 +437,31 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
         return status;
     }
 
+    cv::Mat image;
+    if(MainCameraCFA == "MONO")
+    {
+        image = image_;
+    } else {
+        // image = colorImage(image_);  // Color image processing
+        image = image_; // Original image
+    }
+
     // 获取图像的宽度和高度
     int width = image.cols;
     int height = image.rows;
 
+    qDebug() << "image size:" << width << "," << height;
+
     // 将图像调整为1920x1080的尺寸
-    cv::resize(image, image, cv::Size(4096, 2160));
+    // cv::resize(image, image, cv::Size(4096, 2160));
+
+    qDebug() << "image depth:" << image.depth();
+    qDebug() << "image channels:" << image.channels();
 
     // 将图像数据复制到一维数组
-    std::vector<unsigned char> imageData;
-    imageData.assign(image.data, image.data + image.total() * image.channels());
+    std::vector<unsigned char> imageData;  //uint16_t
+    imageData.assign(image.data, image.data + image.total() * image.channels() * 2);
+    qDebug() << "imageData Size:" << imageData.size() << "," << image.data + image.total() * image.channels();
 
     // 生成唯一ID
     QString uniqueId = QUuid::createUuid().toString();
@@ -442,13 +498,58 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
 
     if (saved)
     {
-        // emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(fileName_));
-        emit wsThread->sendMessageToClient("SavePngSuccess:" + QString::fromStdString(fileName));
+        emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(fileName_));
+        // emit wsThread->sendMessageToClient("SavePngSuccess:" + QString::fromStdString(fileName));
     }
     else
     {
         qDebug() << "Save Image Failed...";
     }
+}
+
+cv::Mat MainWindow::colorImage(cv::Mat img16)
+{
+    // color camera, need to do debayer and color balance
+    cv::Mat AWBImg16;
+    cv::Mat AWBImg16color;
+    cv::Mat AWBImg16mono;
+    cv::Mat AWBImg8color;
+
+    uint16_t B=0;
+    uint16_t W=65535;
+
+    AWBImg16.create(img16.rows, img16.cols, CV_16UC1);
+    AWBImg16color.create(img16.rows, img16.cols, CV_16UC3);
+    AWBImg16mono.create(img16.rows, img16.cols, CV_16UC1);
+    AWBImg8color.create(img16.rows, img16.cols, CV_8UC3);
+
+    Tools::ImageSoftAWB(img16, AWBImg16, MainCameraCFA, ImageGainR, ImageGainB, 30); // image software Auto White Balance is done in RAW image.
+    cv::cvtColor(AWBImg16, AWBImg16color, CV_BayerRG2BGR);
+
+    cv::cvtColor(AWBImg16color, AWBImg16mono, cv::COLOR_BGR2GRAY);
+
+    // cv::cvtColor(AWBImg16, AWBImg16color, CV_BayerRG2RGB);
+
+    // cv::cvtColor(AWBImg16color, AWBImg16mono, cv::COLOR_RGB2GRAY);
+
+    if (AutoStretch == true)
+    {
+        Tools::GetAutoStretch(AWBImg16mono, 0, B, W);
+    }
+    else
+    {
+        B = 0;
+        W = 65535;
+    }
+    qDebug() << "GetAutoStretch:" << B << "," << W;
+    Tools::Bit16To8_Stretch(AWBImg16color, AWBImg8color, B, W);
+
+    return AWBImg16color;
+
+    AWBImg16.release();
+    AWBImg16color.release();
+    AWBImg16mono.release();
+    AWBImg8color.release();
 }
 
 void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
@@ -1094,6 +1195,9 @@ void MainWindow::AfterDeviceConnect()
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
         // m_pToolbarWidget->CaptureView->Camera_Width = glMainCCDSizeX;
         // m_pToolbarWidget->CaptureView->Camera_Height = glMainCCDSizeY;
+        int offsetX, offsetY;
+        indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
+        qDebug() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
     }
 
     if (dpMount != NULL)
@@ -1914,7 +2018,7 @@ void MainWindow::ShowPHDdata()
         // qDebug() << guideDataIndicator << "dRa:" << dRa << "dDec:" << dDec
         //          << "rmsX:" << RMSErrorX << "rmsY:" << RMSErrorY
         //          << "rmsTotal:" << RMSErrorTotal << "SNR:" << SNR;
-        unsigned char phdstatu;
+                unsigned char phdstatu;
         call_phd_checkStatus(phdstatu);
 
         if (dRa != 0 && dDec != 0)
@@ -2106,7 +2210,7 @@ void MainWindow::getTimeNow(int index)
     std::string formatted_time = buffer + std::to_string(ms % 1000);
 
     // 打印带有当前时间的输出
-    std::cout << "TIME(ms): " << formatted_time << "," << index << std::endl;
+    // std::cout << "TIME(ms): " << formatted_time << "," << index << std::endl;
 }
 
 void MainWindow::onPHDControlGuideTimeout()

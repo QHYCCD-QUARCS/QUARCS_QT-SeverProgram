@@ -19,6 +19,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <QNetworkInterface>
 
 class MainWindow : public QObject
 {
@@ -27,6 +28,8 @@ class MainWindow : public QObject
 public:
     explicit MainWindow(QObject *parent = nullptr);
     ~MainWindow();
+
+    void getHostAddress();
 
     void initINDIClient();
     void initINDIServer();
@@ -64,6 +67,8 @@ public:
     int saveFitsAsPNG(QString fitsFileName);
 
     void saveGuiderImageAsJPG(cv::Mat Image);
+
+    cv::Mat colorImage(cv::Mat img16);
 
     void refreshGuideImage(cv::Mat image16,QString CFA);
 
@@ -168,6 +173,11 @@ public:
     bool isMoving = false;
     bool MoveInward = true;
     int AutoMovePosition;
+
+    QString MainCameraCFA;
+
+    double ImageGainR = 1.0;
+    double ImageGainB = 1.0;
 
     QVector<QPointF> dataPoints;
 

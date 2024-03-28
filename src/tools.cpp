@@ -1720,6 +1720,9 @@ void Tools::ImageSoftAWB(cv::Mat sourceImg16, cv::Mat& targetImg16, QString CFA,
 
   double gain1, gain2, gain3, gain4;
 
+  qDebug() << "CFA:" << CFA;
+  qDebug() << "gainR:" << gainR << "," << "gainB:" << gainB;
+
   if (CFA == "RGGB") {
     gain1 = 1.0 * gainR;
     gain2 = 1.0;
