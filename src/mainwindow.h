@@ -192,6 +192,10 @@ public:
 
     int FocuserControl_getPosition();
 
+    void TelescopeControl_Goto(double Ra,double Dec);
+
+    QString TelescopeControl_Status();
+
     bool TelescopeControl_Park();
 
     bool TelescopeControl_Track();
@@ -199,6 +203,47 @@ public:
     void TelescopeControl_Home();
 
     void TelescopeControl_SYNCHome();
+
+    void ScheduleTabelData(QString message);
+
+    QList<ScheduleData> m_scheduList;
+
+    QTimer telescopeTimer;
+    QTimer guiderTimer;
+    QTimer captureTimer;
+
+    int schedule_currentNum = 0;
+    int schedule_ExpTime;
+    int schedule_RepeatNum;
+    int schedule_currentShootNum = 0;
+
+    bool InSlewing;
+    bool GuidingHasStarted = false;
+    QString ShootStatus;
+
+    bool StopSchedule = false;
+
+    void startSchedule();
+
+    void startMountGoto(double ra, double dec);       // Ra:Hour, Dec:Degree
+
+    void startGuiding();
+
+    void startCapture(int ExpTime);
+
+    bool WaitForTelescopeToComplete();
+
+    bool WaitForShootToComplete();
+
+    bool WaitForGuidingToComplete();
+
+    int ImageSave(QString name, int num);
+
+    QString ScheduleTargetNames;
+
+    bool directoryExists(const std::string& path);
+
+    bool createDirectory(const std::string& basePath);
 
 private slots:
     void onMessageReceived(const QString &message);

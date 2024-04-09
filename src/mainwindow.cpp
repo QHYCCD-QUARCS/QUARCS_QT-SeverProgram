@@ -289,6 +289,27 @@ void MainWindow::onMessageReceived(const QString &message)
         qDebug() << "GainB is set to " << ImageGainB;
     }
 
+    else if (parts[0].trimmed() == "ScheduleTabelData")
+    {
+        ScheduleTabelData(message);
+    }
+
+    else if (parts.size() == 5 && parts[0].trimmed() == "startMountGoto")
+    {
+        double Ra, Dec;
+        Ra  = parts[2].trimmed().toDouble();
+        Dec = parts[4].trimmed().toDouble();
+
+        qDebug() << "RaDecData:" << Ra << "," << Dec;
+
+        startMountGoto(Ra, Dec);
+    }
+
+    else if (message == "StopSchedule")
+    {
+        StopSchedule = true;
+    }
+
 }
 
 void MainWindow::initINDIServer()
@@ -321,6 +342,7 @@ void MainWindow::initINDIClient()
                 saveFitsAsJPG(QString::fromStdString(filename));
             }
             glMainCameraStatu = "Displaying";
+            ShootStatus = "Completed";
         });
 }
 
@@ -2326,6 +2348,27 @@ int MainWindow::FocuserControl_getPosition()
   }
 }
 
+void MainWindow::TelescopeControl_Goto(double Ra,double Dec)
+{
+  if(dpMount!=NULL)
+  {
+    INDI::PropertyNumber property = NULL;
+    indi_Client->slewTelescopeJNowNonBlock(dpMount,Ra,Dec,true,property);
+  }
+}
+
+QString MainWindow::TelescopeControl_Status()
+{
+  if (dpMount != NULL) 
+  {
+    QString status;
+    
+    indi_Client->getTelescopeStatus(dpMount,status);
+    
+    return status;
+  }
+}
+
 bool MainWindow::TelescopeControl_Park()
 {
   bool isPark = false;
@@ -2365,4 +2408,327 @@ bool MainWindow::TelescopeControl_Track()
     qDebug()<<"isTrack???:"<<isTrack;
   }
   return isTrack;
+}
+
+void MainWindow::ScheduleTabelData(QString message)
+{
+    ScheduleTargetNames.clear();
+    schedule_currentShootNum = 0;
+    QStringList ColDataList = message.split('[');
+    for (int i = 1; i < ColDataList.size(); ++i) {
+        QString ColData = ColDataList[i];   // ",M 24, Ra:4.785693,Dec:-0.323759,12:00:00,1 s,Ha,,Bias,ON,],"
+        ScheduleData rowData;
+        qDebug() << "ColData[" << i << "]:" << ColData;
+
+        QStringList RowDataList = ColData.split(',');
+        for (int j = 1; j < 10; ++j) {
+            if(j == 1){
+                rowData.shootTarget = RowDataList[j];
+                qDebug() << "Target:" << rowData.shootTarget;
+                // 将 shootTarget 添加到 ScheduleTargetNames 中
+                if (!ScheduleTargetNames.isEmpty())
+                {
+                    ScheduleTargetNames += ",";
+                }
+                ScheduleTargetNames += rowData.shootTarget;
+            } else if(j == 2){
+                QStringList parts = RowDataList[j].split(':');
+                rowData.targetRa = Tools::RadToHour(parts[1].toDouble());
+                qDebug() << "Ra:" << rowData.targetRa;
+            } else if(j == 3){
+                QStringList parts = RowDataList[j].split(':');
+                rowData.targetDec = Tools::RadToDegree(parts[1].toDouble());
+                qDebug() << "Dec:" << rowData.targetDec;
+            } else if(j == 4){
+                rowData.shootTime = RowDataList[j];
+                qDebug() << "Time:" << rowData.shootTime;
+            } else if(j == 5){
+                QStringList parts = RowDataList[j].split(' ');
+                QString value = parts[0];
+                QString unit = parts[1];
+                if (unit == "s")
+                    rowData.exposureTime = value.toInt() * 1000; // Convert seconds to milliseconds
+                else if (unit == "ms")
+                    rowData.exposureTime = value.toInt(); // Milliseconds
+                if (rowData.exposureTime == 0) {
+                    rowData.exposureTime = 1000;
+                    qDebug() << "Exptime error, Exptime = 1000 ms";
+                }
+                qDebug() << "Exptime:" << rowData.exposureTime;
+            } else if(j == 6){
+                rowData.filterNumber = RowDataList[j];
+                qDebug() << "CFW:" << rowData.filterNumber;
+            } else if(j == 7){
+                if(RowDataList[j] == "") {
+                    rowData.repeatNumber = 1;
+                    qDebug() << "Repeat error, Repeat = 1";
+                } else {
+                    rowData.repeatNumber = RowDataList[j].toInt();
+                }
+                qDebug() << "Repeat:" << rowData.repeatNumber;
+            } else if(j == 8){
+                rowData.shootType = RowDataList[j];
+                qDebug() << "Type:" << rowData.shootType;
+            } else if(j == 9){
+                rowData.resetFocusing = (RowDataList[j] == "ON");
+                qDebug() << "Focus:" << rowData.resetFocusing;
+            }
+        }
+        rowData.progress = 0;
+        // scheduleTable.Data.push_back(rowData);
+        m_scheduList.append(rowData);
+    }
+    startSchedule();
+}
+
+void MainWindow::startSchedule()
+{
+    createDirectory("/home/quarcs/Astro_SaveImage");
+    if (schedule_currentNum >= 0 && schedule_currentNum < m_scheduList.size()) 
+    {
+        schedule_ExpTime = m_scheduList[schedule_currentNum].exposureTime;
+        schedule_RepeatNum = m_scheduList[schedule_currentNum].repeatNumber;
+        StopSchedule = false;
+        startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
+    } 
+    else 
+    {
+        qDebug() << "Index out of range, Schedule is complete!";
+        StopSchedule = true;
+        schedule_currentNum = 0;
+        // 在实际应用中，你可能想要返回一个默认值或者处理索引超出范围的情况
+        // 这里仅仅是一个简单的示例
+        // return ScheduleData();
+    }
+}
+
+void MainWindow::startMountGoto(double ra, double dec)  // Ra:Hour, Dec:Degree
+{
+    // 停止和清理先前的计时器
+    telescopeTimer.stop();
+    telescopeTimer.disconnect();
+
+    qDebug() << "Mount Goto:" << ra << "," << dec;
+
+    TelescopeControl_Goto(ra, dec);
+    call_phd_StopLooping();
+    GuidingHasStarted = false;
+
+    sleep(2); //赤道仪的状态更新有一定延迟
+
+    // 启动等待赤道仪转动的定时器
+    telescopeTimer.setSingleShot(true);
+
+    connect(&telescopeTimer, &QTimer::timeout, [this]() {
+        if (StopSchedule)
+        {
+            StopSchedule = false;
+            qDebug("Schedule is stop!");
+
+            if (dpMount != NULL)
+            {
+                indi_Client->setTelescopeAbortMotion(dpMount);
+            }
+
+            return;
+        }
+        // 检查赤道仪状态
+        if (WaitForTelescopeToComplete()) 
+        {
+            telescopeTimer.stop();  // 转动完成时停止定时器
+            qDebug() << "Mount Goto Complete!";
+
+            if(GuidingHasStarted == false)
+            {
+                startGuiding();
+            }
+        } 
+        else 
+        {
+            telescopeTimer.start(1000);  // 继续等待
+        } 
+    });
+
+    telescopeTimer.start(1000);
+}
+
+void MainWindow::startGuiding() 
+{
+    // 停止和清理先前的计时器
+    guiderTimer.stop();
+    guiderTimer.disconnect();
+
+    GuidingHasStarted = true;
+    call_phd_StartLooping();
+    sleep(2);
+    call_phd_AutoFindStar();
+    call_phd_StartGuiding();
+
+    // 启动等待赤道仪转动的定时器
+   guiderTimer.setSingleShot(true);
+
+    connect(&guiderTimer, &QTimer::timeout, [this]() {
+        if (StopSchedule)
+        {
+            StopSchedule = false;
+            call_phd_StopLooping();
+            qDebug("Schedule is stop!");
+            return;
+        }
+        // 检查赤道仪状态
+        if (WaitForGuidingToComplete()) 
+        {
+            guiderTimer.stop();  // 转动完成时停止定时器
+            qDebug() << "Guiding Complete!";
+
+            // CaptureSession();
+            startCapture(schedule_ExpTime);
+        } 
+        else 
+        {
+            guiderTimer.start(1000);  // 继续等待
+        } 
+    });
+
+    guiderTimer.start(1000);
+}
+
+void MainWindow::startCapture(int ExpTime)
+{
+    // 停止和清理先前的计时器
+    captureTimer.stop();
+    captureTimer.disconnect();
+
+    ShootStatus = "InProgress";
+    qDebug() << "ShootStatus: " << ShootStatus;
+    INDI_Capture(ExpTime);
+    schedule_currentShootNum ++;
+
+    captureTimer.setSingleShot(true);
+
+    connect(&captureTimer, &QTimer::timeout, [this]() {
+        if (StopSchedule)
+        {
+            StopSchedule = false;
+            INDI_AbortCapture();
+            qDebug("Schedule is stop!");
+            return;
+        }
+        // 检查赤道仪状态
+        if (WaitForShootToComplete()) 
+        {
+            captureTimer.stop();  // 转动完成时停止定时器
+            qDebug() << "Capture" << schedule_currentShootNum << "Complete!";
+            ImageSave(m_scheduList[schedule_currentNum].shootTarget, schedule_currentShootNum);
+            // Process
+            m_scheduList[schedule_currentNum].progress = (static_cast<double>(schedule_currentShootNum) / m_scheduList[schedule_currentNum].repeatNumber) * 100;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+
+            if (schedule_currentShootNum < schedule_RepeatNum)
+            {
+                startCapture(schedule_ExpTime);
+            }
+            else
+            {
+                schedule_currentShootNum = 0;
+
+                // next schedule...
+                schedule_currentNum ++;
+                qDebug() << "next schedule...";
+                startSchedule();
+            }
+
+        } 
+        else 
+        {
+            captureTimer.start(1000);  // 继续等待
+        } 
+    });
+
+    captureTimer.start(1000);
+}
+
+bool MainWindow::WaitForTelescopeToComplete() {
+  return (TelescopeControl_Status() != "Slewing");
+}
+
+bool MainWindow::WaitForShootToComplete() {
+  qDebug("Wait For Shoot To Complete...");
+  return (ShootStatus != "InProgress");
+}
+
+bool MainWindow::WaitForGuidingToComplete() {
+  qDebug() << "Wait For Guiding To Complete..." << InGuiding;
+  return InGuiding;
+}
+
+int MainWindow::ImageSave(QString name, int num)
+{
+  const char* sourcePath = "/dev/shm/ccd_simulator.fits";
+  // const char* destinationPath = "/Home/Pic/star_1.fits";
+
+  name.replace(' ', '_');
+  QString resultFileName = QString("%1-%2.fits").arg(name).arg(num);
+
+  std::time_t currentTime = std::time(nullptr);
+  std::tm *timeInfo = std::localtime(&currentTime);
+  char buffer[80];
+  std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
+
+  // 指定目标目录
+  QString destinationDirectory = "/home/quarcs/Astro_SaveImage";
+
+  // 拼接目标文件路径
+  QString destinationPath = destinationDirectory  + "/" + buffer + " [" + ScheduleTargetNames + "]" + "/" + resultFileName;
+
+  // 将QString转换为const char*
+  const char* destinationPathChar = destinationPath.toUtf8().constData();
+
+  std::ifstream sourceFile(sourcePath, std::ios::binary);
+  if (!sourceFile.is_open()) {
+    std::cerr << "无法打开源文件：" << sourcePath << std::endl;
+    return 1;
+  }
+
+  std::ofstream destinationFile(destinationPathChar, std::ios::binary);
+  if (!destinationFile.is_open()) {
+    std::cerr << "无法创建或打开目标文件：" << destinationPathChar << std::endl;
+    return 1;
+  }
+
+  destinationFile << sourceFile.rdbuf();
+
+  sourceFile.close();
+  destinationFile.close();
+
+  return 0;
+}
+
+bool MainWindow::directoryExists(const std::string& path) {
+    struct stat info;
+    return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
+}
+
+bool MainWindow::createDirectory(const std::string& basePath) {
+    std::time_t currentTime = std::time(nullptr);
+    std::tm* timeInfo = std::localtime(&currentTime);
+    char buffer[80];
+    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
+    std::string folderName = basePath + "/" + buffer + " [" + ScheduleTargetNames.toStdString() + "]";
+
+    // Check if directory already exists
+    if (directoryExists(folderName)) {
+        std::cout << "Directory already exists: " << folderName << std::endl;
+        return true;
+    }
+
+    // Create directory
+    int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    if (status == 0) {
+        std::cout << "Directory created successfully: " << folderName << std::endl;
+        return true;
+    } else {
+        std::cerr << "Failed to create directory: " << folderName << std::endl;
+        return false;
+    }
 }

@@ -1535,7 +1535,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 
 uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
 {
-    INDI::PropertyText property = dp->getProperty("OnStep_Status");
+    INDI::PropertyText property = dp->getProperty("OnStep Status");
 
     if (!property.isValid())
     {

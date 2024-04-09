@@ -123,6 +123,20 @@ struct LocationResult
   double elevation;
 };
 
+struct ScheduleData
+{
+  QString shootTarget;    //拍摄目标
+  double targetRa;
+  double targetDec;
+  QString shootTime;      //拍摄时间
+  int exposureTime;       //曝光时间
+  QString filterNumber;   //滤镜轮号
+  int repeatNumber;       //重复张数
+  QString shootType;      //拍摄类型
+  bool resetFocusing;     //重新调焦
+  int progress;           //进度
+};
+
 enum class SystemNumber {
   Mount = 0,
   Guider = 1,
