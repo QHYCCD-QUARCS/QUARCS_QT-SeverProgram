@@ -181,7 +181,7 @@ Installation steps:
 8、Compile and Run in Terminal (assume the project in ~/workspace/QUARCS_QT-SeverProgram)
 
 	cd ~/workspace/QUARCS_QT-SeverProgram/src
-	make build
+	mkdir build
 	cd build
 	cmake ..
 	make 
