@@ -20,6 +20,7 @@
 #include <fstream>
 #include <vector>
 #include <QNetworkInterface>
+#include <filesystem>
 
 class MainWindow : public QObject
 {
@@ -211,6 +212,9 @@ public:
     QTimer telescopeTimer;
     QTimer guiderTimer;
     QTimer captureTimer;
+    QTimer timewaitingTimer;
+    QTimer filterTimer;
+    QTimer focusTimer;
 
     int schedule_currentNum = 0;
     int schedule_ExpTime;
@@ -229,6 +233,8 @@ public:
 
     void startGuiding();
 
+    void startTimeWaiting();
+
     void startCapture(int ExpTime);
 
     bool WaitForTelescopeToComplete();
@@ -237,13 +243,39 @@ public:
 
     bool WaitForGuidingToComplete();
 
-    int ImageSave(QString name, int num);
+    bool WaitForTimeToComplete();
+
+    int ScheduleImageSave(QString name, int num);
+
+    int CaptureImageSave();
 
     QString ScheduleTargetNames;
 
+    // std::string ImageSaveBasePath = "/home/quarcs/QUARCS_SaveImage/";
+    // QString ImageSaveBaseDirectory = "/home/quarcs/QUARCS_SaveImage/";
+    std::string ImageSaveBasePath = "image";
+    QString ImageSaveBaseDirectory = "image";
+
     bool directoryExists(const std::string& path);
 
-    bool createDirectory(const std::string& basePath);
+    bool createScheduleDirectory();
+
+    bool createCaptureDirectory();
+
+    QVector<ConnectedDevice> ConnectedDevices;
+
+    void getConnectedDevices();
+
+    bool isStagingImage = false;
+    QString SavedImage;
+
+    void getStagingImage();
+
+    bool isStagingScheduleData = false;
+    QString StagingScheduleData;
+
+    void getStagingScheduleData();
+
 
 private slots:
     void onMessageReceived(const QString &message);

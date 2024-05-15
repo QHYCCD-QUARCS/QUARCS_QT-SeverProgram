@@ -137,6 +137,18 @@ struct ScheduleData
   int progress;           //进度
 };
 
+struct ConnectedDevice
+{
+  QString DeviceType;
+  QString DeviceName;
+};
+
+struct ClientButtonStatus
+{
+  QString Button;
+  QString Status;
+};
+
 enum class SystemNumber {
   Mount = 0,
   Guider = 1,
@@ -172,8 +184,12 @@ class Tools {
   static void startIndiDriver(QString driver_name);
   static void stopIndiDriver(QString driver_name);
   static void printSystemDeviceList(SystemDeviceList s);
+  static void makeConfigFolder();
+  static void makeImageFolder();
   static void saveSystemDeviceList(SystemDeviceList deviceList);
   static SystemDeviceList readSystemDeviceList();
+  static void saveExpTimeList(QString List);
+  static QString readExpTimeList();
   static void stopIndiDriverAll(const DriversList driver_list);
 
   static uint32_t readFitsHeadForDevName(std::string filename,QString &devname);

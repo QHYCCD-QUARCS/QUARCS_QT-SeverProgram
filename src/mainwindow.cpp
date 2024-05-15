@@ -32,6 +32,8 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
 
     Tools::InitSystemDeviceList();
     Tools::initSystemDeviceList(systemdevicelist);
+    Tools::makeConfigFolder();
+    Tools::makeImageFolder();
 
     m_thread = new QThread;
     m_threadTimer = new QTimer;
@@ -310,6 +312,43 @@ void MainWindow::onMessageReceived(const QString &message)
         StopSchedule = true;
     }
 
+    else if (message == "CaptureImageSave")
+    {
+        CaptureImageSave();
+    }
+
+    else if (message == "getConnectedDevices")
+    {
+        getConnectedDevices();
+    }
+
+    else if (message == "getStagingImage")
+    {
+        getStagingImage();
+    }
+
+    else if (parts[0].trimmed() == "StagingScheduleData")
+    {
+        isStagingScheduleData = true;
+        StagingScheduleData = message;
+    }
+
+    else if (message == "getStagingScheduleData")
+    {
+        getStagingScheduleData();
+    }
+
+    else if (parts[0].trimmed() == "ExpTimeList")
+    {
+        Tools::saveExpTimeList(message);
+    }
+
+    else if (message == "getExpTimeList")
+    {
+        emit wsThread->sendMessageToClient(Tools::readExpTimeList());
+    }
+
+    
 }
 
 void MainWindow::initINDIServer()
@@ -521,6 +560,8 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
     if (saved)
     {
         emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(fileName_));
+        isStagingImage = true;
+        SavedImage = QString::fromStdString(fileName_);
         // emit wsThread->sendMessageToClient("SavePngSuccess:" + QString::fromStdString(fileName));
     }
     else
@@ -1204,6 +1245,7 @@ void MainWindow::AfterDeviceConnect()
     {
         qDebug() << "AfterAllConnected | DeviceName: " << dpMainCamera->getDeviceName();
         emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+        ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
 
         indi_Client->setBLOBMode(B_ALSO, dpMainCamera->getDeviceName(), nullptr);
         indi_Client->enableDirectBlobAccess(dpMainCamera->getDeviceName(), nullptr);
@@ -1225,6 +1267,7 @@ void MainWindow::AfterDeviceConnect()
     if (dpMount != NULL)
     {
         emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()));
+        ConnectedDevices.push_back({"Mount", QString::fromUtf8(dpMount->getDeviceName())});
         QString DevicePort; // add by CJQ 2023.3.3
         indi_Client->getDevicePort(dpMount, DevicePort);
 
@@ -1287,6 +1330,7 @@ void MainWindow::AfterDeviceConnect()
     if (dpFocuser != NULL)
     {
         emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()));
+        ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
         indi_Client->GetAllPropertyName(dpFocuser);
         indi_Client->syncFocuserPosition(dpFocuser, 0);
     }
@@ -2483,23 +2527,58 @@ void MainWindow::ScheduleTabelData(QString message)
 
 void MainWindow::startSchedule()
 {
-    createDirectory("/home/quarcs/Astro_SaveImage");
+    createScheduleDirectory();
     if (schedule_currentNum >= 0 && schedule_currentNum < m_scheduList.size()) 
     {
         schedule_ExpTime = m_scheduList[schedule_currentNum].exposureTime;
         schedule_RepeatNum = m_scheduList[schedule_currentNum].repeatNumber;
         StopSchedule = false;
-        startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
+        startTimeWaiting(); 
     } 
     else 
     {
         qDebug() << "Index out of range, Schedule is complete!";
         StopSchedule = true;
         schedule_currentNum = 0;
+        call_phd_StopLooping();
+        GuidingHasStarted = false;
         // 在实际应用中，你可能想要返回一个默认值或者处理索引超出范围的情况
         // 这里仅仅是一个简单的示例
         // return ScheduleData();
     }
+}
+
+void MainWindow::startTimeWaiting() 
+{
+    // 停止和清理先前的计时器
+    timewaitingTimer.stop();
+    timewaitingTimer.disconnect();
+
+    // 启动等待的定时器
+   timewaitingTimer.setSingleShot(true);
+
+    connect(&timewaitingTimer, &QTimer::timeout, [this]() {
+        if (StopSchedule)
+        {
+            StopSchedule = false;
+            qDebug("Schedule is stop!");
+            return;
+        }
+
+        if (WaitForTimeToComplete()) 
+        {
+            timewaitingTimer.stop();  // 完成时停止定时器
+            qDebug() << "Time Waiting Complete!";
+
+            startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
+        } 
+        else 
+        {
+            timewaitingTimer.start(1000);  // 继续等待
+        } 
+    });
+
+    timewaitingTimer.start(1000);
 }
 
 void MainWindow::startMountGoto(double ra, double dec)  // Ra:Hour, Dec:Degree
@@ -2581,7 +2660,6 @@ void MainWindow::startGuiding()
             guiderTimer.stop();  // 转动完成时停止定时器
             qDebug() << "Guiding Complete!";
 
-            // CaptureSession();
             startCapture(schedule_ExpTime);
         } 
         else 
@@ -2619,7 +2697,7 @@ void MainWindow::startCapture(int ExpTime)
         {
             captureTimer.stop();  // 转动完成时停止定时器
             qDebug() << "Capture" << schedule_currentShootNum << "Complete!";
-            ImageSave(m_scheduList[schedule_currentNum].shootTarget, schedule_currentShootNum);
+            ScheduleImageSave(m_scheduList[schedule_currentNum].shootTarget, schedule_currentShootNum);
             // Process
             m_scheduList[schedule_currentNum].progress = (static_cast<double>(schedule_currentShootNum) / m_scheduList[schedule_currentNum].repeatNumber) * 100;
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
@@ -2662,10 +2740,71 @@ bool MainWindow::WaitForGuidingToComplete() {
   return InGuiding;
 }
 
-int MainWindow::ImageSave(QString name, int num)
+bool MainWindow::WaitForTimeToComplete() {
+    qDebug() << "Wait For Time To Complete...";
+    QString TargetTime = m_scheduList[schedule_currentNum].shootTime;
+
+    // 如果获取到的目标时间不是完整的时间格式，直接返回 true
+    if (TargetTime.length() != 5 || TargetTime[2] != ':')
+        return true;
+    
+    // 获取当前时间
+    QTime currentTime = QTime::currentTime();
+    // 解析目标时间
+    QTime targetTime = QTime::fromString(TargetTime, "hh:mm");
+
+    qDebug() << "currentTime:" << currentTime << ", targetTime:" << targetTime;
+
+    // 如果目标时间晚于当前时间，返回 false
+    if (targetTime > currentTime)
+        return false;
+    
+    // 目标时间早于或等于当前时间，返回 true
+    return true;
+}
+
+int MainWindow::CaptureImageSave() {
+    createCaptureDirectory();
+    const char* sourcePath = "/dev/shm/ccd_simulator.fits";
+
+    QString resultFileName = QTime::currentTime().toString() + ".fits";
+    
+    std::time_t currentTime = std::time(nullptr);
+    std::tm *timeInfo = std::localtime(&currentTime);
+    char buffer[80];
+    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
+
+    // 指定目标目录
+    QString destinationDirectory = ImageSaveBaseDirectory + "/CaptureImage";
+
+    QString destinationPath = destinationDirectory  + "/" + buffer + "/" + resultFileName;
+
+    // 将QString转换为const char*
+    const char* destinationPathChar = destinationPath.toUtf8().constData();
+
+    std::ifstream sourceFile(sourcePath, std::ios::binary);
+    if (!sourceFile.is_open()) {
+        std::cerr << "无法打开源文件：" << sourcePath << std::endl;
+        return 1;
+    }
+
+    std::ofstream destinationFile(destinationPathChar, std::ios::binary);
+    if (!destinationFile.is_open()) {
+        std::cerr << "无法创建或打开目标文件：" << destinationPathChar << std::endl;
+        return 1;
+    }
+
+    destinationFile << sourceFile.rdbuf();
+
+    sourceFile.close();
+    destinationFile.close();
+
+    return 0;
+}
+
+int MainWindow::ScheduleImageSave(QString name, int num)
 {
   const char* sourcePath = "/dev/shm/ccd_simulator.fits";
-  // const char* destinationPath = "/Home/Pic/star_1.fits";
 
   name.replace(' ', '_');
   QString resultFileName = QString("%1-%2.fits").arg(name).arg(num);
@@ -2676,10 +2815,10 @@ int MainWindow::ImageSave(QString name, int num)
   std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
 
   // 指定目标目录
-  QString destinationDirectory = "/home/quarcs/Astro_SaveImage";
+  QString destinationDirectory = ImageSaveBaseDirectory + "/ScheduleImage";
 
   // 拼接目标文件路径
-  QString destinationPath = destinationDirectory  + "/" + buffer + " [" + ScheduleTargetNames + "]" + "/" + resultFileName;
+  QString destinationPath = destinationDirectory  + "/" + buffer + " " + QTime::currentTime().toString("hh") + "h [" + ScheduleTargetNames + "]" + "/" + resultFileName;
 
   // 将QString转换为const char*
   const char* destinationPathChar = destinationPath.toUtf8().constData();
@@ -2709,26 +2848,110 @@ bool MainWindow::directoryExists(const std::string& path) {
     return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
 }
 
-bool MainWindow::createDirectory(const std::string& basePath) {
+bool MainWindow::createScheduleDirectory() {
+    std::string basePath = ImageSaveBasePath + "/ScheduleImage";
+
     std::time_t currentTime = std::time(nullptr);
     std::tm* timeInfo = std::localtime(&currentTime);
     char buffer[80];
     std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
-    std::string folderName = basePath + "/" + buffer + " [" + ScheduleTargetNames.toStdString() + "]";
+    std::string folderName = basePath + "/" + buffer + " " + QTime::currentTime().toString("hh").toStdString() + "h [" + ScheduleTargetNames.toStdString() + "]";
 
-    // Check if directory already exists
-    if (directoryExists(folderName)) {
-        std::cout << "Directory already exists: " << folderName << std::endl;
-        return true;
+    // // Check if directory already exists
+    // if (directoryExists(folderName)) {
+    //     std::cout << "Directory already exists: " << folderName << std::endl;
+    //     return true;
+    // }
+
+    // // Create directory
+    // int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    // if (status == 0) {
+    //     std::cout << "Directory created successfully: " << folderName << std::endl;
+    //     return true;
+    // } else {
+    //     std::cerr << "Failed to create directory: " << folderName << std::endl;
+    //     return false;
+    // }
+    
+    // 如果目录不存在，则创建
+    if (!std::filesystem::exists(folderName))
+    {
+        if (std::filesystem::create_directory(folderName))
+        {
+            std::cout << "文件夹创建成功: " << folderName << std::endl;
+        }
+        else
+        {
+            std::cerr << "创建文件夹时发生错误" << std::endl;
+        }
     }
-
-    // Create directory
-    int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-    if (status == 0) {
-        std::cout << "Directory created successfully: " << folderName << std::endl;
-        return true;
-    } else {
-        std::cerr << "Failed to create directory: " << folderName << std::endl;
-        return false;
+    else
+    {
+        std::cout << "文件夹已存在: " << folderName << std::endl;
     }
 }
+
+bool MainWindow::createCaptureDirectory() {
+    std::string basePath = ImageSaveBasePath + "/CaptureImage/";
+
+    std::time_t currentTime = std::time(nullptr);
+    std::tm* timeInfo = std::localtime(&currentTime);
+    char buffer[80];
+    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
+    std::string folderName = basePath + buffer;
+
+    // // Check if directory already exists
+    // if (directoryExists(folderName)) {
+    //     std::cout << "Directory already exists: " << folderName << std::endl;
+    //     return true;
+    // }
+
+    // // Create directory
+    // int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    // if (status == 0) {
+    //     std::cout << "Directory created successfully: " << folderName << std::endl;
+    //     return true;
+    // } else {
+    //     std::cerr << "Failed to create directory: " << folderName << std::endl;
+    //     return false;
+    // }
+
+    // 如果目录不存在，则创建
+    if (!std::filesystem::exists(folderName))
+    {
+        if (std::filesystem::create_directory(folderName))
+        {
+            std::cout << "文件夹创建成功: " << folderName << std::endl;
+        }
+        else
+        {
+            std::cerr << "创建文件夹时发生错误" << std::endl;
+        }
+    }
+    else
+    {
+        std::cout << "文件夹已存在: " << folderName << std::endl;
+    }
+}
+
+void MainWindow::getConnectedDevices(){
+    for(int i = 0; i < ConnectedDevices.size(); i++){
+        qDebug() << "Device[" << i << "]: " << ConnectedDevices[i].DeviceName;
+        emit wsThread->sendMessageToClient("ConnectSuccess:" + ConnectedDevices[i].DeviceType + ":" + ConnectedDevices[i].DeviceName);
+    }
+}
+
+void MainWindow::getStagingImage(){
+    if(isStagingImage){
+        emit wsThread->sendMessageToClient("SaveBinSuccess:" + SavedImage);
+    }
+}
+
+void MainWindow::getStagingScheduleData(){
+    if(isStagingScheduleData) {
+        // emit wsThread->sendMessageToClient("RecoveryScheduleData:" + StagingScheduleData);
+        emit wsThread->sendMessageToClient(StagingScheduleData);
+    }
+}
+
+

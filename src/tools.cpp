@@ -10,6 +10,7 @@
 #include <fstream>
 #include <qxmlstream.h>
 #include "fitsio.h"
+#include <filesystem>
 
 // #define ImageDebug
 
@@ -422,9 +423,75 @@ void Tools::printSystemDeviceList(SystemDeviceList s){
     qDebug() << "******************************************************";
 }
 
+void Tools::makeConfigFolder() {
+  std::string directory = "config"; // 要创建的文件夹名
+
+    // 如果目录不存在，则创建
+    if (!std::filesystem::exists(directory))
+    {
+        if (std::filesystem::create_directory(directory))
+        {
+            std::cout << "文件夹创建成功: " << directory << std::endl;
+        }
+        else
+        {
+            std::cerr << "创建文件夹时发生错误" << std::endl;
+        }
+    }
+    else
+    {
+        std::cout << "文件夹已存在: " << directory << std::endl;
+    }
+}
+
+void Tools::makeImageFolder() {
+    std::string directory = "image"; // 要创建的文件夹名
+
+    // 如果目录不存在，则创建
+    if (!std::filesystem::exists(directory))
+    {
+        if (std::filesystem::create_directory(directory))
+        {
+            std::cout << "文件夹创建成功: " << directory << std::endl;
+
+            // 创建子文件夹 CaptureImage
+            std::string captureDirectory = directory + "/CaptureImage";
+            if (std::filesystem::create_directory(captureDirectory))
+            {
+                std::cout << "子文件夹创建成功: " << captureDirectory << std::endl;
+            }
+            else
+            {
+                std::cerr << "创建子文件夹时发生错误" << std::endl;
+            }
+
+            // 创建子文件夹 ScheduleImage
+            std::string scheduleDirectory = directory + "/ScheduleImage";
+            if (std::filesystem::create_directory(scheduleDirectory))
+            {
+                std::cout << "子文件夹创建成功: " << scheduleDirectory << std::endl;
+            }
+            else
+            {
+                std::cerr << "创建子文件夹时发生错误" << std::endl;
+            }
+        }
+        else
+        {
+            std::cerr << "创建文件夹时发生错误" << std::endl;
+        }
+    }
+    else
+    {
+        std::cout << "文件夹已存在: " << directory << std::endl;
+    }
+}
+
 void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
 {
-  std::string filename = "/home/quarcs/device_connect.dat";
+  std::string directory = "config"; // 配置文件夹名
+  std::string filename = directory + "/device_connect.dat"; // 在配置文件夹中创建文件
+
   std::ofstream outfile(filename, std::ios::binary);
 
   if (!outfile.is_open()) {
@@ -467,7 +534,8 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
 SystemDeviceList Tools::readSystemDeviceList()
 {
   SystemDeviceList deviceList;
-  std::string filename = "/home/quarcs/device_connect.dat";
+  std::string directory = "config"; // 配置文件夹名
+  std::string filename = directory + "/device_connect.dat"; // 在配置文件夹中创建文件
   std::ifstream infile(filename, std::ios::binary);
 
   if (!infile.is_open()) {
@@ -516,6 +584,63 @@ SystemDeviceList Tools::readSystemDeviceList()
     infile.close();
 
     return deviceList;
+}
+
+void Tools::saveExpTimeList(QString List)
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/ExpTimeList.dat"; // 在配置文件夹中创建文件
+
+  std::ofstream outfile(filename, std::ios::binary);
+
+  if (!outfile.is_open())
+  {
+    std::cerr << "打开文件写入时发生错误: " << filename << std::endl;
+    return;
+  }
+
+  QByteArray ExpTimeListUtf8 = List.toUtf8();
+
+  // 写入 QString 大小信息和数据
+  size_t ExpTimeListSize = static_cast<size_t>(ExpTimeListUtf8.size());
+  outfile.write(reinterpret_cast<const char *>(&ExpTimeListSize), sizeof(size_t));
+  outfile.write(ExpTimeListUtf8.constData(), ExpTimeListSize);
+
+  outfile.close();
+}
+
+QString Tools::readExpTimeList()
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/ExpTimeList.dat"; // 在配置文件夹中创建文件
+  std::ifstream infile(filename, std::ios::binary);
+
+  if (!infile.is_open())
+  {
+    std::cerr << "打开文件读取时发生错误: " << filename << std::endl;
+    return QString();
+  }
+
+  // 读取经验时间列表的大小
+  size_t ExpTimeListSize;
+  infile.read(reinterpret_cast<char *>(&ExpTimeListSize), sizeof(size_t));
+
+  // 分配内存空间用于存储经验时间列表的数据
+  char *buffer = new char[ExpTimeListSize];
+
+  // 读取经验时间列表的数据
+  infile.read(buffer, ExpTimeListSize);
+
+  // 将读取的数据转换为 QString
+  QString ExpTimeList = QString::fromUtf8(buffer, ExpTimeListSize);
+
+  // 释放内存空间
+  delete[] buffer;
+
+  // 关闭文件
+  infile.close();
+
+  return ExpTimeList;
 }
 
 void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){

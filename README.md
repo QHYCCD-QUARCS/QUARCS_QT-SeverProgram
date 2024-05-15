@@ -195,4 +195,5 @@ Installation steps:
 
 
    
-   
+Welcome to join the QUARUS Discod discussion group for online discussions (https://discord.gg/uHTPfJ5uuV)   
+-   
