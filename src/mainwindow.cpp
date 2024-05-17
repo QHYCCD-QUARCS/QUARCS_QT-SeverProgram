@@ -345,10 +345,51 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (message == "getExpTimeList")
     {
-        emit wsThread->sendMessageToClient(Tools::readExpTimeList());
+        if (Tools::readExpTimeList() != QString()){
+            emit wsThread->sendMessageToClient(Tools::readExpTimeList());
+        }
     }
 
-    
+    else if (message == "getCaptureStatus")
+    {
+        if (glMainCameraStatu == "Exposuring")
+        {
+            emit wsThread->sendMessageToClient("CameraInExposuring:True");
+        }
+    }
+
+    else if (parts[0].trimmed() == "SetCFWPosition")
+    {
+        int pos = parts[1].trimmed().toInt();
+        // qDebug() << "SetCFWPosition:" << pos;
+        if (dpCFW != NULL)
+        {
+            indi_Client->setCFWPosition(dpCFW, pos);
+            emit wsThread->sendMessageToClient("SetCFWPositionSuccess:" + QString::number(pos));
+            qDebug() << "Set CFW Position to " << pos << "Success!!!";
+        }
+    }
+
+    else if (parts[0].trimmed() == "CFWList")
+    {
+        if(dpCFW != NULL) {
+            Tools::saveCFWList(QString::fromUtf8(dpCFW->getDeviceName()), parts[1]);
+        }
+    }
+
+    else if (message == "getCFWList")
+    {
+        if (dpCFW != NULL)
+        {
+            int min, max, pos;
+            indi_Client->getCFWPosition(dpCFW, pos, min, max);
+            emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+            if (Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())) != QString())
+            {
+                emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));
+            }
+        }
+    }
 }
 
 void MainWindow::initINDIServer()
@@ -968,7 +1009,7 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
     QElapsedTimer t;
     t.start();
 
-    int timeout_ms = 6000;
+    int timeout_ms = 20000;
     int timeout_total = timeout_ms * searchClient->GetDeviceCount();
     int counter_connected;
 
@@ -1190,7 +1231,7 @@ void MainWindow::DeviceConnect()
     // connecting.....
     // QElapsedTimer t;
     t.start();
-    timeout_ms = 6000 * indi_Client->GetDeviceCount();
+    timeout_ms = 20000 * indi_Client->GetDeviceCount();
     while (t.elapsed() < timeout_ms)
     {
         QThread::msleep(300);
@@ -1333,6 +1374,21 @@ void MainWindow::AfterDeviceConnect()
         ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
         indi_Client->GetAllPropertyName(dpFocuser);
         indi_Client->syncFocuserPosition(dpFocuser, 0);
+    }
+
+    if (dpCFW != NULL)
+    {
+        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()));
+        ConnectedDevices.push_back({"CFW", QString::fromUtf8(dpCFW->getDeviceName())});
+        indi_Client->GetAllPropertyName(dpCFW);
+        int min, max, pos;
+        indi_Client->getCFWPosition(dpCFW, pos, min, max);
+        qDebug() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+        emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+        if(Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())) != QString())
+        {
+            emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));
+        }
     }
 }
 
@@ -2532,6 +2588,7 @@ void MainWindow::startSchedule()
     {
         schedule_ExpTime = m_scheduList[schedule_currentNum].exposureTime;
         schedule_RepeatNum = m_scheduList[schedule_currentNum].repeatNumber;
+        schedule_CFWpos = m_scheduList[schedule_currentNum].filterNumber.toInt();
         StopSchedule = false;
         startTimeWaiting(); 
     } 
@@ -2660,7 +2717,8 @@ void MainWindow::startGuiding()
             guiderTimer.stop();  // 转动完成时停止定时器
             qDebug() << "Guiding Complete!";
 
-            startCapture(schedule_ExpTime);
+            // startCapture(schedule_ExpTime);
+            startSetCFW(schedule_CFWpos);
         } 
         else 
         {
@@ -2669,6 +2727,14 @@ void MainWindow::startGuiding()
     });
 
     guiderTimer.start(1000);
+}
+
+void MainWindow::startSetCFW(int pos)
+{
+    if(dpCFW != NULL){
+        indi_Client->setCFWPosition(dpCFW, pos);
+        startCapture(schedule_ExpTime);
+    }
 }
 
 void MainWindow::startCapture(int ExpTime)

@@ -190,6 +190,8 @@ class Tools {
   static SystemDeviceList readSystemDeviceList();
   static void saveExpTimeList(QString List);
   static QString readExpTimeList();
+  static void saveCFWList(QString Name, QString List);
+  static QString readCFWList(QString Name);
   static void stopIndiDriverAll(const DriversList driver_list);
 
   static uint32_t readFitsHeadForDevName(std::string filename,QString &devname);

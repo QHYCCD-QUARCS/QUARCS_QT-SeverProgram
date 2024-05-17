@@ -218,6 +218,7 @@ public:
 
     int schedule_currentNum = 0;
     int schedule_ExpTime;
+    int schedule_CFWpos;
     int schedule_RepeatNum;
     int schedule_currentShootNum = 0;
 
@@ -236,6 +237,8 @@ public:
     void startTimeWaiting();
 
     void startCapture(int ExpTime);
+
+    void startSetCFW(int pos);
 
     bool WaitForTelescopeToComplete();
 

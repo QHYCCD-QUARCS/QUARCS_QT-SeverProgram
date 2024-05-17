@@ -643,6 +643,63 @@ QString Tools::readExpTimeList()
   return ExpTimeList;
 }
 
+void Tools::saveCFWList(QString Name, QString List)
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/CFWList(" + Name.toStdString() +").dat"; // 在配置文件夹中创建文件
+
+  std::ofstream outfile(filename, std::ios::binary);
+
+  if (!outfile.is_open())
+  {
+    std::cerr << "打开文件写入时发生错误: " << filename << std::endl;
+    return;
+  }
+
+  QByteArray CFWListUtf8 = List.toUtf8();
+
+  // 写入 QString 大小信息和数据
+  size_t CFWListSize = static_cast<size_t>(CFWListUtf8.size());
+  outfile.write(reinterpret_cast<const char *>(&CFWListSize), sizeof(size_t));
+  outfile.write(CFWListUtf8.constData(), CFWListSize);
+
+  outfile.close();
+}
+
+QString Tools::readCFWList(QString Name)
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/CFWList(" + Name.toStdString() +").dat";  // 在配置文件夹中创建文件
+  std::ifstream infile(filename, std::ios::binary);
+
+  if (!infile.is_open())
+  {
+    std::cerr << "打开文件读取时发生错误: " << filename << std::endl;
+    return QString();
+  }
+
+  // 读取经验时间列表的大小
+  size_t CFWListSize;
+  infile.read(reinterpret_cast<char *>(&CFWListSize), sizeof(size_t));
+
+  // 分配内存空间用于存储经验时间列表的数据
+  char *buffer = new char[CFWListSize];
+
+  // 读取经验时间列表的数据
+  infile.read(buffer, CFWListSize);
+
+  // 将读取的数据转换为 QString
+  QString CFWList = QString::fromUtf8(buffer, CFWListSize);
+
+  // 释放内存空间
+  delete[] buffer;
+
+  // 关闭文件
+  infile.close();
+
+  return CFWList;
+}
+
 void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
     //clear one device
     qDebug()<<"index:"<<index;

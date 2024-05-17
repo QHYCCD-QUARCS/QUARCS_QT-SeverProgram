@@ -1883,7 +1883,7 @@ uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp,int position)
      }
 
     if(t.elapsed()>timeout){
-       qDebug() << "setTelescopeHomeInit | ERROR : timeout ";
+       qDebug() << "setCFWPosition | ERROR : timeout ";
        return QHYCCD_ERROR;
     }
 
@@ -1903,7 +1903,7 @@ uint32_t MyClient::getCFWSlotName(INDI::BaseDevice *dp,QString & name)
 
     name   = property[0].getText();
 
-    qDebug() << "setCFWSlotName" << name   ;
+    qDebug() << "getCFWSlotName" << name;
     return QHYCCD_SUCCESS;
 }
 
