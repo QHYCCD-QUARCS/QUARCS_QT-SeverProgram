@@ -47,7 +47,7 @@ void MyClient::newProperty(INDI::Property property)
    // if (!baseDevice.isDeviceNameMatch("Simple CCD"))
     //    return;
 
-    qDebug()<<property->getName();
+    // qDebug() << "newProperty: " << property->getName();
     //qDebug("Recveing message from Server %s", baseDevice.messageQueue(messageID).c_str());
 }
 
@@ -71,6 +71,7 @@ void MyClient::updateProperty(INDI::Property property)
     // qDebug() << "updateProperty:" << property.getType();
     if (property.getType() == INDI_BLOB)
     {
+        qDebug() << "newProperty(getName): " << property.getName();
         qDebug("Recveing image from Server size len name label format %d %d %s %s %s", property.getBLOB()->bp->size,property.getBLOB()->bp->bloblen,property.getBLOB()->bp->name,property.getBLOB()->bp->label,property.getBLOB()->bp->format);
         std::ofstream myfile;
         std::string filename="/dev/shm/ccd_simulator.fits";
@@ -84,7 +85,7 @@ void MyClient::updateProperty(INDI::Property property)
         std::string devname = devname_.toStdString();
 
         receiveImage(filename, devname);
-    }
+    } 
 }
 
 //************************ device list management***********************************
@@ -1535,7 +1536,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 
 uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
 {
-    INDI::PropertyText property = dp->getProperty("OnStep Status");
+    INDI::PropertyText property = dp->getProperty("OnStep_Status");
 
     if (!property.isValid())
     {
@@ -1544,7 +1545,7 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
     }
     
     statu = property[1].getText();
-    qDebug()<<"OnStep Status: "<< statu;
+    // qDebug()<<"OnStep Status: "<< statu;
     
     return QHYCCD_SUCCESS;
 }

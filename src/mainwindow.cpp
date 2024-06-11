@@ -120,6 +120,8 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         int ExpTime = parts[1].trimmed().toInt();
         qDebug() << ExpTime;
+        CaptureTestTimer.start();
+        qDebug() << "\033[32m" << "Exposure start." << "\033[0m";
         INDI_Capture(ExpTime);
         glExpTime = ExpTime;
     }
@@ -136,15 +138,15 @@ void MainWindow::onMessageReceived(const QString &message)
         int Steps = parts[2].trimmed().toInt();
         if(LR == "Left")
         {
-            FocuserControl_Move(true,Steps);
+            FocusMoveAndCalFWHM(true,Steps);
         }
         else if(LR == "Right")
         {
-            FocuserControl_Move(false,Steps);
+            FocusMoveAndCalFWHM(false,Steps);
         }
         else if(LR == "Target")
         {
-            FocusMoveToPosition(Steps);
+            FocusGotoAndCalFWHM(Steps);
         }
     }
     else if (parts.size() == 5 && parts[0].trimmed() == "RedBox")
@@ -165,9 +167,9 @@ void MainWindow::onMessageReceived(const QString &message)
         qDebug() << "BoxSideLength:" << BoxSideLength;
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
     }
-    else if (message == "focusCapture")
+    else if (message == "AutoFocus")
     {
-        FocusingLooping();
+        AutoFocus();
     }
     else if (message == "abortExposure")
     {
@@ -296,15 +298,23 @@ void MainWindow::onMessageReceived(const QString &message)
         ScheduleTabelData(message);
     }
 
-    else if (parts.size() == 5 && parts[0].trimmed() == "startMountGoto")
+    else if (parts.size() == 4 && parts[0].trimmed() == "MountGoto")
     {
-        double Ra, Dec;
-        Ra  = parts[2].trimmed().toDouble();
-        Dec = parts[4].trimmed().toDouble();
+        QStringList RaDecList = message.split(',');
+        QStringList RaList = RaDecList[0].split(':');
+        QStringList DecList = RaDecList[1].split(':');
 
-        qDebug() << "RaDecData:" << Ra << "," << Dec;
+        double Ra_Rad, Dec_Rad;
+        Ra_Rad  = RaList[2].trimmed().toDouble();
+        Dec_Rad = DecList[1].trimmed().toDouble();
 
-        startMountGoto(Ra, Dec);
+        qDebug() << "RaDec(Rad):" << Ra_Rad << "," << Dec_Rad;
+
+        double Ra_Hour, Dec_Degree;
+        Ra_Hour  = Tools::RadToHour(Ra_Rad);
+        Dec_Degree = Tools::RadToDegree(Dec_Rad);
+
+        MountGoto(Ra_Hour, Dec_Degree);
     }
 
     else if (message == "StopSchedule")
@@ -352,6 +362,7 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (message == "getCaptureStatus")
     {
+        qDebug() << "MainCameraStatu: " << glMainCameraStatu;
         if (glMainCameraStatu == "Exposuring")
         {
             emit wsThread->sendMessageToClient("CameraInExposuring:True");
@@ -390,6 +401,69 @@ void MainWindow::onMessageReceived(const QString &message)
             }
         }
     }
+
+    else if (message == "MoveFileToUSB")
+    {
+        MoveFileToUSB();
+    }
+
+    else if (message == "ClearCalibrationData")
+    {
+        ClearCalibrationData = true;
+        qDebug() << "ClearCalibrationData: " << ClearCalibrationData;
+    }
+
+    else if (message == "GuiderSwitch")
+    {
+        if (isGuiding){
+            isGuiding = false;
+            call_phd_StopLooping();
+            emit wsThread->sendMessageToClient("GuiderStatus:false");
+        } else {
+            isGuiding = true;
+            if (ClearCalibrationData) {
+                ClearCalibrationData = false;
+                call_phd_ClearCalibration();
+            }
+
+            call_phd_StartLooping();
+            sleep(1);
+
+            call_phd_AutoFindStar();
+            call_phd_StartGuiding();
+
+            emit wsThread->sendMessageToClient("GuiderStatus:true");
+        }
+    }
+
+    else if (parts[0].trimmed() == "GuiderExpTimeSwitch")
+    {
+        call_phd_setExposureTime(parts[1].toInt());
+    }
+
+    else if (message == "getGuiderStatus") 
+    {
+        if(isGuiding) {
+            emit wsThread->sendMessageToClient("GuiderStatus:true");
+        } else {
+            emit wsThread->sendMessageToClient("GuiderStatus:false");
+        }
+    }
+
+    else if (parts.size() == 4 && parts[0].trimmed() == "SolveSYNC")
+    {
+        glFocalLength  = parts[1].trimmed().toInt();
+        glCameraSize_width  = parts[2].trimmed().toDouble();
+        glCameraSize_height = parts[3].trimmed().toDouble();
+
+        TelescopeControl_SolveSYNC();
+    }
+
+    else if (message == "ClearDataPoints")
+    {
+        // FWHM Data
+        dataPoints.clear();
+    }
 }
 
 void MainWindow::initINDIServer()
@@ -412,17 +486,25 @@ void MainWindow::initINDIClient()
         [this](const std::string &filename, const std::string &devname)
         {
             //   responseIndiBlobImage(QString::fromStdString(filename), QString::fromStdString(devname));
+            // CaptureTestTime = CaptureTestTimer.elapsed();
+            // qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+            // CaptureTestTimer.invalidate();
             // 曝光完成
-            if(glIsFocusingLooping == false)
-            {
-                saveFitsAsPNG(QString::fromStdString(filename));
+            if(dpMainCamera!=NULL){
+                if(dpMainCamera->getDeviceName()==devname)
+                {
+                    if(glIsFocusingLooping == false)
+                    {
+                        saveFitsAsPNG(QString::fromStdString(filename));
+                    }
+                    else
+                    {
+                        saveFitsAsJPG(QString::fromStdString(filename));
+                    }
+                    glMainCameraStatu = "Displaying";
+                    ShootStatus = "Completed";
+                }
             }
-            else
-            {
-                saveFitsAsJPG(QString::fromStdString(filename));
-            }
-            glMainCameraStatu = "Displaying";
-            ShootStatus = "Completed";
         });
 }
 
@@ -430,20 +512,28 @@ void MainWindow::onTimeout()
 {
     ShowPHDdata();
 
-    if(isMoving == true && dpFocuser != NULL)
+    // 显示赤道仪指向
+    mountDisplayCounter++;
+    if (dpMount != NULL)
     {
-        CurrentPosition = FocuserControl_getPosition();
-        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
-
-        if(CurrentPosition == TargetPosition)
+        if (dpMount->isConnected())
         {
-            isMoving = false;
-            // emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-            // emit wsThread->sendMessageToClient("FWHM_Result:" + QString::number(FWHM));
-            qDebug("FocusMoveDone");
+            if (mountDisplayCounter >= 100)
+            {
+                double RA_HOURS, DEC_DEGREE;
+                indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
+                double CurrentRA_Degree = Tools::HourToDegree(RA_HOURS);
+                double CurrentDEC_Degree = DEC_DEGREE;
+
+                emit wsThread->sendMessageToClient("TelescopeRADEC:" + QString::number(CurrentRA_Degree) + ":" + QString::number(CurrentDEC_Degree));
+                
+                // bool isSlewing = (TelescopeControl_Status() != "Slewing");
+
+                emit wsThread->sendMessageToClient("TelescopeStatus:" + TelescopeControl_Status());
+
+                mountDisplayCounter = 0;
+            }
         }
-
-
     }
 }
 
@@ -461,6 +551,8 @@ void MainWindow::saveFitsAsJPG(QString filename)
 
     cv::Mat NewImage = result.image;
     FWHM = result.FWHM;
+
+    FWHMCalOver = true;
 
     // 将图像缩放到0-255范围内
     // cv::normalize(image, SendImage, 0, 255, cv::NORM_MINMAX, CV_8U);    // 原图
@@ -482,16 +574,25 @@ void MainWindow::saveFitsAsJPG(QString filename)
         QFile::remove(filePath);
     }
 
+    // 删除前一张图像文件
+    if (PriorROIImage != "NULL") {
+        QFile::remove(QString::fromStdString(PriorROIImage));
+    }
+
     // 保存新的图像带有唯一ID的文件名
     std::string fileName = "CaptureImage_" + uniqueId.toStdString() + ".jpg";
     std::string filePath = vueDirectoryPath + fileName;
 
     bool saved = cv::imwrite(filePath, SendImage);
 
+    std::string Command = "ln -sf " + filePath + " " + vueImagePath + fileName;
+    system(Command.c_str());
+
+    PriorROIImage = vueImagePath + fileName;
+
     if (saved)
     {
         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName));
-        emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
 
         dataPoints.append(QPointF(CurrentPosition, FWHM));
 
@@ -511,15 +612,20 @@ void MainWindow::saveFitsAsJPG(QString filename)
                 LineData.append(QPointF(x, y));
             }
 
+            // 计算导数为零的 x 坐标
+            float x_min = -b / (2 * a);
+            minPoint_X = x_min;
+            // 计算最小值点的 y 坐标
+            float y_min = a * x_min * x_min + b * x_min + c;
+
             QString dataString;
             for (const auto &point : LineData)
             {
                 dataString += QString::number(point.x()) + "|" + QString::number(point.y()) + ":";
             }
 
-            qDebug() << "LineData:" << dataString;
-
             emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
+            emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
         }    
     }
     else
@@ -530,8 +636,11 @@ void MainWindow::saveFitsAsJPG(QString filename)
 
 int MainWindow::saveFitsAsPNG(QString fitsFileName)
 {
-    cv::Mat image_;
-    int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image_);
+    CaptureTestTimer.start();
+    qDebug() << "\033[32m" << "Save image data start." << "\033[0m";
+
+    cv::Mat image;
+    int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
 
     if (status != 0)
     {
@@ -539,76 +648,65 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
         return status;
     }
 
-    cv::Mat image;
-    if(MainCameraCFA == "MONO")
-    {
-        image = image_;
-    } else {
-        // image = colorImage(image_);  // Color image processing
-        image = image_; // Original image
-    }
-
-    // 获取图像的宽度和高度
     int width = image.cols;
     int height = image.rows;
-
+    
     qDebug() << "image size:" << width << "," << height;
-
-    // 将图像调整为1920x1080的尺寸
-    // cv::resize(image, image, cv::Size(4096, 2160));
-
     qDebug() << "image depth:" << image.depth();
     qDebug() << "image channels:" << image.channels();
-
-    // 将图像数据复制到一维数组
+    
     std::vector<unsigned char> imageData;  //uint16_t
     imageData.assign(image.data, image.data + image.total() * image.channels() * 2);
     qDebug() << "imageData Size:" << imageData.size() << "," << image.data + image.total() * image.channels();
-
-    // 生成唯一ID
+    
     QString uniqueId = QUuid::createUuid().toString();
-
-    // 定义目录路径
-    // std::string vueDirectoryPath = "/home/astro/workspace/GitClone/stellarium-web-engine_qscope/apps/web-frontend/dist/img/";
-    // std::string vueDirectoryPath = "/dev/shm/";
-
-    // 列出所有以"CaptureImage"为前缀的文件
+    
     QDir directory(QString::fromStdString(vueDirectoryPath));
     QStringList filters;
-    filters << "CaptureImage*.png" << "CaptureImage*.bin"; // 使用通配符来筛选以"CaptureImage"为前缀的png和bin文件
+    filters << "CaptureImage*.bin";
     QStringList fileList = directory.entryList(filters, QDir::Files);
-
-    // 删除所有匹配的文件
+    
     for (const auto &file : fileList)
     {
         QString filePath = QString::fromStdString(vueDirectoryPath) + file;
         QFile::remove(filePath);
     }
 
-    // 保存新的图像带有唯一ID的文件名
-    std::string fileName = "CaptureImage_" + uniqueId.toStdString() + ".png";
+    // 删除前一张图像文件
+    if (PriorCaptureImage != "NULL") {
+        QFile::remove(QString::fromStdString(PriorCaptureImage));
+    }
+    
     std::string fileName_ = "CaptureImage_" + uniqueId.toStdString() + ".bin";
-    std::string filePath = vueDirectoryPath + fileName;
     std::string filePath_ = vueDirectoryPath + fileName_;
-
-    // 将图像数据保存到二进制文件
+    
     std::ofstream outFile(filePath_, std::ios::binary);
+    if (!outFile) {
+        throw std::runtime_error("Failed to open file for writing.");
+    }
+
     outFile.write(reinterpret_cast<const char*>(imageData.data()), imageData.size());
+    if (!outFile) {
+        throw std::runtime_error("Failed to write data to file.");
+    }
+
     outFile.close();
-
-    bool saved = cv::imwrite(filePath, image);
-
-    if (saved)
-    {
-        emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(fileName_));
-        isStagingImage = true;
-        SavedImage = QString::fromStdString(fileName_);
-        // emit wsThread->sendMessageToClient("SavePngSuccess:" + QString::fromStdString(fileName));
+    if (!outFile) {
+        throw std::runtime_error("Failed to close the file properly.");
     }
-    else
-    {
-        qDebug() << "Save Image Failed...";
-    }
+    
+    CaptureTestTime = CaptureTestTimer.elapsed();
+    qDebug() << "\033[32m" << "Save image Data completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+    CaptureTestTimer.invalidate();
+
+    std::string Command = "ln -sf " + filePath_ + " " + vueImagePath + fileName_;
+    system(Command.c_str());
+
+    PriorCaptureImage = vueImagePath + fileName_;
+
+    emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(fileName_));
+    isStagingImage = true;
+    SavedImage = QString::fromStdString(fileName_);   
 }
 
 cv::Mat MainWindow::colorImage(cv::Mat img16)
@@ -674,11 +772,21 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
         QFile::remove(filePath);
     }
 
+    // 删除前一张图像文件
+    if (PriorGuiderImage != "NULL") {
+        QFile::remove(QString::fromStdString(PriorGuiderImage));
+    }
+
     // 保存新的图像带有唯一ID的文件名
     std::string fileName = "GuiderImage_" + uniqueId.toStdString() + ".jpg";
     std::string filePath = vueDirectoryPath + fileName;
 
     bool saved = cv::imwrite(filePath, Image);
+
+    std::string Command = "ln -sf " + filePath + " " + vueImagePath + fileName;
+    system(Command.c_str());
+
+    PriorGuiderImage = vueImagePath + fileName;
 
     if (saved)
     {
@@ -1208,7 +1316,7 @@ void MainWindow::DeviceConnect()
             systemdevicelist.system_devices[index].isConnect = false; // clean the status before connect
             if (index == 1)
             {
-                //   call_phd_whichCamera(systemdevicelist.system_devices[index].dp->getDeviceName());  // PHD2 Guider Connect
+                call_phd_whichCamera(systemdevicelist.system_devices[index].dp->getDeviceName());  // PHD2 Guider Connect
             }
             else
             {
@@ -1303,6 +1411,7 @@ void MainWindow::AfterDeviceConnect()
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
         qDebug() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
+        // indi_Client->setTemperature(dpMainCamera, -10);
     }
 
     if (dpMount != NULL)
@@ -1314,7 +1423,7 @@ void MainWindow::AfterDeviceConnect()
 
         //????
         double glLongitude_radian, glLatitude_radian;
-        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");
+        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");      //TODO:
         glLatitude_radian = Tools::getDecAngle("40° 09' 14.93");
         //????
 
@@ -1389,6 +1498,12 @@ void MainWindow::AfterDeviceConnect()
         {
             emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));
         }
+    }
+
+    if (dpGuider != NULL)
+    {
+        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()));
+        ConnectedDevices.push_back({"Guider", QString::fromUtf8(dpGuider->getDeviceName())});
     }
 }
 
@@ -1468,6 +1583,7 @@ void MainWindow::INDI_Capture(int Exp_times)
 
 void MainWindow::INDI_AbortCapture()
 {
+    glMainCameraStatu="IDLE";
     if (dpMainCamera)
     {
         indi_Client->setCCDAbortExposure(dpMainCamera);
@@ -1518,7 +1634,7 @@ void MainWindow::FocusingLooping()
 
 void MainWindow::refreshGuideImage(cv::Mat img16, QString CFA)
 {
-    strechShowImage(img16, CFA, true, true, 0, 0, 65535, 1.0, 1.7, 100, true);
+    // strechShowImage(img16, CFA, true, true, 0, 0, 65535, 1.0, 1.7, 100, true);
 }
 
 void MainWindow::strechShowImage(cv::Mat img16,QString CFA,bool AutoStretch,bool AWB,int AutoStretchMode,uint16_t blacklevel,uint16_t whitelevel,double ratioRG,double ratioBG,uint16_t offset,bool updateHistogram){
@@ -2384,19 +2500,204 @@ void MainWindow::GetPHD2ControlInstruct()
     }
 }
 
-void MainWindow::FocusMoveToPosition(int position)
+void MainWindow::FocuserControl_Goto(int Position)
 {
-    // ((MainWindow* )this->topLevelWidget()->children()[1]->children()[2]->children()[1])->FocuserControl_MoveToPosition(position);
-    isMoving = true;
-    TargetPosition = AutoMovePosition;
+  if (dpFocuser != NULL) 
+  {
+    focusTimer.stop();
+    focusTimer.disconnect();
+
+    CurrentPosition = FocuserControl_getPosition();
+
+    TargetPosition = Position;
+
     qDebug() << "TargetPosition: " << TargetPosition;
+
+    indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
+
+    focusTimer.setSingleShot(true);
+
+    connect(&focusTimer, &QTimer::timeout, [this]() {
+        CurrentPosition = FocuserControl_getPosition();
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+        
+        if (WaitForFocuserToComplete()) 
+        {
+            focusTimer.stop();  // 转动完成时停止定时器
+            qDebug() << "Focuser Goto Complete!";
+            FocusingLooping();
+        } 
+        else 
+        {
+            focusTimer.start(100);  // 继续等待
+        } 
+    });
+
+    focusTimer.start(100);
+  }
+}
+
+void MainWindow::AutoFocus() 
+{
+    int stepIncrement = 100;
+    double FWHM_1 = 0;
+    double FWHM_2 = 0;
+    double FWHM_3 = 0;
+    bool isInward = true;
+
+    int initialPosition = FocuserControl_getPosition();
+    int currentPosition = initialPosition;
+
+    FWHM_1 = FocusMoveAndCalFWHM(!isInward, stepIncrement);
+    qDebug() << "FWHM_1(" << FWHM_1 << ") Calculation Complete!";
+    currentPosition = FocuserControl_getPosition();
+
+    FWHM_2 = FocusMoveAndCalFWHM(isInward, stepIncrement);
+    qDebug() << "FWHM_2(" << FWHM_2 << ") Calculation Complete!";
+    currentPosition = FocuserControl_getPosition();
+
+    FWHM_3 = FocusMoveAndCalFWHM(isInward, stepIncrement * 2);
+    qDebug() << "FWHM_3(" << FWHM_3 << ") Calculation Complete!";
+    currentPosition = FocuserControl_getPosition();
+
+    // Determine the initial moving direction based on the FWHM values
+    if (FWHM_2 < FWHM_1) {
+        isInward = true;
+    } else if (FWHM_3 < FWHM_2) {
+        isInward = false;
+    } else {
+        // If neither direction improves FWHM, assume moving inward
+        isInward = true;
+    }
+
+    double previousBestStep = currentPosition;
+    bool converged = false;
+    int maxIterations = 50;
+    double convergenceThreshold = 1.0;
+    int iterations = 0;
+    int consecutiveFartherCount = 0; // Counter for positions getting farther from minPoint_X
+    QVector<QPointF> focusMeasures = { QPointF(initialPosition, FWHM_1), QPointF(initialPosition + stepIncrement, FWHM_2), QPointF(initialPosition + 2 * stepIncrement, FWHM_3) };
+
+    while (iterations < maxIterations && !converged) {
+        double fwhm = FocusMoveAndCalFWHM(isInward, stepIncrement);
+        currentPosition = FocuserControl_getPosition();
+        focusMeasures.append(QPointF(currentPosition, fwhm));
+
+        if (focusMeasures.size() >= 4) {
+            float a, b, c;
+            int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
+            if (result == 0) {
+                double bestStep = -b / (2 * a);
+                minPoint_X = bestStep; // Update minPoint_X with the new best step
+
+                // Check if the new best step is close to the previous best step
+                if (abs(bestStep - previousBestStep) < convergenceThreshold) {
+                    converged = true;
+                }
+                previousBestStep = bestStep;
+            }
+        }
+
+        // Check if the position is getting farther from minPoint_X
+        if ((currentPosition > minPoint_X && previousBestStep > minPoint_X && abs(currentPosition - minPoint_X) > abs(previousBestStep - minPoint_X)) ||
+            (currentPosition < minPoint_X && previousBestStep < minPoint_X && abs(currentPosition - minPoint_X) > abs(previousBestStep - minPoint_X))) {
+            consecutiveFartherCount++;
+        } else {
+            consecutiveFartherCount = 0; // Reset the count if getting closer
+        }
+
+        if (consecutiveFartherCount >= 5) {
+            // Move to minPoint_X and change direction
+            FocuserControl_Goto((int)minPoint_X);
+            isInward = !isInward;
+            consecutiveFartherCount = 0; // Reset the count after moving to minPoint_X
+        }
+
+        iterations++;
+    }
+
+    // Move the focuser to the best step if not already there
+    if (currentPosition != (int)minPoint_X) {
+        FocuserControl_Goto((int)minPoint_X);
+    }
+
+    qDebug() << "Auto focus complete. Best step: " << minPoint_X;
+}
+
+double MainWindow::FocusGotoAndCalFWHM(int steps) {
+    QEventLoop loop;
+    double FWHM = 0;
+
+    // 停止和清理先前的计时器
+    FWHMTimer.stop();
+    FWHMTimer.disconnect();
+
+    FWHMCalOver = false;
+    FocuserControl_Goto(steps);
+
+    FWHMTimer.setSingleShot(true);
+
+    connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
+        if (FWHMCalOver) 
+        {
+            FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
+            FWHMTimer.stop();
+            qDebug() << "FWHM Calculation Complete!";
+            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+            loop.quit();
+        } 
+        else 
+        {
+            FWHMTimer.start(1000);  // 继续等待
+        }
+    });
+
+    FWHMTimer.start(1000);
+    loop.exec();  // 等待事件循环直到调用 loop.quit()
+
+    return FWHM;
+}
+
+double MainWindow::FocusMoveAndCalFWHM(bool isInward, int steps) {
+    QEventLoop loop;
+    double FWHM = 0;
+
+    // 停止和清理先前的计时器
+    FWHMTimer.stop();
+    FWHMTimer.disconnect();
+
+    FWHMCalOver = false;
+    FocuserControl_Move(isInward, steps);
+
+    FWHMTimer.setSingleShot(true);
+
+    connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
+        if (FWHMCalOver) 
+        {
+            FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
+            FWHMTimer.stop();
+            qDebug() << "FWHM Calculation Complete!";
+            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+            loop.quit();
+        } 
+        else 
+        {
+            FWHMTimer.start(1000);  // 继续等待
+        }
+    });
+
+    FWHMTimer.start(1000);
+    loop.exec();  // 等待事件循环直到调用 loop.quit()
+
+    return FWHM;
 }
 
 void MainWindow::FocuserControl_Move(bool isInward, int steps)
 {
   if (dpFocuser != NULL) 
   {
-    isMoving = true;
+    focusTimer.stop();
+    focusTimer.disconnect();
 
     CurrentPosition = FocuserControl_getPosition();
 
@@ -2412,7 +2713,32 @@ void MainWindow::FocuserControl_Move(bool isInward, int steps)
 
     indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
     indi_Client->moveFocuserSteps(dpFocuser, steps);
+
+    focusTimer.setSingleShot(true);
+
+    connect(&focusTimer, &QTimer::timeout, [this]() {
+        CurrentPosition = FocuserControl_getPosition();
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+        
+        if (WaitForFocuserToComplete()) 
+        {
+            focusTimer.stop();  // 转动完成时停止定时器
+            qDebug() << "Focuser Move Complete!";
+            FocusingLooping();
+        } 
+        else 
+        {
+            focusTimer.start(100);  // 继续等待
+        } 
+    });
+
+    focusTimer.start(100);
+
   }
+}
+
+bool MainWindow::WaitForFocuserToComplete() {
+   return(CurrentPosition == TargetPosition);
 }
 
 int MainWindow::FocuserControl_setSpeed(int speed)
@@ -2513,6 +2839,7 @@ bool MainWindow::TelescopeControl_Track()
 void MainWindow::ScheduleTabelData(QString message)
 {
     ScheduleTargetNames.clear();
+    m_scheduList.clear();
     schedule_currentShootNum = 0;
     QStringList ColDataList = message.split('[');
     for (int i = 1; i < ColDataList.size(); ++i) {
@@ -3005,6 +3332,7 @@ void MainWindow::getConnectedDevices(){
         qDebug() << "Device[" << i << "]: " << ConnectedDevices[i].DeviceName;
         emit wsThread->sendMessageToClient("ConnectSuccess:" + ConnectedDevices[i].DeviceType + ":" + ConnectedDevices[i].DeviceName);
     }
+    emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
 }
 
 void MainWindow::getStagingImage(){
@@ -3020,4 +3348,100 @@ void MainWindow::getStagingScheduleData(){
     }
 }
 
+int MainWindow::MoveFileToUSB(){
+    qDebug("MoveFileToUSB");
 
+}
+
+void MainWindow::TelescopeControl_SolveSYNC()
+{
+    // get parameters for calculating FOV
+    int FocalLength = glFocalLength;
+    double CameraSize_width = glCameraSize_width;
+    double CameraSize_height = glCameraSize_height;
+    // int FocalLength = 510;
+    // double CameraSize_width = 24.9;
+    // double CameraSize_height = 16.6;
+
+    double Ra_Hour;
+    double Dec_Degree;
+
+    if (dpMount != NULL)
+    {
+        indi_Client->getTelescopeRADECJNOW(dpMount, Ra_Hour, Dec_Degree);
+    }
+    else
+    {
+        qDebug("No Mount Connect.");
+        return;
+    }
+    double Ra_Degree = Tools::HourToDegree(Ra_Hour);
+
+    qDebug() << "CurrentRa(Degree):" << Ra_Degree << "," << "CurrentDec(Degree):" << Dec_Degree;
+
+    SloveResults result = Tools::PlateSlove(FocalLength, CameraSize_width, CameraSize_height, Ra_Degree, Dec_Degree, false);
+
+    qDebug() << "SloveResults: " << result.RA_Degree << "," << result.DEC_Degree;
+
+    if (result.DEC_Degree == -1 && result.RA_Degree == -1)
+    {
+        qDebug("Plate Solve Failur");
+        return;
+    }
+    else
+    {
+        if (dpMount != NULL)
+        {
+            INDI::PropertyNumber property = NULL;
+            // indi_Client->syncTelescopeJNow(dpMount,RadToHour(RA_Degree),RadToDegree(DEC_Degree),property);
+            qDebug() << "syncTelescopeJNow | start";
+            QString action = "SYNC";
+
+            indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);
+
+            qDebug() << "DegreeToHour:" << Tools::DegreeToHour(result.RA_Degree) << "DEC_Degree:" << result.DEC_Degree;
+
+            indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);
+            qDebug() << "syncTelescopeJNow | end";
+            double a, b;
+            indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
+            qDebug() << "Get_RA_Hour:" << a << "Get_DEC_Degree:" << b;
+        }
+        else
+        {
+            qDebug("No Mount Connect.");
+            return;
+        }
+    }
+}
+
+void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
+{
+    qDebug() << "RaDec:" << Ra_Hour << "," << Dec_Degree;
+
+    // 停止和清理先前的计时器
+    telescopeTimer.stop();
+    telescopeTimer.disconnect();
+
+    TelescopeControl_Goto(Ra_Hour, Dec_Degree);
+
+    sleep(2); // 赤道仪的状态更新有一定延迟
+
+    // 启动等待赤道仪转动的定时器
+    telescopeTimer.setSingleShot(true);
+
+    connect(&telescopeTimer, &QTimer::timeout, [this]()
+    {
+        // 检查赤道仪状态
+        if (WaitForTelescopeToComplete()) 
+        {
+            telescopeTimer.stop();  // 转动完成时停止定时器
+            qDebug() << "Mount Goto Complete!";
+        } 
+        else 
+        {
+            telescopeTimer.start(1000);  // 继续等待
+        } });
+
+    telescopeTimer.start(1000);
+}

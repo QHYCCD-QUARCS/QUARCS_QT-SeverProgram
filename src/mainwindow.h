@@ -111,13 +111,20 @@ public:
 
     bool one_touch_connect = true;
     bool one_touch_connect_first = true;
-    int glMainCCDSizeX,glMainCCDSizeY;
+    int glMainCCDSizeX = 0;
+    int glMainCCDSizeY = 0;
 
     bool glIsFocusingLooping;
     QString glMainCameraStatu;
     QElapsedTimer glMainCameraCaptureTimer;
 
-    std::string vueDirectoryPath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    // std::string vueDirectoryPath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    std::string vueDirectoryPath = "/dev/shm/";
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";  // /var/www/html/img/
+
+    std::string PriorGuiderImage = "NULL";
+    std::string PriorROIImage = "NULL";
+    std::string PriorCaptureImage = "NULL";
 
     bool AutoStretch = true;
 
@@ -145,6 +152,9 @@ public:
     bool glPHD_ShowLockCross;
     bool glPHD_StartGuide = false;
 
+    bool ClearCalibrationData = true;
+    bool isGuiding = false;
+
     int glROI_x;
     int glROI_y;
     int CaptureViewWidth;
@@ -171,20 +181,28 @@ public:
     int currentSteps = 5000;
     int CurrentPosition = 0;
     int TargetPosition = 0;
-    bool isMoving = false;
     bool MoveInward = true;
     int AutoMovePosition;
+
+    bool FWHMCalOver = false;
+
+    float minPoint_X;
+
+    double FocusMoveAndCalFWHM(bool isInward, int steps);
+    double FocusGotoAndCalFWHM(int steps);
+
+    QTimer FWHMTimer; 
 
     QString MainCameraCFA;
 
     double ImageGainR = 1.0;
     double ImageGainB = 1.0;
 
-    QVector<QPointF> dataPoints;
+    QVector<QPointF> dataPoints;    // FWHM Data
 
-    void FocusMove(bool isInward, int steps);
+    void AutoFocus();
 
-    void FocusMoveToPosition(int position);
+    void FocuserControl_Goto(int position);
 
     void FocuserControl_Move(bool isInward, int steps);
 
@@ -205,7 +223,13 @@ public:
 
     void TelescopeControl_SYNCHome();
 
+    void TelescopeControl_SolveSYNC();
+
     void ScheduleTabelData(QString message);
+
+    int glFocalLength;
+    double glCameraSize_width;
+    double glCameraSize_height;
 
     QList<ScheduleData> m_scheduList;
 
@@ -248,6 +272,8 @@ public:
 
     bool WaitForTimeToComplete();
 
+    bool WaitForFocuserToComplete();
+
     int ScheduleImageSave(QString name, int num);
 
     int CaptureImageSave();
@@ -278,6 +304,21 @@ public:
     QString StagingScheduleData;
 
     void getStagingScheduleData();
+
+    QElapsedTimer CaptureTestTimer;
+    qint64 CaptureTestTime;
+
+
+    int MoveFileToUSB();
+
+    int mountDisplayCounter = 0;
+
+    double LastRA_Degree = 0;
+    double LastDEC_Degree = 0;
+
+    void MountGoto(double Ra_Hour, double Dec_Degree);
+
+    
 
 
 private slots:

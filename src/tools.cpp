@@ -2431,20 +2431,22 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     qDebug() << "Max:" << Bri1;
 
     int x_s, x_b;
-    for (int i = FirstMoment_x; i > 0; i--)
+    // for (int i = FirstMoment_x; i > 0; i--)
+    for (int i = 0; i < FirstMoment_x; i++)
     {
         ushort Bri_Left = subimage.at<ushort>(FirstMoment_y, i);
-        if (Bri_Left <= Bri1 / 2)
+        if (Bri_Left >= Bri1 / 2)
         {
             x_s = i;
             break;
         }
     }
 
-    for (int j = FirstMoment_x; j < width; j++)
+    // for (int j = FirstMoment_x; j < width; j++)
+    for (int j = width; j > FirstMoment_x; j--)
     {
         ushort Bri_Right = subimage.at<ushort>(FirstMoment_y, j);
-        if (Bri_Right <= Bri1 / 2)
+        if (Bri_Right >= Bri1 / 2)
         {
             x_b = j;
             break;
@@ -2986,7 +2988,7 @@ MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double Cam
   qDebug() << "FocalLength: " << FocalLength << ", " << "CameraSize: " << CameraSize_width << ", " << CameraSize_height;
 
   double CameraSize_diagonal = sqrt(pow(CameraSize_width, 2) + pow(CameraSize_height, 2));
-  qDebug() << CameraSize_diagonal;
+  // qDebug() << CameraSize_diagonal;
 
   double minFOV,maxFOV;
 
@@ -3006,7 +3008,7 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
   SloveResults result;
   MinMaxFOV FOV;
 
-  qDebug() << "Ra_Degree:" << Ra_Degree << "," << "Dec_Degree:" << Dec_Degree;
+  // qDebug() << "Ra_Degree:" << Ra_Degree << "," << "Dec_Degree:" << Dec_Degree;
 
   QString RA = QString::number(Ra_Degree);
   QString DEC = QString::number(Dec_Degree);
@@ -3023,8 +3025,9 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
   QString filename;
   if(USEQHYCCDSDK == false)
   {
-    filename = "/dev/shm/ccd_simulator_";
-    command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    filename = "/dev/shm/ccd_simulator";
+    // command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
   }
   else
   {

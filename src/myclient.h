@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <functional>
+#include <QElapsedTimer>
 
 // 回调函数类型定义
 using ImageReceivedCallback = std::function<void(const std::string& filename, const std::string& devname)>;
@@ -19,6 +20,9 @@ class MyClient : public INDI::BaseClient
 
 
     public:
+
+        QElapsedTimer CaptureTestTimer;
+        qint64 CaptureTestTime;
 
         uint32_t QHYCCD_SUCCESS = 1;
         uint32_t QHYCCD_ERROR = 0;
