@@ -402,11 +402,6 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
-    else if (message == "MoveFileToUSB")
-    {
-        MoveFileToUSB();
-    }
-
     else if (message == "ClearCalibrationData")
     {
         ClearCalibrationData = true;
@@ -464,6 +459,30 @@ void MainWindow::onMessageReceived(const QString &message)
         // FWHM Data
         dataPoints.clear();
     }
+
+    else if (message == "ShowAllImageFolder")
+    {
+        std::string allFile = GetAllFile();
+        std::cout << allFile << std::endl;
+        emit wsThread->sendMessageToClient("ShowAllImageFolder:" + QString::fromStdString(allFile));
+        
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "MoveFileToUSB")
+    {
+        QStringList ImagePath= parseString(parts[1].trimmed().toStdString(),ImageSaveBasePath);
+        RemoveImageToUsb(ImagePath);
+        
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "DeleteFile")
+    {
+        QStringList ImagePath= parseString(parts[1].trimmed().toStdString(),ImageSaveBasePath);
+        DeleteImage(ImagePath);
+    }
+    else if (message == "USBCheck"){
+        USBCheck();
+    }
+
+
 }
 
 void MainWindow::initINDIServer()
@@ -3327,6 +3346,8 @@ bool MainWindow::createCaptureDirectory() {
     }
 }
 
+
+
 void MainWindow::getConnectedDevices(){
     for(int i = 0; i < ConnectedDevices.size(); i++){
         qDebug() << "Device[" << i << "]: " << ConnectedDevices[i].DeviceName;
@@ -3444,4 +3465,291 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
         } });
 
     telescopeTimer.start(1000);
+}
+
+void MainWindow::DeleteImage(QStringList DelImgPath)
+{
+    std::string password = "quarcs"; // sudo 密码
+    for (int i = 0; i < DelImgPath.size(); i++) {
+        if (i < DelImgPath.size()) {
+            std::ostringstream commandStream;
+            commandStream << "echo '" << password << "' | sudo -S rm -rf \"./" << DelImgPath[i].toStdString() << "\"";
+            std::string command = commandStream.str();
+
+            std::cout << "Deleted command: " << commandStream.str() << std::endl;
+        
+            // 执行系统命令删除文件
+            int result = system(command.c_str());
+        
+            if (result == 0) {
+                std::cout << "Deleted file: " << DelImgPath[i].toStdString() << std::endl;
+            } else {
+                std::cerr << "Failed to delete file: " << DelImgPath[i].toStdString() << std::endl;
+            }
+        } else {
+            std::cerr << "Index out of range: " << i << std::endl;
+        }
+    }
+}
+std::string MainWindow::GetAllFile()
+{
+    std::string capturePath = ImageSaveBasePath + "/CaptureImage/";
+    std::string planPath = ImageSaveBasePath + "/ScheduleImage/";
+    std::string resultString;
+    std::string captureString = "CaptureImage{";
+    std::string planString = "ScheduleImage{";
+    for (const auto &entry : std::filesystem::directory_iterator(capturePath))
+    {
+        std::string fileName = entry.path().filename(); // 获取文件名（包含扩展名）
+        captureString += fileName + ";";                // 拼接为字符串
+    }
+    for (const auto &entry : std::filesystem::directory_iterator(planPath))
+    {
+        std::string folderName = entry.path().filename().string(); // 获取文件夹名
+        planString += folderName + ";";
+    }
+    resultString = captureString + "}:" + planString + '}';
+    return resultString;
+}
+
+
+// 解析字符串
+QStringList MainWindow::parseString(const std::string &input, const std::string &imgFilePath) {
+    QStringList paths;
+    QString baseString;
+    size_t pos = input.find('{');
+    if (pos != std::string::npos) {
+        baseString = QString::fromStdString(input.substr(0, pos));
+        std::string content = input.substr(pos + 1);
+        size_t endPos = content.find('}');
+        if (endPos != std::string::npos) {
+            content = content.substr(0, endPos);
+
+            // 去掉末尾的分号（如果有的话）
+            if (!content.empty() && content.back() == ';') {
+                content.pop_back();
+            }
+
+            QStringList parts = QString::fromStdString(content).split(';', Qt::SkipEmptyParts);
+            for (const QString &part : parts) {
+                QString path = QDir::toNativeSeparators(QString::fromStdString(imgFilePath) + "/" + baseString + "/" + part);
+                paths.append(path);
+            }
+        }
+    }
+    return paths;
+}
+
+// 返回 U 盘剩余内存
+long long MainWindow::getUSBSpace(const QString &usb_mount_point)
+{
+    struct statvfs stat;
+    if (statvfs(usb_mount_point.toUtf8().constData(), &stat) == 0) {
+        long long free_space = static_cast<long long>(stat.f_bfree) * stat.f_frsize;
+        // std::cout << "U 盘剩余空间大小: " << free_space << " bytes" << std::endl;
+        return free_space;
+    } else {
+        std::cerr << "获取 U 盘空间信息失败。" << std::endl;
+        emit wsThread->sendMessageToClient("getUSBFail:Failed to obtain the space information of the USB flash drive." );
+        return -1;
+    }
+}
+
+long long MainWindow::getTotalSize(const QStringList &filePaths) 
+{
+    long long totalSize = 0;
+    foreach(QString filePath, filePaths) {
+        QFileInfo fileInfo(filePath);
+        if(fileInfo.exists()) {
+            totalSize += fileInfo.size();
+        }
+    }
+    return totalSize;
+}
+
+// 获取文件系统挂载模式
+bool MainWindow::isMountReadOnly(const QString& mountPoint) {
+    struct statvfs fsinfo;
+    auto mountPointStr = mountPoint.toUtf8().constData();
+    qDebug() << "Checking filesystem information for mount point:" << mountPointStr;
+
+    if (statvfs(mountPointStr, &fsinfo) != 0) {
+        qCritical() << "Failed to get filesystem information for" << mountPoint << ":" << strerror(errno);
+        emit wsThread->sendMessageToClient(QString("getUSBFail:Failed to get filesystem information for %1, error: %2").arg(mountPoint).arg(strerror(errno)));
+        return false;
+    }
+
+    qDebug() << "Filesystem flags for" << mountPoint << ":" << fsinfo.f_flag;
+    return (fsinfo.f_flag & ST_RDONLY) != 0;
+}
+
+
+// 将文件系统挂载模式更改为读写模式
+bool MainWindow::remountReadWrite(const QString& mountPoint, const QString& password) {
+    QProcess process;
+    process.start("sudo", {"-S", "mount", "-o", "remount,rw", mountPoint});
+    if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
+        std::cerr << "Failed to execute command: sudo mount" << std::endl;
+        emit wsThread->sendMessageToClient("getUSBFail:Failed to execute command: sudo mount -o remount,rw usb." );
+        return false;
+    }
+    process.closeWriteChannel();
+    process.waitForFinished(-1);
+    return process.exitCode() == 0;
+}
+
+void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
+{
+    QString base = "/media/";
+    QString username = QDir::home().dirName();
+    QString basePath = base + username;
+    QDir baseDir(basePath);
+    QString usb_mount_point = "";
+    if (!baseDir.exists()) {
+        qDebug() << "Base directory does not exist.";
+        return ;
+    }
+
+    // 获取所有文件夹，排除"."和".."，并且排除"CDROM"
+    QStringList filters;
+    filters << "*";
+    QStringList folderList = baseDir.entryList(filters, QDir::Dirs | QDir::NoDotAndDotDot);
+
+    // 排除包含"CDROM"的文件夹
+    folderList.removeAll("CDROM");
+    
+    // 检查剩余文件夹数量是否为1
+    if (folderList.size() == 1) {
+        usb_mount_point = basePath + "/" + folderList.at(0);
+        qDebug() << "USB mount point:" << usb_mount_point;
+    } else if (folderList.size() == 0)  {
+        emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Null");
+        qDebug() << "The directory does not contain exactly one folder excluding CDROM.";
+        return;
+    } else {
+        emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Multiple");
+        qDebug() << "The directory does not contain exactly one folder excluding CDROM.";
+        return;
+    }
+
+    const QString password = "quarcs"; // sudo 密码
+
+    QStorageInfo storageInfo(usb_mount_point);
+    if (storageInfo.isValid() && storageInfo.isReady()) {
+        if (storageInfo.isReadOnly()) {
+            // 处理1: 该路径为只读设备
+           if (!remountReadWrite(usb_mount_point, password)) {
+            std::cerr << "Failed to remount filesystem as read-write" << std::endl;
+            return;
+            }
+            std::cout << "Filesystem remounted as read-write successfully" << std::endl;
+        }
+        qDebug() << "此路径为可写设备";
+    }else{
+        qDebug() << "指定路径不是有效的文件系统或未准备好";
+    }
+    long long remaining_space = getUSBSpace(usb_mount_point);
+    if (remaining_space == -1){
+        std::cerr << "Check whether a USB flash drive or portable hard drive is inserted!" << std::endl;
+        return ;
+    }
+    long long totalSize = getTotalSize(RemoveImgPath);
+    if (totalSize >= remaining_space) {
+        std::cout << "存储空间不足，无法复制文件到 U 盘!" << std::endl;
+        emit wsThread->sendMessageToClient("getUSBFail:Not enough storage space to copy files to USB flash drive!" );
+        return;
+    }
+    QDateTime currentDateTime = QDateTime::currentDateTime();
+    QString folderName = "QUARCS_ImageSave";
+    QString folderPath = usb_mount_point + "/" + folderName;
+
+    int sumMoveImage = 0;
+    for (const auto &imgPath : RemoveImgPath) {
+        QString fileName = imgPath;
+        int pos = fileName.lastIndexOf('/');
+        int pos1 = fileName.lastIndexOf("/", pos - 1);
+        if (pos ==-1 || pos1 == -1)
+        {
+            qDebug() << "path is error!";
+            return;
+        }
+        QString destinationPath = folderPath + fileName.mid(pos1, pos - pos1 + 1);
+        QProcess process;
+        process.start("sudo", {"-S", "mkdir", "-p", destinationPath});
+        if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
+            std::cerr << "Failed to execute command: sudo mkdir" << std::endl;
+            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
+            continue;
+        }
+        process.closeWriteChannel();
+        process.waitForFinished(-1);
+
+        process.start("sudo", {"-S", "cp", "-r", imgPath, destinationPath });
+        if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
+            std::cerr << "Failed to execute command: sudo cp" << std::endl;
+            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
+            continue;
+        }
+        process.closeWriteChannel();
+        process.waitForFinished(-1);
+
+        // Read the standard error output
+        QByteArray stderrOutput = process.readAllStandardError();
+
+        if (process.exitCode() == 0) {
+            std::cout << "Copied file: " << imgPath.toStdString() << " to " << destinationPath.toStdString() << std::endl;
+        } else {
+            std::cerr << "Failed to copy file: " << imgPath.toStdString() << " to " << destinationPath.toStdString() << std::endl;
+            // Print the error reason
+            std::cerr << "Error: " << stderrOutput.constData() << std::endl;
+            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
+            continue;
+        }
+        sumMoveImage ++;
+        emit wsThread->sendMessageToClient("HasMoveImgnNUmber:succeed:" + QString::number(sumMoveImage));
+    }
+}
+
+void MainWindow::USBCheck(){
+    QString message;
+    QString base = "/media/";
+    QString username = QDir::home().dirName();
+    QString basePath = base + username;
+    QDir baseDir(basePath);
+    QString usb_mount_point = "";
+    if (!baseDir.exists()) {
+        qDebug() << "Base directory does not exist.";
+        return ;
+    }
+
+    // 获取所有文件夹，排除"."和".."，并且排除"CDROM"
+    QStringList filters;
+    filters << "*";
+    QStringList folderList = baseDir.entryList(filters, QDir::Dirs | QDir::NoDotAndDotDot);
+
+    // 排除包含"CDROM"的文件夹
+    folderList.removeAll("CDROM");
+
+    if (folderList.size() == 1) {
+        usb_mount_point = basePath + "/" + folderList.at(0);
+        qDebug() << "USB mount point:" << usb_mount_point;
+        QString usbName = folderList.join(",");
+        message = "USBCheck";
+        long long remaining_space = getUSBSpace(usb_mount_point);
+        if (remaining_space == -1){
+            std::cerr << "Check whether a USB flash drive or portable hard drive is inserted!" << std::endl;
+            return ;
+        }
+        message = message + ":" + folderList.at(0) + "," + QString::number(remaining_space);
+        qDebug()<<message;
+        emit wsThread->sendMessageToClient(message);
+    } else if (folderList.size() == 0) {
+        emit wsThread->sendMessageToClient("USBCheck:Null, Null");
+        return;
+    } else {
+        emit wsThread->sendMessageToClient("USBCheck:Multiple, Multiple");
+        return;
+    }
+
+    return ;
 }

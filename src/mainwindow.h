@@ -22,6 +22,11 @@
 #include <QNetworkInterface>
 #include <filesystem>
 
+#include <string>
+#include <algorithm>
+#include <sys/statvfs.h>
+#include <QStorageInfo>
+
 class MainWindow : public QObject
 {
     Q_OBJECT
@@ -291,6 +296,8 @@ public:
 
     bool createCaptureDirectory();
 
+     
+
     QVector<ConnectedDevice> ConnectedDevices;
 
     void getConnectedDevices();
@@ -317,6 +324,19 @@ public:
     double LastDEC_Degree = 0;
 
     void MountGoto(double Ra_Hour, double Dec_Degree);
+
+
+    // void CaptureImageSave();
+    void DeleteImage(QStringList DelImgPath);
+    std::string GetAllFile();
+    QStringList parseString(const std::string &input, const std::string &imgFilePath);
+    long long getUSBSpace(const QString &usb_mount_point);
+    long long getTotalSize(const QStringList &filePaths);
+    void RemoveImageToUsb(QStringList RemoveImgPath);
+    bool isMountReadOnly(const QString& mountPoint);
+    bool remountReadWrite(const QString& mountPoint, const QString& password);
+
+    void USBCheck();
 
     
 
