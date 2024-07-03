@@ -11,6 +11,8 @@
 #include <qxmlstream.h>
 #include "fitsio.h"
 #include <filesystem>
+#include <QObject>
+#include <QDebug>
 
 // #define ImageDebug
 
@@ -2374,8 +2376,8 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
     cv::Scalar scalar = mean(gray);
     double Background = scalar.val[0];
 
-    qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
-    qDebug() << "Backgroud brightness:" << Background;
+    // qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+    // qDebug() << "Backgroud brightness:" << Background;
 
     cv::Mat m = cv::Mat(gray.size(), gray.type(), cv::Scalar(Background));
     cv::Mat dst = cv::Mat::zeros(gray.size(), gray.type());
@@ -2383,6 +2385,327 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
     subtract(gray, m, dst);
 
     return dst;
+}
+
+// bool Tools::DetectStar(cv::Mat image, double threshold, int minArea, cv::Rect& starRect)
+// {
+//     cv::Mat subimage = Tools::SubBackGround(image).clone();
+//     cv::Mat binaryImage;
+
+//     // 二值化处理，阈值可以根据需要调整
+//     cv::threshold(subimage, binaryImage, threshold, 255, cv::THRESH_BINARY);
+
+//     // 确保二值图像是CV_8UC1格式
+//     if (binaryImage.type() != CV_8UC1)
+//     {
+//         binaryImage.convertTo(binaryImage, CV_8UC1);
+//     }
+
+//     // 连通区域检测
+//     std::vector<std::vector<cv::Point>> contours;
+//     cv::findContours(binaryImage, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+//     // 找到面积最大的连通区域，认为是星点
+//     double maxArea = 0;
+//     for (const auto& contour : contours)
+//     {
+//         double area = cv::contourArea(contour);
+//         if (area >= minArea && area > maxArea)
+//         {
+//             maxArea = area;
+//             starRect = cv::boundingRect(contour);
+//         }
+//     }
+
+//     if (maxArea > 0) {
+//         // 检查检测到的星点亮度分布是否符合要求
+//         cv::Mat starRegion = subimage(starRect);
+//         double meanBrightness = cv::mean(starRegion)[0];
+//         if (meanBrightness > threshold) {
+//             return true;
+//         }
+//     }
+
+//     return false;
+// }
+
+QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHFR)
+{
+  Tools tempTool;
+
+  loadFitsResult result;
+
+  QList<FITSImage::Star> stars;
+
+  result = loadFits("/dev/shm/ccd_simulator.fits");
+
+  if (!result.success)
+  {
+    printf("Error in loading FITS file");
+    return stars;
+  }
+
+  FITSImage::Statistic imageStats = result.imageStats;
+  uint8_t *imageBuffer = result.imageBuffer;
+  stars = tempTool.FindStarsByStellarSolver_(AllStars, imageStats, imageBuffer, runHFR);
+  return stars;
+}
+
+QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR)
+{
+  StellarSolver solver(imagestats, imageBuffer);
+  // 配置solver参数
+  SSolver::Parameters parameters;
+
+  // 设置参数
+  // parameters.apertureShape = SSolver::SHAPE_CIRCLE; // 使用圆形的星点检测形状
+  // parameters.kron_fact = 2.5;                       // 设置Kron因子
+  // parameters.subpix = 5;                            // 子像素设置
+  // parameters.r_min = 5;                             // 最小星点半径
+  // parameters.magzero = 20;                          // 零点星等
+  // parameters.minarea = 20;                          // 最小星点面积
+  // parameters.deblend_thresh = 32;                   // 去混叠阈值
+  // parameters.deblend_contrast = 0.005;              // 去混叠对比度
+  // parameters.clean = 1;                             // 清理图像
+  // parameters.fwhm = 1;                              // 全宽半高
+  // parameters.maxSize = 0;                           // 最大星点大小
+  // parameters.minSize = 0;                           // 最小星点大小
+  // parameters.maxEllipse = 1.5;                      // 最大椭圆比
+  // parameters.initialKeep = 250;                     // 初始保留星点数量
+  // parameters.keepNum = 100;                         // 保留星点数量
+  // parameters.removeBrightest = 10;                  // 移除最亮星点比例
+  // parameters.removeDimmest = 20;                    // 移除最暗星点比例
+  // parameters.saturationLimit = 90;                  // 饱和度限制
+  
+  parameters.apertureShape = SSolver::SHAPE_CIRCLE;
+  parameters.autoDownsample = true;
+  parameters.clean = 1;
+  parameters.clean_param = 1;
+  parameters.convFilterType = SSolver::CONV_GAUSSIAN;
+  parameters.deblend_contrast = 0.004999999888241291;
+  parameters.deblend_thresh = 32;
+  parameters.description = "Default focus star-extraction.";
+  parameters.downsample = 1;
+  parameters.fwhm = 1;
+  parameters.inParallel = true;
+  parameters.initialKeep = 250;
+  parameters.keepNum = 100;
+  parameters.kron_fact = 2.5;
+  parameters.listName = "1-Focus-Default";
+  parameters.logratio_tokeep = 20.72326583694641;
+  parameters.logratio_tosolve = 20.72326583694641;
+  parameters.logratio_totune = 13.815510557964274;
+  parameters.magzero = 20;
+  parameters.maxEllipse = 1.5;
+  parameters.maxSize = 10;
+  parameters.maxwidth = 180;
+  parameters.minSize = 0;
+  parameters.minarea = 20;
+  parameters.minwidth = 0.1;
+  parameters.multiAlgorithm = SSolver::MULTI_AUTO;
+  parameters.partition = true;
+  parameters.r_min = 5;
+  parameters.removeBrightest = 10;
+  parameters.removeDimmest = 20;
+  parameters.resort = true;
+  parameters.saturationLimit = 90;
+  parameters.search_parity = 15;
+  parameters.solverTimeLimit = 600;
+  parameters.subpix = 5;
+
+
+  solver.setLogLevel(SSolver::LOG_ALL);
+  solver.setSSLogLevel(SSolver::LOG_NORMAL);
+
+  solver.setProperty("ExtractorType", SSolver::EXTRACTOR_INTERNAL);
+  solver.setProperty("ProcessType", SSolver::EXTRACT);
+  solver.setParameterProfile(SSolver::Parameters::DEFAULT);
+  // solver.setParameterProfile(SSolver::Parameters::ALL_STARS);
+
+  // 设置参数
+  solver.setParameters(parameters);
+
+  if(AllStars) {
+    solver.setParameterProfile(SSolver::Parameters::ALL_STARS);
+  }
+
+  connect(&solver, &StellarSolver::logOutput, this, &Tools::StellarSolverLogOutput);
+
+  // 进行星点检测
+  bool success = solver.extract(runHFR);
+  if (!success)
+  {
+    std::cerr << "Star extraction failed." << std::endl;
+  }
+  qDebug() << "success extract: " << success;
+
+  QList<FITSImage::Star> stars;
+
+  stars = solver.getStarList();
+
+  // 输出检测到的星点信息
+  std::cout << "Detected " << stars.size() << " stars." << std::endl;
+  for (const auto &star : stars)
+  {
+    std::cout << "Star at (" << star.x << ", " << star.y << ") with HFR: " << star.HFR << std::endl;
+  }
+
+  return stars;
+}
+
+void Tools::StellarSolverLogOutput(QString text){
+  qDebug() << "StellarSolver LogOutput: " << text.toUtf8().data();
+}
+
+loadFitsResult Tools::loadFits(QString fileName)
+{
+  loadFitsResult result;
+  QString file = fileName;
+  fitsfile *fptr{nullptr};
+  FITSImage::Statistic stats;
+  /// Generic data image buffer
+  uint8_t *m_ImageBuffer{nullptr};
+  /// Above buffer size in bytes
+  uint32_t m_ImageBufferSize{0};
+  int status = 0, anynullptr = 0;
+  long naxes[3];
+
+  // Use open diskfile as it does not use extended file names which has problems opening
+  // files with [ ] or ( ) in their names.
+  if (fits_open_diskfile(&fptr, file.toLocal8Bit(), READONLY, &status))
+  {
+    // logIssue(QString("Error opening fits file %1").arg(file));
+    qDebug() << "Error opening fits file " << file;
+    result.success = false;
+    return result;
+  }
+  else
+    stats.size = QFile(file).size();
+
+  if (fits_movabs_hdu(fptr, 1, IMAGE_HDU, &status))
+  {
+    // logIssue(QString("Could not locate image HDU."));
+    qDebug() << "Could not locate image HDU.";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  int fitsBitPix = 0;
+  if (fits_get_img_param(fptr, 3, &fitsBitPix, &(stats.ndim), naxes, &status))
+  {
+    // logIssue(QString("FITS file open error (fits_get_img_param)."));
+    qDebug() << "FITS file open error (fits_get_img_param).";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  if (stats.ndim < 2)
+  {
+    // logIssue("1D FITS images are not supported.");
+    qDebug() << "1D FITS images are not supported.";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  switch (fitsBitPix)
+  {
+  case BYTE_IMG:
+    // stats.dataType      = SEP_TBYTE;
+    stats.dataType = 11;
+    stats.bytesPerPixel = sizeof(uint8_t);
+    break;
+  case SHORT_IMG:
+    // Read SHORT image as USHORT
+    stats.dataType = TUSHORT;
+    stats.bytesPerPixel = sizeof(int16_t);
+    break;
+  case USHORT_IMG:
+    stats.dataType = TUSHORT;
+    stats.bytesPerPixel = sizeof(uint16_t);
+    break;
+  case LONG_IMG:
+    // Read LONG image as ULONG
+    stats.dataType = TULONG;
+    stats.bytesPerPixel = sizeof(int32_t);
+    break;
+  case ULONG_IMG:
+    stats.dataType = TULONG;
+    stats.bytesPerPixel = sizeof(uint32_t);
+    break;
+  case FLOAT_IMG:
+    stats.dataType = TFLOAT;
+    stats.bytesPerPixel = sizeof(float);
+    break;
+  case LONGLONG_IMG:
+    stats.dataType = TLONGLONG;
+    stats.bytesPerPixel = sizeof(int64_t);
+    break;
+  case DOUBLE_IMG:
+    stats.dataType = TDOUBLE;
+    stats.bytesPerPixel = sizeof(double);
+    break;
+  default:
+    // logIssue(QString("Bit depth %1 is not supported.").arg(fitsBitPix));
+    qDebug() << "Bit depth %1 is not supported." << fitsBitPix;
+
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  if (stats.ndim < 3)
+    naxes[2] = 1;
+
+  if (naxes[0] == 0 || naxes[1] == 0)
+  {
+    // logIssue(QString("Image has invalid dimensions %1x%2").arg(naxes[0]).arg(naxes[1]));
+    qDebug() << "Image has invalid dimensions " << naxes[0] << naxes[1];
+  }
+
+  stats.width = static_cast<uint16_t>(naxes[0]);
+  stats.height = static_cast<uint16_t>(naxes[1]);
+  stats.channels = static_cast<uint8_t>(naxes[2]);
+  stats.samples_per_channel = stats.width * stats.height;
+
+  m_ImageBufferSize = stats.samples_per_channel * stats.channels * static_cast<uint16_t>(stats.bytesPerPixel);
+  // deleteImageBuffer();
+  if (m_ImageBuffer)
+  {
+    delete[] m_ImageBuffer;
+    m_ImageBuffer = nullptr;
+  }
+
+  m_ImageBuffer = new uint8_t[m_ImageBufferSize];
+  if (m_ImageBuffer == nullptr)
+  {
+    // logIssue(QString("FITSData: Not enough memory for image_buffer channel. Requested: %1 bytes ").arg(m_ImageBufferSize));
+    qDebug() << "FITSData: Not enough memory for image_buffer channel. Requested:" << m_ImageBufferSize << "bytes ";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  long nelements = stats.samples_per_channel * stats.channels;
+
+  if (fits_read_img(fptr, static_cast<uint16_t>(stats.dataType), 1, nelements, nullptr, m_ImageBuffer, &anynullptr, &status))
+  {
+    // logIssue("Error reading image.");
+    qDebug() << "Error reading image.";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  fits_close_file(fptr, &status);
+
+  result.success = true;
+  result.imageStats = stats;
+  result.imageBuffer = m_ImageBuffer;
+
+  return result;
 }
 
 FWHM_Result Tools::CalculateFWHM(cv::Mat image)
@@ -2458,7 +2781,7 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     qDebug() << x_b << x_s;
 
     qDebug() << "[[[[[FWHM:" << FWHM << "]]]]]";
-    qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+    // qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
     cv::Mat imagePoint = image.clone();
 
@@ -2473,8 +2796,80 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     result.FWHM = FWHM;
 
     return result;
+}
 
-    // cv::waitKey();
+HFR_Result Tools::CalculateHFR(cv::Mat image)
+{
+    HFR_Result result;
+    cv::Rect starRect;
+    // if (!Tools::DetectStar(image, 50.0, 5, starRect)) {
+    //     qDebug() << "No star detected in the image.";
+    //     result.image = image;
+    //     result.HFR = -1.0;
+    //     return result;
+    // }
+
+    // cv::Mat starRegion = image(starRect);
+    cv::Mat subimage = Tools::SubBackGround(image).clone();
+    int FirstMoment_x, FirstMoment_y;
+
+    double scale_up = 10.0;
+    cv::resize(subimage, subimage, cv::Size(), scale_up, scale_up, cv::INTER_LINEAR);
+
+    cv::Mat imageFloat;
+    subimage.convertTo(imageFloat, CV_64F);
+
+    double sum = cv::sum(imageFloat)[0];
+    double xCoordinate = 0.0;
+    double yCoordinate = 0.0;
+
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = imageFloat.at<double>(y, x);
+            xCoordinate += x * pixelValue;
+            yCoordinate += y * pixelValue;
+        }
+    }
+
+    xCoordinate /= sum;
+    yCoordinate /= sum;
+
+    FirstMoment_x = static_cast<int>(xCoordinate);
+    FirstMoment_y = static_cast<int>(yCoordinate);
+
+    double maxBrightness = subimage.at<ushort>(FirstMoment_y, FirstMoment_x);
+    double halfMaxBrightness = maxBrightness / 2.0;
+
+    std::vector<double> distances;
+
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = subimage.at<ushort>(y, x);
+            if (pixelValue >= halfMaxBrightness) {
+                double distance = std::sqrt(std::pow(x - FirstMoment_x, 2) + std::pow(y - FirstMoment_y, 2));
+                distances.push_back(distance);
+            }
+        }
+    }
+
+    double sumDistances = std::accumulate(distances.begin(), distances.end(), 0.0);
+    double HFR = sumDistances / distances.size() / 10.0;
+
+    // 在原图上绘制检测结果
+    cv::Mat imagePoint = image.clone();
+    cv::Point center(starRect.x + FirstMoment_x / 10, starRect.y + FirstMoment_y / 10);
+    cv::rectangle(imagePoint, starRect, cv::Scalar(0, 255, 0), 1); // 绘制外接矩形
+    cv::circle(imagePoint, center, static_cast<int>(HFR), cv::Scalar(0, 0, 255), 1); // 绘制HFR圆
+    cv::circle(imagePoint, center, 1, cv::Scalar(0, 255, 0), -1); // 绘制中心点
+
+    // 在图像上显示HFR数值
+    std::string hfrText = cv::format("%.2f", HFR);
+    cv::putText(imagePoint, hfrText, cv::Point(starRect.x, starRect.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+
+    result.image = imagePoint;
+    result.HFR = HFR;
+
+    return result;
 }
 
 /*************************************************************************
@@ -3090,7 +3485,7 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
 
 int Tools::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c) {
     int n = data.size();
-    if (n < 4) {
+    if (n < 5) {
         return -1; // 数据点数量不足
     }
     cv::Mat A(n, 3, CV_32F);
@@ -3113,6 +3508,31 @@ int Tools::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, f
     c = X.at<float>(2, 0);
 
     return 0; // 拟合成功
+}
+
+double Tools::calculateRSquared(QVector<QPointF> data, float a, float b, float c) {
+    double ssTotal = 0.0;
+    double ssResidual = 0.0;
+    double meanY = 0.0;
+
+    // 计算 y 的平均值
+    for (const QPointF &point : data) {
+        meanY += point.y();
+    }
+    meanY /= data.size();
+
+    for (const QPointF &point : data) {
+        float x = point.x();
+        float y = point.y();
+        float yFit = a * x * x + b * x + c;
+        ssTotal += (y - meanY) * (y - meanY);
+        ssResidual += (y - yFit) * (y - yFit);
+    }
+
+    double rSquared = 1 - (ssResidual / ssTotal);
+
+    // rSquaredLabel->setText(QString("R²: %1").arg(rSquared));
+    return rSquared;
 }
 
 // 2023.12.21 CJQ

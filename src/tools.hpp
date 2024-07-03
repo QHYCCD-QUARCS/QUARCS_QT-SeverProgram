@@ -18,12 +18,21 @@
 #include <QLabel>
 #include "fitsio.h"
 #include <QApplication>
+#include <QObject>
+#include <QDebug>
+
+#include <stellarsolver.h>
 
 struct FWHM_Result
 {
   /* data */
   cv::Mat image;
   double FWHM;
+};
+
+struct HFR_Result {
+    cv::Mat image;
+    double HFR;
 };
 
 
@@ -159,7 +168,22 @@ enum class SystemNumber {
   LensCover1 = 23,
 };
 
-class Tools {
+typedef struct
+{
+  QString key;     /** FITS Header Key */
+  QVariant value;  /** FITS Header Value */
+  QString comment; /** FITS Header Comment, if any */
+} Record;
+
+struct loadFitsResult
+{
+  bool success;
+  FITSImage::Statistic imageStats;
+  uint8_t *imageBuffer;
+};
+
+class Tools : public QObject {
+  Q_OBJECT
   Q_DISABLE_COPY(Tools)
  public:
   static void Initialize();
@@ -242,9 +266,15 @@ class Tools {
   static void CvDebugSave(cv::Mat img, const std::string& name = "test.png");
 
   static cv::Mat SubBackGround(cv::Mat image);
+  // static bool DetectStar(cv::Mat image, double threshold, int minArea, cv::Rect& starRect);
   static FWHM_Result CalculateFWHM(cv::Mat image);
+  static HFR_Result CalculateHFR(cv::Mat image);
 
   static cv::Mat CalMoments(cv::Mat image);
+
+  static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
+
+  static loadFitsResult loadFits(QString fileName);
 
   static double getDecAngle(const QString& str);
 
@@ -310,11 +340,18 @@ class Tools {
 
   static int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);
 
+  static double calculateRSquared(QVector<QPointF> data, float a, float b, float c);
+
+public slots:
+  void StellarSolverLogOutput(QString text);
+
  private:
   Tools();
   ~Tools();
 
   static Tools* instance_;
+
+  QList<FITSImage::Star> FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR);
 };
 
 #endif  // TOOLS_HPP

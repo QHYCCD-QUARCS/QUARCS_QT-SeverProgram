@@ -22,6 +22,8 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS ${QT_COMPONENTS})
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS ${QT_COMPONENTS})
 find_package(OpenCV REQUIRED)
 
+find_package(StellarSolver REQUIRED)
+
 add_executable(client
   main.cpp
   websocketclient.h websocketclient.cpp
@@ -45,7 +47,10 @@ install(TARGETS client
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-target_include_directories(client PUBLIC /usr/include/libindi)
+target_include_directories(client PUBLIC 
+  /usr/include/libindi
+  /usr/local/include/libstellarsolver  # Path to stellarsolver headers
+)
 link_directories(${PROJECT_SOURCE_DIR}/usr/lib/x86_64-linux-gnu)
 target_link_libraries(client PUBLIC
   -lnova
@@ -59,6 +64,7 @@ target_include_directories(client PUBLIC
 )
 target_link_libraries(client PRIVATE
     qhyccd
+    stellarsolver
 )
 
 target_link_libraries(client PRIVATE
@@ -69,5 +75,6 @@ target_link_libraries(client PRIVATE
     Qt${QT_VERSION_MAJOR}::Concurrent
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::WebSockets
+    ${StellarSolver_LIBS}
 )
 

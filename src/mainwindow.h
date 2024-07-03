@@ -27,6 +27,8 @@
 #include <sys/statvfs.h>
 #include <QStorageInfo>
 
+#include <stellarsolver.h>
+
 class MainWindow : public QObject
 {
     Q_OBJECT
@@ -193,7 +195,7 @@ public:
 
     float minPoint_X;
 
-    double FocusMoveAndCalFWHM(bool isInward, int steps);
+    double FocusMoveAndCalHFR(bool isInward, int steps);
     double FocusGotoAndCalFWHM(int steps);
 
     QTimer FWHMTimer; 
@@ -205,7 +207,11 @@ public:
 
     QVector<QPointF> dataPoints;    // FWHM Data
 
+    double R2;
+
     void AutoFocus();
+
+    bool StopAutoFocus = false;
 
     void FocuserControl_Goto(int position);
 

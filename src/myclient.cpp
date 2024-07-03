@@ -68,18 +68,26 @@ void MyClient::newDevice(INDI::BaseDevice baseDevice){
 
 void MyClient::updateProperty(INDI::Property property)
 {
-    // qDebug() << "updateProperty:" << property.getType();
     if (property.getType() == INDI_BLOB)
     {
+        CaptureTestTime = CaptureTestTimer.elapsed();
+        qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+        CaptureTestTimer.invalidate();
+
         qDebug() << "newProperty(getName): " << property.getName();
         qDebug("Recveing image from Server size len name label format %d %d %s %s %s", property.getBLOB()->bp->size,property.getBLOB()->bp->bloblen,property.getBLOB()->bp->name,property.getBLOB()->bp->label,property.getBLOB()->bp->format);
+        CaptureTestTimer.start();
+        qDebug() << "\033[32m" << "Save ccd_simulator.fits start." << "\033[0m";
         std::ofstream myfile;
         std::string filename="/dev/shm/ccd_simulator.fits";
         myfile.open(filename, std::ios::out | std::ios::binary);
         myfile.write(static_cast<char *>(property.getBLOB()->bp->blob), property.getBLOB()->bp->bloblen);
         myfile.close();
 
-        //readFitsHead("ccd_simulator.fits");
+        CaptureTestTime = CaptureTestTimer.elapsed();
+        qDebug() << "\033[32m" << "Save ccd_simulator.fits completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+        CaptureTestTimer.invalidate();
+
         QString devname_;
         Tools::readFitsHeadForDevName(filename,devname_);
         std::string devname = devname_.toStdString();
@@ -315,6 +323,9 @@ uint32_t MyClient::takeExposure(INDI::BaseDevice *dp,double seconds)
         IDLog("Error: unable to find CCD Simulator CCD_EXPOSURE property...\n");
         return QHYCCD_ERROR;
     }
+
+    CaptureTestTimer.start();
+    qDebug() << "\033[32m" << "Exposure start." << "\033[0m";
 
     // Take a 1 second exposure
     IDLog("Taking a %g second exposure.\n", seconds);
@@ -1617,7 +1628,7 @@ uint32_t MyClient::setFocuserMoveDiretion(INDI::BaseDevice *dp,bool isDirectionI
     if(isDirectionIn==true)   {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
     if(isDirectionIn==false)  {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
     sendNewProperty(property);
-    qDebug() << "setFocuserMoveDiretion | IN/OUT isDirectionIn:" << isDirectionIn ;
+    // qDebug() << "setFocuserMoveDiretion | IN/OUT isDirectionIn:" << isDirectionIn ;
     return QHYCCD_SUCCESS;
 }
 

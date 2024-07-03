@@ -120,8 +120,6 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         int ExpTime = parts[1].trimmed().toInt();
         qDebug() << ExpTime;
-        CaptureTestTimer.start();
-        qDebug() << "\033[32m" << "Exposure start." << "\033[0m";
         INDI_Capture(ExpTime);
         glExpTime = ExpTime;
     }
@@ -138,11 +136,11 @@ void MainWindow::onMessageReceived(const QString &message)
         int Steps = parts[2].trimmed().toInt();
         if(LR == "Left")
         {
-            FocusMoveAndCalFWHM(true,Steps);
+            FocusMoveAndCalHFR(true,Steps);
         }
         else if(LR == "Right")
         {
-            FocusMoveAndCalFWHM(false,Steps);
+            FocusMoveAndCalHFR(false,Steps);
         }
         else if(LR == "Target")
         {
@@ -170,6 +168,10 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "AutoFocus")
     {
         AutoFocus();
+    }
+    else if (message == "StopAutoFocus")
+    {
+        StopAutoFocus = true;
     }
     else if (message == "abortExposure")
     {
@@ -563,13 +565,30 @@ void MainWindow::saveFitsAsJPG(QString filename)
     cv::Mat SendImage;
     Tools::readFits(filename.toLocal8Bit().constData(), image);
 
+    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
+
+    if(stars.size() != 0){
+        FWHM = stars[0].HFR;
+    }
+    else {
+        FWHM = -1;
+    }   
+    
+
     if(image16.depth()==8) image.convertTo(image16,CV_16UC1,256,0); //x256  MSB alignment
     else                   image.convertTo(image16,CV_16UC1,1,0);
 
-    FWHM_Result result = Tools::CalculateFWHM(image16);
+    if(FWHM != -1){
+        // 在原图上绘制检测结果
+        cv::Point center(stars[0].x, stars[0].y);
+        cv::circle(image16, center, static_cast<int>(FWHM), cv::Scalar(0, 0, 255), 1); // 绘制HFR圆
+        cv::circle(image16, center, 1, cv::Scalar(0, 255, 0), -1);                     // 绘制中心点
+        // 在图像上显示HFR数值
+        std::string hfrText = cv::format("%.2f", stars[0].HFR);
+        cv::putText(image16, hfrText, cv::Point(stars[0].x - FWHM, stars[0].y - FWHM - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+    }
 
-    cv::Mat NewImage = result.image;
-    FWHM = result.FWHM;
+    cv::Mat NewImage = image16;
 
     FWHMCalOver = true;
 
@@ -613,39 +632,42 @@ void MainWindow::saveFitsAsJPG(QString filename)
     {
         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName));
 
-        dataPoints.append(QPointF(CurrentPosition, FWHM));
+        if(FWHM != -1){
+            dataPoints.append(QPointF(CurrentPosition, FWHM));
 
-        qDebug() << "dataPoints:" << CurrentPosition << "," << FWHM;
+            qDebug() << "dataPoints:" << CurrentPosition << "," << FWHM;
 
-        float a, b, c;
-        Tools::fitQuadraticCurve(dataPoints, a, b, c);
+            float a, b, c;
+            Tools::fitQuadraticCurve(dataPoints, a, b, c);
 
-        if (dataPoints.size() > 3) {
-            qDebug() << "fitQuadraticCurve:" << a << b << c;
+            if (dataPoints.size() >= 5) {
+                QVector<QPointF> LineData;
 
-            QVector<QPointF> LineData;
+                for (float x = CurrentPosition - 3000; x <= CurrentPosition + 3000; x += 10)
+                {
+                    float y = a * x * x + b * x + c;
+                    LineData.append(QPointF(x, y));
+                }
 
-            for (float x = CurrentPosition - 3000; x <= CurrentPosition + 3000; x += 10)
-            {
-                float y = a * x * x + b * x + c;
-                LineData.append(QPointF(x, y));
-            }
+                // 计算导数为零的 x 坐标
+                float x_min = -b / (2 * a);
+                minPoint_X = x_min;
+                // 计算最小值点的 y 坐标
+                float y_min = a * x_min * x_min + b * x_min + c;
 
-            // 计算导数为零的 x 坐标
-            float x_min = -b / (2 * a);
-            minPoint_X = x_min;
-            // 计算最小值点的 y 坐标
-            float y_min = a * x_min * x_min + b * x_min + c;
+                QString dataString;
+                for (const auto &point : LineData)
+                {
+                    dataString += QString::number(point.x()) + "|" + QString::number(point.y()) + ":";
+                }
 
-            QString dataString;
-            for (const auto &point : LineData)
-            {
-                dataString += QString::number(point.x()) + "|" + QString::number(point.y()) + ":";
-            }
+                R2 = Tools::calculateRSquared(dataPoints, a, b, c);
+                qDebug() << "RSquared: " << R2;
 
-            emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
-            emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
-        }    
+                emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
+                emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
+            }    
+        }
     }
     else
     {
@@ -660,6 +682,8 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
 
     cv::Mat image;
     int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
+
+    // QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(false, true);
 
     if (status != 0)
     {
@@ -725,7 +749,16 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
 
     emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(fileName_));
     isStagingImage = true;
-    SavedImage = QString::fromStdString(fileName_);   
+    SavedImage = QString::fromStdString(fileName_);
+
+    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(false, true);
+
+    QString dataString;
+    for (const auto &star : stars)
+    {
+        dataString += QString::number(star.x) + "|" + QString::number(star.y) + "|" + QString::number(star.HFR) + ":";
+    }
+    emit wsThread->sendMessageToClient("DetectedStars:" + dataString);
 }
 
 cv::Mat MainWindow::colorImage(cv::Mat img16)
@@ -2558,89 +2591,180 @@ void MainWindow::FocuserControl_Goto(int Position)
 
 void MainWindow::AutoFocus() 
 {
+    StopAutoFocus = false;
     int stepIncrement = 100;
-    double FWHM_1 = 0;
-    double FWHM_2 = 0;
-    double FWHM_3 = 0;
+
     bool isInward = true;
+
+    FocusMoveAndCalHFR(!isInward, stepIncrement * 5);
 
     int initialPosition = FocuserControl_getPosition();
     int currentPosition = initialPosition;
 
-    FWHM_1 = FocusMoveAndCalFWHM(!isInward, stepIncrement);
-    qDebug() << "FWHM_1(" << FWHM_1 << ") Calculation Complete!";
-    currentPosition = FocuserControl_getPosition();
+    int Pass3Steps;
 
-    FWHM_2 = FocusMoveAndCalFWHM(isInward, stepIncrement);
-    qDebug() << "FWHM_2(" << FWHM_2 << ") Calculation Complete!";
-    currentPosition = FocuserControl_getPosition();
+    QVector<QPointF> focusMeasures;
 
-    FWHM_3 = FocusMoveAndCalFWHM(isInward, stepIncrement * 2);
-    qDebug() << "FWHM_3(" << FWHM_3 << ") Calculation Complete!";
-    currentPosition = FocuserControl_getPosition();
+    int OnePassSteps = 8;
+    int LostStarNum = 0;
 
-    // Determine the initial moving direction based on the FWHM values
-    if (FWHM_2 < FWHM_1) {
-        isInward = true;
-    } else if (FWHM_3 < FWHM_2) {
-        isInward = false;
-    } else {
-        // If neither direction improves FWHM, assume moving inward
-        isInward = true;
+    for(int i = 1; i < OnePassSteps; i++) {
+        if (StopAutoFocus) {
+            qDebug("Stop Auto Focus...");
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+        qDebug() << "Pass1: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        if (HFR == -1) {
+            LostStarNum++;
+            if (LostStarNum >= 3) {
+                qDebug("Too many number of lost star points.");
+                FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
+                qDebug("Returned to the starting point.");
+                emit wsThread->sendMessageToClient("AutoFocusOver:true");
+                return;
+            }
+        }
+        currentPosition = FocuserControl_getPosition();
+        focusMeasures.append(QPointF(currentPosition, HFR));
     }
 
-    double previousBestStep = currentPosition;
-    bool converged = false;
-    int maxIterations = 50;
-    double convergenceThreshold = 1.0;
-    int iterations = 0;
-    int consecutiveFartherCount = 0; // Counter for positions getting farther from minPoint_X
-    QVector<QPointF> focusMeasures = { QPointF(initialPosition, FWHM_1), QPointF(initialPosition + stepIncrement, FWHM_2), QPointF(initialPosition + 2 * stepIncrement, FWHM_3) };
+    float a, b, c;
+    int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
+    if (result == 0)
+    {
+        if(R2 < 0.8) {
+            qDebug("R² < 0.8");
+            // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
 
-    while (iterations < maxIterations && !converged) {
-        double fwhm = FocusMoveAndCalFWHM(isInward, stepIncrement);
-        currentPosition = FocuserControl_getPosition();
-        focusMeasures.append(QPointF(currentPosition, fwhm));
+        if(a < 0) {
+            // 抛物线的开口向下
+            qDebug("抛物线的开口向下");
+            // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
+        }
 
-        if (focusMeasures.size() >= 4) {
-            float a, b, c;
-            int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
-            if (result == 0) {
-                double bestStep = -b / (2 * a);
-                minPoint_X = bestStep; // Update minPoint_X with the new best step
+        int countLessThan = 0;
+        int countGreaterThan = 0;
 
-                // Check if the new best step is close to the previous best step
-                if (abs(bestStep - previousBestStep) < convergenceThreshold) {
-                    converged = true;
-                }
-                previousBestStep = bestStep;
+        for (const QPointF &point : focusMeasures)
+        {
+            if (point.x() < minPoint_X)
+            {
+                countLessThan++;
+            }
+            else if (point.x() > minPoint_X)
+            {
+                countGreaterThan++;
             }
         }
 
-        // Check if the position is getting farther from minPoint_X
-        if ((currentPosition > minPoint_X && previousBestStep > minPoint_X && abs(currentPosition - minPoint_X) > abs(previousBestStep - minPoint_X)) ||
-            (currentPosition < minPoint_X && previousBestStep < minPoint_X && abs(currentPosition - minPoint_X) > abs(previousBestStep - minPoint_X))) {
-            consecutiveFartherCount++;
-        } else {
-            consecutiveFartherCount = 0; // Reset the count if getting closer
+        if (countLessThan > countGreaterThan) {
+            qDebug() << "More points are less than minPoint_X.";
+            if(a > 0) {
+                // 抛物线的开口向上
+                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+            } 
         }
-
-        if (consecutiveFartherCount >= 5) {
-            // Move to minPoint_X and change direction
-            FocuserControl_Goto((int)minPoint_X);
-            isInward = !isInward;
-            consecutiveFartherCount = 0; // Reset the count after moving to minPoint_X
+        else if (countGreaterThan > countLessThan) {
+            qDebug() << "More points are greater than minPoint_X.";
+            if(a < 0) {
+                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+            }
         }
-
-        iterations++;
     }
 
-    // Move the focuser to the best step if not already there
-    if (currentPosition != (int)minPoint_X) {
-        FocuserControl_Goto((int)minPoint_X);
+    for(int i = 1; i < OnePassSteps; i++) {
+        if (StopAutoFocus) {
+            qDebug("Stop Auto Focus...");
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+        qDebug() << "Pass2: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        currentPosition = FocuserControl_getPosition();
+        focusMeasures.append(QPointF(currentPosition, HFR));
     }
 
+    float a_, b_, c_;
+    int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
+    if (result_ == 0)
+    {
+        if(R2 < 0.8) {
+            qDebug("R² < 0.8");
+            // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+
+        if(a_ < 0) {
+            // 抛物线的开口向下
+            qDebug("抛物线的开口向下"); 
+        }
+
+        int countLessThan = 0;
+        int countGreaterThan = 0;
+
+        for (const QPointF &point : focusMeasures)
+        {
+            if (point.x() < minPoint_X)
+            {
+                countLessThan++;
+            }
+            else if (point.x() > minPoint_X)
+            {
+                countGreaterThan++;
+            }
+        }
+
+        if (countLessThan > countGreaterThan) {
+            qDebug() << "More points are less than minPoint_X.";
+            Pass3Steps = countLessThan-countGreaterThan;
+            qDebug() << "Pass3Steps: " << Pass3Steps;
+
+            FocusGotoAndCalFWHM(minPoint_X);
+
+            FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
+        }
+        else if (countGreaterThan > countLessThan) {
+            qDebug() << "More points are greater than minPoint_X.";
+            Pass3Steps = countGreaterThan - countLessThan;
+            qDebug() << "Pass3Steps: " << Pass3Steps;
+
+            FocusGotoAndCalFWHM(minPoint_X);
+            if(countLessThan > 0){
+                FocusMoveAndCalHFR(isInward, stepIncrement * countLessThan);
+            }
+        }
+        else {
+            qDebug() << "The number of points less than and greater than minPoint_X is equal.";
+            FocusGotoAndCalFWHM(minPoint_X);
+            qDebug() << "Auto focus complete. Best step: " << minPoint_X;
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+    }
+
+    for(int i = 1; i < Pass3Steps + 1; i++) {
+        if (StopAutoFocus) {
+            qDebug("Stop Auto Focus...");
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+        qDebug() << "Pass3: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        currentPosition = FocuserControl_getPosition();
+        focusMeasures.append(QPointF(currentPosition, HFR));
+    }
+
+    FocusGotoAndCalFWHM(minPoint_X);
     qDebug() << "Auto focus complete. Best step: " << minPoint_X;
+    currentPosition = FocuserControl_getPosition();
+    qDebug() << "Current Position : " << currentPosition;
+    emit wsThread->sendMessageToClient("AutoFocusOver:true");
 }
 
 double MainWindow::FocusGotoAndCalFWHM(int steps) {
@@ -2677,7 +2801,7 @@ double MainWindow::FocusGotoAndCalFWHM(int steps) {
     return FWHM;
 }
 
-double MainWindow::FocusMoveAndCalFWHM(bool isInward, int steps) {
+double MainWindow::FocusMoveAndCalHFR(bool isInward, int steps) {
     QEventLoop loop;
     double FWHM = 0;
 
