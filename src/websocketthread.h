@@ -1,11 +1,11 @@
 #ifndef WEBSOCKETTHREAD_H
 #define WEBSOCKETTHREAD_H
 
-#include <QThread>
 #include "websocketclient.h"
 
-class WebSocketThread : public QThread
-{
+#include <QThread>
+
+class WebSocketThread : public QThread {
     Q_OBJECT
 
 public:
@@ -24,4 +24,4 @@ private:
     WebSocketClient *client;
 };
 
-#endif // WEBSOCKETTHREAD_H
+#endif  // WEBSOCKETTHREAD_H

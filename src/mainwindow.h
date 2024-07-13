@@ -1,36 +1,36 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QObject>
-#include <QThread>
-#include <QProcess>
-#include <fitsio.h>
-// #include "websocketclient.h"
-#include "myclient.h"
 #include <QFile>
-#include "tools.hpp"
-#include <QXmlStreamReader>
-#include "websocketthread.h"
-
-#include <sys/types.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-
-#include <iostream>
-#include <fstream>
-#include <vector>
 #include <QNetworkInterface>
-#include <filesystem>
+#include <QObject>
+#include <QProcess>
+#include <QStorageInfo>
+#include <QThread>
+#include <QXmlStreamReader>
+
+#include "myclient.h"
+#include "tools.hpp"
+#include "websocketthread.h"
+// #include "websocketclient.h"
 
 #include <string>
-#include <algorithm>
+#include <vector>
+
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <sys/statvfs.h>
-#include <QStorageInfo>
+#include <sys/types.h>
 
+#include <fitsio.h>
+
+#if __has_include(<stellarsolver.h>)
 #include <stellarsolver.h>
+#else
+#include <libstellarsolver/stellarsolver.h>
+#endif
 
-class MainWindow : public QObject
-{
+class MainWindow : public QObject {
     Q_OBJECT
 
 public:
@@ -46,24 +46,27 @@ public:
     void disconnectIndiServer();
     void connectDevice(int x);
 
-    void readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
-                              std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from);
-    void printDevGroups2(const DriversList drivers_list, int ListNum, QString group);
+    void readDriversListFromFiles(const std::string &filename,
+                                  DriversList &drivers_list_from,
+                                  std::vector<DevGroup> &dev_groups_from,
+                                  std::vector<Device> &devices_from);
+    void printDevGroups2(const DriversList drivers_list, int ListNum,
+                         QString group);
 
-    void DeviceSelect(int systemNumber,int grounpNumber);
-    void SelectIndiDevice(int systemNumber,int grounpNumber);
+    void DeviceSelect(int systemNumber, int grounpNumber);
+    void SelectIndiDevice(int systemNumber, int grounpNumber);
 
     bool indi_Driver_Confirm(QString DriverName);
     void indi_Device_Confirm(QString DeviceName);
 
-    uint32_t clearCheckDeviceExist(QString drivername,bool &isExist);
+    uint32_t clearCheckDeviceExist(QString drivername, bool &isExist);
 
     void DeviceConnect();
     void AfterDeviceConnect();
     void disconnectIndiServer(MyClient *client);
     void connectIndiServer(MyClient *client);
 
-    //ms
+    // ms
     void INDI_Capture(int Exp_times);
 
     void INDI_AbortCapture();
@@ -78,9 +81,12 @@ public:
 
     cv::Mat colorImage(cv::Mat img16);
 
-    void refreshGuideImage(cv::Mat image16,QString CFA);
+    void refreshGuideImage(cv::Mat image16, QString CFA);
 
-    void strechShowImage(cv::Mat img16,QString CFA,bool AutoStretch,bool AWB,int AutoStretchMode,uint16_t blacklevel,uint16_t whitelevel,double ratioRG,double ratioBG,uint16_t offset,bool updateHistogram);
+    void strechShowImage(cv::Mat img16, QString CFA, bool AutoStretch, bool AWB,
+                         int AutoStretchMode, uint16_t blacklevel,
+                         uint16_t whitelevel, double ratioRG, double ratioBG,
+                         uint16_t offset, bool updateHistogram);
 
     void InitPHD2();
 
@@ -125,9 +131,12 @@ public:
     QString glMainCameraStatu;
     QElapsedTimer glMainCameraCaptureTimer;
 
-    // std::string vueDirectoryPath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    // std::string vueDirectoryPath =
+    // "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
     std::string vueDirectoryPath = "/dev/shm/";
-    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";  // /var/www/html/img/
+    std::string vueImagePath =
+        "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/"
+        "web-frontend/dist/img/";  // /var/www/html/img/
 
     std::string PriorGuiderImage = "NULL";
     std::string PriorROIImage = "NULL";
@@ -135,11 +144,11 @@ public:
 
     bool AutoStretch = true;
 
-    QProcess* cmdPHD2;
+    QProcess *cmdPHD2;
     int key_phd;
     int shmid_phd;
     bool isGuideCapture = true;
-    #define BUFSZ_PHD 16590848
+#define BUFSZ_PHD 16590848
     char *sharedmemory_phd;
 
     char phd_direction;
@@ -167,7 +176,7 @@ public:
     int CaptureViewWidth;
     int CaptureViewHeight;
     int BoxSideLength = 500;
-    
+
     double FWHM;
 
     bool InGuiding = false;
@@ -179,8 +188,8 @@ public:
 
     Q_SLOT void onPHDControlGuideTimeout();
 
-    QThread* m_thread = nullptr;
-    QTimer* m_threadTimer = nullptr;
+    QThread *m_thread = nullptr;
+    QTimer *m_threadTimer = nullptr;
 
     Q_SLOT void onTimeout();
 
@@ -198,14 +207,14 @@ public:
     double FocusMoveAndCalHFR(bool isInward, int steps);
     double FocusGotoAndCalFWHM(int steps);
 
-    QTimer FWHMTimer; 
+    QTimer FWHMTimer;
 
     QString MainCameraCFA;
 
     double ImageGainR = 1.0;
     double ImageGainB = 1.0;
 
-    QVector<QPointF> dataPoints;    // FWHM Data
+    QVector<QPointF> dataPoints;  // FWHM Data
 
     double R2;
 
@@ -217,12 +226,12 @@ public:
 
     void FocuserControl_Move(bool isInward, int steps);
 
-    int  FocuserControl_setSpeed(int speed);
-    int  FocuserControl_getSpeed();
+    int FocuserControl_setSpeed(int speed);
+    int FocuserControl_getSpeed();
 
     int FocuserControl_getPosition();
 
-    void TelescopeControl_Goto(double Ra,double Dec);
+    void TelescopeControl_Goto(double Ra, double Dec);
 
     QString TelescopeControl_Status();
 
@@ -265,7 +274,7 @@ public:
 
     void startSchedule();
 
-    void startMountGoto(double ra, double dec);       // Ra:Hour, Dec:Degree
+    void startMountGoto(double ra, double dec);  // Ra:Hour, Dec:Degree
 
     void startGuiding();
 
@@ -296,13 +305,11 @@ public:
     std::string ImageSaveBasePath = "image";
     QString ImageSaveBaseDirectory = "image";
 
-    bool directoryExists(const std::string& path);
+    bool directoryExists(const std::string &path);
 
     bool createScheduleDirectory();
 
     bool createCaptureDirectory();
-
-     
 
     QVector<ConnectedDevice> ConnectedDevices;
 
@@ -321,7 +328,6 @@ public:
     QElapsedTimer CaptureTestTimer;
     qint64 CaptureTestTime;
 
-
     int MoveFileToUSB();
 
     int mountDisplayCounter = 0;
@@ -331,21 +337,18 @@ public:
 
     void MountGoto(double Ra_Hour, double Dec_Degree);
 
-
     // void CaptureImageSave();
     void DeleteImage(QStringList DelImgPath);
     std::string GetAllFile();
-    QStringList parseString(const std::string &input, const std::string &imgFilePath);
+    QStringList parseString(const std::string &input,
+                            const std::string &imgFilePath);
     long long getUSBSpace(const QString &usb_mount_point);
     long long getTotalSize(const QStringList &filePaths);
     void RemoveImageToUsb(QStringList RemoveImgPath);
-    bool isMountReadOnly(const QString& mountPoint);
-    bool remountReadWrite(const QString& mountPoint, const QString& password);
+    bool isMountReadOnly(const QString &mountPoint);
+    bool remountReadWrite(const QString &mountPoint, const QString &password);
 
     void USBCheck();
-
-    
-
 
 private slots:
     void onMessageReceived(const QString &message);
@@ -359,4 +362,4 @@ private:
     QProcess *glIndiServer;
 };
 
-#endif // MAINWINDOW_H
+#endif  // MAINWINDOW_H
