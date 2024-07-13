@@ -1,29 +1,3 @@
-cmake_minimum_required(VERSION 3.14)
-
-project(client LANGUAGES CXX)
-
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(QT_COMPONENTS
-  Core
-  Gui
-  Widgets
-  Concurrent
-  Network
-  WebSockets
-  LinguistTools
-)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS ${QT_COMPONENTS})
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS ${QT_COMPONENTS})
-find_package(OpenCV REQUIRED)
-
-find_package(StellarSolver REQUIRED)
-
 add_executable(client
   main.cpp
   websocketclient.h websocketclient.cpp
@@ -37,37 +11,22 @@ target_link_libraries(client PRIVATE
     indiclient ${ZLIB_LIBRARY} ${NOVA_LIBRARIES}
 )
 
-IF (UNIX AND NOT APPLE)
-    target_link_libraries(client PRIVATE -lpthread)
-ENDIF ()
+if (UNIX AND NOT APPLE)
+    target_link_libraries(client PRIVATE pthread)
+endif()
 
-include(GNUInstallDirs)
-install(TARGETS client
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-
-target_include_directories(client PUBLIC 
-  /usr/include/libindi
-  /usr/local/include/libstellarsolver  # Path to stellarsolver headers
-)
 link_directories(${PROJECT_SOURCE_DIR}/usr/lib/x86_64-linux-gnu)
+
 target_link_libraries(client PUBLIC
-  -lnova
-  -lindidriver
-  -lindiclient
-  -lcfitsio
+  nova
+  indidriver
+  indiclient
+  cfitsio
 )
 
-target_include_directories(client PUBLIC
-    /usr/local/include
-)
 target_link_libraries(client PRIVATE
     qhyccd
     stellarsolver
-)
-
-target_link_libraries(client PRIVATE
     ${OpenCV_LIBS}
     Qt${QT_VERSION_MAJOR}::Core
     Qt${QT_VERSION_MAJOR}::Gui
@@ -77,4 +36,3 @@ target_link_libraries(client PRIVATE
     Qt${QT_VERSION_MAJOR}::WebSockets
     ${StellarSolver_LIBS}
 )
-
