@@ -29,6 +29,8 @@
 
 #include <stellarsolver.h>
 
+#include "platesolveworker.h"
+
 class MainWindow : public QObject
 {
     Q_OBJECT
@@ -236,7 +238,35 @@ public:
 
     void TelescopeControl_SolveSYNC();
 
+    LocationResult TelescopeControl_GetLocation();
+
+    QDateTime TelescopeControl_GetTimeUTC();
+
+    SphericalCoordinates TelescopeControl_GetRaDec();
+
+    void SolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight);
+
+    void LoopSolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight);
+
+    void LoopCapture(int ExpTime);
+
+    bool StopLoopCapture = false;
+
+    bool TakeNewCapture = true;
+
     void ScheduleTabelData(QString message);
+
+    bool isLoopSolveImage = false;
+
+    bool isSingleSolveImage = false;
+
+    int SolveImageScaledHeight;
+
+    std::vector<SloveResults> SloveResultList;
+
+    void ClearSloveResultList();
+
+    void RecoverySloveResul();
 
     int glFocalLength;
     double glCameraSize_width;
@@ -250,6 +280,7 @@ public:
     QTimer timewaitingTimer;
     QTimer filterTimer;
     QTimer focusTimer;
+    QTimer solveTimer;
 
     int schedule_currentNum = 0;
     int schedule_ExpTime;
@@ -262,6 +293,7 @@ public:
     QString ShootStatus;
 
     bool StopSchedule = false;
+    bool StopPlateSolve = false;
 
     void startSchedule();
 
@@ -318,6 +350,8 @@ public:
 
     void getStagingScheduleData();
 
+    void getStagingGuiderData();
+
     QElapsedTimer CaptureTestTimer;
     qint64 CaptureTestTime;
 
@@ -343,6 +377,8 @@ public:
     bool remountReadWrite(const QString& mountPoint, const QString& password);
 
     void USBCheck();
+
+    PlateSolveWorker *platesolveworker = new PlateSolveWorker;
 
     
 

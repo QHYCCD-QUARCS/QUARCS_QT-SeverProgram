@@ -68,6 +68,9 @@ class MyClient : public INDI::BaseClient
         uint32_t getCCDReadMode(INDI::BaseDevice *dp,int &value,int &min,int &max);
         uint32_t setCCDReadMode(INDI::BaseDevice *dp,int value);
 
+        uint32_t setCCDUploadModeToLacal(INDI::BaseDevice *dp);
+
+        uint32_t setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefix);
 
         //Telescope API
         uint32_t getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_aperture,double & telescope_focal,double & guider_aperature, double &guider_focal);

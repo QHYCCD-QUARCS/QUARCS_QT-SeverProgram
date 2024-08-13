@@ -106,10 +106,35 @@ struct SphericalCoordinates {
     double dec;
 };
 
+struct AltAz {
+  double altitude;
+  double azimuth;
+};
+
+struct WCSParams {
+    double crpix0;
+    double crpix1;
+    double crval0;
+    double crval1;
+    double cd11;
+    double cd12;
+    double cd21;
+    double cd22;
+};
+
 struct SloveResults
 {
   double RA_Degree;
   double DEC_Degree;
+
+  double RA_0;
+  double DEC_0;
+  double RA_1;
+  double DEC_1;
+  double RA_2;
+  double DEC_2;
+  double RA_3;
+  double DEC_3;
 };
 
 struct MinMaxFOV
@@ -282,6 +307,7 @@ class Tools : public QObject {
 
   static double rangeTo(double value, double max, double min);
   static double getLST_Degree(QDateTime datetimeUTC, double longitude_radian);
+  static bool getJDFromDate(double *newjd, const int y, const int m, const int d, const int h, const int min, const float s);
   static double getHA_Degree(double RA_radian, double LST_Degree);
   static void ra_dec_to_alt_az(double ha_radian, double dec_radian,
                                double& alt_radian, double& az_radian,
@@ -331,8 +357,18 @@ class Tools : public QObject {
   static CartesianCoordinates calculatePointC(CartesianCoordinates pointA, CartesianCoordinates vectorV);
   static SphericalCoordinates convertToSphericalCoordinates(CartesianCoordinates cartesianPoint);
 
+  static double calculateGST(const std::tm& date);
+  static AltAz calculateAltAz(double ra, double dec, double lat, double lon, const std::tm& date);
+  static void printDMS(double angle);
+  static double DMSToDegree(int degrees, int minutes, double seconds);
   static MinMaxFOV calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height);
-  static SloveResults PlateSlove(int FocalLength,double CameraSize_width,double CameraSize_height, double Ra_Degree, double Dec_Degree, bool USEQHYCCDSDK);
+  static bool WaitForPlateSolveToComplete();
+  static bool isSolveImageFinish();
+  static SloveResults PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK);
+  static SloveResults ReadSolveResult(QString filename, int imageWidth, int imageHeight);
+  static WCSParams extractWCSParams(const QString& wcsInfo);
+  static SphericalCoordinates pixelToRaDec(double x, double y, const WCSParams& wcs);
+  static std::vector<SphericalCoordinates> getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight);
 
   static StelObjectSelect getStelObjectSelectName();
 
@@ -344,6 +380,8 @@ class Tools : public QObject {
 
 public slots:
   void StellarSolverLogOutput(QString text);
+
+  SloveResults onSolveFinished(int exitCode);
 
  private:
   Tools();

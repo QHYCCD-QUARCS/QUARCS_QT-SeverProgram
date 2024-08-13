@@ -74,19 +74,13 @@ void MyClient::updateProperty(INDI::Property property)
         qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
         CaptureTestTimer.invalidate();
 
-        qDebug() << "newProperty(getName): " << property.getName();
         qDebug("Recveing image from Server size len name label format %d %d %s %s %s", property.getBLOB()->bp->size,property.getBLOB()->bp->bloblen,property.getBLOB()->bp->name,property.getBLOB()->bp->label,property.getBLOB()->bp->format);
-        CaptureTestTimer.start();
-        qDebug() << "\033[32m" << "Save ccd_simulator.fits start." << "\033[0m";
+
         std::ofstream myfile;
         std::string filename="/dev/shm/ccd_simulator.fits";
         myfile.open(filename, std::ios::out | std::ios::binary);
         myfile.write(static_cast<char *>(property.getBLOB()->bp->blob), property.getBLOB()->bp->bloblen);
         myfile.close();
-
-        CaptureTestTime = CaptureTestTimer.elapsed();
-        qDebug() << "\033[32m" << "Save ccd_simulator.fits completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
-        CaptureTestTimer.invalidate();
 
         QString devname_;
         Tools::readFitsHeadForDevName(filename,devname_);
@@ -94,6 +88,30 @@ void MyClient::updateProperty(INDI::Property property)
 
         receiveImage(filename, devname);
     } 
+    else if (property.getType() == INDI_TEXT)
+    {
+        qDebug() << "\033[32m" << "INDI new Text(label):" << property.getText()->label << "\033[0m";
+        qDebug() << "\033[32m" << "INDI new Text(name):" << property.getText()->name << "\033[0m";
+
+        auto tvp = property.getText();
+        if (tvp->isNameMatch("CCD_FILE_PATH"))
+        {
+            auto filepath = tvp->findWidgetByName("FILE_PATH");
+            if (filepath){
+                qDebug() << "\033[32m" << "New Capture Image Save To" << QString(filepath->getText()) << "\033[0m";
+
+                CaptureTestTime = CaptureTestTimer.elapsed();
+                qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+                CaptureTestTimer.invalidate();
+
+                QString devname_;
+                Tools::readFitsHeadForDevName(QString(filepath->getText()).toStdString(),devname_);
+                std::string devname = devname_.toStdString();
+
+                receiveImage(QString(filepath->getText()).toStdString(), devname);
+            }  
+        }
+    }
 }
 
 //************************ device list management***********************************
@@ -655,7 +673,38 @@ uint32_t MyClient::setCCDReadMode(INDI::BaseDevice *dp,int value)
     return QHYCCD_SUCCESS;
 }
 
+uint32_t MyClient::setCCDUploadModeToLacal(INDI::BaseDevice *dp) {
+    INDI::PropertySwitch uploadmode = dp->getProperty("UPLOAD_MODE");
 
+    if (!uploadmode.isValid())
+    {
+        IDLog("Error: unable to find UPLOAD_MODE property...\n");
+        return QHYCCD_ERROR;
+    }
+
+    uploadmode[0].setState(ISS_OFF);
+    uploadmode[1].setState(ISS_ON);
+    uploadmode[2].setState(ISS_OFF);
+
+    sendNewProperty(uploadmode);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefix) {
+    INDI::PropertyText upload = dp->getProperty("UPLOAD_SETTINGS");
+
+    if (!upload.isValid())
+    {
+        IDLog("Error: unable to find UPLOAD_SETTINGS property...\n");
+        return QHYCCD_ERROR;
+    }
+
+    upload[0].setText(Dir.toLatin1().data());
+    upload[1].setText(Prefix.toLatin1().data());
+
+    sendNewProperty(upload);
+    return QHYCCD_SUCCESS;
+}
 
 
 uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
@@ -1547,7 +1596,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 
 uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
 {
-    INDI::PropertyText property = dp->getProperty("OnStep_Status");
+    INDI::PropertyText property = dp->getProperty("OnStep Status");
 
     if (!property.isValid())
     {

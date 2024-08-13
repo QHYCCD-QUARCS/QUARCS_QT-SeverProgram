@@ -31,9 +31,13 @@ qhyccd_handle* fpgahandle_;
 qhyccd_handle* maincamhandle_;
 }  // namespace
 
-Tools* Tools::instance_ = nullptr;
+Tools* Tools::instance_ = new Tools();
 
 int glChannelCount;
+
+bool PlateSolveInProgress = false;
+
+bool isSolveImageFinished = false;
 
 Tools::Tools() {}
 
@@ -228,7 +232,6 @@ void Tools::ClearSystemDeviceListItem(int index) {
   systemDeviceList_.system_devices[index].DriverFrom = "";
   systemDeviceList_.system_devices[index].DriverIndiName = "";
   systemDeviceList_.system_devices[index].isConnect = false;
-  // qDebug()<<"clearSystemDeviceListItem";
 }
 
 void Tools::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
@@ -2547,14 +2550,14 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FIT
   std::cout << "Detected " << stars.size() << " stars." << std::endl;
   for (const auto &star : stars)
   {
-    std::cout << "Star at (" << star.x << ", " << star.y << ") with HFR: " << star.HFR << std::endl;
+    // std::cout << "Star at (" << star.x << ", " << star.y << ") with HFR: " << star.HFR << std::endl;
   }
 
   return stars;
 }
 
 void Tools::StellarSolverLogOutput(QString text){
-  qDebug() << "StellarSolver LogOutput: " << text.toUtf8().data();
+  // qDebug() << "StellarSolver LogOutput: " << text.toUtf8().data();
 }
 
 loadFitsResult Tools::loadFits(QString fileName)
@@ -2905,62 +2908,125 @@ double Tools::rangeTo(double value, double max, double min) {
 }
 
 // 2023.12.21 CJQ
-// double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
-//   int year = datetimeUTC.date().year();
-//   int month = datetimeUTC.date().month();
-//   int day = datetimeUTC.date().day();
-//   int hour = datetimeUTC.time().hour();
-//   int minute = datetimeUTC.time().minute();
-//   int second = datetimeUTC.time().second();
-//   int msec = datetimeUTC.time().msec();
+double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
+  int year = datetimeUTC.date().year();
+  int month = datetimeUTC.date().month();
+  int day = datetimeUTC.date().day();
+  int hour = datetimeUTC.time().hour();
+  int minute = datetimeUTC.time().minute();
+  int second = datetimeUTC.time().second();
+  int msec = datetimeUTC.time().msec();
 
-// #ifdef debug
-//   qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << datetimeUTC;
-//   qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << year << month << day
-//            << hour << minute << second << msec;
-// #endif
+#ifdef debug
+  qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << datetimeUTC;
+  qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << year << month << day
+           << hour << minute << second << msec;
+#endif
 
-//   double jd;
-//   StelUtils::getJDFromDate(&jd, year, month, day, hour, minute, second);
+  double jd;
+  getJDFromDate(&jd, year, month, day, hour, minute, second);
 
-//   double d;
-//   d = jd - 2451545.0;
+  double d;
+  d = jd - 2451545.0;
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|d = %f", d);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|d = %f", d);
+#endif
 
-//   double UT;
+  double UT;
 
-//   UT = hour + (minute * 60 + second + (double)msec / 1000) / 3600.0;
+  UT = hour + (minute * 60 + second + (double)msec / 1000) / 3600.0;
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|UT = %f", UT);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|UT = %f", UT);
+#endif
 
-//   double longitude_Degree = RadToDegree(longitude_radian);
+  double longitude_Degree = RadToDegree(longitude_radian);
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|longitude (degree) = %f", longitude_Degree);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|longitude (degree) = %f", longitude_Degree);
+#endif
 
-//   double LST;
+  double LST;
 
-//   LST = 100.46 + 0.985647 * d + longitude_Degree + 15 * UT;
+  LST = 100.46 + 0.985647 * d + longitude_Degree + 15 * UT;
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|LST before range = %f", LST);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|LST before range = %f", LST);
+#endif
 
-//   LST = rangeTo(LST, 360.0, 0.0);
+  LST = rangeTo(LST, 360.0, 0.0);
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|LST after  range (degree) %f (hms) %s", LST,
-//          qPrintable(radToHmsStr(DegreeToRad(LST), true)));
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|LST after  range (degree) %f (hms) %s", LST,
+         qPrintable(radToHmsStr(DegreeToRad(LST), true)));
+#endif
 
-//   return LST;
-// }
+  return LST;
+}
+
+bool Tools::getJDFromDate(double *newjd, const int y, const int m, const int d, const int h, const int min, const float s)
+{
+    static const long IGREG2 = 15 + 31L * (10 + 12L * 1582);
+    double deltaTime = (h / 24.0) + (min / (24.0 * 60.0)) + (static_cast<double>(s) / (24.0 * 60.0 * 60.0)) - 0.5;
+    QDate test((y <= 0 ? y - 1 : y), m, d);
+    // if QDate will oblige, do so.
+    // added hook for Julian calendar, because it has been removed from Qt5 --AW
+    if (test.isValid() && y > 1582)
+    {
+        double qdjd = static_cast<double>(test.toJulianDay());
+        qdjd += deltaTime;
+        *newjd = qdjd;
+        return true;
+    }
+    else
+    {
+        /*
+         * Algorithm taken from "Numerical Recipes in C, 2nd Ed." (1992), pp. 11-12
+         */
+        long ljul;
+        long jy, jm;
+        long laa, lbb, lcc, lee;
+
+        jy = y;
+        if (m > 2)
+        {
+            jm = m + 1;
+        }
+        else
+        {
+            --jy;
+            jm = m + 13;
+        }
+
+        laa = 1461 * jy / 4;
+        if (jy < 0 && jy % 4)
+        {
+            --laa;
+        }
+        lbb = 306001 * jm / 10000;
+        ljul = laa + lbb + d + 1720995L;
+
+        if (d + 31L * (m + 12L * y) >= IGREG2)
+        {
+            lcc = jy / 100;
+            if (jy < 0 && jy % 100)
+            {
+                --lcc;
+            }
+            lee = lcc / 4;
+            if (lcc < 0 && lcc % 4)
+            {
+                --lee;
+            }
+            ljul += 2 - lcc + lee;
+        }
+        double jd = static_cast<double>(ljul);
+        jd += deltaTime;
+        *newjd = jd;
+        return true;
+    }
+}
 
 double Tools::getHA_Degree(double RA_radian, double LST_Degree) {
   double HA;
@@ -3006,17 +3072,16 @@ void Tools::ra_dec_to_alt_az(double ha_radian, double dec_radian,
 #endif
 }
 
-
 // 2023.12.21 CJQ
-// void Tools::full_ra_dec_to_alt_az(QDateTime datetimeUTC, double ra_radian,
-//                                   double dec_radian, double latitude_radian,
-//                                   double longitude_radian, double& alt_radian,
-//                                   double& az_radian) {
-//   double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
-//   double HA_Degree = getHA_Degree(ra_radian, LST_Degree);
-//   ra_dec_to_alt_az(DegreeToRad(HA_Degree), dec_radian, alt_radian, az_radian,
-//                    latitude_radian);
-// }
+void Tools::full_ra_dec_to_alt_az(QDateTime datetimeUTC, double ra_radian,
+                                  double dec_radian, double latitude_radian,
+                                  double longitude_radian, double& alt_radian,
+                                  double& az_radian) {
+  double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
+  double HA_Degree = getHA_Degree(ra_radian, LST_Degree);
+  ra_dec_to_alt_az(DegreeToRad(HA_Degree), dec_radian, alt_radian, az_radian,
+                   latitude_radian);
+}
 
 void Tools::alt_az_to_ra_dec(double alt_radian, double az_radian,
                              double& hr_radian, double& dec_radian,
@@ -3061,24 +3126,24 @@ void Tools::alt_az_to_ra_dec(double alt_radian, double az_radian,
 }
 
 // 2023.12.21 CJQ
-// void Tools::full_alt_az_to_ra_dec(QDateTime datetimeUTC, double alt_radian,
-//                                   double az_radian, double latitude_radian,
-//                                   double longitude_radian, double& ra_radian,
-//                                   double& dec_radian) {
-//   double ha_radian = 0;
+void Tools::full_alt_az_to_ra_dec(QDateTime datetimeUTC, double alt_radian,
+                                  double az_radian, double latitude_radian,
+                                  double longitude_radian, double& ra_radian,
+                                  double& dec_radian) {
+  double ha_radian = 0;
 
-//   alt_az_to_ra_dec(alt_radian, az_radian, ha_radian, dec_radian,
-//                    latitude_radian);
+  alt_az_to_ra_dec(alt_radian, az_radian, ha_radian, dec_radian,
+                   latitude_radian);
 
-//   double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
+  double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
 
-//   double RA_Degree;
-//   RA_Degree = LST_Degree - RadToDegree(ha_radian);
+  double RA_Degree;
+  RA_Degree = LST_Degree - RadToDegree(ha_radian);
 
-//   RA_Degree = rangeTo(RA_Degree, 360.0, 0.0);
+  RA_Degree = rangeTo(RA_Degree, 360.0, 0.0);
 
-//   ra_radian = DegreeToRad(RA_Degree);
-// }
+  ra_radian = DegreeToRad(RA_Degree);
+}
 
 // 2023.12.21 CJQ
 // void Tools::getCurrentMeridianRADEC(double Latitude_radian,
@@ -3398,15 +3463,79 @@ MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double Cam
   return result;
 }
 
-SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double CameraSize_height, double Ra_Degree, double Dec_Degree, bool USEQHYCCDSDK)
+// 计算格林尼治恒星时 (GST)
+double Tools::calculateGST(const std::tm& date) {
+    std::tm epoch = {0, 0, 12, 1, 0, 100}; // Jan 1, 2000 12:00:00 UTC
+    std::time_t epoch_time = std::mktime(&epoch);
+    std::time_t now_time = std::mktime(const_cast<std::tm*>(&date));
+    double JD = 2451545.0 + (now_time - epoch_time) / 86400.0;
+    double T = (JD - 2451545.0) / 36525.0;
+    double GST = 280.46061837 + 360.98564736629 * (JD - 2451545.0) + 0.000387933 * T * T - (T * T * T / 38710000.0);
+    return fmod(GST, 360.0);
+}
+
+AltAz Tools::calculateAltAz(double ra, double dec, double lat, double lon, const std::tm& date) {
+    // 将输入值转换为弧度
+    double ra_rad = Tools::DegreeToRad(ra * 15.0); // 赤经转换为弧度并乘以15
+    double dec_rad = Tools::DegreeToRad(dec);
+    double lat_rad = Tools::DegreeToRad(lat);
+    double lon_rad = Tools::DegreeToRad(lon);
+
+    // 计算GST和LST
+    double GST = Tools::calculateGST(date);
+    double LST = fmod(GST + lon, 360.0); // LST在0-360度范围内
+    double HA = Tools::DegreeToRad(LST) - ra_rad; // 时角
+
+    // 计算高度角
+    double alt_rad = asin(sin(dec_rad) * sin(lat_rad) + cos(dec_rad) * cos(lat_rad) * cos(HA));
+    double alt_deg = Tools::RadToDegree(alt_rad);
+
+    // 计算方位角
+    double cosAz = (sin(dec_rad) - sin(alt_rad) * sin(lat_rad)) / (cos(alt_rad) * cos(lat_rad));
+    double az_rad = acos(cosAz);
+    double az_deg = Tools::RadToDegree(az_rad);
+
+    // 调整方位角
+    if (sin(HA) > 0) {
+        az_deg = 360.0 - az_deg;
+    }
+
+    return { alt_deg, az_deg };
+}
+
+void Tools::printDMS(double angle) {
+    int degrees = static_cast<int>(angle);
+    double fractional = angle - degrees;
+    int minutes = static_cast<int>(fractional * 60);
+    double seconds = (fractional * 60 - minutes) * 60;
+
+    std::cout << degrees << "° " << minutes << "' " << std::fixed << std::setprecision(2) << seconds << "\"";
+}
+
+double Tools::DMSToDegree(int degrees, int minutes, double seconds) {
+    // 确定符号
+    double sign = degrees < 0 ? -1.0 : 1.0;
+    // 计算绝对值
+    double absDegrees = std::abs(degrees) + minutes / 60.0 + seconds / 3600.0;
+    return sign * absDegrees;
+}
+
+bool Tools::WaitForPlateSolveToComplete() {
+  // qDebug() << "Wait For Plate Solve To Complete.";
+  return !PlateSolveInProgress;
+}
+
+bool Tools::isSolveImageFinish() {
+  return isSolveImageFinished;
+}
+
+SloveResults Tools::PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK)
 {
+  PlateSolveInProgress = true;
+  isSolveImageFinished = false;
+
   SloveResults result;
   MinMaxFOV FOV;
-
-  // qDebug() << "Ra_Degree:" << Ra_Degree << "," << "Dec_Degree:" << Dec_Degree;
-
-  QString RA = QString::number(Ra_Degree);
-  QString DEC = QString::number(Dec_Degree);
 
   FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
 
@@ -3415,19 +3544,20 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
 
   // solve image
   QProcess* cmd_test = new QProcess();
+  QObject::connect(cmd_test, SIGNAL(finished(int)), instance_, SLOT(onSolveFinished(int)));
 
   QString command_qstr;
-  QString filename;
+  // QString filename;
   if(USEQHYCCDSDK == false)
   {
-    filename = "/dev/shm/ccd_simulator";
+    // filename = "/dev/shm/ccd_simulator";
     // command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-    command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
   }
   else
   {
     filename = "/dev/shm/SDK_Capture";
-    command_qstr="solve-field " + filename + ".png"  + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    // command_qstr="solve-field " + filename + ".png"  + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
   }
 
   const char* command;
@@ -3439,9 +3569,20 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
   cmd_test->waitForFinished();
 
   QApplication::processEvents();
+}
 
+SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageHeight) {
+  isSolveImageFinished = false;
+
+  SloveResults result;
+  filename = filename.chopped(5);
+
+  QString command_qstr;
   command_qstr = "wcsinfo " + filename + ".wcs";
+  const char* command;
   command = command_qstr.toLocal8Bit();
+  qDebug() << command;  // TODO:娉ㄩ噴鎺?  
+  QProcess* cmd_test = new QProcess();
 
   cmd_test->start(command);
   cmd_test->waitForStarted();
@@ -3469,18 +3610,98 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
   DEC_Degree = str_DEC_Degree.toDouble();
   Rotation_Degree = str_Rotation.toDouble();
 
+  WCSParams wcs = extractWCSParams(str);
+  std::vector<SphericalCoordinates> corners = getFOVCorners(wcs, imageWidth, imageHeight);
+  std::cout << "FOV Corners (Ra, Dec):" << std::endl;
+  for (const auto &corner : corners)
+  {
+    std::cout << "Ra: " << corner.ra << ", Dec: " << corner.dec << std::endl;
+  }
+  result.RA_0 = corners[0].ra;
+  result.DEC_0 = corners[0].dec;
+  result.RA_1 = corners[1].ra;
+  result.DEC_1 = corners[1].dec;
+  result.RA_2 = corners[2].ra;
+  result.DEC_2 = corners[2].dec;
+  result.RA_3 = corners[3].ra;
+  result.DEC_3 = corners[3].dec;
+
   qDebug("RA DEC Rotation(degree) %f %f %f", RA_Degree, DEC_Degree, Rotation_Degree);
   if (str == "") {
     qDebug("Tools:Plate Solve Failur");
     result.RA_Degree = -1;
     result.DEC_Degree = -1;
+    PlateSolveInProgress = false;
     return result;
   } else {
     qDebug() << "RA DEC " << QString::number(RA_Degree, 'g', 9) << " " << QString::number(DEC_Degree, 'g', 9);
     result.RA_Degree = RA_Degree;
     result.DEC_Degree = DEC_Degree;
+    PlateSolveInProgress = false;
     return result;
   }
+}
+
+SloveResults Tools::onSolveFinished(int exitCode) {
+  qDebug("Solve Finished!!!");
+  qDebug("Solve Finished!!!");
+  qDebug("Solve Finished!!!");
+  isSolveImageFinished = true;
+}
+
+WCSParams Tools::extractWCSParams(const QString& wcsInfo) {
+  WCSParams wcs;
+    
+    int pos1 = wcsInfo.indexOf("crpix0");
+    int pos2 = wcsInfo.indexOf("crpix1");
+    int pos3 = wcsInfo.indexOf("crval0");
+    int pos4 = wcsInfo.indexOf("crval1");
+    int pos5 = wcsInfo.indexOf("cd11");
+    int pos6 = wcsInfo.indexOf("cd12");
+    int pos7 = wcsInfo.indexOf("cd21");
+    int pos8 = wcsInfo.indexOf("cd22");
+
+    wcs.crpix0 = wcsInfo.mid(pos1 + 7, wcsInfo.indexOf("\n", pos1) - pos1 - 7).toDouble();
+    wcs.crpix1 = wcsInfo.mid(pos2 + 7, wcsInfo.indexOf("\n", pos2) - pos2 - 7).toDouble();
+    wcs.crval0 = wcsInfo.mid(pos3 + 7, wcsInfo.indexOf("\n", pos3) - pos3 - 7).toDouble();
+    wcs.crval1 = wcsInfo.mid(pos4 + 7, wcsInfo.indexOf("\n", pos4) - pos4 - 7).toDouble();
+    wcs.cd11 = wcsInfo.mid(pos5 + 5, wcsInfo.indexOf("\n", pos5) - pos5 - 5).toDouble();
+    wcs.cd12 = wcsInfo.mid(pos6 + 5, wcsInfo.indexOf("\n", pos6) - pos6 - 5).toDouble();
+    wcs.cd21 = wcsInfo.mid(pos7 + 5, wcsInfo.indexOf("\n", pos7) - pos7 - 5).toDouble();
+    wcs.cd22 = wcsInfo.mid(pos8 + 5, wcsInfo.indexOf("\n", pos8) - pos8 - 5).toDouble();
+
+    qDebug() << "crpix0: " << QString::number(wcs.crpix0, 'g', 9);
+    qDebug() << "crpix1: " << QString::number(wcs.crpix1, 'g', 9);
+    qDebug() << "crval0: " << QString::number(wcs.crval0, 'g', 9);
+    qDebug() << "crval1: " << QString::number(wcs.crval1, 'g', 9);
+    qDebug() << "cd11: " << QString::number(wcs.cd11, 'g', 9);
+    qDebug() << "cd12: " << QString::number(wcs.cd12, 'g', 9);
+    qDebug() << "cd21: " << QString::number(wcs.cd21, 'g', 9);
+    qDebug() << "cd22: " << QString::number(wcs.cd22, 'g', 9);
+    
+    return wcs;
+}
+
+// 函数：从像素坐标转换为RaDec
+SphericalCoordinates Tools::pixelToRaDec(double x, double y, const WCSParams& wcs) {
+    double dx = x - wcs.crpix0;
+    double dy = y - wcs.crpix1;
+
+    double ra = wcs.crval0 + wcs.cd11 * dx + wcs.cd12 * dy;
+    double dec = wcs.crval1 + wcs.cd21 * dx + wcs.cd22 * dy;
+
+    return {ra, dec};
+}
+
+// 函数：从WCS参数和图像尺寸计算四个角的RaDec值
+std::vector<SphericalCoordinates> Tools::getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight) {
+    std::vector<SphericalCoordinates> corners(4);
+    corners[0] = pixelToRaDec(0, 0, wcs);                  // Bottom-left
+    corners[1] = pixelToRaDec(imageWidth, 0, wcs);         // Bottom-right
+    corners[2] = pixelToRaDec(imageWidth, imageHeight, wcs); // Top-right
+    corners[3] = pixelToRaDec(0, imageHeight, wcs);        // Top-left
+
+    return corners;
 }
 
 int Tools::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c) {

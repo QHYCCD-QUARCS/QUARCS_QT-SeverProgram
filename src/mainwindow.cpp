@@ -350,6 +350,11 @@ void MainWindow::onMessageReceived(const QString &message)
         getStagingScheduleData();
     }
 
+    else if (message == "getStagingGuiderData")
+    {
+        getStagingGuiderData();
+    }
+
     else if (parts[0].trimmed() == "ExpTimeList")
     {
         Tools::saveExpTimeList(message);
@@ -484,6 +489,53 @@ void MainWindow::onMessageReceived(const QString &message)
         USBCheck();
     }
 
+    else if (parts.size() == 4 && parts[0].trimmed() == "SolveImage")
+    {
+        glFocalLength = parts[1].trimmed().toInt();
+        glCameraSize_width = parts[2].trimmed().toDouble();
+        glCameraSize_height = parts[3].trimmed().toDouble();
+
+        // if(Tools::WaitForPlateSolveToComplete) {
+        //     SolveImage(glFocalLength, glCameraSize_width, glCameraSize_height);
+        // }
+        // else {
+        //     qDebug("Solve image in progress!!!");
+        // }
+
+        isSingleSolveImage = true;
+    }
+
+    else if (parts.size() == 4 && parts[0].trimmed() == "startLoopSolveImage") {
+        glFocalLength = parts[1].trimmed().toInt();
+        glCameraSize_width = parts[2].trimmed().toDouble();
+        glCameraSize_height = parts[3].trimmed().toDouble();
+
+        isLoopSolveImage = true;
+    }
+
+    else if (message == "stopLoopSolveImage") {
+        qDebug("Set isLoopSolveImage false");
+        isLoopSolveImage = false;
+    }
+
+    else if (message == "StartLoopCapture") {
+        qDebug("start Loop Capture");
+        LoopCapture(glExpTime);
+    }
+
+    else if (message == "StopLoopCapture") {
+        qDebug("stop Loop Capture");
+        StopLoopCapture = true;
+    }
+
+    else if (message == "getStagingSolveResult") {
+        RecoverySloveResul();
+    }
+
+    else if (message == "ClearSloveResultList") {
+        ClearSloveResultList();
+    }
+
 
 }
 
@@ -516,7 +568,7 @@ void MainWindow::initINDIClient()
                 {
                     if(glIsFocusingLooping == false)
                     {
-                        saveFitsAsPNG(QString::fromStdString(filename));
+                        saveFitsAsPNG(QString::fromStdString(filename));    // "/dev/shm/ccd_simulator.fits"
                     }
                     else
                     {
@@ -677,8 +729,8 @@ void MainWindow::saveFitsAsJPG(QString filename)
 
 int MainWindow::saveFitsAsPNG(QString fitsFileName)
 {
-    CaptureTestTimer.start();
-    qDebug() << "\033[32m" << "Save image data start." << "\033[0m";
+    // CaptureTestTimer.start();
+    // qDebug() << "\033[32m" << "Save image data start." << "\033[0m";
 
     cv::Mat image;
     int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
@@ -695,8 +747,8 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
     int height = image.rows;
     
     qDebug() << "image size:" << width << "," << height;
-    qDebug() << "image depth:" << image.depth();
-    qDebug() << "image channels:" << image.channels();
+    // qDebug() << "image depth:" << image.depth();
+    // qDebug() << "image channels:" << image.channels();
     
     std::vector<unsigned char> imageData;  //uint16_t
     imageData.assign(image.data, image.data + image.total() * image.channels() * 2);
@@ -738,9 +790,9 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName)
         throw std::runtime_error("Failed to close the file properly.");
     }
     
-    CaptureTestTime = CaptureTestTimer.elapsed();
-    qDebug() << "\033[32m" << "Save image Data completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
-    CaptureTestTimer.invalidate();
+    // CaptureTestTime = CaptureTestTimer.elapsed();
+    // qDebug() << "\033[32m" << "Save image Data completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+    // CaptureTestTimer.invalidate();
 
     std::string Command = "ln -sf " + filePath_ + " " + vueImagePath + fileName_;
     system(Command.c_str());
@@ -1153,6 +1205,7 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
     {
         searchClient->disconnectServer();
         isExist = false;
+        emit wsThread->sendMessageToClient("ScanFailed:No device found.");
         return QHYCCD_SUCCESS;
     }
 
@@ -1332,8 +1385,10 @@ void MainWindow::DeviceConnect()
         // qApp->processEvents();
         qDebug() << indi_Client->GetDeviceCount() << totalDevice;
     }
-    if (t.elapsed() > timeout_ms)
+    if (t.elapsed() > timeout_ms){
         qDebug() << "System Connect | INDI connectServer | ERROR: timeout :device connected less than system device list";
+        emit wsThread->sendMessageToClient("ConnectFailed:Device connected less than system device list.");
+    }
     else
         qDebug() << "System Connect | Success, used time(ms):" << t.elapsed();
     indi_Client->PrintDevices();
@@ -1341,6 +1396,7 @@ void MainWindow::DeviceConnect()
     if (indi_Client->GetDeviceCount() == 0)
     {
         qDebug() << "System Connect | Error:No device found";
+        emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
         return;
     }
     qDebug() << "System Connect | 1";
@@ -1464,6 +1520,9 @@ void MainWindow::AfterDeviceConnect()
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
         qDebug() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
         // indi_Client->setTemperature(dpMainCamera, -10);
+
+        indi_Client->setCCDUploadModeToLacal(dpMainCamera);
+        indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
     }
 
     if (dpMount != NULL)
@@ -1616,9 +1675,9 @@ void MainWindow::INDI_Capture(int Exp_times)
         // indi_Client->setCCDFrameInfo(dpMainCamera,100,100,100,100);
         int value, min, max;
         indi_Client->getCCDGain(dpMainCamera, value, min, max);
-        qDebug() << "CameraGain:" << value << min << max;
+        // qDebug() << "CameraGain:" << value << min << max;
         indi_Client->getCCDOffset(dpMainCamera, value, min, max);
-        qDebug() << "CameraOffset:" << value << min << max;
+        // qDebug() << "CameraOffset:" << value << min << max;
 
         indi_Client->resetCCDFrameInfo(dpMainCamera);
 
@@ -2387,6 +2446,69 @@ void MainWindow::ShowPHDdata()
             PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_8UC1);
 
         PHDImg.data = srcData;
+
+        if(isLoopSolveImage) {
+            if(Tools::WaitForPlateSolveToComplete() && !TakeNewCapture) {
+                qDebug() << "isLoopSolveImage:" << isLoopSolveImage;
+
+                TakeNewCapture = true;
+
+                cv::Mat image;
+                Tools::readFits("/dev/shm/ccd_simulator.fits", image);   // ccd_simulator  SolveImage
+                // cv::Mat image = PHDImg.clone();
+
+                // 获取图像的原始宽高
+                int originalWidth = image.cols;
+                int originalHeight = image.rows;
+
+                // 计算缩放后的高度
+                int newWidth = 1024;
+                int newHeight = static_cast<int>(originalHeight * (newWidth / static_cast<double>(originalWidth)));
+                SolveImageScaledHeight = newHeight;
+
+                // 调整图像大小
+                cv::Mat resizedImage;
+                cv::resize(image, resizedImage, cv::Size(newWidth, newHeight));
+
+                cv::medianBlur(resizedImage,resizedImage,3);
+                QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+                cv::imwrite(SolveImageFileName.toStdString(), resizedImage);     //TODO:
+                LoopSolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
+            }
+        }
+
+        if(isSingleSolveImage) {
+            if(Tools::WaitForPlateSolveToComplete()) {
+                isSingleSolveImage = false;
+
+                cv::Mat image;
+                Tools::readFits("/dev/shm/ccd_simulator.fits", image);     // ccd_simulator  SolveImage
+                // cv::Mat image = PHDImg.clone();
+
+                // 获取图像的原始宽高
+                int originalWidth = image.cols;
+                int originalHeight = image.rows;
+
+                // 计算缩放后的高度
+                int newWidth = 1024;
+                int newHeight = static_cast<int>(originalHeight * (newWidth / static_cast<double>(originalWidth)));
+                SolveImageScaledHeight = newHeight;
+
+                // 调整图像大小
+                cv::Mat resizedImage;
+                cv::resize(image, resizedImage, cv::Size(newWidth, newHeight));
+
+                cv::medianBlur(resizedImage,resizedImage,3);
+                QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+                cv::imwrite(SolveImageFileName.toStdString(), resizedImage);     //TODO:
+                CaptureTestTimer.start();
+                qDebug() << "\033[32m" << "Solve image start." << "\033[0m";
+                SolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
+                CaptureTestTime = CaptureTestTimer.elapsed();
+                qDebug() << "\033[32m" << "Solve image completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+                CaptureTestTimer.invalidate();
+            }
+        }
 
         uint16_t B = 0;
         uint16_t W = 65535;
@@ -3493,6 +3615,16 @@ void MainWindow::getStagingScheduleData(){
     }
 }
 
+void MainWindow::getStagingGuiderData() {
+    for (int i = 0; i < glPHD_rmsdate.size(); i++)
+    {
+        emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
+        if (i > 50) {
+            emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
+        }
+    }
+}
+
 int MainWindow::MoveFileToUSB(){
     qDebug("MoveFileToUSB");
 
@@ -3524,7 +3656,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
     qDebug() << "CurrentRa(Degree):" << Ra_Degree << "," << "CurrentDec(Degree):" << Dec_Degree;
 
-    SloveResults result = Tools::PlateSlove(FocalLength, CameraSize_width, CameraSize_height, Ra_Degree, Dec_Degree, false);
+    SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator", FocalLength, CameraSize_width, CameraSize_height, false);
 
     qDebug() << "SloveResults: " << result.RA_Degree << "," << result.DEC_Degree;
 
@@ -3560,9 +3692,47 @@ void MainWindow::TelescopeControl_SolveSYNC()
     }
 }
 
+LocationResult MainWindow::TelescopeControl_GetLocation()
+{
+  if (dpMount != NULL) 
+  {
+    LocationResult result;
+    
+    indi_Client->getLocation(dpMount, result.latitude_degree, result.longitude_degree, result.elevation);
+
+    return result;
+  }
+}
+
+QDateTime MainWindow::TelescopeControl_GetTimeUTC()
+{
+  if (dpMount != NULL) 
+  {
+    QDateTime result;
+    
+    indi_Client->getTimeUTC(dpMount, result);
+
+    return result;
+  }
+}
+
+SphericalCoordinates MainWindow::TelescopeControl_GetRaDec()
+{
+  if (dpMount != NULL) 
+  {
+    SphericalCoordinates result;
+    double RA_HOURS, DEC_DEGREE;
+    indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
+    result.ra = Tools::HourToDegree(RA_HOURS);
+    result.dec = DEC_DEGREE;
+
+    return result;
+  }
+}
+
 void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
 {
-    qDebug() << "RaDec:" << Ra_Hour << "," << Dec_Degree;
+    qDebug() << "RaDec(Hour):" << Ra_Hour << "," << Dec_Degree;
 
     // 停止和清理先前的计时器
     telescopeTimer.stop();
@@ -3876,4 +4046,144 @@ void MainWindow::USBCheck(){
     }
 
     return ;
+}
+
+void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight) {
+    qDebug("Single Solve Image");
+
+    // 停止和清理先前的计时器
+    solveTimer.stop();
+    solveTimer.disconnect();
+
+    // Tools::PlateSolve(Filename, FocalLength, CameraWidth, CameraHeight, 4656, 3522, false);
+
+    QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
+
+    platesolveworker->setParams(Filename, FocalLength, CameraWidth, CameraHeight, false); // 设置参数
+    platesolveworker->start();
+
+    solveTimer.setSingleShot(true);
+
+    connect(&solveTimer, &QTimer::timeout, [this, Filename]()
+    {
+        if (Tools::isSolveImageFinish())
+        {
+            SloveResults result = Tools::ReadSolveResult(Filename, 1024, SolveImageScaledHeight);
+            qDebug() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+
+            if (result.RA_Degree == -1 && result.DEC_Degree == -1)
+            {
+                qDebug("Solve image faild...");
+                emit wsThread->sendMessageToClient("SolveImageFaild");
+            }
+            else
+            {
+                if (SloveResultList.size() == 3) {
+                    SloveResultList.clear();
+                }
+                SloveResultList.push_back(result);
+                emit wsThread->sendMessageToClient("SolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
+                emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
+            }
+        }
+        else 
+        {
+            solveTimer.start(1000);  // 继续等待
+        } 
+    });
+
+    solveTimer.start(1000);
+}
+
+void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight) {
+    qDebug("Loop Solve Image");
+ 
+    solveTimer.stop();
+    solveTimer.disconnect();
+
+    QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
+
+    platesolveworker->setParams(Filename, FocalLength, CameraWidth, CameraHeight, false); // 设置参数
+    platesolveworker->start();
+
+    // 启动等待赤道仪转动的定时器
+    solveTimer.setSingleShot(true);
+
+    connect(&solveTimer, &QTimer::timeout, [this, Filename]()
+    {
+        // 检查赤道仪状态
+        if (Tools::isSolveImageFinish())
+        {
+            SloveResults result = Tools::ReadSolveResult(Filename, 1024, SolveImageScaledHeight);
+            qDebug() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+
+            if (result.RA_Degree == -1 && result.DEC_Degree == -1)
+            {
+                qDebug("Solve image faild...");
+                emit wsThread->sendMessageToClient("SolveImageFaild");
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("RealTimeSolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
+            }
+        }
+        else 
+        {
+            solveTimer.start(1000);  // 继续等待
+        } 
+    });
+
+    solveTimer.start(1000);
+}
+
+void MainWindow::LoopCapture(int ExpTime) {
+    // 停止和清理先前的计时器
+    captureTimer.stop();
+    captureTimer.disconnect();
+
+    ShootStatus = "InProgress";
+    qDebug() << "ShootStatus: " << ShootStatus;
+    INDI_Capture(ExpTime);
+
+    captureTimer.setSingleShot(true);
+
+    connect(&captureTimer, &QTimer::timeout, [this]() {
+        if (StopLoopCapture)
+        {
+            StopLoopCapture = false;
+            INDI_AbortCapture();
+            return;
+        }
+        // 检查赤道仪状态
+        if (WaitForShootToComplete() && Tools::WaitForPlateSolveToComplete()) 
+        {
+            captureTimer.stop();  // 转动完成时停止定时器
+
+            TakeNewCapture = false;
+            
+            // CaptureImageSave();
+            // Process
+            LoopCapture(glExpTime);
+        } 
+        else 
+        {
+            captureTimer.start(3000);  // 继续等待
+        } 
+    });
+
+    captureTimer.start(3000);
+}
+
+void MainWindow::ClearSloveResultList() {
+    SloveResultList.clear();
+}
+
+void MainWindow::RecoverySloveResul()
+{
+    for (const auto &result : SloveResultList)
+    {
+        qDebug() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+        emit wsThread->sendMessageToClient("SolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
+        emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
+    }
 }
