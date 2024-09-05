@@ -11,6 +11,8 @@
 // 回调函数类型定义
 using ImageReceivedCallback = std::function<void(const std::string& filename, const std::string& devname)>;
 
+using MessageReceivedCallback = std::function<void(const std::string& message)>;
+
 class MyClient : public INDI::BaseClient
 {
     public:
@@ -117,7 +119,7 @@ class MyClient : public INDI::BaseClient
         uint32_t slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,bool EnableTracking,INDI::PropertyNumber &property);
         uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property);
 
-        uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu);
+        uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error);
 
         //--------------------CFW API
         uint32_t getCFWPosition(INDI::BaseDevice *dp,int & position,int &min,int &max);
@@ -177,6 +179,18 @@ class MyClient : public INDI::BaseClient
         }
     }
 
+    void setMessageReceivedCallback(MessageReceivedCallback callback) {
+        messageReceivedCallback = callback;
+    }
+
+    // 收到图像并触发回调
+    void receiveMessage(const std::string& message) {
+        // 触发回调函数
+        if (imageReceivedCallback) {
+          messageReceivedCallback(message);
+        }
+    }
+
     protected:
         //void newMessage(INDI::BaseDevice baseDevice, int messageID) override;
         // void newDevice(INDI::BaseDevice *dp) ;
@@ -194,6 +208,8 @@ class MyClient : public INDI::BaseClient
         std::vector<std::string> deviceNames;
 
     ImageReceivedCallback imageReceivedCallback;
+
+    MessageReceivedCallback messageReceivedCallback;
 
 };
 

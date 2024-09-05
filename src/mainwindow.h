@@ -31,6 +31,8 @@
 
 #include "platesolveworker.h"
 
+#include <regex>
+
 class MainWindow : public QObject
 {
     Q_OBJECT
@@ -44,9 +46,9 @@ public:
     void initINDIClient();
     void initINDIServer();
 
-    QString connectIndiServer();
-    void disconnectIndiServer();
-    void connectDevice(int x);
+    // QString connectIndiServer();
+    // void disconnectIndiServer();
+    // void connectDevice(int x);
 
     void readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
                               std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from);
@@ -56,7 +58,7 @@ public:
     void SelectIndiDevice(int systemNumber,int grounpNumber);
 
     bool indi_Driver_Confirm(QString DriverName);
-    void indi_Device_Confirm(QString DeviceName);
+    void indi_Device_Confirm(QString DeviceName, QString DriverName);
 
     uint32_t clearCheckDeviceExist(QString drivername,bool &isExist);
 
@@ -64,6 +66,8 @@ public:
     void AfterDeviceConnect();
     void disconnectIndiServer(MyClient *client);
     void connectIndiServer(MyClient *client);
+
+    void ClearSystemDeviceList();
 
     //ms
     void INDI_Capture(int Exp_times);
@@ -74,7 +78,7 @@ public:
 
     void saveFitsAsJPG(QString filename);
 
-    int saveFitsAsPNG(QString fitsFileName);
+    int saveFitsAsPNG(QString fitsFileName, bool ProcessBin);
 
     void saveGuiderImageAsJPG(cv::Mat Image);
 
@@ -122,6 +126,9 @@ public:
     bool one_touch_connect_first = true;
     int glMainCCDSizeX = 0;
     int glMainCCDSizeY = 0;
+
+    int glOffsetValue = 0, glOffsetMin = 0, glOffsetMax = 0;
+    int glGainValue = 0, glGainMin = 0, glGainMax = 0;
 
     bool glIsFocusingLooping;
     QString glMainCameraStatu;
@@ -226,7 +233,7 @@ public:
 
     void TelescopeControl_Goto(double Ra,double Dec);
 
-    QString TelescopeControl_Status();
+    MountStatus TelescopeControl_Status();
 
     bool TelescopeControl_Park();
 
@@ -295,7 +302,11 @@ public:
     bool StopSchedule = false;
     bool StopPlateSolve = false;
 
+    bool MountGotoError = false;
+
     void startSchedule();
+
+    void nextSchedule();
 
     void startMountGoto(double ra, double dec);       // Ra:Hour, Dec:Degree
 
@@ -359,6 +370,15 @@ public:
     int MoveFileToUSB();
 
     int mountDisplayCounter = 0;
+
+    int MainCameraStatusCounter = 0;
+
+    bool isFilterOnCamera = false;
+
+    bool isFirstCapture = true;
+
+    double glCurrentLocationLat = 0;
+    double glCurrentLocationLng = 0; 
 
     double LastRA_Degree = 0;
     double LastDEC_Degree = 0;

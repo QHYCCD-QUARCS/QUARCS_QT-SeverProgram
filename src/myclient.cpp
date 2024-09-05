@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 #include <QDebug>
+#include <QObject>
 //#include <qhyccd.h>
 
 #include <fitsio.h>
@@ -37,11 +38,12 @@ MyClient::MyClient()
 
 void MyClient::newMessage(INDI::BaseDevice baseDevice, int messageID)
 {
-   // if (!baseDevice.isDeviceNameMatch("Simple CCD"))
-    //    return;
+    // qDebug("[INDI SERVER] %s", baseDevice.messageQueue(messageID).c_str());
 
-   qDebug("[INDI SERVER] %s", baseDevice.messageQueue(messageID).c_str());
+    std::string message = baseDevice->messageQueue(messageID);
+    receiveMessage(message);
 }
+
 void MyClient::newProperty(INDI::Property property)
 {
    // if (!baseDevice.isDeviceNameMatch("Simple CCD"))
@@ -90,8 +92,8 @@ void MyClient::updateProperty(INDI::Property property)
     } 
     else if (property.getType() == INDI_TEXT)
     {
-        qDebug() << "\033[32m" << "INDI new Text(label):" << property.getText()->label << "\033[0m";
-        qDebug() << "\033[32m" << "INDI new Text(name):" << property.getText()->name << "\033[0m";
+        // qDebug() << "\033[32m" << "INDI new Text(label):" << property.getText()->label << "\033[0m";
+        // qDebug() << "\033[32m" << "INDI new Text(name):" << property.getText()->name << "\033[0m";
 
         auto tvp = property.getText();
         if (tvp->isNameMatch("CCD_FILE_PATH"))
@@ -111,6 +113,8 @@ void MyClient::updateProperty(INDI::Property property)
                 receiveImage(QString(filepath->getText()).toStdString(), devname);
             }  
         }
+    } else if (property.getType() == INDI_NUMBER) {
+
     }
 }
 
@@ -1594,7 +1598,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 
 
 
-uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
+uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
 {
     INDI::PropertyText property = dp->getProperty("OnStep Status");
 
@@ -1605,7 +1609,11 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
     }
     
     statu = property[1].getText();
-    // qDebug()<<"OnStep Status: "<< statu;
+    error = property[7].getText();
+    // qDebug()<<"OnStep error: "<< error;
+    if(error != "None") {
+        qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
+    }
     
     return QHYCCD_SUCCESS;
 }
@@ -1932,23 +1940,26 @@ uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp,int position)
 
 
     sendNewProperty(property);
+
     QElapsedTimer t;
     t.start();
 
     int timeout=10000;
     while(t.elapsed()<timeout){
         qDebug() <<property->getStateAsString();
-        qDebug() << "State:" << property->getState();
+        // qDebug() << "State:" << property->getState();
         QThread::msleep(300);
-        if(property->getState()==IPS_OK) break;  // it will not wait the motor arrived
-     }
+        if(property->getState()==IPS_OK) {
+            qDebug() <<property->getStateAsString();
+            break;  // it will not wait the motor arrived
+        }
+    }
 
     if(t.elapsed()>timeout){
        qDebug() << "setCFWPosition | ERROR : timeout ";
        return QHYCCD_ERROR;
     }
 
-    qDebug()<<"setCFWPosition"<< position ;
     return QHYCCD_SUCCESS;
 }
 

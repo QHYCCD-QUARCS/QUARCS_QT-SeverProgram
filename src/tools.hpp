@@ -23,6 +23,11 @@
 
 #include <stellarsolver.h>
 
+#define Min2(a, b) ((a) < (b) ? (a) : (b))
+#define Max2(a, b) ((a) > (b) ? (a) : (b))
+#define LimitByte(v) ((uint8_t)Min2(Max2(v, 0), 0xFF))
+#define LimitShort(v) ((uint16_t)Min2(Max2(v, 0), 0xFFFF))
+
 struct FWHM_Result
 {
   /* data */
@@ -207,6 +212,12 @@ struct loadFitsResult
   uint8_t *imageBuffer;
 };
 
+struct MountStatus
+{
+  QString status;
+  QString error;
+};
+
 class Tools : public QObject {
   Q_OBJECT
   Q_DISABLE_COPY(Tools)
@@ -300,6 +311,14 @@ class Tools : public QObject {
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
 
   static loadFitsResult loadFits(QString fileName);
+
+  static void SaveMatToJPG(cv::Mat image);
+
+  static cv::Mat processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor);
+
+  static uint32_t PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin);
+
+  static uint32_t PixelsDataSoftBin(uint8_t* srcdata, uint8_t* bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor);
 
   static double getDecAngle(const QString& str);
 
