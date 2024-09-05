@@ -18,12 +18,26 @@
 #include <QLabel>
 #include "fitsio.h"
 #include <QApplication>
+#include <QObject>
+#include <QDebug>
+
+#include <stellarsolver.h>
+
+#define Min2(a, b) ((a) < (b) ? (a) : (b))
+#define Max2(a, b) ((a) > (b) ? (a) : (b))
+#define LimitByte(v) ((uint8_t)Min2(Max2(v, 0), 0xFF))
+#define LimitShort(v) ((uint16_t)Min2(Max2(v, 0), 0xFFFF))
 
 struct FWHM_Result
 {
   /* data */
   cv::Mat image;
   double FWHM;
+};
+
+struct HFR_Result {
+    cv::Mat image;
+    double HFR;
 };
 
 
@@ -97,10 +111,35 @@ struct SphericalCoordinates {
     double dec;
 };
 
+struct AltAz {
+  double altitude;
+  double azimuth;
+};
+
+struct WCSParams {
+    double crpix0;
+    double crpix1;
+    double crval0;
+    double crval1;
+    double cd11;
+    double cd12;
+    double cd21;
+    double cd22;
+};
+
 struct SloveResults
 {
   double RA_Degree;
   double DEC_Degree;
+
+  double RA_0;
+  double DEC_0;
+  double RA_1;
+  double DEC_1;
+  double RA_2;
+  double DEC_2;
+  double RA_3;
+  double DEC_3;
 };
 
 struct MinMaxFOV
@@ -123,6 +162,32 @@ struct LocationResult
   double elevation;
 };
 
+struct ScheduleData
+{
+  QString shootTarget;    //拍摄目标
+  double targetRa;
+  double targetDec;
+  QString shootTime;      //拍摄时间
+  int exposureTime;       //曝光时间
+  QString filterNumber;   //滤镜轮号
+  int repeatNumber;       //重复张数
+  QString shootType;      //拍摄类型
+  bool resetFocusing;     //重新调焦
+  int progress;           //进度
+};
+
+struct ConnectedDevice
+{
+  QString DeviceType;
+  QString DeviceName;
+};
+
+struct ClientButtonStatus
+{
+  QString Button;
+  QString Status;
+};
+
 enum class SystemNumber {
   Mount = 0,
   Guider = 1,
@@ -133,7 +198,28 @@ enum class SystemNumber {
   LensCover1 = 23,
 };
 
-class Tools {
+typedef struct
+{
+  QString key;     /** FITS Header Key */
+  QVariant value;  /** FITS Header Value */
+  QString comment; /** FITS Header Comment, if any */
+} Record;
+
+struct loadFitsResult
+{
+  bool success;
+  FITSImage::Statistic imageStats;
+  uint8_t *imageBuffer;
+};
+
+struct MountStatus
+{
+  QString status;
+  QString error;
+};
+
+class Tools : public QObject {
+  Q_OBJECT
   Q_DISABLE_COPY(Tools)
  public:
   static void Initialize();
@@ -158,8 +244,14 @@ class Tools {
   static void startIndiDriver(QString driver_name);
   static void stopIndiDriver(QString driver_name);
   static void printSystemDeviceList(SystemDeviceList s);
+  static void makeConfigFolder();
+  static void makeImageFolder();
   static void saveSystemDeviceList(SystemDeviceList deviceList);
   static SystemDeviceList readSystemDeviceList();
+  static void saveExpTimeList(QString List);
+  static QString readExpTimeList();
+  static void saveCFWList(QString Name, QString List);
+  static QString readCFWList(QString Name);
   static void stopIndiDriverAll(const DriversList driver_list);
 
   static uint32_t readFitsHeadForDevName(std::string filename,QString &devname);
@@ -210,9 +302,23 @@ class Tools {
   static void CvDebugSave(cv::Mat img, const std::string& name = "test.png");
 
   static cv::Mat SubBackGround(cv::Mat image);
+  // static bool DetectStar(cv::Mat image, double threshold, int minArea, cv::Rect& starRect);
   static FWHM_Result CalculateFWHM(cv::Mat image);
+  static HFR_Result CalculateHFR(cv::Mat image);
 
   static cv::Mat CalMoments(cv::Mat image);
+
+  static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
+
+  static loadFitsResult loadFits(QString fileName);
+
+  static void SaveMatToJPG(cv::Mat image);
+
+  static cv::Mat processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor);
+
+  static uint32_t PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin);
+
+  static uint32_t PixelsDataSoftBin(uint8_t* srcdata, uint8_t* bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor);
 
   static double getDecAngle(const QString& str);
 
@@ -220,6 +326,7 @@ class Tools {
 
   static double rangeTo(double value, double max, double min);
   static double getLST_Degree(QDateTime datetimeUTC, double longitude_radian);
+  static bool getJDFromDate(double *newjd, const int y, const int m, const int d, const int h, const int min, const float s);
   static double getHA_Degree(double RA_radian, double LST_Degree);
   static void ra_dec_to_alt_az(double ha_radian, double dec_radian,
                                double& alt_radian, double& az_radian,
@@ -269,8 +376,18 @@ class Tools {
   static CartesianCoordinates calculatePointC(CartesianCoordinates pointA, CartesianCoordinates vectorV);
   static SphericalCoordinates convertToSphericalCoordinates(CartesianCoordinates cartesianPoint);
 
+  static double calculateGST(const std::tm& date);
+  static AltAz calculateAltAz(double ra, double dec, double lat, double lon, const std::tm& date);
+  static void printDMS(double angle);
+  static double DMSToDegree(int degrees, int minutes, double seconds);
   static MinMaxFOV calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height);
-  static SloveResults PlateSlove(int FocalLength,double CameraSize_width,double CameraSize_height, double Ra_Degree, double Dec_Degree, bool USEQHYCCDSDK);
+  static bool WaitForPlateSolveToComplete();
+  static bool isSolveImageFinish();
+  static SloveResults PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK);
+  static SloveResults ReadSolveResult(QString filename, int imageWidth, int imageHeight);
+  static WCSParams extractWCSParams(const QString& wcsInfo);
+  static SphericalCoordinates pixelToRaDec(double x, double y, const WCSParams& wcs);
+  static std::vector<SphericalCoordinates> getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight);
 
   static StelObjectSelect getStelObjectSelectName();
 
@@ -278,11 +395,20 @@ class Tools {
 
   static int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);
 
+  static double calculateRSquared(QVector<QPointF> data, float a, float b, float c);
+
+public slots:
+  void StellarSolverLogOutput(QString text);
+
+  SloveResults onSolveFinished(int exitCode);
+
  private:
   Tools();
   ~Tools();
 
   static Tools* instance_;
+
+  QList<FITSImage::Star> FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR);
 };
 
 #endif  // TOOLS_HPP

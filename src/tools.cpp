@@ -10,6 +10,9 @@
 #include <fstream>
 #include <qxmlstream.h>
 #include "fitsio.h"
+#include <filesystem>
+#include <QObject>
+#include <QDebug>
 
 // #define ImageDebug
 
@@ -28,9 +31,13 @@ qhyccd_handle* fpgahandle_;
 qhyccd_handle* maincamhandle_;
 }  // namespace
 
-Tools* Tools::instance_ = nullptr;
+Tools* Tools::instance_ = new Tools();
 
 int glChannelCount;
+
+bool PlateSolveInProgress = false;
+
+bool isSolveImageFinished = false;
 
 Tools::Tools() {}
 
@@ -225,7 +232,6 @@ void Tools::ClearSystemDeviceListItem(int index) {
   systemDeviceList_.system_devices[index].DriverFrom = "";
   systemDeviceList_.system_devices[index].DriverIndiName = "";
   systemDeviceList_.system_devices[index].isConnect = false;
-  // qDebug()<<"clearSystemDeviceListItem";
 }
 
 void Tools::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
@@ -422,9 +428,75 @@ void Tools::printSystemDeviceList(SystemDeviceList s){
     qDebug() << "******************************************************";
 }
 
+void Tools::makeConfigFolder() {
+  std::string directory = "config"; // 要创建的文件夹名
+
+    // 如果目录不存在，则创建
+    if (!std::filesystem::exists(directory))
+    {
+        if (std::filesystem::create_directory(directory))
+        {
+            std::cout << "文件夹创建成功: " << directory << std::endl;
+        }
+        else
+        {
+            std::cerr << "创建文件夹时发生错误" << std::endl;
+        }
+    }
+    else
+    {
+        std::cout << "文件夹已存在: " << directory << std::endl;
+    }
+}
+
+void Tools::makeImageFolder() {
+    std::string directory = "image"; // 要创建的文件夹名
+
+    // 如果目录不存在，则创建
+    if (!std::filesystem::exists(directory))
+    {
+        if (std::filesystem::create_directory(directory))
+        {
+            std::cout << "文件夹创建成功: " << directory << std::endl;
+
+            // 创建子文件夹 CaptureImage
+            std::string captureDirectory = directory + "/CaptureImage";
+            if (std::filesystem::create_directory(captureDirectory))
+            {
+                std::cout << "子文件夹创建成功: " << captureDirectory << std::endl;
+            }
+            else
+            {
+                std::cerr << "创建子文件夹时发生错误" << std::endl;
+            }
+
+            // 创建子文件夹 ScheduleImage
+            std::string scheduleDirectory = directory + "/ScheduleImage";
+            if (std::filesystem::create_directory(scheduleDirectory))
+            {
+                std::cout << "子文件夹创建成功: " << scheduleDirectory << std::endl;
+            }
+            else
+            {
+                std::cerr << "创建子文件夹时发生错误" << std::endl;
+            }
+        }
+        else
+        {
+            std::cerr << "创建文件夹时发生错误" << std::endl;
+        }
+    }
+    else
+    {
+        std::cout << "文件夹已存在: " << directory << std::endl;
+    }
+}
+
 void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
 {
-  std::string filename = "/home/quarcs/device_connect.dat";
+  std::string directory = "config"; // 配置文件夹名
+  std::string filename = directory + "/device_connect.dat"; // 在配置文件夹中创建文件
+
   std::ofstream outfile(filename, std::ios::binary);
 
   if (!outfile.is_open()) {
@@ -467,7 +539,8 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
 SystemDeviceList Tools::readSystemDeviceList()
 {
   SystemDeviceList deviceList;
-  std::string filename = "/home/quarcs/device_connect.dat";
+  std::string directory = "config"; // 配置文件夹名
+  std::string filename = directory + "/device_connect.dat"; // 在配置文件夹中创建文件
   std::ifstream infile(filename, std::ios::binary);
 
   if (!infile.is_open()) {
@@ -516,6 +589,120 @@ SystemDeviceList Tools::readSystemDeviceList()
     infile.close();
 
     return deviceList;
+}
+
+void Tools::saveExpTimeList(QString List)
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/ExpTimeList.dat"; // 在配置文件夹中创建文件
+
+  std::ofstream outfile(filename, std::ios::binary);
+
+  if (!outfile.is_open())
+  {
+    std::cerr << "打开文件写入时发生错误: " << filename << std::endl;
+    return;
+  }
+
+  QByteArray ExpTimeListUtf8 = List.toUtf8();
+
+  // 写入 QString 大小信息和数据
+  size_t ExpTimeListSize = static_cast<size_t>(ExpTimeListUtf8.size());
+  outfile.write(reinterpret_cast<const char *>(&ExpTimeListSize), sizeof(size_t));
+  outfile.write(ExpTimeListUtf8.constData(), ExpTimeListSize);
+
+  outfile.close();
+}
+
+QString Tools::readExpTimeList()
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/ExpTimeList.dat"; // 在配置文件夹中创建文件
+  std::ifstream infile(filename, std::ios::binary);
+
+  if (!infile.is_open())
+  {
+    std::cerr << "打开文件读取时发生错误: " << filename << std::endl;
+    return QString();
+  }
+
+  // 读取经验时间列表的大小
+  size_t ExpTimeListSize;
+  infile.read(reinterpret_cast<char *>(&ExpTimeListSize), sizeof(size_t));
+
+  // 分配内存空间用于存储经验时间列表的数据
+  char *buffer = new char[ExpTimeListSize];
+
+  // 读取经验时间列表的数据
+  infile.read(buffer, ExpTimeListSize);
+
+  // 将读取的数据转换为 QString
+  QString ExpTimeList = QString::fromUtf8(buffer, ExpTimeListSize);
+
+  // 释放内存空间
+  delete[] buffer;
+
+  // 关闭文件
+  infile.close();
+
+  return ExpTimeList;
+}
+
+void Tools::saveCFWList(QString Name, QString List)
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/CFWList(" + Name.toStdString() +").dat"; // 在配置文件夹中创建文件
+
+  std::ofstream outfile(filename, std::ios::binary);
+
+  if (!outfile.is_open())
+  {
+    std::cerr << "打开文件写入时发生错误: " << filename << std::endl;
+    return;
+  }
+
+  QByteArray CFWListUtf8 = List.toUtf8();
+
+  // 写入 QString 大小信息和数据
+  size_t CFWListSize = static_cast<size_t>(CFWListUtf8.size());
+  outfile.write(reinterpret_cast<const char *>(&CFWListSize), sizeof(size_t));
+  outfile.write(CFWListUtf8.constData(), CFWListSize);
+
+  outfile.close();
+}
+
+QString Tools::readCFWList(QString Name)
+{
+  std::string directory = "config";                      // 配置文件夹名
+  std::string filename = directory + "/CFWList(" + Name.toStdString() +").dat";  // 在配置文件夹中创建文件
+  std::ifstream infile(filename, std::ios::binary);
+
+  if (!infile.is_open())
+  {
+    std::cerr << "打开文件读取时发生错误: " << filename << std::endl;
+    return QString();
+  }
+
+  // 读取经验时间列表的大小
+  size_t CFWListSize;
+  infile.read(reinterpret_cast<char *>(&CFWListSize), sizeof(size_t));
+
+  // 分配内存空间用于存储经验时间列表的数据
+  char *buffer = new char[CFWListSize];
+
+  // 读取经验时间列表的数据
+  infile.read(buffer, CFWListSize);
+
+  // 将读取的数据转换为 QString
+  QString CFWList = QString::fromUtf8(buffer, CFWListSize);
+
+  // 释放内存空间
+  delete[] buffer;
+
+  // 关闭文件
+  infile.close();
+
+  return CFWList;
 }
 
 void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
@@ -600,6 +787,7 @@ void Tools::startIndiDriver(QString driver_name)
     s.append("> /tmp/myFIFO");
     system(s.toUtf8().constData());
     // qDebug() << "startIndiDriver" << driver_name;
+    qDebug() << "Start INDI Driver | DriverName: " << driver_name;
 }
 
 void Tools::stopIndiDriver(QString driver_name)
@@ -1720,6 +1908,9 @@ void Tools::ImageSoftAWB(cv::Mat sourceImg16, cv::Mat& targetImg16, QString CFA,
 
   double gain1, gain2, gain3, gain4;
 
+  qDebug() << "CFA:" << CFA;
+  qDebug() << "gainR:" << gainR << "," << "gainB:" << gainB;
+
   if (CFA == "RGGB") {
     gain1 = 1.0 * gainR;
     gain2 = 1.0;
@@ -2189,8 +2380,8 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
     cv::Scalar scalar = mean(gray);
     double Background = scalar.val[0];
 
-    qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
-    qDebug() << "Backgroud brightness:" << Background;
+    // qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+    // qDebug() << "Backgroud brightness:" << Background;
 
     cv::Mat m = cv::Mat(gray.size(), gray.type(), cv::Scalar(Background));
     cv::Mat dst = cv::Mat::zeros(gray.size(), gray.type());
@@ -2198,6 +2389,327 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
     subtract(gray, m, dst);
 
     return dst;
+}
+
+// bool Tools::DetectStar(cv::Mat image, double threshold, int minArea, cv::Rect& starRect)
+// {
+//     cv::Mat subimage = Tools::SubBackGround(image).clone();
+//     cv::Mat binaryImage;
+
+//     // 二值化处理，阈值可以根据需要调整
+//     cv::threshold(subimage, binaryImage, threshold, 255, cv::THRESH_BINARY);
+
+//     // 确保二值图像是CV_8UC1格式
+//     if (binaryImage.type() != CV_8UC1)
+//     {
+//         binaryImage.convertTo(binaryImage, CV_8UC1);
+//     }
+
+//     // 连通区域检测
+//     std::vector<std::vector<cv::Point>> contours;
+//     cv::findContours(binaryImage, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+//     // 找到面积最大的连通区域，认为是星点
+//     double maxArea = 0;
+//     for (const auto& contour : contours)
+//     {
+//         double area = cv::contourArea(contour);
+//         if (area >= minArea && area > maxArea)
+//         {
+//             maxArea = area;
+//             starRect = cv::boundingRect(contour);
+//         }
+//     }
+
+//     if (maxArea > 0) {
+//         // 检查检测到的星点亮度分布是否符合要求
+//         cv::Mat starRegion = subimage(starRect);
+//         double meanBrightness = cv::mean(starRegion)[0];
+//         if (meanBrightness > threshold) {
+//             return true;
+//         }
+//     }
+
+//     return false;
+// }
+
+QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHFR)
+{
+  Tools tempTool;
+
+  loadFitsResult result;
+
+  QList<FITSImage::Star> stars;
+
+  result = loadFits("/dev/shm/ccd_simulator.fits");
+
+  if (!result.success)
+  {
+    printf("Error in loading FITS file");
+    return stars;
+  }
+
+  FITSImage::Statistic imageStats = result.imageStats;
+  uint8_t *imageBuffer = result.imageBuffer;
+  stars = tempTool.FindStarsByStellarSolver_(AllStars, imageStats, imageBuffer, runHFR);
+  return stars;
+}
+
+QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR)
+{
+  StellarSolver solver(imagestats, imageBuffer);
+  // 配置solver参数
+  SSolver::Parameters parameters;
+
+  // 设置参数
+  // parameters.apertureShape = SSolver::SHAPE_CIRCLE; // 使用圆形的星点检测形状
+  // parameters.kron_fact = 2.5;                       // 设置Kron因子
+  // parameters.subpix = 5;                            // 子像素设置
+  // parameters.r_min = 5;                             // 最小星点半径
+  // parameters.magzero = 20;                          // 零点星等
+  // parameters.minarea = 20;                          // 最小星点面积
+  // parameters.deblend_thresh = 32;                   // 去混叠阈值
+  // parameters.deblend_contrast = 0.005;              // 去混叠对比度
+  // parameters.clean = 1;                             // 清理图像
+  // parameters.fwhm = 1;                              // 全宽半高
+  // parameters.maxSize = 0;                           // 最大星点大小
+  // parameters.minSize = 0;                           // 最小星点大小
+  // parameters.maxEllipse = 1.5;                      // 最大椭圆比
+  // parameters.initialKeep = 250;                     // 初始保留星点数量
+  // parameters.keepNum = 100;                         // 保留星点数量
+  // parameters.removeBrightest = 10;                  // 移除最亮星点比例
+  // parameters.removeDimmest = 20;                    // 移除最暗星点比例
+  // parameters.saturationLimit = 90;                  // 饱和度限制
+  
+  parameters.apertureShape = SSolver::SHAPE_CIRCLE;
+  parameters.autoDownsample = true;
+  parameters.clean = 1;
+  parameters.clean_param = 1;
+  parameters.convFilterType = SSolver::CONV_GAUSSIAN;
+  parameters.deblend_contrast = 0.004999999888241291;
+  parameters.deblend_thresh = 32;
+  parameters.description = "Default focus star-extraction.";
+  parameters.downsample = 1;
+  parameters.fwhm = 1;
+  parameters.inParallel = true;
+  parameters.initialKeep = 250;
+  parameters.keepNum = 100;
+  parameters.kron_fact = 2.5;
+  parameters.listName = "1-Focus-Default";
+  parameters.logratio_tokeep = 20.72326583694641;
+  parameters.logratio_tosolve = 20.72326583694641;
+  parameters.logratio_totune = 13.815510557964274;
+  parameters.magzero = 20;
+  parameters.maxEllipse = 1.5;
+  parameters.maxSize = 10;
+  parameters.maxwidth = 180;
+  parameters.minSize = 0;
+  parameters.minarea = 20;
+  parameters.minwidth = 0.1;
+  parameters.multiAlgorithm = SSolver::MULTI_AUTO;
+  parameters.partition = true;
+  parameters.r_min = 5;
+  parameters.removeBrightest = 10;
+  parameters.removeDimmest = 20;
+  parameters.resort = true;
+  parameters.saturationLimit = 90;
+  parameters.search_parity = 15;
+  parameters.solverTimeLimit = 600;
+  parameters.subpix = 5;
+
+
+  solver.setLogLevel(SSolver::LOG_ALL);
+  solver.setSSLogLevel(SSolver::LOG_NORMAL);
+
+  solver.setProperty("ExtractorType", SSolver::EXTRACTOR_INTERNAL);
+  solver.setProperty("ProcessType", SSolver::EXTRACT);
+  solver.setParameterProfile(SSolver::Parameters::DEFAULT);
+  // solver.setParameterProfile(SSolver::Parameters::ALL_STARS);
+
+  // 设置参数
+  solver.setParameters(parameters);
+
+  if(AllStars) {
+    solver.setParameterProfile(SSolver::Parameters::ALL_STARS);
+  }
+
+  connect(&solver, &StellarSolver::logOutput, this, &Tools::StellarSolverLogOutput);
+
+  // 进行星点检测
+  bool success = solver.extract(runHFR);
+  if (!success)
+  {
+    std::cerr << "Star extraction failed." << std::endl;
+  }
+  qDebug() << "success extract: " << success;
+
+  QList<FITSImage::Star> stars;
+
+  stars = solver.getStarList();
+
+  // 输出检测到的星点信息
+  std::cout << "Detected " << stars.size() << " stars." << std::endl;
+  for (const auto &star : stars)
+  {
+    // std::cout << "Star at (" << star.x << ", " << star.y << ") with HFR: " << star.HFR << std::endl;
+  }
+
+  return stars;
+}
+
+void Tools::StellarSolverLogOutput(QString text){
+  // qDebug() << "StellarSolver LogOutput: " << text.toUtf8().data();
+}
+
+loadFitsResult Tools::loadFits(QString fileName)
+{
+  loadFitsResult result;
+  QString file = fileName;
+  fitsfile *fptr{nullptr};
+  FITSImage::Statistic stats;
+  /// Generic data image buffer
+  uint8_t *m_ImageBuffer{nullptr};
+  /// Above buffer size in bytes
+  uint32_t m_ImageBufferSize{0};
+  int status = 0, anynullptr = 0;
+  long naxes[3];
+
+  // Use open diskfile as it does not use extended file names which has problems opening
+  // files with [ ] or ( ) in their names.
+  if (fits_open_diskfile(&fptr, file.toLocal8Bit(), READONLY, &status))
+  {
+    // logIssue(QString("Error opening fits file %1").arg(file));
+    qDebug() << "Error opening fits file " << file;
+    result.success = false;
+    return result;
+  }
+  else
+    stats.size = QFile(file).size();
+
+  if (fits_movabs_hdu(fptr, 1, IMAGE_HDU, &status))
+  {
+    // logIssue(QString("Could not locate image HDU."));
+    qDebug() << "Could not locate image HDU.";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  int fitsBitPix = 0;
+  if (fits_get_img_param(fptr, 3, &fitsBitPix, &(stats.ndim), naxes, &status))
+  {
+    // logIssue(QString("FITS file open error (fits_get_img_param)."));
+    qDebug() << "FITS file open error (fits_get_img_param).";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  if (stats.ndim < 2)
+  {
+    // logIssue("1D FITS images are not supported.");
+    qDebug() << "1D FITS images are not supported.";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  switch (fitsBitPix)
+  {
+  case BYTE_IMG:
+    // stats.dataType      = SEP_TBYTE;
+    stats.dataType = 11;
+    stats.bytesPerPixel = sizeof(uint8_t);
+    break;
+  case SHORT_IMG:
+    // Read SHORT image as USHORT
+    stats.dataType = TUSHORT;
+    stats.bytesPerPixel = sizeof(int16_t);
+    break;
+  case USHORT_IMG:
+    stats.dataType = TUSHORT;
+    stats.bytesPerPixel = sizeof(uint16_t);
+    break;
+  case LONG_IMG:
+    // Read LONG image as ULONG
+    stats.dataType = TULONG;
+    stats.bytesPerPixel = sizeof(int32_t);
+    break;
+  case ULONG_IMG:
+    stats.dataType = TULONG;
+    stats.bytesPerPixel = sizeof(uint32_t);
+    break;
+  case FLOAT_IMG:
+    stats.dataType = TFLOAT;
+    stats.bytesPerPixel = sizeof(float);
+    break;
+  case LONGLONG_IMG:
+    stats.dataType = TLONGLONG;
+    stats.bytesPerPixel = sizeof(int64_t);
+    break;
+  case DOUBLE_IMG:
+    stats.dataType = TDOUBLE;
+    stats.bytesPerPixel = sizeof(double);
+    break;
+  default:
+    // logIssue(QString("Bit depth %1 is not supported.").arg(fitsBitPix));
+    qDebug() << "Bit depth %1 is not supported." << fitsBitPix;
+
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  if (stats.ndim < 3)
+    naxes[2] = 1;
+
+  if (naxes[0] == 0 || naxes[1] == 0)
+  {
+    // logIssue(QString("Image has invalid dimensions %1x%2").arg(naxes[0]).arg(naxes[1]));
+    qDebug() << "Image has invalid dimensions " << naxes[0] << naxes[1];
+  }
+
+  stats.width = static_cast<uint16_t>(naxes[0]);
+  stats.height = static_cast<uint16_t>(naxes[1]);
+  stats.channels = static_cast<uint8_t>(naxes[2]);
+  stats.samples_per_channel = stats.width * stats.height;
+
+  m_ImageBufferSize = stats.samples_per_channel * stats.channels * static_cast<uint16_t>(stats.bytesPerPixel);
+  // deleteImageBuffer();
+  if (m_ImageBuffer)
+  {
+    delete[] m_ImageBuffer;
+    m_ImageBuffer = nullptr;
+  }
+
+  m_ImageBuffer = new uint8_t[m_ImageBufferSize];
+  if (m_ImageBuffer == nullptr)
+  {
+    // logIssue(QString("FITSData: Not enough memory for image_buffer channel. Requested: %1 bytes ").arg(m_ImageBufferSize));
+    qDebug() << "FITSData: Not enough memory for image_buffer channel. Requested:" << m_ImageBufferSize << "bytes ";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  long nelements = stats.samples_per_channel * stats.channels;
+
+  if (fits_read_img(fptr, static_cast<uint16_t>(stats.dataType), 1, nelements, nullptr, m_ImageBuffer, &anynullptr, &status))
+  {
+    // logIssue("Error reading image.");
+    qDebug() << "Error reading image.";
+    fits_close_file(fptr, &status);
+    result.success = false;
+    return result;
+  }
+
+  fits_close_file(fptr, &status);
+
+  result.success = true;
+  result.imageStats = stats;
+  result.imageBuffer = m_ImageBuffer;
+
+  return result;
 }
 
 FWHM_Result Tools::CalculateFWHM(cv::Mat image)
@@ -2246,20 +2758,22 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     qDebug() << "Max:" << Bri1;
 
     int x_s, x_b;
-    for (int i = FirstMoment_x; i > 0; i--)
+    // for (int i = FirstMoment_x; i > 0; i--)
+    for (int i = 0; i < FirstMoment_x; i++)
     {
         ushort Bri_Left = subimage.at<ushort>(FirstMoment_y, i);
-        if (Bri_Left <= Bri1 / 2)
+        if (Bri_Left >= Bri1 / 2)
         {
             x_s = i;
             break;
         }
     }
 
-    for (int j = FirstMoment_x; j < width; j++)
+    // for (int j = FirstMoment_x; j < width; j++)
+    for (int j = width; j > FirstMoment_x; j--)
     {
         ushort Bri_Right = subimage.at<ushort>(FirstMoment_y, j);
-        if (Bri_Right <= Bri1 / 2)
+        if (Bri_Right >= Bri1 / 2)
         {
             x_b = j;
             break;
@@ -2271,7 +2785,7 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     qDebug() << x_b << x_s;
 
     qDebug() << "[[[[[FWHM:" << FWHM << "]]]]]";
-    qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+    // qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
     cv::Mat imagePoint = image.clone();
 
@@ -2286,8 +2800,493 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     result.FWHM = FWHM;
 
     return result;
+}
 
-    // cv::waitKey();
+HFR_Result Tools::CalculateHFR(cv::Mat image)
+{
+    HFR_Result result;
+    cv::Rect starRect;
+    // if (!Tools::DetectStar(image, 50.0, 5, starRect)) {
+    //     qDebug() << "No star detected in the image.";
+    //     result.image = image;
+    //     result.HFR = -1.0;
+    //     return result;
+    // }
+
+    // cv::Mat starRegion = image(starRect);
+    cv::Mat subimage = Tools::SubBackGround(image).clone();
+    int FirstMoment_x, FirstMoment_y;
+
+    double scale_up = 10.0;
+    cv::resize(subimage, subimage, cv::Size(), scale_up, scale_up, cv::INTER_LINEAR);
+
+    cv::Mat imageFloat;
+    subimage.convertTo(imageFloat, CV_64F);
+
+    double sum = cv::sum(imageFloat)[0];
+    double xCoordinate = 0.0;
+    double yCoordinate = 0.0;
+
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = imageFloat.at<double>(y, x);
+            xCoordinate += x * pixelValue;
+            yCoordinate += y * pixelValue;
+        }
+    }
+
+    xCoordinate /= sum;
+    yCoordinate /= sum;
+
+    FirstMoment_x = static_cast<int>(xCoordinate);
+    FirstMoment_y = static_cast<int>(yCoordinate);
+
+    double maxBrightness = subimage.at<ushort>(FirstMoment_y, FirstMoment_x);
+    double halfMaxBrightness = maxBrightness / 2.0;
+
+    std::vector<double> distances;
+
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = subimage.at<ushort>(y, x);
+            if (pixelValue >= halfMaxBrightness) {
+                double distance = std::sqrt(std::pow(x - FirstMoment_x, 2) + std::pow(y - FirstMoment_y, 2));
+                distances.push_back(distance);
+            }
+        }
+    }
+
+    double sumDistances = std::accumulate(distances.begin(), distances.end(), 0.0);
+    double HFR = sumDistances / distances.size() / 10.0;
+
+    // 在原图上绘制检测结果
+    cv::Mat imagePoint = image.clone();
+    cv::Point center(starRect.x + FirstMoment_x / 10, starRect.y + FirstMoment_y / 10);
+    cv::rectangle(imagePoint, starRect, cv::Scalar(0, 255, 0), 1); // 绘制外接矩形
+    cv::circle(imagePoint, center, static_cast<int>(HFR), cv::Scalar(0, 0, 255), 1); // 绘制HFR圆
+    cv::circle(imagePoint, center, 1, cv::Scalar(0, 255, 0), -1); // 绘制中心点
+
+    // 在图像上显示HFR数值
+    std::string hfrText = cv::format("%.2f", HFR);
+    cv::putText(imagePoint, hfrText, cv::Point(starRect.x, starRect.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+
+    result.image = imagePoint;
+    result.HFR = HFR;
+
+    return result;
+}
+
+cv::Mat Tools::processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor) {
+    uint32_t width = image.cols;
+    uint32_t height = image.rows;
+    uint32_t depth = image.elemSize() * 8; // 每个像素的位深
+
+    // 确保图像数据连续存储
+    // if (!image.isContinuous()) {
+    //     image = image.clone();
+    // }
+
+    // 获取输入数据指针
+    uint8_t* srcdata = image.data;
+
+    // 根据位深设置输出数据的大小
+    uint32_t outputSize;
+    if (depth == 8) {
+        outputSize = (width / camxbin) * (height / camybin);
+    } else if (depth == 16) {
+        outputSize = 2 * (width / camxbin) * (height / camybin);
+    } else if (depth == 32) {
+        outputSize = 4 * (width / camxbin) * (height / camybin);
+    } else {
+        std::cerr << "Unsupported depth!" << std::endl;
+    }
+
+    // 分配输出数据的内存
+    std::vector<uint8_t> bindata(outputSize, 0);
+
+    // 调用函数
+    // uint32_t result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
+    uint32_t result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, depth, camxbin, camybin, isColor);
+
+    if (result == QHYCCD_SUCCESS) {
+        // 处理成功，根据位深设置输出图像
+        int newWidth = width / camxbin;
+        int newHeight = height / camybin;
+        if (depth == 8) {
+            cv::Mat output(newHeight, newWidth, CV_8U, bindata.data()); 
+            return output;
+            // cv::imshow("Output Image", output);
+        } else if (depth == 16) {
+            cv::Mat output(newHeight, newWidth, CV_16U, bindata.data());
+            return output;
+            // cv::imshow("Output Image", output);
+        } else if (depth == 32) {
+            cv::Mat output(newHeight, newWidth, CV_32S, bindata.data());
+            return output;
+            // cv::imshow("Output Image", output);
+        }
+        // cv::waitKey(0);
+    } else {
+        std::cerr << "Error in PixelsDataSoftBin_AVG function." << std::endl;
+    }
+}
+
+uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin)
+{
+  uint32_t stride = width;
+  uint32_t newStride = width / camxbin;
+  if (depth == 8)
+  {
+    uint8_t *temp;
+    temp = (unsigned char *)malloc(2 * newStride * (height / camybin));
+    memset(temp, 0, 2 * newStride * (height / camybin));
+    for (uint32_t i = 0; i < height / camybin; i++)
+    {
+      for (uint32_t v = 0; v < camybin; v++)
+      {
+        uint16_t *pd = (uint16_t *)temp + newStride * i;
+        uint8_t *ps = (uint8_t *)srcdata + stride * (i * camybin + v);
+        for (uint32_t j = 0; j < width / camxbin; j++)
+        {
+          for (uint32_t h = 0; h < camxbin; h++)
+          {
+            uint32_t y = (uint16_t)(*pd + *ps);
+            *pd = y;
+            ps++;
+          }
+          pd++;
+        }
+      }
+    }
+    uint32_t i = 0;
+    memset(bindata, 0, newStride * (height / camybin));
+    uint16_t *tempbin = (uint16_t *)temp + i;
+    uint8_t *bin = bindata + i;
+    for (i = 0; i < newStride * (height / camybin); i++)
+    {
+      uint32_t avg = (uint8_t)(*tempbin / (camxbin * camybin));
+      *bin = avg;
+      bin++;
+      tempbin++;
+    }
+    free(temp);
+    // OutputDebugPrintf(QHYCCD_MSGL_INFO,"QHYCCD|QHYBASE.CPP|PixelsDataSoftBin_AVG 8bit end");
+    return QHYCCD_SUCCESS;
+  }
+  else if (depth == 16)
+  { // OutputDebugPrintf(QHYCCD_MSGL_INFO,"QHYCCD|QHYBASE.CPP|PixelsDataSoftBin_AVG 16bit");
+    uint8_t *temp;
+    temp = (unsigned char *)malloc(4 * newStride * (height / camybin));
+    memset(temp, 0, 4 * newStride * (height / camybin));
+    for (uint32_t i = 0; i < height / camybin; i++)
+    {
+      for (uint32_t v = 0; v < camybin; v++)
+      {
+        uint32_t *pd = (uint32_t *)temp + newStride * i;
+        uint16_t *ps = (uint16_t *)srcdata + stride * (i * camybin + v);
+        for (uint32_t j = 0; j < width / camxbin; j++)
+        { // OutputDebugPrintf(QHYCCD_MSGL_INFO,"QHYCCD|QHYBASE.CPP|PixelsDataSoftBin_AVG i=%d  v=%d  j=%d",i,v,j);
+          for (uint32_t h = 0; h < camxbin; h++)
+          {
+            uint32_t y = (uint32_t)(*pd + *ps);
+            *pd = y;
+            ps++;
+          }
+          pd++;
+        }
+      }
+    }
+    // OutputDebugPrintf(QHYCCD_MSGL_INFO,"QHYCCD|QHYBASE.CPP|PixelsDataSoftBin_AVG 16bit sum");
+    uint32_t i = 0;
+    memset(bindata, 0, 2 * newStride * (height / camybin));
+    uint32_t *tempbin = (uint32_t *)temp + i;
+    uint16_t *bin = (uint16_t *)bindata + i;
+    // OutputDebugPrintf(QHYCCD_MSGL_INFO,"QHYCCD|QHYBASE.CPP|PixelsDataSoftBin_AVG 16bit for start");
+    for (i = 0; i < newStride * (height / camybin); i++) // 2*
+    {
+      uint32_t avg = (uint16_t)(*tempbin / (camxbin * camybin));
+      *bin = avg;
+      bin++;
+      tempbin++;
+    }
+    // OutputDebugPrintf(QHYCCD_MSGL_INFO,"QHYCCD|QHYBASE.CPP|PixelsDataSoftBin_AVG 16bit for end");
+    free(temp);
+    // OutputDebugPrintf(QHYCCD_MSGL_INFO,"QHYCCD|QHYBASE.CPP|PixelsDataSoftBin_AVG 16bit end");
+    return QHYCCD_SUCCESS;
+  }
+  else if (depth == 32)
+  {
+
+    uint32_t *pd;
+    uint32_t *ps;
+    memset(bindata, 0, 4 * newStride * (height / camybin));
+
+    for (uint32_t i = 0; i < height / camybin; i++)
+    {
+      for (uint32_t v = 0; v < camybin; v++)
+      {
+        pd = (uint32_t *)bindata + newStride * i;
+        ps = (uint32_t *)srcdata + stride * (i * camybin + v);
+        for (uint32_t j = 0; j < width / camxbin; j++)
+        {
+          for (uint32_t h = 0; h < camxbin; h++)
+          {
+            uint32_t y = *pd + *ps;
+            *pd = y;
+            ps++;
+          }
+          pd++;
+        }
+      }
+    }
+
+    pd = (uint32_t *)(bindata);
+
+    for (uint32_t i = 0; i < height / camybin; i++)
+    {
+      for (uint32_t j = 0; j < width / camxbin; j++)
+      {
+        *pd = *pd / (camxbin * camybin);
+        pd++;
+      }
+    }
+
+    return QHYCCD_SUCCESS;
+  }
+  return QHYCCD_ERROR;
+}
+
+uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
+{
+  if (iscolor)
+  {
+    unsigned char *data = NULL;
+    if (srcdata == bindata)
+    {
+      data = new unsigned char[(width * depth / 8 + 3) / 4 * 4 * height];
+      memcpy(data, srcdata, (width * depth / 8 + 3) / 4 * 4 * height);
+      srcdata = data;
+    }
+    if (depth == 8)
+    {
+      memset(bindata, 0, (width / camxbin) * (height / camybin));
+      for (uint32_t i = 0; i < height / camybin / 2; i++)
+      {
+        uint8_t *pd = bindata + width / camxbin * i * 2;
+        uint8_t *ps = srcdata + width * camxbin * i * 2;
+        uint8_t *psEnd = ps + width / camxbin * camxbin - 1;
+        for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+        {
+          for (int yi = 1; yi <= camybin; yi++)
+          {
+            for (int xi = 1; xi <= camxbin; xi++)
+            {
+              uint32_t y00 = LimitByte(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
+              uint32_t y01 = LimitByte(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
+              uint32_t y10 = LimitByte(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
+              uint32_t y11 = LimitByte(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
+              pd[0] = y00;
+              pd[1] = y01;
+              pd[width / camxbin + 0] = y10;
+              pd[width / camxbin + 1] = y11;
+            }
+          }
+        }
+      }
+      return QHYCCD_SUCCESS;
+    }
+    else if (depth == 16)
+    {
+      memset(bindata, 0, 2 * (width / camxbin) * (height / camybin));
+      for (uint32_t i = 0; i < height / camybin / 2; i++)
+      {
+        uint16_t *pd = (uint16_t *)bindata + width / camxbin * i * 2;
+        uint16_t *ps = (uint16_t *)srcdata + width * camxbin * i * 2;
+        uint16_t *psEnd = ps + width / camxbin * camxbin - 1;
+        for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+        {
+          for (int yi = 1; yi <= camybin; yi++)
+          {
+            for (int xi = 1; xi <= camxbin; xi++)
+            {
+              uint32_t y00 = LimitShort(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
+              uint32_t y01 = LimitShort(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
+              uint32_t y10 = LimitShort(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
+              uint32_t y11 = LimitShort(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
+              pd[0] = y00;
+              pd[1] = y01;
+              pd[width / camxbin + 0] = y10;
+              pd[width / camxbin + 1] = y11;
+            }
+          }
+        }
+      }
+      return QHYCCD_SUCCESS;
+    }
+    else if (depth == 32)
+    {
+      memset(bindata, 0, 4 * (width / camxbin) * (height / camybin));
+      for (uint32_t i = 0; i < height / camybin / 2; i++)
+      {
+        uint32_t *pd = (uint32_t *)bindata + width / camxbin * i * 2;
+        uint32_t *ps = (uint32_t *)srcdata + width * camxbin * i * 2;
+        uint32_t *psEnd = ps + width / camxbin * camxbin - 1;
+        for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+        {
+          for (int yi = 1; yi <= camybin; yi++)
+          {
+            for (int xi = 1; xi <= camxbin; xi++)
+            {
+              pd[0] += ps[2 * (yi - 1) * width + 2 * (xi - 1)];
+              pd[1] += ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1];
+              pd[width / camxbin + 0] += ps[width * (2 * yi - 1) + 2 * (xi - 1)];
+              pd[width / camxbin + 1] += ps[width * (2 * yi - 1) + 2 * xi - 1];
+            }
+          }
+        }
+      }
+      return QHYCCD_SUCCESS;
+    }
+    if (data != NULL)
+    {
+      delete[] data;
+    }
+  }
+  else
+  {
+    uint32_t stride = width;
+    uint32_t newStride = width / camxbin;
+
+    if (depth == 8)
+    {
+      memset(bindata, 0, newStride * (height / camybin));
+      for (uint32_t i = 0; i < height / camybin; i++)
+      {
+        for (uint32_t v = 0; v < camybin; v++)
+        {
+          uint8_t *pd = bindata + newStride * i;
+          uint8_t *ps = srcdata + stride * (i * camybin + v);
+          for (uint32_t j = 0; j < width / camxbin; j++)
+          {
+            for (uint32_t h = 0; h < camxbin; h++)
+            {
+              uint32_t y = LimitByte(*pd + *ps);
+              *pd = y;
+              ps++;
+            }
+            pd++;
+          }
+        }
+      }
+      return QHYCCD_SUCCESS;
+    }
+    else if (depth == 16)
+    {
+      memset(bindata, 0, 2 * newStride * (height / camybin));
+      for (uint32_t i = 0; i < height / camybin; i++)
+      {
+        for (uint32_t v = 0; v < camybin; v++)
+        {
+          uint16_t *pd = (uint16_t *)bindata + newStride * i;
+          uint16_t *ps = (uint16_t *)srcdata + stride * (i * camybin + v);
+          for (uint32_t j = 0; j < width / camxbin; j++)
+          {
+            for (uint32_t h = 0; h < camxbin; h++)
+            {
+              uint32_t y = LimitShort(*pd + *ps);
+              *pd = y;
+              ps++;
+            }
+            pd++;
+          }
+        }
+      }
+      return QHYCCD_SUCCESS;
+    }
+    else if (depth == 32)
+    {
+      memset(bindata, 0, 4 * newStride * (height / camybin));
+
+      for (uint32_t i = 0; i < height / camybin; i++)
+      {
+        for (uint32_t v = 0; v < camybin; v++)
+        {
+          uint32_t *pd = (uint32_t *)bindata + newStride * i;
+          uint32_t *ps = (uint32_t *)srcdata + stride * (i * camybin + v);
+          for (uint32_t j = 0; j < width / camxbin; j++)
+          {
+            for (uint32_t h = 0; h < camxbin; h++)
+            {
+              uint32_t y = *pd + *ps;
+              *pd = y;
+              ps++;
+            }
+            pd++;
+          }
+        }
+      }
+      return QHYCCD_SUCCESS;
+    }
+  }
+  return QHYCCD_ERROR;
+}
+
+void Tools::SaveMatToJPG(cv::Mat image)
+{
+  if (image.empty())
+  {
+    std::cerr << "输入图像为空，无法保存！" << std::endl;
+    return;
+  }
+
+  // 打印输入图像的信息
+  std::cout << "Input image type: " << image.type() << ", size: " << image.size() << std::endl;
+
+  cv::Mat image16;
+  cv::Mat SendImage;
+
+  // 确保输入图像是8位深度
+  if (image.depth() == CV_8U)
+  {
+    qDebug("256, 0");
+    image.convertTo(image16, CV_16UC1, 256, 0); // x256  MSB alignment
+  }
+  else if (image.depth() == CV_16U)
+  {
+    qDebug("1, 0");
+    image.convertTo(image16, CV_16UC1, 1, 0);
+  }
+  else
+  {
+    std::cerr << "Unsupported image depth: " << image.depth() << std::endl;
+    return;
+  }
+
+  // 打印转换后图像的信息
+  std::cout << "Converted image type: " << image16.type() << ", size: " << image16.size() << std::endl;
+
+  cv::Mat NewImage = image16;
+
+  // 打印新图像的信息
+  std::cout << "New image type: " << NewImage.type() << ", size: " << NewImage.size() << std::endl;
+
+  // 将图像缩放到0-255范围内
+  cv::normalize(NewImage, SendImage, 0, 255, cv::NORM_MINMAX, CV_8U);
+
+  // 打印最终图像的信息
+  std::cout << "SendImage type: " << SendImage.type() << ", size: " << SendImage.size() << std::endl;
+
+  std::string outputFilename = "/dev/shm/MatToJPG.jpg";
+  bool saved = cv::imwrite(outputFilename, SendImage);
+
+  if (!saved)
+  {
+    std::cerr << "图像保存失败！" << std::endl;
+  }
+  else
+  {
+    std::cout << "图像已成功保存到: " << outputFilename << std::endl;
+  }
 }
 
 /*************************************************************************
@@ -2323,62 +3322,125 @@ double Tools::rangeTo(double value, double max, double min) {
 }
 
 // 2023.12.21 CJQ
-// double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
-//   int year = datetimeUTC.date().year();
-//   int month = datetimeUTC.date().month();
-//   int day = datetimeUTC.date().day();
-//   int hour = datetimeUTC.time().hour();
-//   int minute = datetimeUTC.time().minute();
-//   int second = datetimeUTC.time().second();
-//   int msec = datetimeUTC.time().msec();
+double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
+  int year = datetimeUTC.date().year();
+  int month = datetimeUTC.date().month();
+  int day = datetimeUTC.date().day();
+  int hour = datetimeUTC.time().hour();
+  int minute = datetimeUTC.time().minute();
+  int second = datetimeUTC.time().second();
+  int msec = datetimeUTC.time().msec();
 
-// #ifdef debug
-//   qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << datetimeUTC;
-//   qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << year << month << day
-//            << hour << minute << second << msec;
-// #endif
+#ifdef debug
+  qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << datetimeUTC;
+  qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << year << month << day
+           << hour << minute << second << msec;
+#endif
 
-//   double jd;
-//   StelUtils::getJDFromDate(&jd, year, month, day, hour, minute, second);
+  double jd;
+  getJDFromDate(&jd, year, month, day, hour, minute, second);
 
-//   double d;
-//   d = jd - 2451545.0;
+  double d;
+  d = jd - 2451545.0;
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|d = %f", d);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|d = %f", d);
+#endif
 
-//   double UT;
+  double UT;
 
-//   UT = hour + (minute * 60 + second + (double)msec / 1000) / 3600.0;
+  UT = hour + (minute * 60 + second + (double)msec / 1000) / 3600.0;
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|UT = %f", UT);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|UT = %f", UT);
+#endif
 
-//   double longitude_Degree = RadToDegree(longitude_radian);
+  double longitude_Degree = RadToDegree(longitude_radian);
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|longitude (degree) = %f", longitude_Degree);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|longitude (degree) = %f", longitude_Degree);
+#endif
 
-//   double LST;
+  double LST;
 
-//   LST = 100.46 + 0.985647 * d + longitude_Degree + 15 * UT;
+  LST = 100.46 + 0.985647 * d + longitude_Degree + 15 * UT;
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|LST before range = %f", LST);
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|LST before range = %f", LST);
+#endif
 
-//   LST = rangeTo(LST, 360.0, 0.0);
+  LST = rangeTo(LST, 360.0, 0.0);
 
-// #ifdef debug
-//   qDebug("tools.cpp|getLST_Degree|LST after  range (degree) %f (hms) %s", LST,
-//          qPrintable(radToHmsStr(DegreeToRad(LST), true)));
-// #endif
+#ifdef debug
+  qDebug("tools.cpp|getLST_Degree|LST after  range (degree) %f (hms) %s", LST,
+         qPrintable(radToHmsStr(DegreeToRad(LST), true)));
+#endif
 
-//   return LST;
-// }
+  return LST;
+}
+
+bool Tools::getJDFromDate(double *newjd, const int y, const int m, const int d, const int h, const int min, const float s)
+{
+    static const long IGREG2 = 15 + 31L * (10 + 12L * 1582);
+    double deltaTime = (h / 24.0) + (min / (24.0 * 60.0)) + (static_cast<double>(s) / (24.0 * 60.0 * 60.0)) - 0.5;
+    QDate test((y <= 0 ? y - 1 : y), m, d);
+    // if QDate will oblige, do so.
+    // added hook for Julian calendar, because it has been removed from Qt5 --AW
+    if (test.isValid() && y > 1582)
+    {
+        double qdjd = static_cast<double>(test.toJulianDay());
+        qdjd += deltaTime;
+        *newjd = qdjd;
+        return true;
+    }
+    else
+    {
+        /*
+         * Algorithm taken from "Numerical Recipes in C, 2nd Ed." (1992), pp. 11-12
+         */
+        long ljul;
+        long jy, jm;
+        long laa, lbb, lcc, lee;
+
+        jy = y;
+        if (m > 2)
+        {
+            jm = m + 1;
+        }
+        else
+        {
+            --jy;
+            jm = m + 13;
+        }
+
+        laa = 1461 * jy / 4;
+        if (jy < 0 && jy % 4)
+        {
+            --laa;
+        }
+        lbb = 306001 * jm / 10000;
+        ljul = laa + lbb + d + 1720995L;
+
+        if (d + 31L * (m + 12L * y) >= IGREG2)
+        {
+            lcc = jy / 100;
+            if (jy < 0 && jy % 100)
+            {
+                --lcc;
+            }
+            lee = lcc / 4;
+            if (lcc < 0 && lcc % 4)
+            {
+                --lee;
+            }
+            ljul += 2 - lcc + lee;
+        }
+        double jd = static_cast<double>(ljul);
+        jd += deltaTime;
+        *newjd = jd;
+        return true;
+    }
+}
 
 double Tools::getHA_Degree(double RA_radian, double LST_Degree) {
   double HA;
@@ -2424,17 +3486,16 @@ void Tools::ra_dec_to_alt_az(double ha_radian, double dec_radian,
 #endif
 }
 
-
 // 2023.12.21 CJQ
-// void Tools::full_ra_dec_to_alt_az(QDateTime datetimeUTC, double ra_radian,
-//                                   double dec_radian, double latitude_radian,
-//                                   double longitude_radian, double& alt_radian,
-//                                   double& az_radian) {
-//   double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
-//   double HA_Degree = getHA_Degree(ra_radian, LST_Degree);
-//   ra_dec_to_alt_az(DegreeToRad(HA_Degree), dec_radian, alt_radian, az_radian,
-//                    latitude_radian);
-// }
+void Tools::full_ra_dec_to_alt_az(QDateTime datetimeUTC, double ra_radian,
+                                  double dec_radian, double latitude_radian,
+                                  double longitude_radian, double& alt_radian,
+                                  double& az_radian) {
+  double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
+  double HA_Degree = getHA_Degree(ra_radian, LST_Degree);
+  ra_dec_to_alt_az(DegreeToRad(HA_Degree), dec_radian, alt_radian, az_radian,
+                   latitude_radian);
+}
 
 void Tools::alt_az_to_ra_dec(double alt_radian, double az_radian,
                              double& hr_radian, double& dec_radian,
@@ -2479,24 +3540,24 @@ void Tools::alt_az_to_ra_dec(double alt_radian, double az_radian,
 }
 
 // 2023.12.21 CJQ
-// void Tools::full_alt_az_to_ra_dec(QDateTime datetimeUTC, double alt_radian,
-//                                   double az_radian, double latitude_radian,
-//                                   double longitude_radian, double& ra_radian,
-//                                   double& dec_radian) {
-//   double ha_radian = 0;
+void Tools::full_alt_az_to_ra_dec(QDateTime datetimeUTC, double alt_radian,
+                                  double az_radian, double latitude_radian,
+                                  double longitude_radian, double& ra_radian,
+                                  double& dec_radian) {
+  double ha_radian = 0;
 
-//   alt_az_to_ra_dec(alt_radian, az_radian, ha_radian, dec_radian,
-//                    latitude_radian);
+  alt_az_to_ra_dec(alt_radian, az_radian, ha_radian, dec_radian,
+                   latitude_radian);
 
-//   double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
+  double LST_Degree = getLST_Degree(datetimeUTC, longitude_radian);
 
-//   double RA_Degree;
-//   RA_Degree = LST_Degree - RadToDegree(ha_radian);
+  double RA_Degree;
+  RA_Degree = LST_Degree - RadToDegree(ha_radian);
 
-//   RA_Degree = rangeTo(RA_Degree, 360.0, 0.0);
+  RA_Degree = rangeTo(RA_Degree, 360.0, 0.0);
 
-//   ra_radian = DegreeToRad(RA_Degree);
-// }
+  ra_radian = DegreeToRad(RA_Degree);
+}
 
 // 2023.12.21 CJQ
 // void Tools::getCurrentMeridianRADEC(double Latitude_radian,
@@ -2801,7 +3862,7 @@ MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double Cam
   qDebug() << "FocalLength: " << FocalLength << ", " << "CameraSize: " << CameraSize_width << ", " << CameraSize_height;
 
   double CameraSize_diagonal = sqrt(pow(CameraSize_width, 2) + pow(CameraSize_height, 2));
-  qDebug() << CameraSize_diagonal;
+  // qDebug() << CameraSize_diagonal;
 
   double minFOV,maxFOV;
 
@@ -2816,15 +3877,79 @@ MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double Cam
   return result;
 }
 
-SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double CameraSize_height, double Ra_Degree, double Dec_Degree, bool USEQHYCCDSDK)
+// 计算格林尼治恒星时 (GST)
+double Tools::calculateGST(const std::tm& date) {
+    std::tm epoch = {0, 0, 12, 1, 0, 100}; // Jan 1, 2000 12:00:00 UTC
+    std::time_t epoch_time = std::mktime(&epoch);
+    std::time_t now_time = std::mktime(const_cast<std::tm*>(&date));
+    double JD = 2451545.0 + (now_time - epoch_time) / 86400.0;
+    double T = (JD - 2451545.0) / 36525.0;
+    double GST = 280.46061837 + 360.98564736629 * (JD - 2451545.0) + 0.000387933 * T * T - (T * T * T / 38710000.0);
+    return fmod(GST, 360.0);
+}
+
+AltAz Tools::calculateAltAz(double ra, double dec, double lat, double lon, const std::tm& date) {
+    // 将输入值转换为弧度
+    double ra_rad = Tools::DegreeToRad(ra * 15.0); // 赤经转换为弧度并乘以15
+    double dec_rad = Tools::DegreeToRad(dec);
+    double lat_rad = Tools::DegreeToRad(lat);
+    double lon_rad = Tools::DegreeToRad(lon);
+
+    // 计算GST和LST
+    double GST = Tools::calculateGST(date);
+    double LST = fmod(GST + lon, 360.0); // LST在0-360度范围内
+    double HA = Tools::DegreeToRad(LST) - ra_rad; // 时角
+
+    // 计算高度角
+    double alt_rad = asin(sin(dec_rad) * sin(lat_rad) + cos(dec_rad) * cos(lat_rad) * cos(HA));
+    double alt_deg = Tools::RadToDegree(alt_rad);
+
+    // 计算方位角
+    double cosAz = (sin(dec_rad) - sin(alt_rad) * sin(lat_rad)) / (cos(alt_rad) * cos(lat_rad));
+    double az_rad = acos(cosAz);
+    double az_deg = Tools::RadToDegree(az_rad);
+
+    // 调整方位角
+    if (sin(HA) > 0) {
+        az_deg = 360.0 - az_deg;
+    }
+
+    return { alt_deg, az_deg };
+}
+
+void Tools::printDMS(double angle) {
+    int degrees = static_cast<int>(angle);
+    double fractional = angle - degrees;
+    int minutes = static_cast<int>(fractional * 60);
+    double seconds = (fractional * 60 - minutes) * 60;
+
+    std::cout << degrees << "° " << minutes << "' " << std::fixed << std::setprecision(2) << seconds << "\"";
+}
+
+double Tools::DMSToDegree(int degrees, int minutes, double seconds) {
+    // 确定符号
+    double sign = degrees < 0 ? -1.0 : 1.0;
+    // 计算绝对值
+    double absDegrees = std::abs(degrees) + minutes / 60.0 + seconds / 3600.0;
+    return sign * absDegrees;
+}
+
+bool Tools::WaitForPlateSolveToComplete() {
+  // qDebug() << "Wait For Plate Solve To Complete.";
+  return !PlateSolveInProgress;
+}
+
+bool Tools::isSolveImageFinish() {
+  return isSolveImageFinished;
+}
+
+SloveResults Tools::PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK)
 {
+  PlateSolveInProgress = true;
+  isSolveImageFinished = false;
+
   SloveResults result;
   MinMaxFOV FOV;
-
-  qDebug() << "Ra_Degree:" << Ra_Degree << "," << "Dec_Degree:" << Dec_Degree;
-
-  QString RA = QString::number(Ra_Degree);
-  QString DEC = QString::number(Dec_Degree);
 
   FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
 
@@ -2833,18 +3958,20 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
 
   // solve image
   QProcess* cmd_test = new QProcess();
+  QObject::connect(cmd_test, SIGNAL(finished(int)), instance_, SLOT(onSolveFinished(int)));
 
   QString command_qstr;
-  QString filename;
+  // QString filename;
   if(USEQHYCCDSDK == false)
   {
-    filename = "/dev/shm/ccd_simulator_";
-    command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    // filename = "/dev/shm/ccd_simulator";
+    // command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
   }
   else
   {
     filename = "/dev/shm/SDK_Capture";
-    command_qstr="solve-field " + filename + ".png"  + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    // command_qstr="solve-field " + filename + ".png"  + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
   }
 
   const char* command;
@@ -2856,9 +3983,20 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
   cmd_test->waitForFinished();
 
   QApplication::processEvents();
+}
 
+SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageHeight) {
+  isSolveImageFinished = false;
+
+  SloveResults result;
+  filename = filename.chopped(5);
+
+  QString command_qstr;
   command_qstr = "wcsinfo " + filename + ".wcs";
+  const char* command;
   command = command_qstr.toLocal8Bit();
+  qDebug() << command;  // TODO:娉ㄩ噴鎺?  
+  QProcess* cmd_test = new QProcess();
 
   cmd_test->start(command);
   cmd_test->waitForStarted();
@@ -2886,23 +4024,103 @@ SloveResults Tools::PlateSlove(int FocalLength,double CameraSize_width,double Ca
   DEC_Degree = str_DEC_Degree.toDouble();
   Rotation_Degree = str_Rotation.toDouble();
 
+  WCSParams wcs = extractWCSParams(str);
+  std::vector<SphericalCoordinates> corners = getFOVCorners(wcs, imageWidth, imageHeight);
+  std::cout << "FOV Corners (Ra, Dec):" << std::endl;
+  for (const auto &corner : corners)
+  {
+    std::cout << "Ra: " << corner.ra << ", Dec: " << corner.dec << std::endl;
+  }
+  result.RA_0 = corners[0].ra;
+  result.DEC_0 = corners[0].dec;
+  result.RA_1 = corners[1].ra;
+  result.DEC_1 = corners[1].dec;
+  result.RA_2 = corners[2].ra;
+  result.DEC_2 = corners[2].dec;
+  result.RA_3 = corners[3].ra;
+  result.DEC_3 = corners[3].dec;
+
   qDebug("RA DEC Rotation(degree) %f %f %f", RA_Degree, DEC_Degree, Rotation_Degree);
   if (str == "") {
     qDebug("Tools:Plate Solve Failur");
     result.RA_Degree = -1;
     result.DEC_Degree = -1;
+    PlateSolveInProgress = false;
     return result;
   } else {
     qDebug() << "RA DEC " << QString::number(RA_Degree, 'g', 9) << " " << QString::number(DEC_Degree, 'g', 9);
     result.RA_Degree = RA_Degree;
     result.DEC_Degree = DEC_Degree;
+    PlateSolveInProgress = false;
     return result;
   }
 }
 
+SloveResults Tools::onSolveFinished(int exitCode) {
+  qDebug("Solve Finished!!!");
+  qDebug("Solve Finished!!!");
+  qDebug("Solve Finished!!!");
+  isSolveImageFinished = true;
+}
+
+WCSParams Tools::extractWCSParams(const QString& wcsInfo) {
+  WCSParams wcs;
+    
+    int pos1 = wcsInfo.indexOf("crpix0");
+    int pos2 = wcsInfo.indexOf("crpix1");
+    int pos3 = wcsInfo.indexOf("crval0");
+    int pos4 = wcsInfo.indexOf("crval1");
+    int pos5 = wcsInfo.indexOf("cd11");
+    int pos6 = wcsInfo.indexOf("cd12");
+    int pos7 = wcsInfo.indexOf("cd21");
+    int pos8 = wcsInfo.indexOf("cd22");
+
+    wcs.crpix0 = wcsInfo.mid(pos1 + 7, wcsInfo.indexOf("\n", pos1) - pos1 - 7).toDouble();
+    wcs.crpix1 = wcsInfo.mid(pos2 + 7, wcsInfo.indexOf("\n", pos2) - pos2 - 7).toDouble();
+    wcs.crval0 = wcsInfo.mid(pos3 + 7, wcsInfo.indexOf("\n", pos3) - pos3 - 7).toDouble();
+    wcs.crval1 = wcsInfo.mid(pos4 + 7, wcsInfo.indexOf("\n", pos4) - pos4 - 7).toDouble();
+    wcs.cd11 = wcsInfo.mid(pos5 + 5, wcsInfo.indexOf("\n", pos5) - pos5 - 5).toDouble();
+    wcs.cd12 = wcsInfo.mid(pos6 + 5, wcsInfo.indexOf("\n", pos6) - pos6 - 5).toDouble();
+    wcs.cd21 = wcsInfo.mid(pos7 + 5, wcsInfo.indexOf("\n", pos7) - pos7 - 5).toDouble();
+    wcs.cd22 = wcsInfo.mid(pos8 + 5, wcsInfo.indexOf("\n", pos8) - pos8 - 5).toDouble();
+
+    qDebug() << "crpix0: " << QString::number(wcs.crpix0, 'g', 9);
+    qDebug() << "crpix1: " << QString::number(wcs.crpix1, 'g', 9);
+    qDebug() << "crval0: " << QString::number(wcs.crval0, 'g', 9);
+    qDebug() << "crval1: " << QString::number(wcs.crval1, 'g', 9);
+    qDebug() << "cd11: " << QString::number(wcs.cd11, 'g', 9);
+    qDebug() << "cd12: " << QString::number(wcs.cd12, 'g', 9);
+    qDebug() << "cd21: " << QString::number(wcs.cd21, 'g', 9);
+    qDebug() << "cd22: " << QString::number(wcs.cd22, 'g', 9);
+    
+    return wcs;
+}
+
+// 函数：从像素坐标转换为RaDec
+SphericalCoordinates Tools::pixelToRaDec(double x, double y, const WCSParams& wcs) {
+    double dx = x - wcs.crpix0;
+    double dy = y - wcs.crpix1;
+
+    double ra = wcs.crval0 + wcs.cd11 * dx + wcs.cd12 * dy;
+    double dec = wcs.crval1 + wcs.cd21 * dx + wcs.cd22 * dy;
+
+    return {ra, dec};
+}
+
+// 函数：从WCS参数和图像尺寸计算四个角的RaDec值
+std::vector<SphericalCoordinates> Tools::getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight) {
+    std::vector<SphericalCoordinates> corners(4);
+    corners[0] = pixelToRaDec(0, 0, wcs);                  // Bottom-left
+    corners[1] = pixelToRaDec(imageWidth, 0, wcs);         // Bottom-right
+    corners[2] = pixelToRaDec(imageWidth, imageHeight, wcs); // Top-right
+    corners[3] = pixelToRaDec(0, imageHeight, wcs);        // Top-left
+
+    return corners;
+}
+
 int Tools::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c) {
     int n = data.size();
-    if (n < 4) {
+    if (n < 5) {
         return -1; // 数据点数量不足
     }
     cv::Mat A(n, 3, CV_32F);
@@ -2925,6 +4143,31 @@ int Tools::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, f
     c = X.at<float>(2, 0);
 
     return 0; // 拟合成功
+}
+
+double Tools::calculateRSquared(QVector<QPointF> data, float a, float b, float c) {
+    double ssTotal = 0.0;
+    double ssResidual = 0.0;
+    double meanY = 0.0;
+
+    // 计算 y 的平均值
+    for (const QPointF &point : data) {
+        meanY += point.y();
+    }
+    meanY /= data.size();
+
+    for (const QPointF &point : data) {
+        float x = point.x();
+        float y = point.y();
+        float yFit = a * x * x + b * x + c;
+        ssTotal += (y - meanY) * (y - meanY);
+        ssResidual += (y - yFit) * (y - yFit);
+    }
+
+    double rSquared = 1 - (ssResidual / ssTotal);
+
+    // rSquaredLabel->setText(QString("R²: %1").arg(rSquared));
+    return rSquared;
 }
 
 // 2023.12.21 CJQ

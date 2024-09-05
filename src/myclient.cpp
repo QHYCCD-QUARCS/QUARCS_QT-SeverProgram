@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 #include <QDebug>
+#include <QObject>
 //#include <qhyccd.h>
 
 #include <fitsio.h>
@@ -37,17 +38,18 @@ MyClient::MyClient()
 
 void MyClient::newMessage(INDI::BaseDevice baseDevice, int messageID)
 {
-   // if (!baseDevice.isDeviceNameMatch("Simple CCD"))
-    //    return;
+    // qDebug("[INDI SERVER] %s", baseDevice.messageQueue(messageID).c_str());
 
-   qDebug("[INDI SERVER] %s", baseDevice.messageQueue(messageID).c_str());
+    std::string message = baseDevice->messageQueue(messageID);
+    receiveMessage(message);
 }
+
 void MyClient::newProperty(INDI::Property property)
 {
    // if (!baseDevice.isDeviceNameMatch("Simple CCD"))
     //    return;
 
-    qDebug()<<property->getName();
+    // qDebug() << "newProperty: " << property->getName();
     //qDebug("Recveing message from Server %s", baseDevice.messageQueue(messageID).c_str());
 }
 
@@ -68,22 +70,51 @@ void MyClient::newDevice(INDI::BaseDevice baseDevice){
 
 void MyClient::updateProperty(INDI::Property property)
 {
-    // qDebug() << "updateProperty:" << property.getType();
     if (property.getType() == INDI_BLOB)
     {
+        CaptureTestTime = CaptureTestTimer.elapsed();
+        qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+        CaptureTestTimer.invalidate();
+
         qDebug("Recveing image from Server size len name label format %d %d %s %s %s", property.getBLOB()->bp->size,property.getBLOB()->bp->bloblen,property.getBLOB()->bp->name,property.getBLOB()->bp->label,property.getBLOB()->bp->format);
+
         std::ofstream myfile;
         std::string filename="/dev/shm/ccd_simulator.fits";
         myfile.open(filename, std::ios::out | std::ios::binary);
         myfile.write(static_cast<char *>(property.getBLOB()->bp->blob), property.getBLOB()->bp->bloblen);
         myfile.close();
 
-        //readFitsHead("ccd_simulator.fits");
         QString devname_;
         Tools::readFitsHeadForDevName(filename,devname_);
         std::string devname = devname_.toStdString();
 
         receiveImage(filename, devname);
+    } 
+    else if (property.getType() == INDI_TEXT)
+    {
+        // qDebug() << "\033[32m" << "INDI new Text(label):" << property.getText()->label << "\033[0m";
+        // qDebug() << "\033[32m" << "INDI new Text(name):" << property.getText()->name << "\033[0m";
+
+        auto tvp = property.getText();
+        if (tvp->isNameMatch("CCD_FILE_PATH"))
+        {
+            auto filepath = tvp->findWidgetByName("FILE_PATH");
+            if (filepath){
+                qDebug() << "\033[32m" << "New Capture Image Save To" << QString(filepath->getText()) << "\033[0m";
+
+                CaptureTestTime = CaptureTestTimer.elapsed();
+                qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+                CaptureTestTimer.invalidate();
+
+                QString devname_;
+                Tools::readFitsHeadForDevName(QString(filepath->getText()).toStdString(),devname_);
+                std::string devname = devname_.toStdString();
+
+                receiveImage(QString(filepath->getText()).toStdString(), devname);
+            }  
+        }
+    } else if (property.getType() == INDI_NUMBER) {
+
     }
 }
 
@@ -314,6 +345,9 @@ uint32_t MyClient::takeExposure(INDI::BaseDevice *dp,double seconds)
         IDLog("Error: unable to find CCD Simulator CCD_EXPOSURE property...\n");
         return QHYCCD_ERROR;
     }
+
+    CaptureTestTimer.start();
+    qDebug() << "\033[32m" << "Exposure start." << "\033[0m";
 
     // Take a 1 second exposure
     IDLog("Taking a %g second exposure.\n", seconds);
@@ -643,7 +677,38 @@ uint32_t MyClient::setCCDReadMode(INDI::BaseDevice *dp,int value)
     return QHYCCD_SUCCESS;
 }
 
+uint32_t MyClient::setCCDUploadModeToLacal(INDI::BaseDevice *dp) {
+    INDI::PropertySwitch uploadmode = dp->getProperty("UPLOAD_MODE");
 
+    if (!uploadmode.isValid())
+    {
+        IDLog("Error: unable to find UPLOAD_MODE property...\n");
+        return QHYCCD_ERROR;
+    }
+
+    uploadmode[0].setState(ISS_OFF);
+    uploadmode[1].setState(ISS_ON);
+    uploadmode[2].setState(ISS_OFF);
+
+    sendNewProperty(uploadmode);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefix) {
+    INDI::PropertyText upload = dp->getProperty("UPLOAD_SETTINGS");
+
+    if (!upload.isValid())
+    {
+        IDLog("Error: unable to find UPLOAD_SETTINGS property...\n");
+        return QHYCCD_ERROR;
+    }
+
+    upload[0].setText(Dir.toLatin1().data());
+    upload[1].setText(Prefix.toLatin1().data());
+
+    sendNewProperty(upload);
+    return QHYCCD_SUCCESS;
+}
 
 
 uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
@@ -1533,9 +1598,9 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 
 
 
-uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
+uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
 {
-    INDI::PropertyText property = dp->getProperty("OnStep_Status");
+    INDI::PropertyText property = dp->getProperty("OnStep Status");
 
     if (!property.isValid())
     {
@@ -1544,7 +1609,11 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu)
     }
     
     statu = property[1].getText();
-    qDebug()<<"OnStep Status: "<< statu;
+    error = property[7].getText();
+    // qDebug()<<"OnStep error: "<< error;
+    if(error != "None") {
+        qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
+    }
     
     return QHYCCD_SUCCESS;
 }
@@ -1616,7 +1685,7 @@ uint32_t MyClient::setFocuserMoveDiretion(INDI::BaseDevice *dp,bool isDirectionI
     if(isDirectionIn==true)   {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
     if(isDirectionIn==false)  {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
     sendNewProperty(property);
-    qDebug() << "setFocuserMoveDiretion | IN/OUT isDirectionIn:" << isDirectionIn ;
+    // qDebug() << "setFocuserMoveDiretion | IN/OUT isDirectionIn:" << isDirectionIn ;
     return QHYCCD_SUCCESS;
 }
 
@@ -1871,23 +1940,26 @@ uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp,int position)
 
 
     sendNewProperty(property);
+
     QElapsedTimer t;
     t.start();
 
     int timeout=10000;
     while(t.elapsed()<timeout){
         qDebug() <<property->getStateAsString();
-        qDebug() << "State:" << property->getState();
+        // qDebug() << "State:" << property->getState();
         QThread::msleep(300);
-        if(property->getState()==IPS_OK) break;  // it will not wait the motor arrived
-     }
+        if(property->getState()==IPS_OK) {
+            qDebug() <<property->getStateAsString();
+            break;  // it will not wait the motor arrived
+        }
+    }
 
     if(t.elapsed()>timeout){
-       qDebug() << "setTelescopeHomeInit | ERROR : timeout ";
+       qDebug() << "setCFWPosition | ERROR : timeout ";
        return QHYCCD_ERROR;
     }
 
-    qDebug()<<"setCFWPosition"<< position ;
     return QHYCCD_SUCCESS;
 }
 
@@ -1903,7 +1975,7 @@ uint32_t MyClient::getCFWSlotName(INDI::BaseDevice *dp,QString & name)
 
     name   = property[0].getText();
 
-    qDebug() << "setCFWSlotName" << name   ;
+    qDebug() << "getCFWSlotName" << name;
     return QHYCCD_SUCCESS;
 }
 

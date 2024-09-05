@@ -74,7 +74,7 @@ void WebSocketClient::onNetworkStateChanged(bool isOnline)
 
 void WebSocketClient::onTextMessageReceived(QString message)
 {
-    // qDebug() << "Message received:" << message;
+    qDebug() << "Message received:" << message;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
     QJsonObject messageObj = doc.object();
 

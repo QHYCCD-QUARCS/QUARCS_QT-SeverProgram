@@ -19,6 +19,19 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <QNetworkInterface>
+#include <filesystem>
+
+#include <string>
+#include <algorithm>
+#include <sys/statvfs.h>
+#include <QStorageInfo>
+
+#include <stellarsolver.h>
+
+#include "platesolveworker.h"
+
+#include <regex>
 
 class MainWindow : public QObject
 {
@@ -28,12 +41,14 @@ public:
     explicit MainWindow(QObject *parent = nullptr);
     ~MainWindow();
 
+    void getHostAddress();
+
     void initINDIClient();
     void initINDIServer();
 
-    QString connectIndiServer();
-    void disconnectIndiServer();
-    void connectDevice(int x);
+    // QString connectIndiServer();
+    // void disconnectIndiServer();
+    // void connectDevice(int x);
 
     void readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
                               std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from);
@@ -43,7 +58,7 @@ public:
     void SelectIndiDevice(int systemNumber,int grounpNumber);
 
     bool indi_Driver_Confirm(QString DriverName);
-    void indi_Device_Confirm(QString DeviceName);
+    void indi_Device_Confirm(QString DeviceName, QString DriverName);
 
     uint32_t clearCheckDeviceExist(QString drivername,bool &isExist);
 
@@ -51,6 +66,8 @@ public:
     void AfterDeviceConnect();
     void disconnectIndiServer(MyClient *client);
     void connectIndiServer(MyClient *client);
+
+    void ClearSystemDeviceList();
 
     //ms
     void INDI_Capture(int Exp_times);
@@ -61,9 +78,11 @@ public:
 
     void saveFitsAsJPG(QString filename);
 
-    int saveFitsAsPNG(QString fitsFileName);
+    int saveFitsAsPNG(QString fitsFileName, bool ProcessBin);
 
     void saveGuiderImageAsJPG(cv::Mat Image);
+
+    cv::Mat colorImage(cv::Mat img16);
 
     void refreshGuideImage(cv::Mat image16,QString CFA);
 
@@ -105,13 +124,23 @@ public:
 
     bool one_touch_connect = true;
     bool one_touch_connect_first = true;
-    int glMainCCDSizeX,glMainCCDSizeY;
+    int glMainCCDSizeX = 0;
+    int glMainCCDSizeY = 0;
+
+    int glOffsetValue = 0, glOffsetMin = 0, glOffsetMax = 0;
+    int glGainValue = 0, glGainMin = 0, glGainMax = 0;
 
     bool glIsFocusingLooping;
     QString glMainCameraStatu;
     QElapsedTimer glMainCameraCaptureTimer;
 
-    std::string vueDirectoryPath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    // std::string vueDirectoryPath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    std::string vueDirectoryPath = "/dev/shm/";
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";  // /var/www/html/img/
+
+    std::string PriorGuiderImage = "NULL";
+    std::string PriorROIImage = "NULL";
+    std::string PriorCaptureImage = "NULL";
 
     bool AutoStretch = true;
 
@@ -139,6 +168,9 @@ public:
     bool glPHD_ShowLockCross;
     bool glPHD_StartGuide = false;
 
+    bool ClearCalibrationData = true;
+    bool isGuiding = false;
+
     int glROI_x;
     int glROI_y;
     int CaptureViewWidth;
@@ -165,15 +197,32 @@ public:
     int currentSteps = 5000;
     int CurrentPosition = 0;
     int TargetPosition = 0;
-    bool isMoving = false;
     bool MoveInward = true;
     int AutoMovePosition;
 
-    QVector<QPointF> dataPoints;
+    bool FWHMCalOver = false;
 
-    void FocusMove(bool isInward, int steps);
+    float minPoint_X;
 
-    void FocusMoveToPosition(int position);
+    double FocusMoveAndCalHFR(bool isInward, int steps);
+    double FocusGotoAndCalFWHM(int steps);
+
+    QTimer FWHMTimer; 
+
+    QString MainCameraCFA;
+
+    double ImageGainR = 1.0;
+    double ImageGainB = 1.0;
+
+    QVector<QPointF> dataPoints;    // FWHM Data
+
+    double R2;
+
+    void AutoFocus();
+
+    bool StopAutoFocus = false;
+
+    void FocuserControl_Goto(int position);
 
     void FocuserControl_Move(bool isInward, int steps);
 
@@ -182,6 +231,10 @@ public:
 
     int FocuserControl_getPosition();
 
+    void TelescopeControl_Goto(double Ra,double Dec);
+
+    MountStatus TelescopeControl_Status();
+
     bool TelescopeControl_Park();
 
     bool TelescopeControl_Track();
@@ -189,6 +242,166 @@ public:
     void TelescopeControl_Home();
 
     void TelescopeControl_SYNCHome();
+
+    void TelescopeControl_SolveSYNC();
+
+    LocationResult TelescopeControl_GetLocation();
+
+    QDateTime TelescopeControl_GetTimeUTC();
+
+    SphericalCoordinates TelescopeControl_GetRaDec();
+
+    void SolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight);
+
+    void LoopSolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight);
+
+    void LoopCapture(int ExpTime);
+
+    bool StopLoopCapture = false;
+
+    bool TakeNewCapture = true;
+
+    void ScheduleTabelData(QString message);
+
+    bool isLoopSolveImage = false;
+
+    bool isSingleSolveImage = false;
+
+    int SolveImageScaledHeight;
+
+    std::vector<SloveResults> SloveResultList;
+
+    void ClearSloveResultList();
+
+    void RecoverySloveResul();
+
+    int glFocalLength;
+    double glCameraSize_width;
+    double glCameraSize_height;
+
+    QList<ScheduleData> m_scheduList;
+
+    QTimer telescopeTimer;
+    QTimer guiderTimer;
+    QTimer captureTimer;
+    QTimer timewaitingTimer;
+    QTimer filterTimer;
+    QTimer focusTimer;
+    QTimer solveTimer;
+
+    int schedule_currentNum = 0;
+    int schedule_ExpTime;
+    int schedule_CFWpos;
+    int schedule_RepeatNum;
+    int schedule_currentShootNum = 0;
+
+    bool InSlewing;
+    bool GuidingHasStarted = false;
+    QString ShootStatus;
+
+    bool StopSchedule = false;
+    bool StopPlateSolve = false;
+
+    bool MountGotoError = false;
+
+    void startSchedule();
+
+    void nextSchedule();
+
+    void startMountGoto(double ra, double dec);       // Ra:Hour, Dec:Degree
+
+    void startGuiding();
+
+    void startTimeWaiting();
+
+    void startCapture(int ExpTime);
+
+    void startSetCFW(int pos);
+
+    bool WaitForTelescopeToComplete();
+
+    bool WaitForShootToComplete();
+
+    bool WaitForGuidingToComplete();
+
+    bool WaitForTimeToComplete();
+
+    bool WaitForFocuserToComplete();
+
+    int ScheduleImageSave(QString name, int num);
+
+    int CaptureImageSave();
+
+    QString ScheduleTargetNames;
+
+    // std::string ImageSaveBasePath = "/home/quarcs/QUARCS_SaveImage/";
+    // QString ImageSaveBaseDirectory = "/home/quarcs/QUARCS_SaveImage/";
+    std::string ImageSaveBasePath = "image";
+    QString ImageSaveBaseDirectory = "image";
+
+    bool directoryExists(const std::string& path);
+
+    bool createScheduleDirectory();
+
+    bool createCaptureDirectory();
+
+     
+
+    QVector<ConnectedDevice> ConnectedDevices;
+
+    void getConnectedDevices();
+
+    bool isStagingImage = false;
+    QString SavedImage;
+
+    void getStagingImage();
+
+    bool isStagingScheduleData = false;
+    QString StagingScheduleData;
+
+    void getStagingScheduleData();
+
+    void getStagingGuiderData();
+
+    QElapsedTimer CaptureTestTimer;
+    qint64 CaptureTestTime;
+
+
+    int MoveFileToUSB();
+
+    int mountDisplayCounter = 0;
+
+    int MainCameraStatusCounter = 0;
+
+    bool isFilterOnCamera = false;
+
+    bool isFirstCapture = true;
+
+    double glCurrentLocationLat = 0;
+    double glCurrentLocationLng = 0; 
+
+    double LastRA_Degree = 0;
+    double LastDEC_Degree = 0;
+
+    void MountGoto(double Ra_Hour, double Dec_Degree);
+
+
+    // void CaptureImageSave();
+    void DeleteImage(QStringList DelImgPath);
+    std::string GetAllFile();
+    QStringList parseString(const std::string &input, const std::string &imgFilePath);
+    long long getUSBSpace(const QString &usb_mount_point);
+    long long getTotalSize(const QStringList &filePaths);
+    void RemoveImageToUsb(QStringList RemoveImgPath);
+    bool isMountReadOnly(const QString& mountPoint);
+    bool remountReadWrite(const QString& mountPoint, const QString& password);
+
+    void USBCheck();
+
+    PlateSolveWorker *platesolveworker = new PlateSolveWorker;
+
+    
+
 
 private slots:
     void onMessageReceived(const QString &message);
