@@ -27,11 +27,22 @@
 #include <sys/statvfs.h>
 #include <QStorageInfo>
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <stellarsolver.h>
 
 #include "platesolveworker.h"
 
 #include <regex>
+
+#define GPIO_PATH "/sys/class/gpio"
+#define GPIO_EXPORT "/sys/class/gpio/export"
+#define GPIO_UNEXPORT "/sys/class/gpio/unexport"
+#define GPIO_PIN_1 "516"
+#define GPIO_PIN_2 "527"
 
 class MainWindow : public QObject
 {
@@ -45,6 +56,18 @@ public:
 
     void initINDIClient();
     void initINDIServer();
+
+    void initGPIO();
+
+    void exportGPIO(const char* pin);
+
+    void setGPIODirection(const char* pin, const char* direction);
+
+    void setGPIOValue(const char* pin, const char* value);
+
+    int readGPIOValue(const char* pin);
+
+    void getGPIOsStatus();
 
     // QString connectIndiServer();
     // void disconnectIndiServer();
@@ -112,6 +135,8 @@ public:
 
     uint32_t call_phd_ClearCalibration(void);
 
+    uint32_t call_phd_StarClick(int x, int y);
+
     void ShowPHDdata();
 
     void ControlGuide(int Direction, int Duration);
@@ -161,8 +186,8 @@ public:
     bool glPHD_isSelected;
     double glPHD_StarX = 0;
     double glPHD_StarY = 0;
-    int glPHD_CurrentImageSizeX;
-    int glPHD_CurrentImageSizeY;
+    int glPHD_CurrentImageSizeX = 0;
+    int glPHD_CurrentImageSizeY = 0;
     double glPHD_LockPositionX;
     double glPHD_LockPositionY;
     bool glPHD_ShowLockCross;
@@ -180,6 +205,13 @@ public:
     double FWHM;
 
     bool InGuiding = false;
+
+    QString TelescopePierSide;
+
+    bool FirstRecordTelescopePierSide = true;
+    QString FirstTelescopePierSide;
+
+    bool isMeridianFlipped = false;
 
     QThread *PHDControlGuide_thread = nullptr;
     QTimer *PHDControlGuide_threadTimer = nullptr;
@@ -279,6 +311,8 @@ public:
     double glCameraSize_width;
     double glCameraSize_height;
 
+    int glTelescopeTotalSlewRate;
+
     QList<ScheduleData> m_scheduList;
 
     QTimer telescopeTimer;
@@ -351,6 +385,8 @@ public:
 
     void getConnectedDevices();
 
+    void clearConnectedDevices();
+
     bool isStagingImage = false;
     QString SavedImage;
 
@@ -372,6 +408,8 @@ public:
     int mountDisplayCounter = 0;
 
     int MainCameraStatusCounter = 0;
+
+    int glMainCameraBinning = 1;
 
     bool isFilterOnCamera = false;
 

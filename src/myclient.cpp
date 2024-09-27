@@ -827,14 +827,14 @@ uint32_t MyClient::getTelescopePierSide(INDI::BaseDevice *dp,QString &side)
 
     if (!property.isValid())
     {
-        IDLog("Error: unable to find  TELESCOPE_INFO property...\n");
+        IDLog("Error: unable to find TELESCOPE_PIER_SIDE property...\n");
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      side="EAST";
-    else if(property[1].getState()==ISS_ON) side="WEST";
+    if(property[0].getState()==ISS_ON)      side="WEST";
+    else if(property[1].getState()==ISS_ON) side="EAST";
 
-    qDebug() << "getTelescopePierSide" << side ;
+    // qDebug() << "getTelescopePierSide" << side ;
     return QHYCCD_SUCCESS;
 }
 
@@ -1111,16 +1111,16 @@ uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)        speed=0;
-    else if(property[1].getState()==ISS_ON)   speed=1;
-    else if(property[2].getState()==ISS_ON)   speed=2;
-    else if(property[3].getState()==ISS_ON)   speed=3;
-    else if(property[4].getState()==ISS_ON)   speed=4;
-    else if(property[5].getState()==ISS_ON)   speed=5;
-    else if(property[6].getState()==ISS_ON)   speed=6;
-    else if(property[7].getState()==ISS_ON)   speed=7;
-    else if(property[8].getState()==ISS_ON)   speed=8;
-    else if(property[9].getState()==ISS_ON)   speed=9;
+    if(property[0].getState()==ISS_ON)        speed=1;
+    else if(property[1].getState()==ISS_ON)   speed=2;
+    else if(property[2].getState()==ISS_ON)   speed=3;
+    else if(property[3].getState()==ISS_ON)   speed=4;
+    else if(property[4].getState()==ISS_ON)   speed=5;
+    else if(property[5].getState()==ISS_ON)   speed=6;
+    else if(property[6].getState()==ISS_ON)   speed=7;
+    else if(property[7].getState()==ISS_ON)   speed=8;
+    else if(property[8].getState()==ISS_ON)   speed=9;
+    else if(property[9].getState()==ISS_ON)   speed=10;
 
     qDebug() << "getTelescopeSlewRate" << speed ;
     if(speed>=0 && speed<=9) qDebug()<<property[speed].getLabel();
@@ -1141,18 +1141,13 @@ uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp,int speed)
     }
 
     qDebug() << "property->count():" << property->count();
-    if(speed>=0 && speed < property->count())  
+    if(speed>=0 && speed <= property->count())  
     {
-        // property[speed].setState(ISS_ON);
-        // if(speed>0)
-        // {
-        //     property[speed-1].setState(ISS_OFF);
-        // }
-        property[speed].setState(ISS_ON);
+        property[speed-1].setState(ISS_ON);
 
         for(int i = 0; i < property->count(); i++)
         {
-            if(i!= speed)
+            if(i != speed-1)
             {
                 property[i].setState(ISS_OFF);
             }
@@ -1178,7 +1173,7 @@ uint32_t MyClient::getTelescopeTotalSlewRate(INDI::BaseDevice *dp,int &total)
 
     total=property->count();
 
-    qDebug() << "getTelescopeTotalSlewRate" << total;
+    qDebug() << "getTelescopeTotalSlewRate:" << total;
     return QHYCCD_SUCCESS;
 }
 
@@ -1609,11 +1604,11 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QStrin
     }
     
     statu = property[1].getText();
-    error = property[7].getText();
+    // error = property[7].getText();
     // qDebug()<<"OnStep error: "<< error;
-    if(error != "None") {
-        qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
-    }
+    // if(error != "None") {
+    //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
+    // }
     
     return QHYCCD_SUCCESS;
 }

@@ -28,6 +28,8 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     initINDIServer();
     initINDIClient();
 
+    initGPIO();
+
     readDriversListFromFiles("/usr/share/indi/drivers.xml", drivers_list, dev_groups, devices);
 
     Tools::InitSystemDeviceList();
@@ -191,6 +193,12 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         disconnectIndiServer(indi_Client);
         ClearSystemDeviceList();
+        clearConnectedDevices();
+
+        initINDIServer();
+        initINDIClient();
+        Tools::InitSystemDeviceList();
+        Tools::initSystemDeviceList(systemdevicelist);
     }
     else if (message == "MountMoveWest")
     {
@@ -272,16 +280,27 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
-    else if (parts.size() == 2 && parts[0].trimmed() == "MountSpeedSet")
+    else if (message == "MountSpeedSwitch")
     {
-        int Speed = parts[1].trimmed().toInt();
-        qDebug() << "MountSpeedSet:" << Speed;
         if (dpMount != NULL)
         {
-            indi_Client->setTelescopeSlewRate(dpMount,Speed-1);
-            int Speed_;
-            indi_Client->getTelescopeSlewRate(dpMount,Speed_);
-            emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(Speed_));
+            int currentSpeed;
+            indi_Client->getTelescopeSlewRate(dpMount,currentSpeed);
+            qDebug() << "Current Speed:" << currentSpeed;
+
+            qDebug() << "Total Speed:" << glTelescopeTotalSlewRate;
+
+            if(currentSpeed == glTelescopeTotalSlewRate) {
+                indi_Client->setTelescopeSlewRate(dpMount,1);
+            } else {
+                indi_Client->setTelescopeSlewRate(dpMount,currentSpeed+1);
+                qDebug() << "Set Speed to:" << currentSpeed;
+            }
+
+            int ChangedSpeed;
+            indi_Client->getTelescopeSlewRate(dpMount,ChangedSpeed);
+            qDebug() << "Changed Speed:" << ChangedSpeed;
+            emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(ChangedSpeed));
         }
     }
 
@@ -459,6 +478,7 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
         } else {
             isGuiding = true;
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             if (ClearCalibrationData) {
                 ClearCalibrationData = false;
                 call_phd_ClearCalibration();
@@ -466,12 +486,25 @@ void MainWindow::onMessageReceived(const QString &message)
 
             call_phd_StartLooping();
             sleep(1);
-
-            call_phd_AutoFindStar();
+            if (glPHD_isSelected == false) {
+                call_phd_AutoFindStar();
+            }
             call_phd_StartGuiding();
-
-            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
         }
+    }
+
+    else if (message == "PHD2Recalibrate")
+    {
+        call_phd_ClearCalibration();
+        call_phd_StartLooping();
+        sleep(1);
+
+        call_phd_AutoFindStar();
+        call_phd_StartGuiding();
+
+        emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+
+        // call_phd_StarClick(641,363);
     }
 
     else if (parts[0].trimmed() == "GuiderExpTimeSwitch")
@@ -587,7 +620,65 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    else if (message == "getGPIOsStatus") {
+        getGPIOsStatus();
+    }
 
+    else if (parts.size() == 2 && parts[0].trimmed() == "SwitchOutPutPower")
+    {
+        int index = parts[1].trimmed().toInt();
+        int value;
+
+        if(index == 1) {
+            value = readGPIOValue(GPIO_PIN_1);
+            if(value == 1) {
+                setGPIOValue(GPIO_PIN_1, "0");
+                value = readGPIOValue(GPIO_PIN_1);
+            } else {
+                setGPIOValue(GPIO_PIN_1, "1");
+                value = readGPIOValue(GPIO_PIN_1);
+            }
+        } 
+        else if(index == 2) {
+            value = readGPIOValue(GPIO_PIN_2);
+            if(value == 1) {
+                setGPIOValue(GPIO_PIN_2, "0");
+                value = readGPIOValue(GPIO_PIN_2);
+            } else {
+                setGPIOValue(GPIO_PIN_2, "1");
+                value = readGPIOValue(GPIO_PIN_2);
+            }
+        }
+
+        emit wsThread->sendMessageToClient("OutPutPowerStatus:" + QString::number(index) + ":" + QString::number(value));
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetBinning") {
+        glMainCameraBinning = parts[1].trimmed().toInt();
+        qDebug() << "Set Binning to " << glMainCameraBinning;
+    }
+
+    else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
+    {
+        int CanvasWidth = parts[1].trimmed().toInt();
+        int CanvasHeight = parts[2].trimmed().toInt();
+        int Click_X = parts[3].trimmed().toInt();
+        int Click_Y = parts[4].trimmed().toInt();
+
+        qDebug() << "GuiderCanvasClick:" << CanvasWidth << "," << CanvasHeight << "," << Click_X << "," << Click_Y;
+
+        if (glPHD_CurrentImageSizeX != 0 && glPHD_CurrentImageSizeY != 0)
+        {
+            qDebug() << "PHD2ImageSize:" << glPHD_CurrentImageSizeX << "," << glPHD_CurrentImageSizeY;
+            double ratioZoomX = (double) glPHD_CurrentImageSizeX / CanvasWidth;
+            double ratioZoomY = (double) glPHD_CurrentImageSizeY / CanvasHeight;
+            qDebug() << "ratioZoom:" << ratioZoomX << "," << ratioZoomY;
+            double PHD2Click_X = (double) Click_X * ratioZoomX;
+            double PHD2Click_Y = (double) Click_Y * ratioZoomY;
+            qDebug() << "PHD2Click:" << PHD2Click_X << "," << PHD2Click_Y;
+            call_phd_StarClick(PHD2Click_X, PHD2Click_Y);
+        }
+    }
 }
 
 void MainWindow::initINDIServer()
@@ -653,6 +744,120 @@ void MainWindow::initINDIClient()
     );
 }
 
+void MainWindow::initGPIO() {
+    // 初始化 GPIO_PIN_1
+    // exportGPIO(GPIO_PIN_1);
+    setGPIODirection(GPIO_PIN_1, "out");
+
+    // 初始化 GPIO_PIN_2
+    // exportGPIO(GPIO_PIN_2);
+    setGPIODirection(GPIO_PIN_2, "out");
+
+    // 设置 GPIO_PIN_1 为高电平
+    setGPIOValue(GPIO_PIN_1, "1");
+
+    // 设置 GPIO_PIN_2 为高电平
+    setGPIOValue(GPIO_PIN_2, "1");
+}
+
+void MainWindow::exportGPIO(const char* pin) {
+    int fd;
+    char buf[64];
+
+    // 导出 GPIO 引脚
+    fd = open(GPIO_EXPORT, O_WRONLY);
+    if (fd < 0) {
+        perror("Failed to open export for writing");
+        return;
+    }
+    snprintf(buf, sizeof(buf), "%s", pin);
+    if (write(fd, buf, strlen(buf)) != strlen(buf)) {
+        perror("Failed to write to export");
+        close(fd);
+        return;
+    }
+    close(fd);
+}
+
+void MainWindow::setGPIODirection(const char* pin, const char* direction) {
+    int fd;
+    char path[128];
+
+    // 设置 GPIO 方向
+    snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/direction", pin);
+    fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        perror("Failed to open gpio direction for writing");
+        return;
+    }
+    if (write(fd, direction, strlen(direction) + 1) != strlen(direction) + 1) {
+        perror("Failed to set gpio direction");
+        close(fd);
+        return;
+    }
+    close(fd);
+}
+
+void MainWindow::setGPIOValue(const char* pin, const char* value) {
+    int fd;
+    char path[128];
+
+    // 设置 GPIO 电平
+    snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/value", pin);
+    fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        perror("Failed to open gpio value for writing");
+        return;
+    }
+    if (write(fd, value, strlen(value) + 1) != strlen(value) + 1) {
+        perror("Failed to write to gpio value");
+        close(fd);
+        return;
+    }
+    close(fd);
+}
+
+int MainWindow::readGPIOValue(const char* pin) {
+    int fd;
+    char path[128];
+    char value[3];  // 存储读取的值
+
+    // 构建路径 /sys/class/gpio/gpio[PIN]/value
+    snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/value", pin);
+
+    // 打开 GPIO value 文件进行读取
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        perror("Failed to open gpio value for reading");
+        return -1;  // 返回 -1 表示读取失败
+    }
+
+    // 读取文件内容
+    if (read(fd, value, sizeof(value)) < 0) {
+        perror("Failed to read gpio value");
+        close(fd);
+        return -1;  // 返回 -1 表示读取失败
+    }
+
+    close(fd);
+
+    // 判断读取到的值是否为 '1' 或 '0'
+    if (value[0] == '1') {
+        return 1;  // 返回 1 表示高电平
+    } else if (value[0] == '0') {
+        return 0;  // 返回 0 表示低电平
+    } else {
+        return -1;  // 如果读取的值不是 '0' 或 '1'，返回 -1
+    }
+}
+
+void MainWindow::getGPIOsStatus() {
+    int value1 = readGPIOValue(GPIO_PIN_1);
+    emit wsThread->sendMessageToClient("OutPutPowerStatus:" + QString::number(1) + ":" + QString::number(value1));
+    int value2 = readGPIOValue(GPIO_PIN_2);
+    emit wsThread->sendMessageToClient("OutPutPowerStatus:" + QString::number(2) + ":" + QString::number(value2));
+}
+
 void MainWindow::onTimeout()
 {
     ShowPHDdata();
@@ -674,6 +879,18 @@ void MainWindow::onTimeout()
                 
                 // bool isSlewing = (TelescopeControl_Status() != "Slewing");
 
+                indi_Client->getTelescopePierSide(dpMount, TelescopePierSide);
+                qDebug() << "TelescopePierSide: " << TelescopePierSide;
+                emit wsThread->sendMessageToClient("TelescopePierSide:" + TelescopePierSide);
+
+                if(!FirstRecordTelescopePierSide) {
+                    if(FirstTelescopePierSide != TelescopePierSide) {
+                        isMeridianFlipped = true;
+                    } else {
+                        isMeridianFlipped = false;
+                    }
+                }
+
                 emit wsThread->sendMessageToClient("TelescopeStatus:" + TelescopeControl_Status().status);
 
                 mountDisplayCounter = 0;
@@ -685,6 +902,37 @@ void MainWindow::onTimeout()
     if(dpMainCamera != NULL) {
         if(MainCameraStatusCounter >= 100) {
             emit wsThread->sendMessageToClient("MainCameraStatus:" + glMainCameraStatu);
+        }
+    }
+
+    if (isLoopSolveImage)
+    {
+        if (Tools::WaitForPlateSolveToComplete() && !TakeNewCapture)
+        {
+            qDebug() << "isLoopSolveImage:" << isLoopSolveImage;
+
+            TakeNewCapture = true;
+
+            QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+
+            LoopSolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
+        }
+    }
+
+    if (isSingleSolveImage)
+    {
+        if (Tools::WaitForPlateSolveToComplete())
+        {
+            isSingleSolveImage = false;
+
+            QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+
+            CaptureTestTimer.start();
+            qDebug() << "\033[32m" << "Solve image start." << "\033[0m";
+            SolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
+            CaptureTestTime = CaptureTestTimer.elapsed();
+            qDebug() << "\033[32m" << "Solve image completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+            CaptureTestTimer.invalidate();
         }
     }
 }
@@ -808,9 +1056,6 @@ void MainWindow::saveFitsAsJPG(QString filename)
 
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
-    // CaptureTestTimer.start();
-    // qDebug() << "\033[32m" << "Save image data start." << "\033[0m";
-
     cv::Mat image;
     cv::Mat OriginImage;
     int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
@@ -823,25 +1068,33 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 
     bool isColor = !(MainCameraCFA == "");
 
-    if(ProcessBin && !isFirstCapture){
+    // if(ProcessBin && !isFirstCapture && glMainCameraBinning != 1){
+    if(ProcessBin && glMainCameraBinning != 1){
         // 进行 2x2 的合并
-        image = Tools::processMatWithBinAvg(image, 2, 2, isColor);
+        image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, false);
+        qDebug() << "After bin image size:" << image.cols << "," << image.rows;
     }
 
-    isFirstCapture = false;
+    // isFirstCapture = false;
+
+    cv::Mat srcImage = image.clone();
+    cv::Mat dstImage;
+    qDebug("start medianBlur.");
+    cv::medianBlur(srcImage, dstImage, 3);
+    qDebug("medianBlur success.");
+    QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+    cv::imwrite(SolveImageFileName.toStdString(), dstImage); // TODO:
+    qDebug("image save success.");
     
-    // Tools::SaveMatToJPG(image);
-
-    // QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(false, true);
-
+    Tools::SaveMatTo8BitJPG(image);
+    // Tools::SaveMatTo16BitPNG(image);
+    // Tools::SaveMatToFITS(image);
+    
     int width = image.cols;
     int height = image.rows;
-    
     qDebug() << "image size:" << width << "," << height;
     emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
-    // qDebug() << "image depth:" << image.depth();
-    // qDebug() << "image channels:" << image.channels();
-    
+
     std::vector<unsigned char> imageData;  //uint16_t
     imageData.assign(image.data, image.data + image.total() * image.channels() * 2);
     qDebug() << "imageData Size:" << imageData.size() << "," << image.data + image.total() * image.channels();
@@ -867,11 +1120,13 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     std::string fileName_ = "CaptureImage_" + uniqueId.toStdString() + ".bin";
     std::string filePath_ = vueDirectoryPath + fileName_;
     
+    qDebug("Open file for writing.");
     std::ofstream outFile(filePath_, std::ios::binary);
     if (!outFile) {
         throw std::runtime_error("Failed to open file for writing.");
     }
 
+    qDebug("Write data to file.");
     outFile.write(reinterpret_cast<const char*>(imageData.data()), imageData.size());
     if (!outFile) {
         throw std::runtime_error("Failed to write data to file.");
@@ -881,10 +1136,6 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     if (!outFile) {
         throw std::runtime_error("Failed to close the file properly.");
     }
-    
-    // CaptureTestTime = CaptureTestTimer.elapsed();
-    // qDebug() << "\033[32m" << "Save image Data completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
-    // CaptureTestTimer.invalidate();
 
     std::string Command = "ln -sf " + filePath_ + " " + vueImagePath + fileName_;
     system(Command.c_str());
@@ -1697,13 +1948,17 @@ void MainWindow::AfterDeviceConnect()
         int maxspeed, minspeed, speedvalue, total;
 
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
+        glTelescopeTotalSlewRate = total;
+        qDebug() << "TelescopeTotalSlewRate: " << total;
         emit wsThread->sendMessageToClient("TelescopeTotalSlewRate:" + QString::number(total));
         indi_Client->getTelescopeMaxSlewRateOptions(dpMount, minspeed, maxspeed, speedvalue);
-        indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
-        indi_Client->setTelescopeSlewRate(dpMount, total - 1);
+        // indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
+        indi_Client->setTelescopeSlewRate(dpMount, total);
         int speed;
         indi_Client->getTelescopeSlewRate(dpMount,speed);
-        emit wsThread->sendMessageToClient("TelescopeCurrentSlewRate:" + QString::number(speed));
+        qDebug() << "TelescopeCurrentSlewRate: " << speed;
+        // emit wsThread->sendMessageToClient("TelescopeCurrentSlewRate:" + QString::number(speed));
+        emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(speed));
         indi_Client->setTelescopeTrackEnable(dpMount, true);
 
         bool isTrack = false;
@@ -1722,6 +1977,7 @@ void MainWindow::AfterDeviceConnect()
         QString side;
         indi_Client->getTelescopePierSide(dpMount, side);
         qDebug() << "AfterAllConnected | TelescopePierSide: " << side;
+        emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
     }
 
     if (dpFocuser != NULL)
@@ -2386,6 +2642,40 @@ uint32_t MainWindow::call_phd_ClearCalibration(void)
         return true;
 }
 
+uint32_t MainWindow::call_phd_StarClick(int x, int y)
+{
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x0f;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &x, sizeof(int));
+    addr = addr + sizeof(int);
+    memcpy(sharedmemory_phd + baseAddress + addr, &y, sizeof(int));
+    addr = addr + sizeof(int);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
 void MainWindow::ShowPHDdata()
 {
     unsigned int currentPHDSizeX = 1;
@@ -2515,8 +2805,29 @@ void MainWindow::ShowPHDdata()
         glPHD_Stars.push_back(p);
     }
 
-    if (glPHD_StarX != 0 && glPHD_StarY != 0)
-        glPHD_StartGuide = true;
+    // if (glPHD_StarX != 0 && glPHD_StarY != 0)
+    // {
+        if (glPHD_isSelected == true)
+        {
+            qDebug() << "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY);
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+            emit wsThread->sendMessageToClient("PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY)+ ":" + QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY));
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
+        }
+
+        if (glPHD_ShowLockCross == true)
+        {
+            emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
+            emit wsThread->sendMessageToClient("PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_LockPositionX) + ":" + QString::number(glPHD_LockPositionY));
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
+        }
+    // }
 
     unsigned int byteCount;
     byteCount = currentPHDSizeX * currentPHDSizeY * (bitDepth / 8);
@@ -2536,6 +2847,13 @@ void MainWindow::ShowPHDdata()
 
         if (dRa != 0 && dDec != 0)
         {
+            // if(FirstRecordTelescopePierSide) {
+            //     if(dpMount != NULL) {
+            //         FirstRecordTelescopePierSide = false;
+            //         indi_Client->getTelescopePierSide(dpMount, FirstTelescopePierSide);
+            //     }
+            // }
+
             QPointF tmp;
             tmp.setX(-dRa * PixelRatio);
             tmp.setY(dDec * PixelRatio);
@@ -2612,68 +2930,94 @@ void MainWindow::ShowPHDdata()
 
         PHDImg.data = srcData;
 
-        if(isLoopSolveImage) {
-            if(Tools::WaitForPlateSolveToComplete() && !TakeNewCapture) {
-                qDebug() << "isLoopSolveImage:" << isLoopSolveImage;
+        // if(isLoopSolveImage) {
+        //     if(Tools::WaitForPlateSolveToComplete() && !TakeNewCapture) {
+        //         qDebug() << "isLoopSolveImage:" << isLoopSolveImage;
 
-                TakeNewCapture = true;
+        //         TakeNewCapture = true;
 
-                cv::Mat image;
-                Tools::readFits("/dev/shm/ccd_simulator.fits", image);   // ccd_simulator  SolveImage
-                // cv::Mat image = PHDImg.clone();
+        //         // cv::Mat image;
+        //         // Tools::readFits("/dev/shm/ccd_simulator.fits", image);   // ccd_simulator  SolveImage
 
-                // 获取图像的原始宽高
-                int originalWidth = image.cols;
-                int originalHeight = image.rows;
+        //         // // // 获取图像的原始宽高
+        //         // // int originalWidth = image.cols;
+        //         // // int originalHeight = image.rows;
 
-                // 计算缩放后的高度
-                int newWidth = 1024;
-                int newHeight = static_cast<int>(originalHeight * (newWidth / static_cast<double>(originalWidth)));
-                SolveImageScaledHeight = newHeight;
+        //         // // // 计算缩放后的高度
+        //         // // int newWidth = 1024;
+        //         // // int newHeight = static_cast<int>(originalHeight * (newWidth / static_cast<double>(originalWidth)));
+        //         // // SolveImageScaledHeight = newHeight;
 
-                // 调整图像大小
-                cv::Mat resizedImage;
-                cv::resize(image, resizedImage, cv::Size(newWidth, newHeight));
+        //         // // // 调整图像大小
+        //         // // cv::Mat resizedImage;
+        //         // // cv::resize(image, resizedImage, cv::Size(newWidth, newHeight));
 
-                cv::medianBlur(resizedImage,resizedImage,3);
-                QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
-                cv::imwrite(SolveImageFileName.toStdString(), resizedImage);     //TODO:
-                LoopSolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
-            }
-        }
+        //         // bool isColor = !(MainCameraCFA == "");
+        //         // CamBin CamBin = Tools::mergeImageBasedOnSize(image);
 
-        if(isSingleSolveImage) {
-            if(Tools::WaitForPlateSolveToComplete()) {
-                isSingleSolveImage = false;
+        //         // cv::Mat resizedImage;
 
-                cv::Mat image;
-                Tools::readFits("/dev/shm/ccd_simulator.fits", image);     // ccd_simulator  SolveImage
-                // cv::Mat image = PHDImg.clone();
+        //         // if(CamBin.camxbin != 1) {
+        //         //     resizedImage = Tools::processMatWithBinAvg(image, CamBin.camxbin, CamBin.camybin, isColor, false);
+        //         // } else {
+        //         //     resizedImage = image.clone();
+        //         // }
 
-                // 获取图像的原始宽高
-                int originalWidth = image.cols;
-                int originalHeight = image.rows;
+        //         // cv::Mat resultImage;
+        //         // cv::medianBlur(resizedImage,resultImage,3);
+        //         QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+        //         // cv::imwrite(SolveImageFileName.toStdString(), resultImage);     //TODO:
 
-                // 计算缩放后的高度
-                int newWidth = 1024;
-                int newHeight = static_cast<int>(originalHeight * (newWidth / static_cast<double>(originalWidth)));
-                SolveImageScaledHeight = newHeight;
+        //         LoopSolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
+        //     }
+        // }
 
-                // 调整图像大小
-                cv::Mat resizedImage;
-                cv::resize(image, resizedImage, cv::Size(newWidth, newHeight));
+        // if(isSingleSolveImage) {
+        //     if(Tools::WaitForPlateSolveToComplete()) {
+        //         isSingleSolveImage = false;
 
-                cv::medianBlur(resizedImage,resizedImage,3);
-                QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
-                cv::imwrite(SolveImageFileName.toStdString(), resizedImage);     //TODO:
-                CaptureTestTimer.start();
-                qDebug() << "\033[32m" << "Solve image start." << "\033[0m";
-                SolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
-                CaptureTestTime = CaptureTestTimer.elapsed();
-                qDebug() << "\033[32m" << "Solve image completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
-                CaptureTestTimer.invalidate();
-            }
-        }
+        //         // cv::Mat image;
+        //         // Tools::readFits("/dev/shm/ccd_simulator.fits", image);     // ccd_simulator  SolveImage
+
+        //         // // // 获取图像的原始宽高
+        //         // // int originalWidth = image.cols;
+        //         // // int originalHeight = image.rows;
+
+        //         // // // 计算缩放后的高度
+        //         // // int newWidth = 1024;
+        //         // // int newHeight = static_cast<int>(originalHeight * (newWidth / static_cast<double>(originalWidth)));
+        //         // // SolveImageScaledHeight = newHeight;
+
+        //         // // // 调整图像大小
+        //         // // cv::Mat resizedImage;
+        //         // // cv::resize(image, resizedImage, cv::Size(newWidth, newHeight));
+
+        //         // bool isColor = !(MainCameraCFA == "");
+        //         // CamBin CamBin = Tools::mergeImageBasedOnSize(image);
+
+        //         // qDebug() << "Binning:" << CamBin.camxbin << "," << CamBin.camybin;
+
+        //         // cv::Mat resizedImage;
+
+        //         // if(CamBin.camxbin != 1) {
+        //         //     resizedImage = Tools::processMatWithBinAvg(image, 2, 2, isColor, false);
+        //         // } else {
+        //         //     resizedImage = image.clone();
+        //         // }
+
+        //         // cv::Mat resultImage;
+        //         // cv::medianBlur(resizedImage,resultImage,3);
+        //         QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+        //         // cv::imwrite(SolveImageFileName.toStdString(), resultImage);     //TODO:
+                
+        //         CaptureTestTimer.start();
+        //         qDebug() << "\033[32m" << "Solve image start." << "\033[0m";
+        //         SolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
+        //         CaptureTestTime = CaptureTestTimer.elapsed();
+        //         qDebug() << "\033[32m" << "Solve image completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+        //         CaptureTestTimer.invalidate();
+        //     }
+        // }
 
         uint16_t B = 0;
         uint16_t W = 65535;
@@ -2734,7 +3078,11 @@ void MainWindow::ControlGuide(int Direction, int Duration)
     {
         if (dpMount != NULL)
         {
-            indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
+            if(isMeridianFlipped) {
+                indi_Client->setTelescopeGuideNS(dpMount, 0, Duration);
+            } else {
+                indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
+            }
         }
         break;
     }
@@ -2742,7 +3090,11 @@ void MainWindow::ControlGuide(int Direction, int Duration)
     {
         if (dpMount != NULL)
         {
-            indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
+            if(isMeridianFlipped) {
+                indi_Client->setTelescopeGuideNS(dpMount, 1, Duration);
+            } else {
+                indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
+            }
         }
         break;
     }
@@ -3617,7 +3969,8 @@ int MainWindow::CaptureImageSave() {
     createCaptureDirectory();
     const char* sourcePath = "/dev/shm/ccd_simulator.fits";
 
-    QString resultFileName = QTime::currentTime().toString() + ".fits";
+    // QString resultFileName = QTime::currentTime().toString() + ".fits";
+    QString resultFileName = QTime::currentTime().toString("HH-mm-ss") + ".fits";
     
     std::time_t currentTime = std::time(nullptr);
     std::tm *timeInfo = std::localtime(&currentTime);
@@ -3813,6 +4166,10 @@ void MainWindow::getConnectedDevices(){
     
 }
 
+void MainWindow::clearConnectedDevices() {
+    ConnectedDevices.clear();
+}
+
 void MainWindow::getStagingImage(){
     if(isStagingImage){
         emit wsThread->sendMessageToClient("SaveBinSuccess:" + SavedImage);
@@ -3868,7 +4225,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
     qDebug() << "CurrentRa(Degree):" << Ra_Degree << "," << "CurrentDec(Degree):" << Dec_Degree;
 
-    SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator", FocalLength, CameraSize_width, CameraSize_height, false);
+    SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator.fits", FocalLength, CameraSize_width, CameraSize_height, false);
 
     qDebug() << "SloveResults: " << result.RA_Degree << "," << result.DEC_Degree;
 

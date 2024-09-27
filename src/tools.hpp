@@ -218,6 +218,12 @@ struct MountStatus
   QString error;
 };
 
+struct CamBin
+{
+  int camxbin;
+  int camybin;
+};
+
 class Tools : public QObject {
   Q_OBJECT
   Q_DISABLE_COPY(Tools)
@@ -312,13 +318,19 @@ class Tools : public QObject {
 
   static loadFitsResult loadFits(QString fileName);
 
-  static void SaveMatToJPG(cv::Mat image);
+  static void SaveMatTo8BitJPG(cv::Mat image);
 
-  static cv::Mat processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor);
+  static void SaveMatTo16BitPNG(cv::Mat image);
+
+  static void SaveMatToFITS(const cv::Mat& image);
+
+  static CamBin mergeImageBasedOnSize(cv::Mat image);
+
+  static cv::Mat processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG);
 
   static uint32_t PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin);
 
-  static uint32_t PixelsDataSoftBin(uint8_t* srcdata, uint8_t* bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor);
+  static uint32_t PixelsDataSoftBin(uint8_t* srcdata, uint8_t* bindata, uint32_t width, uint32_t height, uint32_t camchannels, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor);
 
   static double getDecAngle(const QString& str);
 

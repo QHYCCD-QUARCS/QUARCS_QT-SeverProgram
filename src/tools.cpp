@@ -2876,59 +2876,88 @@ HFR_Result Tools::CalculateHFR(cv::Mat image)
     return result;
 }
 
-cv::Mat Tools::processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor) {
-    uint32_t width = image.cols;
-    uint32_t height = image.rows;
-    uint32_t depth = image.elemSize() * 8; // 每个像素的位深
+CamBin Tools::mergeImageBasedOnSize(cv::Mat image) {
+    // 获取图像尺寸
+    int width = image.cols;
+    int height = image.rows;
+    
+    // 计算合适的 bin 值，使合并后的图像不超过 2000
+    CamBin CamBin;
 
-    // 确保图像数据连续存储
-    // if (!image.isContinuous()) {
-    //     image = image.clone();
-    // }
-
-    // 获取输入数据指针
-    uint8_t* srcdata = image.data;
-
-    // 根据位深设置输出数据的大小
-    uint32_t outputSize;
-    if (depth == 8) {
-        outputSize = (width / camxbin) * (height / camybin);
-    } else if (depth == 16) {
-        outputSize = 2 * (width / camxbin) * (height / camybin);
-    } else if (depth == 32) {
-        outputSize = 4 * (width / camxbin) * (height / camybin);
-    } else {
-        std::cerr << "Unsupported depth!" << std::endl;
-    }
-
-    // 分配输出数据的内存
-    std::vector<uint8_t> bindata(outputSize, 0);
-
-    // 调用函数
-    // uint32_t result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
-    uint32_t result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, depth, camxbin, camybin, isColor);
-
-    if (result == QHYCCD_SUCCESS) {
-        // 处理成功，根据位深设置输出图像
-        int newWidth = width / camxbin;
-        int newHeight = height / camybin;
-        if (depth == 8) {
-            cv::Mat output(newHeight, newWidth, CV_8U, bindata.data()); 
-            return output;
-            // cv::imshow("Output Image", output);
-        } else if (depth == 16) {
-            cv::Mat output(newHeight, newWidth, CV_16U, bindata.data());
-            return output;
-            // cv::imshow("Output Image", output);
-        } else if (depth == 32) {
-            cv::Mat output(newHeight, newWidth, CV_32S, bindata.data());
-            return output;
-            // cv::imshow("Output Image", output);
+    // 根据宽度和高度，选择适合的 bin 值
+    if (width > 2000 || height > 2000) {
+        if (width / 2 <= 2000 && height / 2 <= 2000) {
+            CamBin.camxbin = 2;
+            CamBin.camybin = 2;
+        } else if (width / 3 <= 2000 && height / 3 <= 2000) {
+            CamBin.camxbin = 3;
+            CamBin.camybin = 3;
+        } else if (width / 4 <= 2000 && height / 4 <= 2000) {
+            CamBin.camxbin = 4;
+            CamBin.camybin = 4;
         }
-        // cv::waitKey(0);
-    } else {
-        std::cerr << "Error in PixelsDataSoftBin_AVG function." << std::endl;
     }
+    
+    return CamBin;
+}
+
+cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG)
+{
+  uint32_t width = image.cols;
+  uint32_t height = image.rows;
+  uint32_t depth = image.elemSize() * 8; // 每个像素的位深
+  uint32_t camchannels = image.channels();
+
+  // 获取输入数据指针
+  uint8_t *srcdata = image.data;
+
+  // 根据位深设置输出数据的大小
+  uint32_t outputSize;
+  qDebug("Set output size.");
+  if (depth == 8) {
+    outputSize = (width / camxbin) * (height / camybin);
+  }
+  else if (depth == 16) {
+    outputSize = 2 * (width / camxbin) * (height / camybin);
+  }
+  else if (depth == 32) {
+    outputSize = 4 * (width / camxbin) * (height / camybin);
+  }
+  else {
+    std::cerr << "Unsupported depth!" << std::endl;
+  }
+
+  // 分配输出数据的内存
+  std::vector<uint8_t> bindata(outputSize, 0);
+
+  // 调用合并函数
+  uint32_t result;
+  if(isAVG) {
+    result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
+  } else {
+    result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, camchannels, depth, camxbin, camybin, isColor);
+  }
+
+  if (result == QHYCCD_SUCCESS) {
+    // 处理成功，根据位深设置输出图像
+    qDebug("PixelsDataSoftBin Success.");
+    int newWidth = width / camxbin;
+    int newHeight = height / camybin;
+    qDebug() << "newWidth:" << newWidth << ", newHeight:" << newHeight;
+    if (depth == 8) {
+      return cv::Mat(newHeight, newWidth, CV_8U, bindata.data());
+    }
+    else if (depth == 16) {
+      return cv::Mat(newHeight, newWidth, CV_16U, bindata.data());
+    }
+    else if (depth == 32) {
+      return cv::Mat(newHeight, newWidth, CV_32S, bindata.data());
+    }
+    qDebug("Output Image Success.");
+  }
+  else {
+    std::cerr << "Error in PixelsDataSoftBin_AVG function." << std::endl;
+  }
 }
 
 uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin)
@@ -3056,103 +3085,336 @@ uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32
   return QHYCCD_ERROR;
 }
 
-uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
+// uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
+// {
+//   if (iscolor)
+//   {
+//     unsigned char *data = NULL;
+//     if (srcdata == bindata)
+//     {
+//       data = new unsigned char[(width * depth / 8 + 3) / 4 * 4 * height];
+//       memcpy(data, srcdata, (width * depth / 8 + 3) / 4 * 4 * height);
+//       srcdata = data;
+//     }
+//     if (depth == 8)
+//     {
+//       memset(bindata, 0, (width / camxbin) * (height / camybin));
+//       for (uint32_t i = 0; i < height / camybin / 2; i++)
+//       {
+//         uint8_t *pd = bindata + width / camxbin * i * 2;
+//         uint8_t *ps = srcdata + width * camxbin * i * 2;
+//         uint8_t *psEnd = ps + width / camxbin * camxbin - 1;
+//         for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+//         {
+//           for (int yi = 1; yi <= camybin; yi++)
+//           {
+//             for (int xi = 1; xi <= camxbin; xi++)
+//             {
+//               uint32_t y00 = LimitByte(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
+//               uint32_t y01 = LimitByte(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
+//               uint32_t y10 = LimitByte(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
+//               uint32_t y11 = LimitByte(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
+//               pd[0] = y00;
+//               pd[1] = y01;
+//               pd[width / camxbin + 0] = y10;
+//               pd[width / camxbin + 1] = y11;
+//             }
+//           }
+//         }
+//       }
+//       return QHYCCD_SUCCESS;
+//     }
+//     else if (depth == 16)
+//     {
+//       memset(bindata, 0, 2 * (width / camxbin) * (height / camybin));
+//       for (uint32_t i = 0; i < height / camybin / 2; i++)
+//       {
+//         uint16_t *pd = (uint16_t *)bindata + width / camxbin * i * 2;
+//         uint16_t *ps = (uint16_t *)srcdata + width * camxbin * i * 2;
+//         uint16_t *psEnd = ps + width / camxbin * camxbin - 1;
+//         for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+//         {
+//           for (int yi = 1; yi <= camybin; yi++)
+//           {
+//             for (int xi = 1; xi <= camxbin; xi++)
+//             {
+//               uint32_t y00 = LimitShort(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
+//               uint32_t y01 = LimitShort(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
+//               uint32_t y10 = LimitShort(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
+//               uint32_t y11 = LimitShort(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
+//               pd[0] = y00;
+//               pd[1] = y01;
+//               pd[width / camxbin + 0] = y10;
+//               pd[width / camxbin + 1] = y11;
+//             }
+//           }
+//         }
+//       }
+//       return QHYCCD_SUCCESS;
+//     }
+//     else if (depth == 32)
+//     {
+//       memset(bindata, 0, 4 * (width / camxbin) * (height / camybin));
+//       for (uint32_t i = 0; i < height / camybin / 2; i++)
+//       {
+//         uint32_t *pd = (uint32_t *)bindata + width / camxbin * i * 2;
+//         uint32_t *ps = (uint32_t *)srcdata + width * camxbin * i * 2;
+//         uint32_t *psEnd = ps + width / camxbin * camxbin - 1;
+//         for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+//         {
+//           for (int yi = 1; yi <= camybin; yi++)
+//           {
+//             for (int xi = 1; xi <= camxbin; xi++)
+//             {
+//               pd[0] += ps[2 * (yi - 1) * width + 2 * (xi - 1)];
+//               pd[1] += ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1];
+//               pd[width / camxbin + 0] += ps[width * (2 * yi - 1) + 2 * (xi - 1)];
+//               pd[width / camxbin + 1] += ps[width * (2 * yi - 1) + 2 * xi - 1];
+//             }
+//           }
+//         }
+//       }
+//       return QHYCCD_SUCCESS;
+//     }
+//     if (data != NULL)
+//     {
+//       delete[] data;
+//     }
+//   }
+//   else
+//   {
+//     uint32_t stride = width;
+//     uint32_t newStride = width / camxbin;
+
+//     if (depth == 8)
+//     {
+//       memset(bindata, 0, newStride * (height / camybin));
+//       for (uint32_t i = 0; i < height / camybin; i++)
+//       {
+//         for (uint32_t v = 0; v < camybin; v++)
+//         {
+//           uint8_t *pd = bindata + newStride * i;
+//           uint8_t *ps = srcdata + stride * (i * camybin + v);
+//           for (uint32_t j = 0; j < width / camxbin; j++)
+//           {
+//             for (uint32_t h = 0; h < camxbin; h++)
+//             {
+//               uint32_t y = LimitByte(*pd + *ps);
+//               *pd = y;
+//               ps++;
+//             }
+//             pd++;
+//           }
+//         }
+//       }
+//       return QHYCCD_SUCCESS;
+//     }
+//     else if (depth == 16)
+//     {
+//       memset(bindata, 0, 2 * newStride * (height / camybin));
+//       for (uint32_t i = 0; i < height / camybin; i++)
+//       {
+//         for (uint32_t v = 0; v < camybin; v++)
+//         {
+//           uint16_t *pd = (uint16_t *)bindata + newStride * i;
+//           uint16_t *ps = (uint16_t *)srcdata + stride * (i * camybin + v);
+//           for (uint32_t j = 0; j < width / camxbin; j++)
+//           {
+//             for (uint32_t h = 0; h < camxbin; h++)
+//             {
+//               uint32_t y = LimitShort(*pd + *ps);
+//               *pd = y;
+//               ps++;
+//             }
+//             pd++;
+//           }
+//         }
+//       }
+//       return QHYCCD_SUCCESS;
+//     }
+//     else if (depth == 32)
+//     {
+//       memset(bindata, 0, 4 * newStride * (height / camybin));
+
+//       for (uint32_t i = 0; i < height / camybin; i++)
+//       {
+//         for (uint32_t v = 0; v < camybin; v++)
+//         {
+//           uint32_t *pd = (uint32_t *)bindata + newStride * i;
+//           uint32_t *ps = (uint32_t *)srcdata + stride * (i * camybin + v);
+//           for (uint32_t j = 0; j < width / camxbin; j++)
+//           {
+//             for (uint32_t h = 0; h < camxbin; h++)
+//             {
+//               uint32_t y = *pd + *ps;
+//               *pd = y;
+//               ps++;
+//             }
+//             pd++;
+//           }
+//         }
+//       }
+//       return QHYCCD_SUCCESS;
+//     }
+//   }
+//   return QHYCCD_ERROR;
+// }
+
+uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t camchannels, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
 {
+  qDebug("QHYCCD | QHYBASE.CPP | PixelsDataSoftBin | width = %d height = %d camchannels = %d depth = %d camxbin = %d camybin = %d iscolor = %d",
+         width, height, camchannels, depth, camxbin, camybin, iscolor);
   if (iscolor)
   {
-    unsigned char *data = NULL;
-    if (srcdata == bindata)
+    if (depth == 8 && camchannels == 3)
     {
-      data = new unsigned char[(width * depth / 8 + 3) / 4 * 4 * height];
-      memcpy(data, srcdata, (width * depth / 8 + 3) / 4 * 4 * height);
-      srcdata = data;
-    }
-    if (depth == 8)
-    {
-      memset(bindata, 0, (width / camxbin) * (height / camybin));
-      for (uint32_t i = 0; i < height / camybin / 2; i++)
+      qDebug("depth = 8, camchannels = 3");
+      unsigned char *data = NULL;
+      if (srcdata == bindata)
       {
-        uint8_t *pd = bindata + width / camxbin * i * 2;
-        uint8_t *ps = srcdata + width * camxbin * i * 2;
-        uint8_t *psEnd = ps + width / camxbin * camxbin - 1;
-        for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
-        {
-          for (int yi = 1; yi <= camybin; yi++)
-          {
-            for (int xi = 1; xi <= camxbin; xi++)
-            {
-              uint32_t y00 = LimitByte(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
-              uint32_t y01 = LimitByte(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
-              uint32_t y10 = LimitByte(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
-              uint32_t y11 = LimitByte(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
-              pd[0] = y00;
-              pd[1] = y01;
-              pd[width / camxbin + 0] = y10;
-              pd[width / camxbin + 1] = y11;
-            }
-          }
-        }
+        data = new unsigned char[width * height * camchannels];
+        memcpy(data, srcdata, width * height * camchannels);
+        srcdata = data;
+      }
+      cv::Mat srcMat(cv::Size(width, height), CV_8UC(camchannels));
+      cv::Mat dstMat(cv::Size(width / camxbin, height / camybin), CV_8UC(camchannels));
+      memcpy(srcMat.data, srcdata, srcMat.cols * srcMat.rows * srcMat.channels());
+      cv::resize(srcMat, dstMat, cv::Size(dstMat.cols, dstMat.rows));
+      memcpy(bindata, dstMat.data, dstMat.cols * dstMat.rows * dstMat.channels());
+      srcMat.release();
+      dstMat.release();
+      if (data != NULL)
+      {
+        delete[] data;
       }
       return QHYCCD_SUCCESS;
     }
-    else if (depth == 16)
+    else if (depth == 16 && camchannels == 3)
     {
-      memset(bindata, 0, 2 * (width / camxbin) * (height / camybin));
-      for (uint32_t i = 0; i < height / camybin / 2; i++)
+      qDebug("depth = 16, camchannels = 3");
+      unsigned char *data = NULL;
+      if (srcdata == bindata)
       {
-        uint16_t *pd = (uint16_t *)bindata + width / camxbin * i * 2;
-        uint16_t *ps = (uint16_t *)srcdata + width * camxbin * i * 2;
-        uint16_t *psEnd = ps + width / camxbin * camxbin - 1;
-        for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
-        {
-          for (int yi = 1; yi <= camybin; yi++)
-          {
-            for (int xi = 1; xi <= camxbin; xi++)
-            {
-              uint32_t y00 = LimitShort(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
-              uint32_t y01 = LimitShort(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
-              uint32_t y10 = LimitShort(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
-              uint32_t y11 = LimitShort(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
-              pd[0] = y00;
-              pd[1] = y01;
-              pd[width / camxbin + 0] = y10;
-              pd[width / camxbin + 1] = y11;
-            }
-          }
-        }
+        data = new unsigned char[2 * width * height * camchannels];
+        memcpy(data, srcdata, 2 * width * height * camchannels);
+        srcdata = data;
+      }
+      qDebug("memcpy 1");
+      cv::Mat srcMat(cv::Size(2 * width, height), CV_16UC(camchannels));
+      cv::Mat dstMat(cv::Size(2 * width / camxbin, height / camybin), CV_16UC(camchannels));
+      memcpy(srcMat.data, srcdata, srcMat.cols * srcMat.rows * srcMat.channels());
+      qDebug("memcpy 2");
+      cv::resize(srcMat, dstMat, cv::Size(dstMat.cols, dstMat.rows));
+      memcpy(bindata, dstMat.data, dstMat.cols * dstMat.rows * dstMat.channels());
+      qDebug("memcpy 3");
+      srcMat.release();
+      dstMat.release();
+      if (data != NULL)
+      {
+        delete[] data;
       }
       return QHYCCD_SUCCESS;
     }
-    else if (depth == 32)
+    else
     {
-      memset(bindata, 0, 4 * (width / camxbin) * (height / camybin));
-      for (uint32_t i = 0; i < height / camybin / 2; i++)
+      unsigned char *data = NULL;
+      if (srcdata == bindata)
       {
-        uint32_t *pd = (uint32_t *)bindata + width / camxbin * i * 2;
-        uint32_t *ps = (uint32_t *)srcdata + width * camxbin * i * 2;
-        uint32_t *psEnd = ps + width / camxbin * camxbin - 1;
-        for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+        data = new unsigned char[(width * depth / 8 + 3) / 4 * 4 * height];
+        memcpy(data, srcdata, (width * depth / 8 + 3) / 4 * 4 * height);
+        srcdata = data;
+      }
+      if (depth == 8) // camchannels = 1
+      {
+        qDebug("depth = 8, camchannels = 1");
+        memset(bindata, 0, (width / camxbin) * (height / camybin));
+        for (uint32_t i = 0; i < height / camybin / 2; i++)
         {
-          for (int yi = 1; yi <= camybin; yi++)
+          uint8_t *pd = bindata + width / camxbin * i * 2;
+          uint8_t *ps = srcdata + width * camxbin * i * 2;
+          uint8_t *psEnd = ps + width / camxbin * camxbin - 1;
+          for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
           {
-            for (int xi = 1; xi <= camxbin; xi++)
+            for (int yi = 1; yi <= camybin; yi++)
             {
-              pd[0] += ps[2 * (yi - 1) * width + 2 * (xi - 1)];
-              pd[1] += ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1];
-              pd[width / camxbin + 0] += ps[width * (2 * yi - 1) + 2 * (xi - 1)];
-              pd[width / camxbin + 1] += ps[width * (2 * yi - 1) + 2 * xi - 1];
+              for (int xi = 1; xi <= camxbin; xi++)
+              {
+                uint32_t y00 = LimitByte(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
+                uint32_t y01 = LimitByte(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
+                uint32_t y10 = LimitByte(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
+                uint32_t y11 = LimitByte(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
+                pd[0] = y00;
+                pd[1] = y01;
+                pd[width / camxbin + 0] = y10;
+                pd[width / camxbin + 1] = y11;
+              }
             }
           }
         }
+        return QHYCCD_SUCCESS;
       }
-      return QHYCCD_SUCCESS;
-    }
-    if (data != NULL)
-    {
-      delete[] data;
+      else if (depth == 16) // camchannels = 1
+      {
+        qDebug("depth = 16, camchannels = 1");
+        memset(bindata, 0, 2 * (width / camxbin) * (height / camybin));
+        qDebug("memcpy 1");
+        for (uint32_t i = 0; i < height / camybin / 2; i++)
+        {
+          uint16_t *pd = (uint16_t *)bindata + width / camxbin * i * 2;
+          uint16_t *ps = (uint16_t *)srcdata + width * camxbin * i * 2;
+          uint16_t *psEnd = ps + width / camxbin * camxbin - 1;
+          for (; ps < psEnd - camxbin * 2; ps += camxbin * 2, pd += 2)
+          {
+            for (int yi = 1; yi <= camybin; yi++)
+            {
+              for (int xi = 1; xi <= camxbin; xi++)
+              {
+                uint32_t y00 = LimitShort(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
+                uint32_t y01 = LimitShort(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
+                uint32_t y10 = LimitShort(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
+                uint32_t y11 = LimitShort(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
+                pd[0] = y00;
+                pd[1] = y01;
+                pd[width / camxbin + 0] = y10;
+                pd[width / camxbin + 1] = y11;
+              }
+            }
+          }
+        }
+        return QHYCCD_SUCCESS;
+      }
+      else if (depth == 32) // camchannels = 1
+      {
+        qDebug("depth = 32, camchannels = 1");
+        memset(bindata, 0, 4 * (width / camxbin) * (height / camybin));
+        for (uint32_t i = 0; i < height / camybin / 2; i++)
+        {
+          uint32_t *pd = (uint32_t *)bindata + width / camxbin * i * 2;
+          uint32_t *ps = (uint32_t *)srcdata + width * camxbin * i * 2;
+          uint32_t *psEnd = ps + width / camxbin * camxbin - 1;
+          for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+          {
+            for (int yi = 1; yi <= camybin; yi++)
+            {
+              for (int xi = 1; xi <= camxbin; xi++)
+              {
+                pd[0] += ps[2 * (yi - 1) * width + 2 * (xi - 1)];
+                pd[1] += ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1];
+                pd[width / camxbin + 0] += ps[width * (2 * yi - 1) + 2 * (xi - 1)];
+                pd[width / camxbin + 1] += ps[width * (2 * yi - 1) + 2 * xi - 1];
+              }
+            }
+          }
+        }
+        return QHYCCD_SUCCESS;
+      }
+      if (data != NULL)
+      {
+        delete[] data;
+      }
     }
   }
-  else
+  else  // MONO Image
   {
     uint32_t stride = width;
     uint32_t newStride = width / camxbin;
@@ -3231,7 +3493,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
   return QHYCCD_ERROR;
 }
 
-void Tools::SaveMatToJPG(cv::Mat image)
+void Tools::SaveMatTo8BitJPG(cv::Mat image)
 {
   if (image.empty())
   {
@@ -3272,11 +3534,12 @@ void Tools::SaveMatToJPG(cv::Mat image)
 
   // 将图像缩放到0-255范围内
   cv::normalize(NewImage, SendImage, 0, 255, cv::NORM_MINMAX, CV_8U);
+  // cv::convertScaleAbs(NewImage, SendImage, 1 / 256.0);
 
   // 打印最终图像的信息
   std::cout << "SendImage type: " << SendImage.type() << ", size: " << SendImage.size() << std::endl;
 
-  std::string outputFilename = "/dev/shm/MatToJPG.jpg";
+  std::string outputFilename = "/dev/shm/MatTo8BitJPG.jpg";
   bool saved = cv::imwrite(outputFilename, SendImage);
 
   if (!saved)
@@ -3287,6 +3550,90 @@ void Tools::SaveMatToJPG(cv::Mat image)
   {
     std::cout << "图像已成功保存到: " << outputFilename << std::endl;
   }
+}
+
+void Tools::SaveMatTo16BitPNG(cv::Mat image)
+{
+    if (image.empty())
+    {
+        std::cerr << "输入图像为空，无法保存！" << std::endl;
+        return;
+    }
+
+    // 打印输入图像的信息
+    std::cout << "Input image type: " << image.type() << ", size: " << image.size() << std::endl;
+
+    cv::Mat image16;
+
+    // 如果输入图像是 8 位深度，将其转换为 16 位深度
+    if (image.depth() == CV_8U)
+    {
+        std::cout << "将 8 位图像转换为 16 位..." << std::endl;
+        image.convertTo(image16, CV_16U, 256.0); // 将8位深度转换为16位深度，x256以扩展范围
+    }
+    else if (image.depth() == CV_16U)
+    {
+        // 图像已经是 16 位深度
+        image16 = image;
+    }
+    else
+    {
+        std::cerr << "Unsupported image depth: " << image.depth() << std::endl;
+        return;
+    }
+
+    // 打印转换后图像的信息
+    std::cout << "Converted image type: " << image16.type() << ", size: " << image16.size() << std::endl;
+
+    std::string outputFilename = "/dev/shm/MatTo16BitPNG.png";
+    bool saved = cv::imwrite(outputFilename, image16); // 使用 PNG 格式保存
+
+    if (!saved)
+    {
+        std::cerr << "图像保存失败！" << std::endl;
+    }
+    else
+    {
+        std::cout << "图像已成功保存到: " << outputFilename << std::endl;
+    }
+}
+
+void Tools::SaveMatToFITS(const cv::Mat& image) {
+    if (image.empty()) {
+        std::cerr << "输入图像为空！" << std::endl;
+        return;
+    }
+
+    // 确保图像是灰度图
+    cv::Mat gray;
+    if (image.channels() == 3) {
+        cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+    } else {
+        gray = image;
+    }
+
+    // FITS文件要求图像数据是二维的
+    long naxes[2] = {gray.cols, gray.rows};
+    int bitpix = SHORT_IMG;  // 使用16位整型保存
+
+    // 创建FITS文件，使用 '!' 来覆盖已存在的文件
+    fitsfile* fptr;
+    int status = 0;  // 状态变量必须初始化为0
+    std::string filename = "!/dev/shm/MatToFITS.fits";  // 加 ! 来覆盖文件
+    fits_create_file(&fptr, filename.c_str(), &status);
+    fits_create_img(fptr, bitpix, 2, naxes, &status);
+
+    // 将图像数据写入FITS文件
+    fits_write_img(fptr, TSHORT, 1, gray.total(), gray.ptr<short>(), &status);
+
+    // 关闭FITS文件
+    fits_close_file(fptr, &status);
+
+    if (status) {
+        fits_report_error(stderr, status);  // 输出错误信息
+    } else {
+        std::cout << "成功保存图像到 " << filename << std::endl;
+    }
 }
 
 /*************************************************************************
