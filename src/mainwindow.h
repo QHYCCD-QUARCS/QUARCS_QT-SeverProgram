@@ -38,6 +38,8 @@
 
 #include <regex>
 
+#define QT_Client_Version "20241017"
+
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
 #define GPIO_UNEXPORT "/sys/class/gpio/unexport"
@@ -195,6 +197,7 @@ public:
 
     bool ClearCalibrationData = true;
     bool isGuiding = false;
+    bool isGuiderLoopExp = false;
 
     int glROI_x;
     int glROI_y;

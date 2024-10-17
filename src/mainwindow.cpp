@@ -476,20 +476,35 @@ void MainWindow::onMessageReceived(const QString &message)
             isGuiding = false;
             call_phd_StopLooping();
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+            isGuiderLoopExp = false;
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
         } else {
             isGuiding = true;
-            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            // emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             if (ClearCalibrationData) {
                 ClearCalibrationData = false;
                 call_phd_ClearCalibration();
             }
 
-            call_phd_StartLooping();
-            sleep(1);
+            // call_phd_StartLooping();
+            // sleep(1);
             if (glPHD_isSelected == false) {
                 call_phd_AutoFindStar();
             }
             call_phd_StartGuiding();
+        }
+    }
+
+    else if (message == "GuiderLoopExpSwitch")
+    {
+        if (isGuiderLoopExp){
+            isGuiderLoopExp = false;
+            call_phd_StopLooping();
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        } else {
+            isGuiderLoopExp = true;
+            // emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+            call_phd_StartLooping();
         }
     }
 
@@ -502,7 +517,7 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_AutoFindStar();
         call_phd_StartGuiding();
 
-        emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+        // emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
 
         // call_phd_StarClick(641,363);
     }
@@ -512,14 +527,14 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_setExposureTime(parts[1].toInt());
     }
 
-    else if (message == "getGuiderSwitchStatus") 
-    {
-        if(isGuiding) {
-            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
-        } else {
-            emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
-        }
-    }
+    // else if (message == "getGuiderSwitchStatus") 
+    // {
+    //     if(isGuiding) {
+    //         emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+    //     } else {
+    //         emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+    //     }
+    // }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "SolveSYNC")
     {
@@ -678,6 +693,10 @@ void MainWindow::onMessageReceived(const QString &message)
             qDebug() << "PHD2Click:" << PHD2Click_X << "," << PHD2Click_Y;
             call_phd_StarClick(PHD2Click_X, PHD2Click_Y);
         }
+    }
+
+    else if (message == "getQTClientVersion") {
+        emit wsThread->sendMessageToClient("QTClientVersion:" + QString::fromUtf8(QT_Client_Version));
     }
 }
 
@@ -2853,6 +2872,7 @@ void MainWindow::ShowPHDdata()
             //         indi_Client->getTelescopePierSide(dpMount, FirstTelescopePierSide);
             //     }
             // }
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
 
             QPointF tmp;
             tmp.setX(-dRa * PixelRatio);
@@ -3038,6 +3058,8 @@ void MainWindow::ShowPHDdata()
         Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
 
         saveGuiderImageAsJPG(image_raw8);
+        
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
 
         // saveGuiderImageAsJPG(PHDImg);
 
