@@ -12,12 +12,12 @@ DriversListNew drivers_list_new;
 SystemDevice systemdevice;
 SystemDeviceList systemdevicelist;
 
-// QUrl websocketUrl(QStringLiteral("ws://192.168.2.31:8600"));
-QUrl websocketUrl;
+QUrl websocketUrl(QStringLiteral("ws://localhost:8600"));
+// QUrl websocketUrl;
 
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
 {
-    getHostAddress();
+    //getHostAddress();
 
     wsThread = new WebSocketThread(websocketUrl);
     connect(wsThread, &WebSocketThread::receivedMessage, this, &MainWindow::onMessageReceived);
