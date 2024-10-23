@@ -12,12 +12,12 @@ DriversListNew drivers_list_new;
 SystemDevice systemdevice;
 SystemDeviceList systemdevicelist;
 
-// QUrl websocketUrl(QStringLiteral("ws://192.168.2.31:8600"));
-QUrl websocketUrl;
+QUrl websocketUrl(QStringLiteral("ws://localhost:8600"));
+// QUrl websocketUrl;
 
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
 {
-    getHostAddress();
+    //getHostAddress();
 
     wsThread = new WebSocketThread(websocketUrl);
     connect(wsThread, &WebSocketThread::receivedMessage, this, &MainWindow::onMessageReceived);
@@ -70,27 +70,49 @@ MainWindow::~MainWindow()
 
 void MainWindow::getHostAddress()
 {
-    QList<QNetworkInterface> interfaces = QNetworkInterface::allInterfaces();
-    foreach (const QNetworkInterface &interface, interfaces) {
-        // 排除回环接口和非活动接口
-        if (interface.flags() & QNetworkInterface::IsLoopBack || !(interface.flags() & QNetworkInterface::IsUp))
-            continue;
+    while (true) {  // Repeat until a valid IP address is found
+        qDebug() << "Searching for network interfaces...";
+        QList<QNetworkInterface> interfaces = QNetworkInterface::allInterfaces();
+        bool found = false;
 
-        QList<QNetworkAddressEntry> addresses = interface.addressEntries();
-        foreach (const QNetworkAddressEntry &address, addresses) {
-            if (address.ip().protocol() == QAbstractSocket::IPv4Protocol) {
-                QString localIpAddress = address.ip().toString();
-                qDebug() << "Local IP Address:" << address.ip().toString();
+        foreach (const QNetworkInterface &interface, interfaces) {
+            qDebug() << "Checking interface:" << interface.humanReadableName();
+            // Skip loopback and inactive interfaces
+            if (interface.flags() & QNetworkInterface::IsLoopBack || !(interface.flags() & QNetworkInterface::IsUp)) {
+                qDebug() << "Skipping interface (loopback or not active):" << interface.humanReadableName();
+                continue;
+            }
 
-                if (!localIpAddress.isEmpty()) {
-                    QUrl getUrl(QStringLiteral("ws://%1:8600").arg(localIpAddress));
-                    qDebug() << "WebSocket URL:" << getUrl.toString();
-                    websocketUrl = getUrl;
-                } else {
-                    qDebug() << "Failed to get local IP address.";
+            QList<QNetworkAddressEntry> addresses = interface.addressEntries();
+            foreach (const QNetworkAddressEntry &address, addresses) {
+                qDebug() << "Checking address:" << address.ip().toString();
+                if (address.ip().protocol() == QAbstractSocket::IPv4Protocol) {
+                    QString localIpAddress = address.ip().toString();
+                    qDebug() << "Found local IPv4 address:" << localIpAddress;
+
+                    if (!localIpAddress.isEmpty()) {
+                        QUrl getUrl(QStringLiteral("ws://%1:8600").arg(localIpAddress));
+                        qDebug() << "Generated WebSocket URL:" << getUrl.toString();
+                        websocketUrl = getUrl;
+                        found = true;  // IP address found
+                        qDebug() << "IP address successfully found. Breaking out of loops.";
+                        break;  // Break the inner loop as we have found an address
+                    }
                 }
             }
+            if (found) {
+                break;  // Break the outer loop if an address was found
+            }
         }
+
+        if (found) {
+            qDebug() << "Valid IP address found. Exiting the while loop.";
+            break;  // Exit the while loop as a valid IP address has been found
+        }
+
+        qDebug() << "No valid IP address found. Retrying in 1 second...";
+        // Wait a moment before retrying to find an IP address to save system resources
+        QThread::sleep(1);
     }
 }
 
