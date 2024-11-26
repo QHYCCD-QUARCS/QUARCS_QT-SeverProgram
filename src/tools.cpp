@@ -199,7 +199,7 @@ int Tools::GetTotalDeviceFromSystemDeviceList() {
   return i;
 }
 
-bool Tools::GetIndexFromSystemDeviceList(const QString& devname, int& index) {
+bool Tools::getIndexFromSystemDeviceListByName(const QString& devname, int& index) {
   int i = 0;
   for (auto dev : systemDeviceList_.system_devices) {
     if (dev.DeviceIndiName == devname) {
@@ -210,13 +210,13 @@ bool Tools::GetIndexFromSystemDeviceList(const QString& devname, int& index) {
   }
   if (i < 32) {
     index = i;
-    qDebug() << "getIndexFromSystemDeviceList | found device in system list. "
+    qDebug() << "getIndexFromSystemDeviceListByName | found device in system list. "
                 "device name"
              << devname << "index" << index;
     return true;
   } else {
     index = 0;
-    qDebug() << "getIndexFromSystemDeviceList | not found device in system "
+    qDebug() << "getIndexFromSystemDeviceListByName | not found device in system "
                 "list, devname"
              << devname;
     return false;
@@ -423,9 +423,29 @@ void Tools::printSystemDeviceList(SystemDeviceList s){
           if(s.system_devices[i].dp==NULL) dpName="NULL";
           else                             dpName=s.system_devices[i].dp->getDeviceName();
 
-          qDebug()<< i << s.system_devices[i].DeviceIndiGroup << s.system_devices[i].DriverFrom << s.system_devices[i].DriverIndiName << s.system_devices[i].DeviceIndiName << s.system_devices[i].Description <<s.system_devices[i].isConnect <<dpName;
+          if(s.system_devices[i].DriverIndiName != "") {
+            qDebug()<< i << s.system_devices[i].DeviceIndiGroup << s.system_devices[i].DriverFrom << s.system_devices[i].DriverIndiName << s.system_devices[i].DeviceIndiName << s.system_devices[i].Description <<s.system_devices[i].isConnect <<dpName;
+          }
     }
     qDebug() << "******************************************************";
+}
+
+QStringList Tools::getCameraNumFromSystemDeviceList(SystemDeviceList s) {
+  QStringList cameras;
+
+  if (s.system_devices[1].Description != "") {
+    cameras << "Guider";
+  }
+
+  if (s.system_devices[2].Description != "") {
+    cameras << "PoleCamera";
+  }
+
+  if (s.system_devices[20].Description != "") {
+    cameras << "MainCamera";
+  }
+
+  return cameras;
 }
 
 void Tools::makeConfigFolder() {
@@ -494,6 +514,8 @@ void Tools::makeImageFolder() {
 
 void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
 {
+  printSystemDeviceList(deviceList);
+  
   std::string directory = "config"; // 配置文件夹名
   std::string filename = directory + "/device_connect.dat"; // 在配置文件夹中创建文件
 
@@ -748,6 +770,14 @@ int Tools::getTotalDeviceFromSystemDeviceList(SystemDeviceList s){
     return i;
 }
 
+int Tools::getDriverNumFromSystemDeviceList(SystemDeviceList s){
+    int i=0;
+    for(auto dev:s.system_devices){
+        if(dev.DriverIndiName !="") i++;
+    }
+    return i;
+}
+
 void Tools::cleanSystemDeviceListConnect(SystemDeviceList &s){
     for (int i=0;i<s.system_devices.size();i++){
         s.system_devices[i].isConnect=false;
@@ -755,7 +785,7 @@ void Tools::cleanSystemDeviceListConnect(SystemDeviceList &s){
     }
 }
 
-uint32_t Tools::getIndexFromSystemDeviceList(SystemDeviceList s,QString devname,int &index){
+uint32_t Tools::getIndexFromSystemDeviceListByName(SystemDeviceList s,QString devname,int &index){
     int i=0;
     for(auto dev:s.system_devices){
         if (dev.DeviceIndiName == devname ){
@@ -766,12 +796,12 @@ uint32_t Tools::getIndexFromSystemDeviceList(SystemDeviceList s,QString devname,
     }
     if(i<32) {
         index=i;
-        qDebug()<<"getIndexFromSystemDeviceList | found device in system list. device name" << devname<< "index" <<index;
+        qDebug()<<"getIndexFromSystemDeviceListByName | found device in system list. device name" << devname<< "index" <<index;
         return QHYCCD_SUCCESS;
     }
     else{
         index=0;
-        qDebug()<<"getIndexFromSystemDeviceList | not found device in system list, devname"<<devname;
+        qDebug()<<"getIndexFromSystemDeviceListByName | not found device in system list, devname"<<devname;
         return QHYCCD_ERROR;
     }
 
@@ -914,6 +944,29 @@ int Tools::readFits(const char* fileName, cv::Mat& image) {
   fits_close_file(fptr, &status);
 
   return status;
+}
+
+QString Tools::getFitsCaptureTime(const char* fileName) {
+    fitsfile* fptr;
+    int status = 0;
+    char dateObs[30]; // 用于存储拍摄时间字符串
+
+    // 打开 FITS 文件
+    if (fits_open_file(&fptr, fileName, READONLY, &status)) {
+        return QString(); // 返回空 QString 以表示错误
+    }
+
+    // 获取拍摄时间
+    if (fits_read_key(fptr, TSTRING, "DATE-OBS", dateObs, NULL, &status)) {
+        fits_close_file(fptr, &status);
+        return QString(); // 返回空 QString 以表示错误
+    }
+
+    // 关闭文件
+    fits_close_file(fptr, &status);
+    
+    // 返回 QString 类型的拍摄时间
+    return QString::fromStdString(dateObs);
 }
 
 int Tools::readFits_(const char* fileName, cv::Mat& image) {
@@ -3332,8 +3385,8 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
         {
           uint8_t *pd = bindata + width / camxbin * i * 2;
           uint8_t *ps = srcdata + width * camxbin * i * 2;
-          uint8_t *psEnd = ps + width / camxbin * camxbin - 1;
-          for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
+          uint8_t *psEnd = ps + width / camxbin * camxbin;
+          for (; ps < psEnd - camxbin * 2+1; ps += camxbin * 2, pd += 2)
           {
             for (int yi = 1; yi <= camybin; yi++)
             {
@@ -3362,8 +3415,8 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
         {
           uint16_t *pd = (uint16_t *)bindata + width / camxbin * i * 2;
           uint16_t *ps = (uint16_t *)srcdata + width * camxbin * i * 2;
-          uint16_t *psEnd = ps + width / camxbin * camxbin - 1;
-          for (; ps < psEnd - camxbin * 2; ps += camxbin * 2, pd += 2)
+          uint16_t *psEnd = ps + width / camxbin * camxbin;
+          for (; ps < psEnd - camxbin * 2+1; ps += camxbin * 2, pd += 2)
           {
             for (int yi = 1; yi <= camybin; yi++)
             {

@@ -57,15 +57,25 @@ void MyClient::newProperty(INDI::Property property)
 void MyClient::newDevice(INDI::BaseDevice baseDevice){
 //the new Device is a callback function , the connect server will trig it. it can be override here
 
-    qDebug()<<("myclient.cpp | new Device");
+    qDebug() << "\033[1;33m ++++++ New Device ++++++\033[0m";
 
-    const char *devname = baseDevice.getDeviceName();
+    const char *DeviceName = baseDevice.getDeviceName();
+
+    // if(baseDevice.getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE) {
+    //     qDebug() << "We received a CCD!";
+    // } else if (baseDevice.getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE) {
+    //     qDebug() << "We received a FILTER!";
+    // } else if (baseDevice.getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE) {
+    //     qDebug() << "We received a FOCUSER!";
+    // } else if (baseDevice.getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE) {
+    //     qDebug() << "We received a TELESCOPE!";
+    // }
 
     AddDevice(baseDevice,baseDevice.getDeviceName());
 
+    qDebug() << "DeviceName:" << DeviceName << ", " << "GetDeviceCount:" << GetDeviceCount();
 
-    qDebug() << devname;
-    qDebug()<< "GetDeviceCount: " << GetDeviceCount();
+    qDebug() << "\033[1;33m ++++++++++++++++++++++++ \033[0m";
 }
 
 void MyClient::updateProperty(INDI::Property property)
@@ -154,7 +164,7 @@ void MyClient::ClearDevices() {
 }
 
 QString MyClient::PrintDevices() {
-    qDebug()<<"************ Device List ****************";
+    qDebug() << "\033[1;36m--------- INDI Device List ---------\033[0m";
     QString dev;
     if(deviceNames.size()==0){
         qDebug()<<"myclient.cpp | PrintDevices | no device exist";
@@ -172,7 +182,7 @@ QString MyClient::PrintDevices() {
             dev.append(QString::number(i)); // 添加deviceNames元素
         }
     }
-    qDebug()<<"*****************************************";
+    qDebug()<<"\033[1;36m------------------------------------\033[0m";
     return dev;
 }
 
@@ -229,13 +239,16 @@ void MyClient::disconnectAllDevice(void){
     for(int i=0;i<GetDeviceCount();i++)
     {
         dp.append(GetDeviceFromList(i));
-        disconnectDevice(dp[i]->getDeviceName());
-        while (dp[i]->isConnected())
+        if (dp[i]->isConnected())
         {
-            qDebug("disconnectAllDevice | Waiting for disconnect finish...");
-            sleep(1);
-        }   
-        qDebug()<<"disconnectAllDevice |"<<dp[i]->getDeviceName()<<dp[i]->isConnected();
+            disconnectDevice(dp[i]->getDeviceName());
+            while (dp[i]->isConnected())
+            {
+                qDebug("disconnectAllDevice | Waiting for disconnect finish...");
+                sleep(1);
+            }
+            qDebug() << "disconnectAllDevice |" << dp[i]->getDeviceName() << dp[i]->isConnected();
+        }
     }
 }
 
@@ -602,7 +615,7 @@ uint32_t MyClient::setCCDGain(INDI::BaseDevice *dp,int value){
 
     ccdgain[0].setValue(value);
     sendNewProperty(ccdgain);
-    //qDebug()<<"setCCDBinnign"<< value;
+
     return QHYCCD_SUCCESS;
 }
 
@@ -639,7 +652,7 @@ uint32_t MyClient::setCCDOffset(INDI::BaseDevice *dp,int value)
 
     ccdoffset[0].setValue(value);
     sendNewProperty(ccdoffset);
-    //qDebug()<<"setCCDBinnign"<< value;
+
     return QHYCCD_SUCCESS;
 }
 
@@ -673,7 +686,7 @@ uint32_t MyClient::setCCDReadMode(INDI::BaseDevice *dp,int value)
 
     ccdreadmode[0].setValue(value);
     sendNewProperty(ccdreadmode);
-    //qDebug()<<"setCCDBinnign"<< value;
+
     return QHYCCD_SUCCESS;
 }
 
@@ -815,7 +828,7 @@ uint32_t MyClient::setTelescopeInfo(INDI::BaseDevice *dp,double telescope_apertu
     property[2].setValue(guider_aperature);
     property[3].setValue(guider_focal);
     sendNewProperty(property);
-    //qDebug()<<"setCCDBinnign"<< value;
+
     return QHYCCD_SUCCESS;
 }
 
@@ -1595,22 +1608,24 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 
 uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
 {
-    INDI::PropertyText property = dp->getProperty("OnStep Status");
+    if(QString::fromStdString(dp->getDeviceName()) == "LX200 OnStep") {
+        INDI::PropertyText property = dp->getProperty("OnStep Status");
 
-    if (!property.isValid())
-    {
-        IDLog("Error: unable to find  OnStep Status property...\n");
-        return QHYCCD_ERROR;
+        if (!property.isValid())
+        {
+            IDLog("Error: unable to find  OnStep Status property...\n");
+            return QHYCCD_ERROR;
+        }
+        
+        statu = property[1].getText();
+        // error = property[7].getText();
+        // qDebug()<<"OnStep error: "<< error;
+        // if(error != "None") {
+        //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
+        // }
+        
+        return QHYCCD_SUCCESS;
     }
-    
-    statu = property[1].getText();
-    // error = property[7].getText();
-    // qDebug()<<"OnStep error: "<< error;
-    // if(error != "None") {
-    //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
-    // }
-    
-    return QHYCCD_SUCCESS;
 }
 
 /**************************************************************************************

@@ -38,7 +38,10 @@
 
 #include <regex>
 
-#define QT_Client_Version "20241017"
+#include <thread> // 确保包含此头文件
+#include <chrono> // 包含用于时间的头文件
+
+#define QT_Client_Version "20241125"
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -87,12 +90,22 @@ public:
 
     uint32_t clearCheckDeviceExist(QString drivername,bool &isExist);
 
+    void ConnectAllDeviceOnce();
+    void AutoConnectAllDevice();
     void DeviceConnect();
+    void BindingDevice(QString DeviceType, int DeviceIndex);
+    void UnBindingDevice(QString DeviceType);
     void AfterDeviceConnect();
+    void AfterDeviceConnect(INDI::BaseDevice *dp);
     void disconnectIndiServer(MyClient *client);
     void connectIndiServer(MyClient *client);
 
     void ClearSystemDeviceList();
+
+    QVector<int> ConnectedCCDList;
+    QVector<int> ConnectedTELESCOPEList;
+    QVector<int> ConnectedFOCUSERList;
+    QVector<int> ConnectedFILTERList;
 
     //ms
     void INDI_Capture(int Exp_times);
@@ -147,7 +160,7 @@ public:
 
     void getTimeNow(int index);
 
-    int glExpTime;
+    int glExpTime = 1000;
 
     bool one_touch_connect = true;
     bool one_touch_connect_first = true;
@@ -292,7 +305,9 @@ public:
 
     void LoopCapture(int ExpTime);
 
-    bool StopLoopCapture = false;
+    void CaptureAndSolve(int ExpTime, bool isLoop);
+
+    bool EndCaptureAndSolve = false;
 
     bool TakeNewCapture = true;
 
@@ -310,7 +325,7 @@ public:
 
     void RecoverySloveResul();
 
-    int glFocalLength;
+    int glFocalLength = 0;
     double glCameraSize_width;
     double glCameraSize_height;
 
@@ -386,6 +401,8 @@ public:
 
     QVector<ConnectedDevice> ConnectedDevices;
 
+    // int NumberOfTimesConnectDevice = 0;
+
     void getConnectedDevices();
 
     void clearConnectedDevices();
@@ -402,8 +419,8 @@ public:
 
     void getStagingGuiderData();
 
-    QElapsedTimer CaptureTestTimer;
-    qint64 CaptureTestTime;
+    QElapsedTimer ImageSolveTimer;
+    qint64 ImageSolveTime;
 
 
     int MoveFileToUSB();
@@ -437,12 +454,14 @@ public:
     bool isMountReadOnly(const QString& mountPoint);
     bool remountReadWrite(const QString& mountPoint, const QString& password);
 
+    void GetImageFiles(std::string ImageFolder);
+
     void USBCheck();
 
     PlateSolveWorker *platesolveworker = new PlateSolveWorker;
 
     
-
+    QVector<QString> INDI_Driver_List;
 
 private slots:
     void onMessageReceived(const QString &message);

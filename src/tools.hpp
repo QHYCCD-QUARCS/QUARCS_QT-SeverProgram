@@ -85,13 +85,12 @@ struct DriversListNew {
 //used to store the device of the user selected
 
 struct SystemDevice {
-  QString Description{};
+  QString Description{};  // Mount MainCamera Guider Focuser
   int DeviceIndiGroup{};  // number or text.  if number, using the INDI grounp// number standard
   QString DeviceIndiName{};  //"QHY CCD QHY268M-XXXX"
   QString DriverIndiName;    //"indi_qhy_ccd"  or "libqhyccd"
   QString DriverFrom{};      // INDI,ASCOM,NATIVE.
   INDI::BaseDevice *dp;
-  // void* dp = nullptr;
   bool isConnect = false;
 };
 
@@ -241,7 +240,7 @@ class Tools : public QObject {
   static void InitSystemDeviceList();
   static void CleanSystemDeviceListConnect();
   static int  GetTotalDeviceFromSystemDeviceList();
-  static bool GetIndexFromSystemDeviceList(const QString& devname, int& index);
+  static bool getIndexFromSystemDeviceListByName(const QString& devname, int& index);
   static void ClearSystemDeviceListItem(int index);
   static SystemDeviceList& systemDeviceList();
 
@@ -250,6 +249,8 @@ class Tools : public QObject {
   static void startIndiDriver(QString driver_name);
   static void stopIndiDriver(QString driver_name);
   static void printSystemDeviceList(SystemDeviceList s);
+  static QStringList getCameraNumFromSystemDeviceList(SystemDeviceList s);
+
   static void makeConfigFolder();
   static void makeImageFolder();
   static void saveSystemDeviceList(SystemDeviceList deviceList);
@@ -264,11 +265,14 @@ class Tools : public QObject {
 
   static void clearSystemDeviceListItem(SystemDeviceList &s,int index);                          //
   static void initSystemDeviceList(SystemDeviceList &s);                                         //
-  static int getTotalDeviceFromSystemDeviceList(SystemDeviceList s);                             //
+  static int getTotalDeviceFromSystemDeviceList(SystemDeviceList s); 
+  static int getDriverNumFromSystemDeviceList(SystemDeviceList s);                            //
   static void cleanSystemDeviceListConnect(SystemDeviceList &s);                                 //
-  static uint32_t getIndexFromSystemDeviceList(SystemDeviceList s,QString devname,int &index);   //
+  static uint32_t getIndexFromSystemDeviceListByName(SystemDeviceList s,QString devname,int &index);   //
 
   static int readFits(const char* fileName, cv::Mat& image);
+
+  static QString getFitsCaptureTime(const char* fileName);
 
   static int readFits_(const char* fileName, cv::Mat& image);
 
