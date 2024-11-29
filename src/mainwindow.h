@@ -57,7 +57,7 @@ public:
     explicit MainWindow(QObject *parent = nullptr);
     ~MainWindow();
 
-    void getHostAddress();
+    // void getHostAddress();
 
     void initINDIClient();
     void initINDIServer();
@@ -466,6 +466,8 @@ public:
 private slots:
     void onMessageReceived(const QString &message);
     // void sendMessage(QString message);
+    void getHostAddress();
+
 
 private:
     // WebSocketClient *websocket;
