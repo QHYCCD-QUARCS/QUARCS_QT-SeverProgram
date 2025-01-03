@@ -99,6 +99,18 @@ struct SystemDeviceList {
   int currentDeviceCode = -1;
 };
 
+struct DSLRsInfo
+{
+  QString Name;
+  int SizeX;
+  int SizeY;
+  double PixelSize;
+};
+
+struct DSLRsInfoList
+{
+  QVector<DSLRsInfo> DSLRsInfoList;
+};
 
 struct CartesianCoordinates {
     double x;
@@ -251,7 +263,7 @@ class Tools : public QObject {
   static void printSystemDeviceList(SystemDeviceList s);
   static QStringList getCameraNumFromSystemDeviceList(SystemDeviceList s);
 
-  static void makeConfigFolder();
+  static void makeConfigFile();
   static void makeImageFolder();
   static void saveSystemDeviceList(SystemDeviceList deviceList);
   static SystemDeviceList readSystemDeviceList();
@@ -259,6 +271,13 @@ class Tools : public QObject {
   static QString readExpTimeList();
   static void saveCFWList(QString Name, QString List);
   static QString readCFWList(QString Name);
+
+  static void saveDSLRsInfo(DSLRsInfo DSLRsInfo);
+  static DSLRsInfo readDSLRsInfo(QString Name);
+
+  static void readClientSettings(const std::string& fileName, std::unordered_map<std::string, std::string>& config);
+  static void saveClientSettings(const std::string& fileName, const std::unordered_map<std::string, std::string>& config);
+
   static void stopIndiDriverAll(const DriversList driver_list);
 
   static uint32_t readFitsHeadForDevName(std::string filename,QString &devname);

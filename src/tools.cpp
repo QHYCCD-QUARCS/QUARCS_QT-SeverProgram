@@ -114,12 +114,12 @@ bool Tools::LoadSystemListFromXml(const QString& fileName) {
     file.close();
 
     if (xmlReader.hasError()) {
-      qDebug() << "loadSystemListFromXml | xmlRead has ERROR";
+      qWarning() << "loadSystemListFromXml | xmlRead has ERROR";
       return false;
     }
 
   } else {
-    qDebug() << "loadSystemListFromXml | ERROR: Can not open file";
+    qWarning() << "loadSystemListFromXml | ERROR: Can not open file";
     return false;
   }
 
@@ -210,13 +210,13 @@ bool Tools::getIndexFromSystemDeviceListByName(const QString& devname, int& inde
   }
   if (i < 32) {
     index = i;
-    qDebug() << "getIndexFromSystemDeviceListByName | found device in system list. "
+    qInfo() << "getIndexFromSystemDeviceListByName | found device in system list. "
                 "device name"
              << devname << "index" << index;
     return true;
   } else {
     index = 0;
-    qDebug() << "getIndexFromSystemDeviceListByName | not found device in system "
+    qWarning() << "getIndexFromSystemDeviceListByName | not found device in system "
                 "list, devname"
              << devname;
     return false;
@@ -241,7 +241,7 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
         // 处理打开文件失败的情况
-        qDebug() << "打开文件失败";
+        qWarning() << "Fail to open Drivers List file.";
         return;
     }
     QXmlStreamReader xml(&file);
@@ -277,7 +277,7 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
 
     if (dir == nullptr)
     {
-        qDebug() << "Unable to find INDI drivers directory,Please make sure the path is true";
+        qWarning() << "Unable to find INDI drivers directory, Please make sure the path is true.";
         return;
     }
 
@@ -301,7 +301,7 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
                 if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
                 {
                     // 处理打开文件失败的情况
-                    qDebug() << "Open File faild!!!";
+                    qWarning() << "Open File failed!!!";
                 }
 
                 QXmlStreamReader xml(&file);
@@ -417,17 +417,17 @@ void Tools::printSystemDeviceList(SystemDeviceList s){
 
 
 
-    qDebug()<<"*****************System Device Selected***************"<<s.system_devices.size();
+    qInfo()<<"*****************System Device Selected***************"<<s.system_devices.size();
     QString dpName;
     for (int i=0;i<s.system_devices.size();i++){
           if(s.system_devices[i].dp==NULL) dpName="NULL";
           else                             dpName=s.system_devices[i].dp->getDeviceName();
 
           if(s.system_devices[i].DriverIndiName != "") {
-            qDebug()<< i << s.system_devices[i].DeviceIndiGroup << s.system_devices[i].DriverFrom << s.system_devices[i].DriverIndiName << s.system_devices[i].DeviceIndiName << s.system_devices[i].Description <<s.system_devices[i].isConnect <<dpName;
+            qInfo()<< i << s.system_devices[i].DeviceIndiGroup << s.system_devices[i].DriverFrom << s.system_devices[i].DriverIndiName << s.system_devices[i].DeviceIndiName << s.system_devices[i].Description <<s.system_devices[i].isConnect <<dpName;
           }
     }
-    qDebug() << "******************************************************";
+    qInfo() << "******************************************************";
 }
 
 QStringList Tools::getCameraNumFromSystemDeviceList(SystemDeviceList s) {
@@ -448,24 +448,32 @@ QStringList Tools::getCameraNumFromSystemDeviceList(SystemDeviceList s) {
   return cameras;
 }
 
-void Tools::makeConfigFolder() {
-  std::string directory = "config"; // 要创建的文件夹名
+void Tools::makeConfigFile() {
+    std::string directory = "config";  // 要创建的文件夹名
+    std::string filename = "config/config.ini";  // 配置文件路径
 
     // 如果目录不存在，则创建
-    if (!std::filesystem::exists(directory))
-    {
-        if (std::filesystem::create_directory(directory))
-        {
-            std::cout << "文件夹创建成功: " << directory << std::endl;
+    if (!std::filesystem::exists(directory)) {
+        if (std::filesystem::create_directory(directory)) {
+            qInfo() << "Configuration folder created successfully: " << QString::fromStdString(directory);
+        } else {
+            qWarning() << "An error occurred while creating the configuration folder.";
+            return;  // 如果文件夹创建失败，退出
         }
-        else
-        {
-            std::cerr << "创建文件夹时发生错误" << std::endl;
-        }
+    } else {
+        qWarning() << "The configuration folder already exists: " << QString::fromStdString(directory);
     }
-    else
-    {
-        std::cout << "文件夹已存在: " << directory << std::endl;
+
+    // 如果配置文件不存在，则创建空配置文件
+    if (!std::filesystem::exists(filename)) {
+        std::ofstream configFile(filename);  // 在 config 文件夹中创建空文件
+        if (configFile) {
+            qInfo() << "Configuration file created successfully: " << QString::fromStdString(filename);
+        } else {
+            qWarning() << "An error occurred while creating the configuration file.";
+        }
+    } else {
+        qWarning() << "The configuration file already exists: " << QString::fromStdString(filename);
     }
 }
 
@@ -477,261 +485,665 @@ void Tools::makeImageFolder() {
     {
         if (std::filesystem::create_directory(directory))
         {
-            std::cout << "文件夹创建成功: " << directory << std::endl;
+            qInfo() << "Image folder created successfully: " << QString::fromStdString(directory);
 
             // 创建子文件夹 CaptureImage
             std::string captureDirectory = directory + "/CaptureImage";
             if (std::filesystem::create_directory(captureDirectory))
             {
-                std::cout << "子文件夹创建成功: " << captureDirectory << std::endl;
+                qInfo() << "Subfolder created successfully: " << QString::fromStdString(captureDirectory);
             }
             else
             {
-                std::cerr << "创建子文件夹时发生错误" << std::endl;
+                qWarning() << "Error occurred while creating CaptureImage subfolders.";
             }
 
             // 创建子文件夹 ScheduleImage
             std::string scheduleDirectory = directory + "/ScheduleImage";
             if (std::filesystem::create_directory(scheduleDirectory))
             {
-                std::cout << "子文件夹创建成功: " << scheduleDirectory << std::endl;
+                qInfo() << "Subfolder created successfully: " << QString::fromStdString(captureDirectory);
             }
             else
             {
-                std::cerr << "创建子文件夹时发生错误" << std::endl;
+                qWarning() << "Error occurred while creating ScheduleImage subfolders.";
             }
         }
         else
         {
-            std::cerr << "创建文件夹时发生错误" << std::endl;
+            qWarning() << "An error occurred while creating the image folder.";
         }
     }
     else
     {
-        std::cout << "文件夹已存在: " << directory << std::endl;
+        qWarning() << "The image folder already exists: " << QString::fromStdString(directory);
     }
 }
 
-void Tools::saveSystemDeviceList(SystemDeviceList deviceList)
-{
-  printSystemDeviceList(deviceList);
-  
-  std::string directory = "config"; // 配置文件夹名
-  std::string filename = directory + "/device_connect.dat"; // 在配置文件夹中创建文件
+void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
+    std::string directory = "config";  // 配置文件夹名
+    std::string filename = directory + "/config.ini";  // 配置文件路径
 
-  std::ofstream outfile(filename, std::ios::binary);
+    // 检查文件夹是否存在，如果不存在就创建
+    if (!std::filesystem::exists(directory)) {
+        if (!std::filesystem::create_directory(directory)) {
+            qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+            return;
+        }
+    }
 
-  if (!outfile.is_open()) {
-        std::cerr << "打开文件写入时发生错误: " << filename << std::endl;
+    // 读取现有配置文件的内容
+    std::ifstream infile(filename);
+    std::stringstream fileContent;
+    std::string line;
+    bool isInLastConnectedDeviceSection = false;
+
+    // 读取现有文件内容
+    while (std::getline(infile, line)) {
+        fileContent << line << "\n";
+        // 如果遇到 [LastConnectedDevice] 部分，标记为开始位置
+        if (line == "[LastConnectedDevice]") {
+            isInLastConnectedDeviceSection = true;
+        }
+        // 如果已经在 [LastConnectedDevice] 部分，直到遇到空行或另一个部分则跳出
+        if (isInLastConnectedDeviceSection && line.empty()) {
+            isInLastConnectedDeviceSection = false;
+        }
+    }
+    infile.close();
+
+    // 如果文件已经包含了 [LastConnectedDevice] 部分，则移除旧的内容
+    std::string content = fileContent.str();
+    size_t pos = content.find("[LastConnectedDevice]");
+    if (pos != std::string::npos) {
+        size_t endPos = content.find("(End of device list)\n\n", pos) + std::string("(End of device list)\n\n").length();  // 找到 [LastConnectedDevice] 部分结束的位置
+        if (endPos != std::string::npos) {
+            content.erase(pos, endPos - pos);  // 删除旧的设备列表部分
+        }
+    }
+
+    // 打开文件进行写入（覆盖模式）
+    std::ofstream outfile(filename, std::ios::out | std::ios::trunc);  // 打开文件以覆盖内容
+    if (!outfile.is_open()) {
+        qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
         return;
     }
 
+    // 先写入文件的原始内容（去掉 [LastConnectedDevice] 部分）
+    outfile << content;
+
+    // 写入新的 [LastConnectedDevice] 部分
+    outfile << "[LastConnectedDevice]\n";
+
+    // 遍历设备列表并写入到配置文件
     for (const auto& device : deviceList.system_devices) {
-        // 转换 QString 成员为 UTF-8 字符串
         QByteArray descriptionUtf8 = device.Description.toUtf8();
         QByteArray deviceIndiNameUtf8 = device.DeviceIndiName.toUtf8();
         QByteArray driverIndiNameUtf8 = device.DriverIndiName.toUtf8();
         QByteArray driverFromUtf8 = device.DriverFrom.toUtf8();
 
-        // 写入 QString 大小信息和数据
-        size_t descriptionSize = static_cast<size_t>(descriptionUtf8.size());
-        outfile.write(reinterpret_cast<const char*>(&descriptionSize), sizeof(size_t));
-        outfile.write(descriptionUtf8.constData(), descriptionSize);
-
-        outfile.write(reinterpret_cast<const char*>(&device.DeviceIndiGroup), sizeof(int));
-
-        size_t deviceIndiNameSize = static_cast<size_t>(deviceIndiNameUtf8.size());
-        outfile.write(reinterpret_cast<const char*>(&deviceIndiNameSize), sizeof(size_t));
-        outfile.write(deviceIndiNameUtf8.constData(), deviceIndiNameSize);
-
-        size_t driverIndiNameSize = static_cast<size_t>(driverIndiNameUtf8.size());
-        outfile.write(reinterpret_cast<const char*>(&driverIndiNameSize), sizeof(size_t));
-        outfile.write(driverIndiNameUtf8.constData(), driverIndiNameSize);
-
-        size_t driverFromSize = static_cast<size_t>(driverFromUtf8.size());
-        outfile.write(reinterpret_cast<const char*>(&driverFromSize), sizeof(size_t));
-        outfile.write(driverFromUtf8.constData(), driverFromSize);
-
-        outfile.write(reinterpret_cast<const char*>(&device.isConnect), sizeof(bool));
+        // 写入设备信息到配置文件
+        outfile << "Description=" << descriptionUtf8.constData() << "\n";
+        outfile << "DeviceIndiGroup=" << device.DeviceIndiGroup << "\n";
+        outfile << "DeviceIndiName=" << deviceIndiNameUtf8.constData() << "\n";
+        outfile << "DriverIndiName=" << driverIndiNameUtf8.constData() << "\n";
+        outfile << "DriverFrom=" << driverFromUtf8.constData() << "\n";
+        outfile << "isConnect=" << (device.isConnect ? "true" : "false") << "\n";
+        outfile << "\n";  // 每个设备之间空一行，便于阅读
     }
+    outfile << "(End of device list)\n\n";
 
+    // 关闭文件
     outfile.close();
+    qInfo() << "The device list has been saved to the configuration file: " << QString::fromStdString(filename);
 }
 
-SystemDeviceList Tools::readSystemDeviceList()
-{
-  SystemDeviceList deviceList;
-  std::string directory = "config"; // 配置文件夹名
-  std::string filename = directory + "/device_connect.dat"; // 在配置文件夹中创建文件
-  std::ifstream infile(filename, std::ios::binary);
+SystemDeviceList Tools::readSystemDeviceList() {
+    SystemDeviceList deviceList;
+    std::string filename = "config/config.ini"; // INI 配置文件路径
+    std::ifstream infile(filename);
 
-  if (!infile.is_open()) {
-        std::cerr << "打开文件读取时发生错误: " << filename << std::endl;
+    if (!infile.is_open()) {
+        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
         return deviceList;
     }
 
-    while (true) {
-        SystemDevice device;
+    std::string line;
+    bool inLastConnectedDeviceSection = false;
+    SystemDevice currentDevice;
+    std::map<std::string, std::string> sectionData;
 
-        // 读取 QString 成员
-        size_t descriptionSize;
-        infile.read(reinterpret_cast<char*>(&descriptionSize), sizeof(size_t));
-        if (infile.eof()) {
-            break;
+    // 逐行读取 INI 文件
+    while (std::getline(infile, line)) {
+        // 检查是否进入了 [LastConnectedDevice] 部分
+        if (line.find("[LastConnectedDevice]") != std::string::npos) {
+            inLastConnectedDeviceSection = true;
+            continue; // 跳过这一行，开始读取数据
         }
-        std::vector<char> descriptionBuffer(descriptionSize);
-        infile.read(descriptionBuffer.data(), descriptionSize);
-        device.Description = QString::fromUtf8(descriptionBuffer.data(), static_cast<int>(descriptionSize));
 
-        infile.read(reinterpret_cast<char*>(&device.DeviceIndiGroup), sizeof(int));
+        if (inLastConnectedDeviceSection) {
+            // 遇到下一个部分或空行，停止读取当前部分
+            if (line.empty() || line[0] == '[') {
+                // 这里保存当前设备并重置
+                if (!sectionData.empty()) {
+                    // 用 sectionData 填充当前设备
+                    currentDevice.Description = QString::fromStdString(sectionData["Description"]);
+                    currentDevice.DeviceIndiGroup = std::stoi(sectionData["DeviceIndiGroup"]);
+                    currentDevice.DeviceIndiName = QString::fromStdString(sectionData["DeviceIndiName"]);
+                    currentDevice.DriverIndiName = QString::fromStdString(sectionData["DriverIndiName"]);
+                    currentDevice.DriverFrom = QString::fromStdString(sectionData["DriverFrom"]);
+                    currentDevice.isConnect = sectionData["isConnect"] == "true";
 
-        size_t deviceIndiNameSize;
-        infile.read(reinterpret_cast<char*>(&deviceIndiNameSize), sizeof(size_t));
-        std::vector<char> deviceIndiNameBuffer(deviceIndiNameSize);
-        infile.read(deviceIndiNameBuffer.data(), deviceIndiNameSize);
-        device.DeviceIndiName = QString::fromUtf8(deviceIndiNameBuffer.data(), static_cast<int>(deviceIndiNameSize));
+                    // 将当前设备添加到设备列表
+                    deviceList.system_devices.push_back(currentDevice);
+                }
+                // 重置
+                sectionData.clear();
 
-        size_t driverIndiNameSize;
-        infile.read(reinterpret_cast<char*>(&driverIndiNameSize), sizeof(size_t));
-        std::vector<char> driverIndiNameBuffer(driverIndiNameSize);
-        infile.read(driverIndiNameBuffer.data(), driverIndiNameSize);
-        device.DriverIndiName = QString::fromUtf8(driverIndiNameBuffer.data(), static_cast<int>(driverIndiNameSize));
-
-        size_t driverFromSize;
-        infile.read(reinterpret_cast<char*>(&driverFromSize), sizeof(size_t));
-        std::vector<char> driverFromBuffer(driverFromSize);
-        infile.read(driverFromBuffer.data(), driverFromSize);
-        device.DriverFrom = QString::fromUtf8(driverFromBuffer.data(), static_cast<int>(driverFromSize));
-
-        infile.read(reinterpret_cast<char*>(&device.isConnect), sizeof(bool));
-
-        deviceList.system_devices.push_back(device);
+                if (!line.empty() && line[0] == '[') {
+                    // 如果遇到新的节，跳出循环
+                    break;
+                }
+            } else {
+                // 解析键值对
+                std::string key, value;
+                std::istringstream lineStream(line);
+                if (std::getline(std::getline(lineStream, key, '='), value)) {
+                    sectionData[key] = value;
+                }
+            }
+        }
     }
 
     infile.close();
-
     return deviceList;
 }
 
 void Tools::saveExpTimeList(QString List)
 {
-  std::string directory = "config";                      // 配置文件夹名
-  std::string filename = directory + "/ExpTimeList.dat"; // 在配置文件夹中创建文件
+    std::string directory = "config";  // 配置文件夹名
+    std::string filename = directory + "/config.ini";  // 配置文件路径
 
-  std::ofstream outfile(filename, std::ios::binary);
+    // 检查文件夹是否存在，如果不存在就创建
+    if (!std::filesystem::exists(directory)) {
+        if (!std::filesystem::create_directory(directory)) {
+            qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+            return;
+        }
+    }
 
-  if (!outfile.is_open())
-  {
-    std::cerr << "打开文件写入时发生错误: " << filename << std::endl;
-    return;
-  }
+    // 读取现有配置文件的内容
+    std::ifstream infile(filename);
+    std::stringstream fileContent;
+    std::string line;
+    bool isInExpTimeListSection = false;
 
-  QByteArray ExpTimeListUtf8 = List.toUtf8();
+    // 读取现有文件内容
+    while (std::getline(infile, line)) {
+        fileContent << line << "\n";
+        // 如果遇到 [ExpTimeList] 部分，标记为开始位置
+        if (line == "[ExpTimeList]") {
+            isInExpTimeListSection = true;
+        }
+        // 如果已经在 [LastConnectedDevice] 部分，直到遇到空行或另一个部分则跳出
+        if (isInExpTimeListSection && line.empty()) {
+            isInExpTimeListSection = false;
+        }
+    }
+    infile.close();
 
-  // 写入 QString 大小信息和数据
-  size_t ExpTimeListSize = static_cast<size_t>(ExpTimeListUtf8.size());
-  outfile.write(reinterpret_cast<const char *>(&ExpTimeListSize), sizeof(size_t));
-  outfile.write(ExpTimeListUtf8.constData(), ExpTimeListSize);
+    // 如果文件已经包含了 [LastConnectedDevice] 部分，则移除旧的内容
+    std::string content = fileContent.str();
+    size_t pos = content.find("[ExpTimeList]");
+    if (pos != std::string::npos) {
+        size_t endPos = content.find("(End of ExpTime list)\n\n", pos) + std::string("(End of ExpTime list)\n\n").length();  // 找到 [ExpTimeList] 部分结束的位置
+        if (endPos != std::string::npos) {
+            content.erase(pos, endPos - pos);  // 删除旧的设备列表部分
+        }
+    }
 
-  outfile.close();
+    // 打开文件进行写入（覆盖模式）
+    std::ofstream outfile(filename, std::ios::out | std::ios::trunc);  // 打开文件以覆盖内容
+    if (!outfile.is_open()) {
+        qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
+        return;
+    }
+
+    // 先写入文件的原始内容（去掉 [LastConnectedDevice] 部分）
+    outfile << content;
+
+    // 写入新的 [LastConnectedDevice] 部分
+    outfile << "[ExpTimeList]\n";
+
+    QByteArray ExpTimeListUtf8 = List.toUtf8();
+
+    // 将 QString 转换为 UTF-8 格式的字符串，并保存
+    outfile << "ExpTimeList=" << ExpTimeListUtf8.constData() << "\n";
+
+    outfile << "(End of ExpTime list)\n\n";
+
+    outfile.close();
 }
 
 QString Tools::readExpTimeList()
 {
-  std::string directory = "config";                      // 配置文件夹名
-  std::string filename = directory + "/ExpTimeList.dat"; // 在配置文件夹中创建文件
-  std::ifstream infile(filename, std::ios::binary);
+    QString ExpTimeList;
+    std::string filename = "config/config.ini"; // INI 配置文件路径
+    std::ifstream infile(filename);
 
-  if (!infile.is_open())
-  {
-    std::cerr << "打开文件读取时发生错误: " << filename << std::endl;
-    return QString();
-  }
+    if (!infile.is_open()) {
+        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
+        return QString();
+    }
 
-  // 读取经验时间列表的大小
-  size_t ExpTimeListSize;
-  infile.read(reinterpret_cast<char *>(&ExpTimeListSize), sizeof(size_t));
+    std::string line;
+    bool inExpTimeListSection = false;
+    SystemDevice currentDevice;
+    std::map<std::string, std::string> sectionData;
 
-  // 分配内存空间用于存储经验时间列表的数据
-  char *buffer = new char[ExpTimeListSize];
+    // 逐行读取 INI 文件
+    while (std::getline(infile, line)) {
+        // 检查是否进入了 [LastConnectedDevice] 部分
+        if (line.find("[ExpTimeList]") != std::string::npos) {
+            inExpTimeListSection = true;
+            continue; // 跳过这一行，开始读取数据
+        }
 
-  // 读取经验时间列表的数据
-  infile.read(buffer, ExpTimeListSize);
+        if (inExpTimeListSection) {
+            // 遇到下一个部分或空行，停止读取当前部分
+            if (line.empty() || line[0] == '[') {
+                // 这里保存当前设备并重置
+                if (!sectionData.empty()) {
+                    // 用 sectionData 填充当前设备
+                    ExpTimeList = QString::fromStdString(sectionData["ExpTimeList"]);
+                }
+                // 重置
+                sectionData.clear();
 
-  // 将读取的数据转换为 QString
-  QString ExpTimeList = QString::fromUtf8(buffer, ExpTimeListSize);
+                if (!line.empty() && line[0] == '[') {
+                    // 如果遇到新的节，跳出循环
+                    break;
+                }
+            } else {
+                // 解析键值对
+                std::string key, value;
+                std::istringstream lineStream(line);
+                if (std::getline(std::getline(lineStream, key, '='), value)) {
+                    sectionData[key] = value;
+                }
+            }
+        }
+    }
 
-  // 释放内存空间
-  delete[] buffer;
-
-  // 关闭文件
-  infile.close();
-
-  return ExpTimeList;
+    infile.close();
+    return ExpTimeList;
 }
 
 void Tools::saveCFWList(QString Name, QString List)
 {
-  std::string directory = "config";                      // 配置文件夹名
-  std::string filename = directory + "/CFWList(" + Name.toStdString() +").dat"; // 在配置文件夹中创建文件
+    std::string directory = "config";  // 配置文件夹名
+    std::string filename = directory + "/config.ini";  // 配置文件路径
 
-  std::ofstream outfile(filename, std::ios::binary);
+    // 检查文件夹是否存在，如果不存在就创建
+    if (!std::filesystem::exists(directory)) {
+        if (!std::filesystem::create_directory(directory)) {
+            qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+            return;
+        }
+    }
 
-  if (!outfile.is_open())
-  {
-    std::cerr << "打开文件写入时发生错误: " << filename << std::endl;
-    return;
-  }
+    // 读取现有配置文件的内容
+    std::ifstream infile(filename);
+    std::stringstream fileContent;
+    std::string line;
+    bool isInCFWListSection = false;
 
-  QByteArray CFWListUtf8 = List.toUtf8();
+    // 读取现有文件内容
+    while (std::getline(infile, line)) {
+        fileContent << line << "\n";
+        // 如果遇到 [CFWList] 部分，标记为开始位置
+        if (line == "[CFWList(" + Name.toStdString() +")]") {
+            isInCFWListSection = true;
+        }
+        // 如果已经在 [LastConnectedDevice] 部分，直到遇到空行或另一个部分则跳出
+        if (isInCFWListSection && line.empty()) {
+            isInCFWListSection = false;
+        }
+    }
+    infile.close();
 
-  // 写入 QString 大小信息和数据
-  size_t CFWListSize = static_cast<size_t>(CFWListUtf8.size());
-  outfile.write(reinterpret_cast<const char *>(&CFWListSize), sizeof(size_t));
-  outfile.write(CFWListUtf8.constData(), CFWListSize);
+    // 如果文件已经包含了 [LastConnectedDevice] 部分，则移除旧的内容
+    std::string content = fileContent.str();
+    size_t pos = content.find("[CFWList(" + Name.toStdString() +")]");
+    if (pos != std::string::npos) {
+        size_t endPos = content.find("(End of CFW list)\n\n", pos) + std::string("(End of CFW list)\n\n").length();  
+        if (endPos != std::string::npos) {
+            content.erase(pos, endPos - pos);  // 删除旧的设备列表部分
+        }
+    }
 
-  outfile.close();
+    // 打开文件进行写入（覆盖模式）
+    std::ofstream outfile(filename, std::ios::out | std::ios::trunc);  // 打开文件以覆盖内容
+    if (!outfile.is_open()) {
+        qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
+        return;
+    }
+
+    // 先写入文件的原始内容（去掉 [LastConnectedDevice] 部分）
+    outfile << content;
+
+    // 写入新的 [LastConnectedDevice] 部分
+    outfile << "[CFWList(" + Name.toStdString() +")]\n";
+
+    QByteArray CFWListUtf8 = List.toUtf8();
+
+    // 将 QString 转换为 UTF-8 格式的字符串，并保存
+    outfile << "CFWList=" << CFWListUtf8.constData() << "\n";
+
+    outfile << "(End of CFW list)\n\n";
+
+    outfile.close();
 }
 
 QString Tools::readCFWList(QString Name)
 {
-  std::string directory = "config";                      // 配置文件夹名
-  std::string filename = directory + "/CFWList(" + Name.toStdString() +").dat";  // 在配置文件夹中创建文件
-  std::ifstream infile(filename, std::ios::binary);
+    QString CFWList;
+    std::string filename = "config/config.ini"; // INI 配置文件路径
+    std::ifstream infile(filename);
+
+    if (!infile.is_open()) {
+        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
+        return QString();
+    }
+
+    std::string line;
+    bool inCFWListSection = false;
+    SystemDevice currentDevice;
+    std::map<std::string, std::string> sectionData;
+
+    // 逐行读取 INI 文件
+    while (std::getline(infile, line)) {
+        // 检查是否进入了 [LastConnectedDevice] 部分
+        if (line.find("[CFWList(" + Name.toStdString() +")]") != std::string::npos) {
+            inCFWListSection = true;
+            continue; // 跳过这一行，开始读取数据
+        }
+
+        if (inCFWListSection) {
+            // 遇到下一个部分或空行，停止读取当前部分
+            if (line.empty() || line[0] == '[') {
+                // 这里保存当前设备并重置
+                if (!sectionData.empty()) {
+                    // 用 sectionData 填充当前设备
+                    CFWList = QString::fromStdString(sectionData["CFWList"]);
+                }
+                // 重置
+                sectionData.clear();
+
+                if (!line.empty() && line[0] == '[') {
+                    // 如果遇到新的节，跳出循环
+                    break;
+                }
+            } else {
+                // 解析键值对
+                std::string key, value;
+                std::istringstream lineStream(line);
+                if (std::getline(std::getline(lineStream, key, '='), value)) {
+                    sectionData[key] = value;
+                }
+            }
+        }
+    }
+
+    infile.close();
+    return CFWList;
+}
+
+void Tools::saveDSLRsInfo(DSLRsInfo DSLRsInfo)
+{
+  std::string directory = "config";                 // 配置文件夹名
+  std::string filename = directory + "/config.ini"; // 配置文件路径
+
+  // 检查文件夹是否存在，如果不存在就创建
+  if (!std::filesystem::exists(directory))
+  {
+    if (!std::filesystem::create_directory(directory))
+    {
+      qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+      return;
+    }
+  }
+
+  // 读取现有配置文件的内容
+  std::ifstream infile(filename);
+  std::stringstream fileContent;
+  std::string line;
+  bool isInDSLRsInfoSection = false;
+
+  // 读取现有文件内容
+  while (std::getline(infile, line))
+  {
+    fileContent << line << "\n";
+    // 如果遇到 [DSLRsInfo] 部分，标记为开始位置
+    if (line == "[DSLRsInfo(" + DSLRsInfo.Name.toStdString() + ")]")
+    {
+      isInDSLRsInfoSection = true;
+    }
+    // 如果已经在 [DSLRsInfo] 部分，直到遇到空行或另一个部分则跳出
+    if (isInDSLRsInfoSection && line.empty())
+    {
+      isInDSLRsInfoSection = false;
+    }
+  }
+  infile.close();
+
+  // 如果文件已经包含了 [DSLRsInfo] 部分，则移除旧的内容
+  std::string content = fileContent.str();
+  size_t pos = content.find("[DSLRsInfo(" + DSLRsInfo.Name.toStdString() + ")]");
+  if (pos != std::string::npos)
+  {
+    size_t endPos = content.find("(End of DSLR Info)\n\n", pos) + std::string("(End of DSLR Info)\n\n").length();
+    if (endPos != std::string::npos)
+    {
+      content.erase(pos, endPos - pos); // 删除旧的设备列表部分
+    }
+  }
+
+  // 打开文件进行写入（覆盖模式）
+  std::ofstream outfile(filename, std::ios::out | std::ios::trunc); // 打开文件以覆盖内容
+  if (!outfile.is_open())
+  {
+    qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
+    return;
+  }
+
+  // 先写入文件的原始内容（去掉 [DSLRsInfo] 部分）
+  outfile << content;
+
+  // 写入新的 [DSLRsInfo] 部分
+  outfile << "[DSLRsInfo(" + DSLRsInfo.Name.toStdString() + ")]\n";
+
+  // 将 QString 转换为 UTF-8 格式的字符串，并保存
+  outfile << "DSLRsSizeX=" << DSLRsInfo.SizeX << "\n";
+  outfile << "DSLRsSizeY=" << DSLRsInfo.SizeY << "\n";
+  outfile << "DSLRsPixelSize=" << DSLRsInfo.PixelSize << "\n";
+
+  outfile << "(End of DSLR Info)\n\n";
+
+  outfile.close();
+}
+
+DSLRsInfo Tools::readDSLRsInfo(QString Name)
+{
+  DSLRsInfo DSLRsInfo;
+  DSLRsInfo.Name = "";
+  std::string filename = "config/config.ini"; // INI 配置文件路径
+  std::ifstream infile(filename);
 
   if (!infile.is_open())
   {
-    std::cerr << "打开文件读取时发生错误: " << filename << std::endl;
-    return QString();
+    qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
+    return DSLRsInfo;
   }
 
-  // 读取经验时间列表的大小
-  size_t CFWListSize;
-  infile.read(reinterpret_cast<char *>(&CFWListSize), sizeof(size_t));
+  std::string line;
+  bool inDSLRsInfoSection = false;
+  std::map<std::string, std::string> sectionData;
 
-  // 分配内存空间用于存储经验时间列表的数据
-  char *buffer = new char[CFWListSize];
+  // 逐行读取 INI 文件
+  while (std::getline(infile, line))
+  {
+    // 检查是否进入了 [DSLRsInfo] 部分
+    if (line.find("[DSLRsInfo(" + Name.toStdString() + ")]") != std::string::npos)
+    {
+      inDSLRsInfoSection = true;
+      DSLRsInfo.Name = Name;
+      continue; // 跳过这一行，开始读取数据
+    }
 
-  // 读取经验时间列表的数据
-  infile.read(buffer, CFWListSize);
+    if (inDSLRsInfoSection)
+    {
+      // 遇到下一个部分或空行，停止读取当前部分
+      if (line.empty() || line[0] == '[')
+      {
+        // 这里保存当前设备并重置
+        if (!sectionData.empty())
+        {
+          // 用 sectionData 填充当前设备
+          DSLRsInfo.SizeX = sectionData.count("DSLRsSizeX") ? QString::fromStdString(sectionData["DSLRsSizeX"]).toInt() : 0;
+          DSLRsInfo.SizeY = sectionData.count("DSLRsSizeY") ? QString::fromStdString(sectionData["DSLRsSizeY"]).toInt() : 0;
+          DSLRsInfo.PixelSize = sectionData.count("DSLRsPixelSize") ? QString::fromStdString(sectionData["DSLRsPixelSize"]).toDouble() : 0.0;
+        }
+        // 重置
+        sectionData.clear();
 
-  // 将读取的数据转换为 QString
-  QString CFWList = QString::fromUtf8(buffer, CFWListSize);
+        if (!line.empty() && line[0] == '[')
+        {
+          // 如果遇到新的节，跳出循环
+          break;
+        }
+      }
+      else
+      {
+        // 解析键值对
+        std::string key, value;
+        std::istringstream lineStream(line);
+        if (std::getline(std::getline(lineStream, key, '='), value))
+        {
+          sectionData[key] = value;
+        }
+      }
+    }
+  }
 
-  // 释放内存空间
-  delete[] buffer;
-
-  // 关闭文件
   infile.close();
+  return DSLRsInfo;
+}
 
-  return CFWList;
+void Tools::readClientSettings(const std::string& fileName, std::unordered_map<std::string, std::string>& config) {
+    std::ifstream file(fileName);
+    if (!file.is_open()) {
+        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(fileName);
+        return;
+    }
+
+    std::string line;
+    std::string currentSection;
+
+    while (std::getline(file, line)) {
+        // 去除空白字符
+        line.erase(0, line.find_first_not_of(" \t\n\r"));
+        line.erase(line.find_last_not_of(" \t\n\r") + 1);
+
+        if (line.empty()) continue;  // 跳过空行
+
+        // 处理区块头，找到[ClientSettings]等部分
+        if (line[0] == '[' && line[line.length() - 1] == ']') {
+            currentSection = line.substr(1, line.length() - 2);
+            continue;
+        }
+
+        // 处理[ClientSettings]中的内容
+        if (currentSection == "ClientSettings") {
+            size_t pos = line.find("=");
+            if (pos != std::string::npos) {
+                std::string key = line.substr(0, pos);
+                std::string value = line.substr(pos + 1);
+                // 去除多余的空格
+                key.erase(0, key.find_first_not_of(" \t"));
+                key.erase(key.find_last_not_of(" \t") + 1);
+                value.erase(0, value.find_first_not_of(" \t"));
+                value.erase(value.find_last_not_of(" \t") + 1);
+                config[key] = value;
+            }
+        }
+    }
+
+    file.close();
+}
+
+void Tools::saveClientSettings(const std::string& fileName, const std::unordered_map<std::string, std::string>& config) {
+  // 读取文件内容
+  std::ifstream inputFile(fileName);
+  std::stringstream fileContents;
+  fileContents << inputFile.rdbuf();
+  inputFile.close();
+
+  std::string content = fileContents.str();
+  std::string section = "[ClientSettings]";
+  size_t sectionPos = content.find(section);
+
+  if (sectionPos == std::string::npos)
+  {
+    // 如果没有找到 [ClientSettings] 部分，则需要添加该部分
+    content += "\n" + section + "\n";
+    sectionPos = content.size() - 1; // 设定新的位置
+  }
+  else
+  {
+    // 找到 [ClientSettings] 部分后，定位到此部分结束的位置
+    size_t sectionEnd = content.find("\n[", sectionPos + section.size());
+    if (sectionEnd == std::string::npos)
+    {
+      sectionEnd = content.size();
+    }
+
+    // 进入 [ClientSettings] 部分并将配置项读取到内存中
+    std::string clientSettingsSection = content.substr(sectionPos, sectionEnd - sectionPos);
+
+    // 更新配置项
+    for (const auto &pair : config)
+    {
+      // 查找是否已有该配置项
+      size_t pos = clientSettingsSection.find(pair.first + " = ");
+      if (pos != std::string::npos)
+      {
+        // 找到了该项，更新其值
+        size_t endPos = clientSettingsSection.find("\n", pos);
+        clientSettingsSection.replace(pos + pair.first.size() + 3, endPos - pos - pair.first.size() - 3, pair.second);
+      }
+      else
+      {
+        // 没有找到该项，添加新的配置项
+        clientSettingsSection += pair.first + " = " + pair.second + "\n";
+      }
+    }
+
+    // 替换原来的部分
+    content.replace(sectionPos, sectionEnd - sectionPos, clientSettingsSection);
+  }
+
+  // 将更新后的内容写回到文件
+  std::ofstream outputFile(fileName);
+  outputFile << content;
+  outputFile.close();
 }
 
 void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
     //clear one device
-    qDebug()<<"index:"<<index;
+    qInfo()<<"index:"<<index;
     if (s.system_devices.empty()) {
-        qDebug()<<"s.system_devices is nullptr";
+        qInfo()<<"s.system_devices is nullptr";
     }
     else {
         s.system_devices[index].Description="";
@@ -741,7 +1153,7 @@ void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
         s.system_devices[index].DriverFrom="";
         s.system_devices[index].DriverIndiName="";
         s.system_devices[index].isConnect=false;
-        qDebug()<<"clearSystemDeviceListItem";
+        qInfo()<<"SystemDeviceListItem already cleared.";
     }
 }
 
@@ -796,12 +1208,12 @@ uint32_t Tools::getIndexFromSystemDeviceListByName(SystemDeviceList s,QString de
     }
     if(i<32) {
         index=i;
-        qDebug()<<"getIndexFromSystemDeviceListByName | found device in system list. device name" << devname<< "index" <<index;
+        qInfo()<<"getIndexFromSystemDeviceListByName | found device in system list. device name" << devname<< "index" <<index;
         return QHYCCD_SUCCESS;
     }
     else{
         index=0;
-        qDebug()<<"getIndexFromSystemDeviceListByName | not found device in system list, devname"<<devname;
+        qWarning()<<"getIndexFromSystemDeviceListByName | not found device in system list, devname"<<devname;
         return QHYCCD_ERROR;
     }
 
@@ -817,7 +1229,7 @@ void Tools::startIndiDriver(QString driver_name)
     s.append("> /tmp/myFIFO");
     system(s.toUtf8().constData());
     // qDebug() << "startIndiDriver" << driver_name;
-    qDebug() << "Start INDI Driver | DriverName: " << driver_name;
+    qInfo() << "Start INDI Driver | DriverName: " << driver_name;
 }
 
 void Tools::stopIndiDriver(QString driver_name)
@@ -841,7 +1253,7 @@ void Tools::stopIndiDriverAll(const DriversList driver_list)
     indiserver = true;
     if (!indiserver)
     {
-        qDebug("stopIndiDriverAll | ERROR | INDI DRIVER NOT running");
+        qWarning("stopIndiDriverAll | ERROR | INDI DRIVER NOT running");
         return;
     }
 
@@ -2004,7 +2416,7 @@ void Tools::ImageSoftAWB(cv::Mat sourceImg16, cv::Mat& targetImg16, QString CFA,
     }
   }
 
-  qDebug() << "ImageSoftAWB | used time (ms) " << t.elapsed();
+  qInfo() << "ImageSoftAWB | used time (ms) " << t.elapsed();
 }
 
 void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
@@ -2592,16 +3004,16 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FIT
   bool success = solver.extract(runHFR);
   if (!success)
   {
-    std::cerr << "Star extraction failed." << std::endl;
+    qWarning() << "Star extraction failed.";
   }
-  qDebug() << "success extract: " << success;
+  qInfo() << "success extract: " << success;
 
   QList<FITSImage::Star> stars;
 
   stars = solver.getStarList();
 
   // 输出检测到的星点信息
-  std::cout << "Detected " << stars.size() << " stars." << std::endl;
+  qInfo() << "Detected " << stars.size() << " stars.";
   for (const auto &star : stars)
   {
     // std::cout << "Star at (" << star.x << ", " << star.y << ") with HFR: " << star.HFR << std::endl;
@@ -2632,7 +3044,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_open_diskfile(&fptr, file.toLocal8Bit(), READONLY, &status))
   {
     // logIssue(QString("Error opening fits file %1").arg(file));
-    qDebug() << "Error opening fits file " << file;
+    qWarning() << "Error opening fits file " << file;
     result.success = false;
     return result;
   }
@@ -2642,7 +3054,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_movabs_hdu(fptr, 1, IMAGE_HDU, &status))
   {
     // logIssue(QString("Could not locate image HDU."));
-    qDebug() << "Could not locate image HDU.";
+    qWarning() << "Could not locate image HDU.";
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -2652,7 +3064,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_get_img_param(fptr, 3, &fitsBitPix, &(stats.ndim), naxes, &status))
   {
     // logIssue(QString("FITS file open error (fits_get_img_param)."));
-    qDebug() << "FITS file open error (fits_get_img_param).";
+    qWarning() << "FITS file open error (fits_get_img_param).";
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -2661,7 +3073,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (stats.ndim < 2)
   {
     // logIssue("1D FITS images are not supported.");
-    qDebug() << "1D FITS images are not supported.";
+    qWarning() << "1D FITS images are not supported.";
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -2706,7 +3118,7 @@ loadFitsResult Tools::loadFits(QString fileName)
     break;
   default:
     // logIssue(QString("Bit depth %1 is not supported.").arg(fitsBitPix));
-    qDebug() << "Bit depth %1 is not supported." << fitsBitPix;
+    qWarning() << "Bit depth %1 is not supported." << fitsBitPix;
 
     fits_close_file(fptr, &status);
     result.success = false;
@@ -2719,7 +3131,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (naxes[0] == 0 || naxes[1] == 0)
   {
     // logIssue(QString("Image has invalid dimensions %1x%2").arg(naxes[0]).arg(naxes[1]));
-    qDebug() << "Image has invalid dimensions " << naxes[0] << naxes[1];
+    qWarning() << "Image has invalid dimensions." << naxes[0] << naxes[1];
   }
 
   stats.width = static_cast<uint16_t>(naxes[0]);
@@ -2739,7 +3151,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (m_ImageBuffer == nullptr)
   {
     // logIssue(QString("FITSData: Not enough memory for image_buffer channel. Requested: %1 bytes ").arg(m_ImageBufferSize));
-    qDebug() << "FITSData: Not enough memory for image_buffer channel. Requested:" << m_ImageBufferSize << "bytes ";
+    qWarning() << "FITSData: Not enough memory for image_buffer channel. Requested:" << m_ImageBufferSize << "bytes ";
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -2750,7 +3162,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_read_img(fptr, static_cast<uint16_t>(stats.dataType), 1, nelements, nullptr, m_ImageBuffer, &anynullptr, &status))
   {
     // logIssue("Error reading image.");
-    qDebug() << "Error reading image.";
+    qWarning() << "Error reading image.";
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -2801,14 +3213,14 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     FirstMoment_y = yCoordinate;
 //------------------------------------------------------------
 
-    qDebug() << "Barycentric Coordinate:" << FirstMoment_x << "," << FirstMoment_y;
+    qInfo() << "Barycentric Coordinate:" << FirstMoment_x << "," << FirstMoment_y;
 
 
     int height = subimage.rows;
     int width = subimage.cols;
 
     ushort Bri1 = subimage.at<ushort>(FirstMoment_y, FirstMoment_x);
-    qDebug() << "Max:" << Bri1;
+    qInfo() << "Max:" << Bri1;
 
     int x_s, x_b;
     // for (int i = FirstMoment_x; i > 0; i--)
@@ -2835,9 +3247,9 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
 
     // double FWHM = (x_b - x_s)/10.0;
     double FWHM = static_cast<double>(x_b-x_s)/10.0;
-    qDebug() << x_b << x_s;
+    qInfo() << x_b << x_s;
 
-    qDebug() << "[[[[[FWHM:" << FWHM << "]]]]]";
+    qInfo() << "[[[[[FWHM:" << FWHM << "]]]]]";
     // qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
     cv::Mat imagePoint = image.clone();
@@ -2956,61 +3368,61 @@ CamBin Tools::mergeImageBasedOnSize(cv::Mat image) {
 
 cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG)
 {
-  uint32_t width = image.cols;
-  uint32_t height = image.rows;
-  uint32_t depth = image.elemSize() * 8; // 每个像素的位深
-  uint32_t camchannels = image.channels();
+    uint32_t width = image.cols;
+    uint32_t height = image.rows;
+    uint32_t depth = image.elemSize() * 8;
+    uint32_t camchannels = image.channels();
 
-  // 获取输入数据指针
-  uint8_t *srcdata = image.data;
+    uint8_t *srcdata = image.data;
 
-  // 根据位深设置输出数据的大小
-  uint32_t outputSize;
-  qDebug("Set output size.");
-  if (depth == 8) {
-    outputSize = (width / camxbin) * (height / camybin);
-  }
-  else if (depth == 16) {
-    outputSize = 2 * (width / camxbin) * (height / camybin);
-  }
-  else if (depth == 32) {
-    outputSize = 4 * (width / camxbin) * (height / camybin);
-  }
-  else {
-    std::cerr << "Unsupported depth!" << std::endl;
-  }
-
-  // 分配输出数据的内存
-  std::vector<uint8_t> bindata(outputSize, 0);
-
-  // 调用合并函数
-  uint32_t result;
-  if(isAVG) {
-    result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
-  } else {
-    result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, camchannels, depth, camxbin, camybin, isColor);
-  }
-
-  if (result == QHYCCD_SUCCESS) {
-    // 处理成功，根据位深设置输出图像
-    qDebug("PixelsDataSoftBin Success.");
-    int newWidth = width / camxbin;
-    int newHeight = height / camybin;
-    qDebug() << "newWidth:" << newWidth << ", newHeight:" << newHeight;
+    uint32_t outputSize;
     if (depth == 8) {
-      return cv::Mat(newHeight, newWidth, CV_8U, bindata.data());
+        outputSize = (width / camxbin) * (height / camybin);
     }
     else if (depth == 16) {
-      return cv::Mat(newHeight, newWidth, CV_16U, bindata.data());
+        outputSize = 2 * (width / camxbin) * (height / camybin);
     }
     else if (depth == 32) {
-      return cv::Mat(newHeight, newWidth, CV_32S, bindata.data());
+        outputSize = 4 * (width / camxbin) * (height / camybin);
     }
-    qDebug("Output Image Success.");
-  }
-  else {
-    std::cerr << "Error in PixelsDataSoftBin_AVG function." << std::endl;
-  }
+    else {
+        std::cerr << "Unsupported depth!" << std::endl;
+        return cv::Mat(); // 返回空Mat
+    }
+
+    // 分配输出数据的内存
+    std::vector<uint8_t> bindata(outputSize, 0);
+
+    uint32_t result;
+    if(isAVG) {
+        result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
+    } else {
+        result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, camchannels, depth, camxbin, camybin, isColor);
+    }
+
+    if (result == QHYCCD_SUCCESS) {
+        int newWidth = width / camxbin;
+        int newHeight = height / camybin;
+        
+        // 创建新的Mat并复制数据
+        cv::Mat outputImage;
+        if (depth == 8) {
+            outputImage = cv::Mat(newHeight, newWidth, CV_8U);
+            memcpy(outputImage.data, bindata.data(), outputSize);
+        }
+        else if (depth == 16) {
+            outputImage = cv::Mat(newHeight, newWidth, CV_16U);
+            memcpy(outputImage.data, bindata.data(), outputSize);
+        }
+        else if (depth == 32) {
+            outputImage = cv::Mat(newHeight, newWidth, CV_32S);
+            memcpy(outputImage.data, bindata.data(), outputSize);
+        }
+        
+        return outputImage;
+    }
+    
+    return cv::Mat(); // 错误时返回空Mat
 }
 
 uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin)
@@ -3315,13 +3727,13 @@ uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32
 
 uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t camchannels, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
 {
-  qDebug("QHYCCD | QHYBASE.CPP | PixelsDataSoftBin | width = %d height = %d camchannels = %d depth = %d camxbin = %d camybin = %d iscolor = %d",
+  qInfo("QHYCCD | QHYBASE.CPP | PixelsDataSoftBin | width = %d height = %d camchannels = %d depth = %d camxbin = %d camybin = %d iscolor = %d",
          width, height, camchannels, depth, camxbin, camybin, iscolor);
   if (iscolor)
   {
     if (depth == 8 && camchannels == 3)
     {
-      qDebug("depth = 8, camchannels = 3");
+      qInfo("depth = 8, camchannels = 3");
       unsigned char *data = NULL;
       if (srcdata == bindata)
       {
@@ -3344,7 +3756,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
     }
     else if (depth == 16 && camchannels == 3)
     {
-      qDebug("depth = 16, camchannels = 3");
+      qInfo("depth = 16, camchannels = 3");
       unsigned char *data = NULL;
       if (srcdata == bindata)
       {
@@ -3379,7 +3791,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
       }
       if (depth == 8) // camchannels = 1
       {
-        qDebug("depth = 8, camchannels = 1");
+        qInfo("depth = 8, camchannels = 1");
         memset(bindata, 0, (width / camxbin) * (height / camybin));
         for (uint32_t i = 0; i < height / camybin / 2; i++)
         {
@@ -3408,7 +3820,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
       }
       else if (depth == 16) // camchannels = 1
       {
-        qDebug("depth = 16, camchannels = 1");
+        qInfo("depth = 16, camchannels = 1");
         memset(bindata, 0, 2 * (width / camxbin) * (height / camybin));
         qDebug("memcpy 1");
         for (uint32_t i = 0; i < height / camybin / 2; i++)
@@ -3438,7 +3850,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
       }
       else if (depth == 32) // camchannels = 1
       {
-        qDebug("depth = 32, camchannels = 1");
+        qInfo("depth = 32, camchannels = 1");
         memset(bindata, 0, 4 * (width / camxbin) * (height / camybin));
         for (uint32_t i = 0; i < height / camybin / 2; i++)
         {
@@ -4259,7 +4671,7 @@ SphericalCoordinates Tools::convertToSphericalCoordinates(CartesianCoordinates c
 MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height)
 {
   MinMaxFOV result;
-  qDebug() << "FocalLength: " << FocalLength << ", " << "CameraSize: " << CameraSize_width << ", " << CameraSize_height;
+  qInfo() << "FocalLength: " << FocalLength << ", " << "CameraSize: " << CameraSize_width << ", " << CameraSize_height;
 
   double CameraSize_diagonal = sqrt(pow(CameraSize_width, 2) + pow(CameraSize_height, 2));
   // qDebug() << CameraSize_diagonal;
@@ -4272,7 +4684,7 @@ MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double Cam
   result.minFOV = minFOV;
   result.maxFOV = maxFOV;
   
-  qDebug() << "minFov: " << result.minFOV << ", " << "maxFov: " << result.maxFOV;
+  qInfo() << "minFov: " << result.minFOV << ", " << "maxFov: " << result.maxFOV;
 
   return result;
 }
@@ -4440,15 +4852,15 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   result.RA_3 = corners[3].ra;
   result.DEC_3 = corners[3].dec;
 
-  qDebug("RA DEC Rotation(degree) %f %f %f", RA_Degree, DEC_Degree, Rotation_Degree);
+  qInfo("RA DEC Rotation(degree) %f %f %f", RA_Degree, DEC_Degree, Rotation_Degree);
   if (str == "") {
-    qDebug("Tools:Plate Solve Failur");
+    qWarning("Tools:Plate Solve Failur");
     result.RA_Degree = -1;
     result.DEC_Degree = -1;
     PlateSolveInProgress = false;
     return result;
   } else {
-    qDebug() << "RA DEC " << QString::number(RA_Degree, 'g', 9) << " " << QString::number(DEC_Degree, 'g', 9);
+    qInfo() << "RA DEC " << QString::number(RA_Degree, 'g', 9) << " " << QString::number(DEC_Degree, 'g', 9);
     result.RA_Degree = RA_Degree;
     result.DEC_Degree = DEC_Degree;
     PlateSolveInProgress = false;
@@ -4457,9 +4869,9 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
 }
 
 SloveResults Tools::onSolveFinished(int exitCode) {
-  qDebug("Solve Finished!!!");
-  qDebug("Solve Finished!!!");
-  qDebug("Solve Finished!!!");
+  qInfo("Solve Finished!!!");
+  qInfo("Solve Finished!!!");
+  qInfo("Solve Finished!!!");
   isSolveImageFinished = true;
 }
 

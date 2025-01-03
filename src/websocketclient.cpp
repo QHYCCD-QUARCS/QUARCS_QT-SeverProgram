@@ -18,7 +18,7 @@ WebSocketClient::WebSocketClient(const QUrl &url, QObject *parent) :
 
 void WebSocketClient::onConnected()
 {
-    qDebug() << "WebSocket connected";
+    qInfo() << "WebSocket connected";
     connect(&webSocket, &QWebSocket::textMessageReceived,
             this, &WebSocketClient::onTextMessageReceived);
 
@@ -31,7 +31,7 @@ void WebSocketClient::onConnected()
 
 void WebSocketClient::onDisconnected()
 {
-    qDebug() << "WebSocket disconnected";
+    qWarning() << "WebSocket disconnected";
 
     // 断开接收消息的信号与槽
     disconnect(&webSocket, &QWebSocket::textMessageReceived,
@@ -40,18 +40,18 @@ void WebSocketClient::onDisconnected()
     // 启动自动重连定时器，但仅在网络连接正常时重连
     if (isNetworkConnected)
     {
-        qDebug() << "Starting reconnect timer...";
+        qInfo() << "Starting reconnect timer...";
         reconnectTimer.start();
     }
     else
     {
-        qDebug() << "Waitting for network...";
+        qWarning() << "Waitting for network...";
     }
 }
 
 void WebSocketClient::reconnect()
 {
-    qDebug() << "Reconnecting to WebSocket server...";
+    qInfo() << "Reconnecting to WebSocket server...";
     webSocket.close(); // 关闭当前连接
     webSocket.open(url);
 }
@@ -60,14 +60,14 @@ void WebSocketClient::onNetworkStateChanged(bool isOnline)
 {
     if (isOnline)
     {
-        qDebug() << "Network is online";
+        qInfo() << "Network is online";
         isNetworkConnected = true;
         // 网络恢复时重置状态，执行自动重连
         reconnect();
     }
     else
     {
-        qDebug() << "Network is offline";
+        qWarning() << "Network is offline";
         isNetworkConnected = false;
     }
 }

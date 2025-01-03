@@ -15,6 +15,9 @@ SystemDeviceList systemdevicelist;
 // QUrl websocketUrl(QStringLiteral("ws://192.168.2.31:8600"));
 QUrl websocketUrl;
 
+// 定义静态成员变量 instance
+MainWindow *MainWindow::instance = nullptr;
+
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
 {
     getHostAddress();
@@ -22,6 +25,12 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     wsThread = new WebSocketThread(websocketUrl);
     connect(wsThread, &WebSocketThread::receivedMessage, this, &MainWindow::onMessageReceived);
     wsThread->start();
+
+    // 记住当前实例
+    instance = this;
+
+    // 安装自定义的消息处理器
+    qInstallMessageHandler(customMessageHandler);
 
     InitPHD2();
 
@@ -34,7 +43,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
 
     Tools::InitSystemDeviceList();
     Tools::initSystemDeviceList(systemdevicelist);
-    Tools::makeConfigFolder();
+    Tools::makeConfigFile();
     Tools::makeImageFolder();
 
     m_thread = new QThread;
@@ -66,6 +75,9 @@ MainWindow::~MainWindow()
     wsThread->quit();
     wsThread->wait();
     delete wsThread;
+
+    // 清理静态实例
+    instance = nullptr;
 }
 
 void MainWindow::getHostAddress()
@@ -80,14 +92,14 @@ void MainWindow::getHostAddress()
         foreach (const QNetworkAddressEntry &address, addresses) {
             if (address.ip().protocol() == QAbstractSocket::IPv4Protocol) {
                 QString localIpAddress = address.ip().toString();
-                qDebug() << "Local IP Address:" << address.ip().toString();
+                qInfo() << "Local IP Address:" << address.ip().toString();
 
                 if (!localIpAddress.isEmpty()) {
                     QUrl getUrl(QStringLiteral("ws://%1:8600").arg(localIpAddress));
-                    qDebug() << "WebSocket URL:" << getUrl.toString();
+                    qInfo() << "WebSocket URL:" << getUrl.toString();
                     websocketUrl = getUrl;
                 } else {
-                    qDebug() << "Failed to get local IP address.";
+                    qWarning() << "Failed to get local IP address.";
                 }
             }
         }
@@ -105,6 +117,10 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         QString driverName = parts[1].trimmed();
         indi_Driver_Confirm(driverName);
+    }
+    else if (message == "ClearIndiDriver")
+    {
+        indi_Driver_Clear();
     }
     else if (parts.size() == 3 && parts[0].trimmed() == "ConfirmIndiDevice")
     {
@@ -305,7 +321,7 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             int currentSpeed;
             indi_Client->getTelescopeSlewRate(dpMount,currentSpeed);
-            qDebug() << "Current Speed:" << currentSpeed;
+            qInfo() << "Current Speed:" << currentSpeed;
 
             qDebug() << "Total Speed:" << glTelescopeTotalSlewRate;
 
@@ -313,12 +329,12 @@ void MainWindow::onMessageReceived(const QString &message)
                 indi_Client->setTelescopeSlewRate(dpMount,1);
             } else {
                 indi_Client->setTelescopeSlewRate(dpMount,currentSpeed+1);
-                qDebug() << "Set Speed to:" << currentSpeed;
+                qInfo() << "Set Speed to:" << currentSpeed;
             }
 
             int ChangedSpeed;
             indi_Client->getTelescopeSlewRate(dpMount,ChangedSpeed);
-            qDebug() << "Changed Speed:" << ChangedSpeed;
+            qInfo() << "Changed Speed:" << ChangedSpeed;
             emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(ChangedSpeed));
         }
     }
@@ -326,13 +342,13 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainR")
     {
         ImageGainR = parts[1].trimmed().toDouble();
-        qDebug() << "GainR is set to " << ImageGainR;
+        qInfo() << "GainR is set to " << ImageGainR;
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainB")
     {
         ImageGainB = parts[1].trimmed().toDouble();
-        qDebug() << "GainB is set to " << ImageGainB;
+        qInfo() << "GainB is set to " << ImageGainB;
     }
 
     else if (parts[0].trimmed() == "ScheduleTabelData")
@@ -350,7 +366,7 @@ void MainWindow::onMessageReceived(const QString &message)
         Ra_Rad  = RaList[2].trimmed().toDouble();
         Dec_Rad = DecList[1].trimmed().toDouble();
 
-        qDebug() << "RaDec(Rad):" << Ra_Rad << "," << Dec_Rad;
+        qInfo() << "Mount Goto RaDec(Rad):" << Ra_Rad << "," << Dec_Rad;
 
         double Ra_Hour, Dec_Degree;
         Ra_Hour  = Tools::RadToHour(Ra_Rad);
@@ -367,6 +383,11 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "CaptureImageSave")
     {
         CaptureImageSave();
+    }
+
+    else if (message == "getClientSettings")
+    {
+        getClientSettings();
     }
 
     else if (message == "getConnectedDevices")
@@ -409,7 +430,7 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (message == "getCaptureStatus")
     {
-        qDebug() << "INDI Capture Statu:" << glMainCameraStatu;
+        qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
         if (glMainCameraStatu == "Exposuring")
         {
             emit wsThread->sendMessageToClient("CameraInExposuring:True");
@@ -425,14 +446,14 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 indi_Client->setCFWPosition(dpMainCamera, pos);
                 emit wsThread->sendMessageToClient("SetCFWPositionSuccess:" + QString::number(pos));
-                qDebug() << "Set CFW Position to" << pos << "Success!!!";
+                qInfo() << "Set CFW Position to" << pos << "Success!!!";
             }
         } else {
             if (dpCFW != NULL)
             {
                 indi_Client->setCFWPosition(dpCFW, pos);
                 emit wsThread->sendMessageToClient("SetCFWPositionSuccess:" + QString::number(pos));
-                qDebug() << "Set CFW Position to" << pos << "Success!!!";
+                qInfo() << "Set CFW Position to" << pos << "Success!!!";
             }
         }
     }
@@ -486,7 +507,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "ClearCalibrationData")
     {
         ClearCalibrationData = true;
-        qDebug() << "ClearCalibrationData: " << ClearCalibrationData;
+        qInfo() << "ClearCalibrationData: " << ClearCalibrationData;
     }
 
     else if (message == "GuiderSwitch")
@@ -499,7 +520,7 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
         } else {
             isGuiding = true;
-            // emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             if (ClearCalibrationData) {
                 ClearCalibrationData = false;
                 call_phd_ClearCalibration();
@@ -523,7 +544,7 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
         } else {
             isGuiderLoopExp = true;
-            // emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
             call_phd_StartLooping();
         }
     }
@@ -583,7 +604,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "ShowAllImageFolder")
     {
         std::string allFile = GetAllFile();
-        std::cout << allFile << std::endl;
+        qInfo() << QString::fromStdString(allFile);
         emit wsThread->sendMessageToClient("ShowAllImageFolder:" + QString::fromStdString(allFile));
         
     }
@@ -645,12 +666,12 @@ void MainWindow::onMessageReceived(const QString &message)
     }
 
     else if (message == "stopLoopSolveImage") {
-        qDebug("Set isLoopSolveImage false");
+        qInfo("Set isLoopSolveImage false");
         isLoopSolveImage = false;
     }
 
     else if (message == "EndCaptureAndSolve") {
-        qDebug("Set EndCaptureAndSolve true");
+        qInfo("Set EndCaptureAndSolve true");
         EndCaptureAndSolve = true;
     }
 
@@ -674,7 +695,7 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (message == "getCurrentLocation") {
         if(glCurrentLocationLat != 0 && glCurrentLocationLng != 0) {
-            qDebug() << "CurrentLocation:" << glCurrentLocationLat << "," << glCurrentLocationLng;
+            qInfo() << "CurrentLocation:" << glCurrentLocationLat << "," << glCurrentLocationLng;
             emit wsThread->sendMessageToClient("SetCurrentLocation:" + QString::number(glCurrentLocationLat) + ":" + QString::number(glCurrentLocationLng));
         }
     }
@@ -714,11 +735,29 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (parts.size() == 2 && parts[0].trimmed() == "SetBinning") {
         glMainCameraBinning = parts[1].trimmed().toInt();
-        qDebug() << "Set Binning to " << glMainCameraBinning;
+        qInfo() << "Set Binning to " << glMainCameraBinning;
 
         // if(dpMainCamera != NULL) {
         //     indi_Client->setCCDBinnign(dpMainCamera, 2, 2);
         // }
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetCameraTemperature") {
+        double CameraTemperature = parts[1].trimmed().toDouble();
+        qInfo() << "Set Camera Temperature to " << CameraTemperature;
+
+        if(dpMainCamera != NULL) {
+            indi_Client->setTemperature(dpMainCamera, CameraTemperature);
+        }
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetCameraGain") {
+        int CameraGain = parts[1].trimmed().toInt();
+        qInfo() << "Set Camera Gain to " << CameraGain;
+
+        if(dpMainCamera != NULL) {
+            indi_Client->setCCDGain(dpMainCamera, CameraGain);
+        }
     }
 
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
@@ -728,7 +767,7 @@ void MainWindow::onMessageReceived(const QString &message)
         int Click_X = parts[3].trimmed().toInt();
         int Click_Y = parts[4].trimmed().toInt();
 
-        qDebug() << "GuiderCanvasClick:" << CanvasWidth << "," << CanvasHeight << "," << Click_X << "," << Click_Y;
+        qInfo() << "GuiderCanvasClick:" << CanvasWidth << "," << CanvasHeight << "," << Click_X << "," << Click_Y;
 
         if (glPHD_CurrentImageSizeX != 0 && glPHD_CurrentImageSizeY != 0)
         {
@@ -738,7 +777,7 @@ void MainWindow::onMessageReceived(const QString &message)
             qDebug() << "ratioZoom:" << ratioZoomX << "," << ratioZoomY;
             double PHD2Click_X = (double) Click_X * ratioZoomX;
             double PHD2Click_Y = (double) Click_Y * ratioZoomY;
-            qDebug() << "PHD2Click:" << PHD2Click_X << "," << PHD2Click_Y;
+            qInfo() << "PHD2Click:" << PHD2Click_X << "," << PHD2Click_Y;
             call_phd_StarClick(PHD2Click_X, PHD2Click_Y);
         }
     }
@@ -746,6 +785,51 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "getQTClientVersion") {
         emit wsThread->sendMessageToClient("QTClientVersion:" + QString::fromUtf8(QT_Client_Version));
     }
+
+    else if (message == "getHotspotName") {
+        QString HostpotName = getHotspotName();
+        qInfo() << "HotspotName:" << HostpotName;
+        emit wsThread->sendMessageToClient("HotspotName:" + HostpotName);
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "editHotspotName") {
+        QString HostpotName = parts[1].trimmed();
+        editHotspotName(HostpotName);
+    }
+
+    else if (parts.size() == 4 && parts[0].trimmed() == "DSLRCameraInfo") {
+        int Width = parts[1].trimmed().toInt();
+        int Height = parts[2].trimmed().toInt();
+        double PixelSize = parts[3].trimmed().toDouble();
+        
+        if(dpMainCamera != NULL) {
+            indi_Client->setCCDBasicInfo(dpMainCamera, Width, Height, PixelSize, PixelSize, PixelSize, 8);
+            AfterDeviceConnect(dpMainCamera);
+
+            DSLRsInfo DSLRsInfo;
+            DSLRsInfo.Name = dpMainCamera->getDeviceName();
+            DSLRsInfo.SizeX = Width;
+            DSLRsInfo.SizeY = Height;
+            DSLRsInfo.PixelSize = PixelSize;
+
+            Tools::saveDSLRsInfo(DSLRsInfo);
+        }
+    }
+
+    else if (parts.size() == 3 && parts[0].trimmed() == "saveToConfigFile") {
+        QString ConfigName = parts[1].trimmed();
+        QString ConfigValue = parts[2].trimmed();
+        
+        setClientSettings(ConfigName, ConfigValue);
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderFocalLength") {
+        int FocalLength = parts[1].trimmed().toInt();
+        qInfo() << "Set Guider Focal Length to " << FocalLength;
+
+        call_phd_FocalLength(FocalLength);
+    }
+
 }
 
 void MainWindow::initINDIServer()
@@ -777,6 +861,7 @@ void MainWindow::initINDIClient()
                 {
                     if(glIsFocusingLooping == false)
                     {
+                        emit wsThread->sendMessageToClient("ExposureCompleted");
                         saveFitsAsPNG(QString::fromStdString(filename), true);    // "/dev/shm/ccd_simulator.fits"
 
                         // saveFitsAsPNG("/dev/shm/SOLVETEST.fits", true);
@@ -795,8 +880,14 @@ void MainWindow::initINDIClient()
     indi_Client->setMessageReceivedCallback(
         [this](const std::string &message) {
             qDebug("[INDI SERVER] %s", message.c_str());
+            QStringList parts = QString::fromStdString(message.c_str()).split('[');
+            if(parts.size() == 2) {
+                qInfo() << "[INDI SERVER]" << "[" + parts[1];
+            } else {
+                qInfo() << "[INDI SERVER]" << QString::fromStdString(message.c_str());
+            }
 
-            emit wsThread->sendMessageToClient("INDIServerDebug|" + QString::fromStdString(message.c_str()));
+            // emit wsThread->sendMessageToClient("INDIServerDebug|" + QString::fromStdString(message.c_str()));
 
             std::regex regexPattern(R"(OnStep slew/syncError:\s*(.*))");
             std::smatch matchResult;
@@ -807,23 +898,12 @@ void MainWindow::initINDIClient()
                 {
                     QString errorContent = QString::fromStdString(matchResult[1].str());
                     qDebug() << "\033[31m" << "OnStep Error: " << errorContent << "\033[0m";
+                    qInfo() << "OnStep Error: " << errorContent;
                     emit wsThread->sendMessageToClient("OnStep Error:" + errorContent);
                     MountGotoError = true;
                 }
             }
 
-
-            // // 匹配连接信息
-            // std::regex infoPattern(R"(\[INFO\] Connected to\s*(.*))");
-            // std::smatch infoMatchResult;
-
-            // if (std::regex_search(message, infoMatchResult, infoPattern)) {
-            //     if (infoMatchResult.size() > 1) {
-            //         QString connectionInfo = QString::fromStdString(infoMatchResult[1].str());
-            //         qDebug() << "\033[33m" << "Connection Info:" << connectionInfo << "\033[0m"; // 用绿色输出
-            //         NumberOfTimesConnectDevice++;
-            //     }
-            // }
         }
     );
 }
@@ -851,12 +931,12 @@ void MainWindow::exportGPIO(const char* pin) {
     // 导出 GPIO 引脚
     fd = open(GPIO_EXPORT, O_WRONLY);
     if (fd < 0) {
-        perror("Failed to open export for writing");
+        qWarning("Failed to open export for writing");
         return;
     }
     snprintf(buf, sizeof(buf), "%s", pin);
     if (write(fd, buf, strlen(buf)) != strlen(buf)) {
-        perror("Failed to write to export");
+        qInfo("Failed to write to export");
         close(fd);
         return;
     }
@@ -871,11 +951,11 @@ void MainWindow::setGPIODirection(const char* pin, const char* direction) {
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/direction", pin);
     fd = open(path, O_WRONLY);
     if (fd < 0) {
-        perror("Failed to open gpio direction for writing");
+        qWarning("Failed to open gpio direction for writing");
         return;
     }
     if (write(fd, direction, strlen(direction) + 1) != strlen(direction) + 1) {
-        perror("Failed to set gpio direction");
+        qInfo("Failed to set gpio direction");
         close(fd);
         return;
     }
@@ -890,11 +970,11 @@ void MainWindow::setGPIOValue(const char* pin, const char* value) {
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/value", pin);
     fd = open(path, O_WRONLY);
     if (fd < 0) {
-        perror("Failed to open gpio value for writing");
+        qWarning("Failed to open gpio value for writing");
         return;
     }
     if (write(fd, value, strlen(value) + 1) != strlen(value) + 1) {
-        perror("Failed to write to gpio value");
+        qInfo("Failed to write to gpio value");
         close(fd);
         return;
     }
@@ -912,13 +992,13 @@ int MainWindow::readGPIOValue(const char* pin) {
     // 打开 GPIO value 文件进行读取
     fd = open(path, O_RDONLY);
     if (fd < 0) {
-        perror("Failed to open gpio value for reading");
+        qWarning("Failed to open gpio value for reading");
         return -1;  // 返回 -1 表示读取失败
     }
 
     // 读取文件内容
     if (read(fd, value, sizeof(value)) < 0) {
-        perror("Failed to read gpio value");
+        qInfo("Failed to read gpio value");
         close(fd);
         return -1;  // 返回 -1 表示读取失败
     }
@@ -991,7 +1071,6 @@ void MainWindow::onTimeout()
             uint32_t ret;
             ret = indi_Client->getTemperature(dpMainCamera, CameraTemp);
             if(ret == QHYCCD_SUCCESS) {
-                // qDebug() << "MainCameraTemperature:" << QString::number(CameraTemp);
                 emit wsThread->sendMessageToClient("MainCameraTemperature:" + QString::number(CameraTemp));
             }
         }
@@ -1075,7 +1154,7 @@ void MainWindow::saveFitsAsJPG(QString filename)
         if(FWHM != -1){
             dataPoints.append(QPointF(CurrentPosition, FWHM));
 
-            qDebug() << "dataPoints:" << CurrentPosition << "," << FWHM;
+            qInfo() << "dataPoints:" << CurrentPosition << "," << FWHM;
 
             float a, b, c;
             Tools::fitQuadraticCurve(dataPoints, a, b, c);
@@ -1102,7 +1181,7 @@ void MainWindow::saveFitsAsJPG(QString filename)
                 }
 
                 R2 = Tools::calculateRSquared(dataPoints, a, b, c);
-                qDebug() << "RSquared: " << R2;
+                qInfo() << "RSquared: " << R2;
 
                 emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
                 emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
@@ -1111,7 +1190,7 @@ void MainWindow::saveFitsAsJPG(QString filename)
     }
     else
     {
-        qDebug() << "Save Image Failed...";
+        qWarning() << "Save Image Failed...";
     }
 }
 
@@ -1119,12 +1198,12 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
     cv::Mat image;
     cv::Mat OriginImage;
-    qDebug() << "Fits Path: " << fitsFileName;
+    qInfo() << "Fits Path: " << fitsFileName;
     int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
 
     if (status != 0)
     {
-        qDebug() << "Failed to read FITS file: " << fitsFileName.toLocal8Bit().constData();
+        qWarning() << "Failed to read FITS file: " << fitsFileName.toLocal8Bit().constData();
         return status;
     }
 
@@ -1134,7 +1213,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     if(ProcessBin && glMainCameraBinning != 1){
         // 进行 2x2 的合并
         image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, false);
-        qDebug() << "After bin image size:" << image.cols << "," << image.rows;
+        qInfo() << "After bin image size:" << image.cols << "," << image.rows;
     }
 
     // isFirstCapture = false;
@@ -1144,7 +1223,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     qDebug("start medianBlur.");
     cv::medianBlur(srcImage, dstImage, 3);
     qDebug("medianBlur success.");
-    QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+    // QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
     cv::imwrite(SolveImageFileName.toStdString(), dstImage); // TODO:
     qDebug("image save success.");
     
@@ -1154,7 +1233,9 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     
     int width = image.cols;
     int height = image.rows;
-    qDebug() << "image size:" << width << "," << height;
+    qInfo() << "image size:" << width << "," << height;
+    SolveImageWidth = width;
+    SolveImageHeight = height;
     emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
     if(ProcessBin) {
         emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(glMainCameraBinning));
@@ -1165,7 +1246,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 
     std::vector<unsigned char> imageData;  //uint16_t
     imageData.assign(image.data, image.data + image.total() * image.channels() * 2);
-    qDebug() << "imageData Size:" << imageData.size() << "," << image.data + image.total() * image.channels();
+    qInfo() << "imageData Size:" << imageData.size() << "," << image.data + image.total() * image.channels();
     
     QString uniqueId = QUuid::createUuid().toString();
     
@@ -1188,20 +1269,23 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     std::string fileName_ = "CaptureImage_" + uniqueId.toStdString() + ".bin";
     std::string filePath_ = vueDirectoryPath + fileName_;
     
-    qDebug("Open file for writing.");
+    qInfo("Open file for writing.");
     std::ofstream outFile(filePath_, std::ios::binary);
     if (!outFile) {
+        qWarning("Failed to open file for writing.");
         throw std::runtime_error("Failed to open file for writing.");
     }
 
-    qDebug("Write data to file.");
+    qInfo("Write data to file.");
     outFile.write(reinterpret_cast<const char*>(imageData.data()), imageData.size());
     if (!outFile) {
+        qWarning("Failed to write data to file.");
         throw std::runtime_error("Failed to write data to file.");
     }
 
     outFile.close();
     if (!outFile) {
+        qWarning("Failed to close the file properly.");
         throw std::runtime_error("Failed to close the file properly.");
     }
 
@@ -1258,7 +1342,7 @@ cv::Mat MainWindow::colorImage(cv::Mat img16)
         B = 0;
         W = 65535;
     }
-    qDebug() << "GetAutoStretch:" << B << "," << W;
+    qInfo() << "GetAutoStretch:" << B << "," << W;
     Tools::Bit16To8_Stretch(AWBImg16color, AWBImg8color, B, W);
 
     return AWBImg16color;
@@ -1309,7 +1393,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     }
     else
     {
-        qDebug() << "Save GuiderImage Failed...";
+        qWarning() << "Save GuiderImage Failed...";
     }
 }
 
@@ -1319,7 +1403,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
     QFile file(QString::fromStdString(filename));
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-        qDebug() << "Open File Faild";
+        qWarning() << "Open File failed";
         return;
     }
     QXmlStreamReader xml(&file);
@@ -1353,7 +1437,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
 
     if (dir == nullptr)
     {
-        qDebug() << "Unable to find INDI drivers directory,Please make sure the path is true";
+        qWarning() << "Unable to find INDI drivers directory,Please make sure the path is true";
         return;
     }
 
@@ -1372,7 +1456,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
                 QFile file(QString::fromStdString(xmlpath));
                 if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
                 {
-                    qDebug() << "Open File faild!!!";
+                    qWarning() << "Open File failed!!!";
                 }
 
                 QXmlStreamReader xml(&file);
@@ -1492,11 +1576,11 @@ void MainWindow::SelectIndiDevice(int systemNumber, int grounpNumber)
     //     break;
     // }
 
-    qDebug() << "SelectIndiDevice:" << systemdevicelist.currentDeviceCode << "," << drivers_list.selectedGrounp;
+    // qDebug() << "SelectIndiDevice:" << systemdevicelist.currentDeviceCode << "," << drivers_list.selectedGrounp;
 
     for (int i = 0; i < drivers_list.dev_groups[grounpNumber].devices.size(); i++)
     {
-        qDebug() << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].version) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label);
+        // qDebug() << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].version) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].manufacturer);
         emit wsThread->sendMessageToClient("AddDriver:" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) + ":" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name));
     }
 }
@@ -1554,7 +1638,12 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName)
     }
 
     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = DriverName;
-    // emit wsThread->sendMessageToClient("ScanFailed:No device found.");
+}
+
+bool MainWindow::indi_Driver_Clear()
+{
+    systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "";
+    systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = "";
 }
 
 void MainWindow::indi_Device_Confirm(QString DeviceName, QString DriverName)
@@ -1595,7 +1684,7 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
 
     if (connected == false)
     {
-        qDebug() << "clearCheckDeviceExist | ERROR:can not find server";
+        qWarning() << "clearCheckDeviceExist | ERROR:can not find server";
         return QHYCCD_ERROR;
     }
 
@@ -1634,7 +1723,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     int SelectedDriverNum = Tools::getDriverNumFromSystemDeviceList(systemdevicelist);
     if (SelectedDriverNum == 0)
     {
-        qDebug() << "System Connect | Error: No driver in system device list";
+        qWarning() << "System Connect | Error: No driver in system device list";
         emit wsThread->sendMessageToClient("ConnectFailed:No driver in system device list.");
         return;
     }
@@ -1665,7 +1754,7 @@ void MainWindow::ConnectAllDeviceOnce() {
                 if (item == driverName)
                 {
                     isFound = true;
-                    qDebug() << "System Connect | found one duplite driver,do not start it again" << driverName;
+                    qWarning() << "System Connect | found one duplite driver,do not start it again" << driverName;
                     break;
                 }
             }
@@ -1684,32 +1773,31 @@ void MainWindow::ConnectAllDeviceOnce() {
 
     if (indi_Client->isServerConnected() == false)
     {
-        qDebug() << "System Connect | ERROR:can not find server";
+        qWarning() << "System Connect | ERROR:can not find server";
         return;
     }
 
     if (indi_Client->GetDeviceCount() == 0)
     {
-        qDebug() << "System Connect | Error:No device found";
+        qWarning() << "System Connect | Error:No device found";
         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
         return;
     }
 
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
-        qDebug() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
+        qInfo() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
         indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+
+        int waitTime = 0;
+        while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5) {
+            qInfo() << "Wait for Connect" << indi_Client->GetDeviceNameFromList(i).c_str();
+            QThread::msleep(1000);  // 等待1秒
+            waitTime++;
+        }
     }
 
-    sleep(10);
-
-    // while (NumberOfTimesConnectDevice != indi_Client->GetDeviceCount()) {
-    //     qDebug() << "Wait for Connect all device...";
-    //     // 等待一段时间以避免过于频繁的检查
-    //     std::this_thread::sleep_for(std::chrono::milliseconds(500)); // 可以根据需要调整时间
-    // }
-
-    // std::this_thread::sleep_for(std::chrono::seconds(1));
+    // sleep(10);
 
     ConnectedCCDList.clear();
     ConnectedTELESCOPEList.clear();
@@ -1720,20 +1808,25 @@ void MainWindow::ConnectAllDeviceOnce() {
         if(indi_Client->GetDeviceFromList(i)->isConnected()) {
             if(indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE) {
                 qDebug() << "\033[1;32m We received a CCD!\033[0m";
+                qInfo() << "We received a CCD!";
                 ConnectedCCDList.push_back(i);
             } else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE) {
                 qDebug() << "\033[1;32m We received a FILTER!\033[0m";
+                qInfo() << "We received a FILTER!";
                 ConnectedFILTERList.push_back(i);
             } else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE) {
                 qDebug() << "\033[1;32m We received a TELESCOPE!\033[0m";
+                qInfo() << "We received a TELESCOPE!";
                 ConnectedTELESCOPEList.push_back(i);
             } else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE) {
                 qDebug() << "\033[1;32m We received a FOCUSER!\033[0m";
+                qInfo() << "We received a FOCUSER!";
                 ConnectedFOCUSERList.push_back(i);
             }  
-            qDebug() << "Driver:" << indi_Client->GetDeviceFromList(i)->getDriverExec() << "Device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            qInfo() << "Driver:" << indi_Client->GetDeviceFromList(i)->getDriverExec() << "Device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
         } else {
-            qDebug() << "\033[1;31m Connect Faild device: \033[0m" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            qDebug() << "\033[1;31m Connect failed device: \033[0m" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            qWarning() << "Connect failed device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
         }
     }
 
@@ -1745,15 +1838,15 @@ void MainWindow::ConnectAllDeviceOnce() {
         qDebug() << "Selected Cameras:" << Camera;
     }
 
-    qDebug() << "Number of Connected CCD:" << ConnectedCCDList.size();
-    qDebug() << "Number of Connected TELESCOPE:" << ConnectedTELESCOPEList.size();
-    qDebug() << "Number of Connected FOCUSER:" << ConnectedFOCUSERList.size();
-    qDebug() << "Number of Connected FILTER:" << ConnectedFILTERList.size();
+    qInfo() << "Number of Connected CCD:" << ConnectedCCDList.size();
+    qInfo() << "Number of Connected TELESCOPE:" << ConnectedTELESCOPEList.size();
+    qInfo() << "Number of Connected FOCUSER:" << ConnectedFOCUSERList.size();
+    qInfo() << "Number of Connected FILTER:" << ConnectedFILTERList.size();
 
     bool EachDeviceOne = true;
 
     if(SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1) {
-        qDebug() << "The Camera Selected and Connected are Both 1";
+        qInfo() << "The Camera Selected and Connected are Both 1";
         if(SelectedCameras[0] == "Guider") {
             dpGuider = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
             // systemdevicelist.system_devices[1].isConnect = true;
@@ -1761,13 +1854,14 @@ void MainWindow::ConnectAllDeviceOnce() {
             sleep(1);
             call_phd_whichCamera(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
             // PHD2 connect status
+            AfterDeviceConnect(dpGuider);
 
         } else if(SelectedCameras[0] == "PoleCamera") {
             dpPoleScope = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
             systemdevicelist.system_devices[2].isConnect = true;
             AfterDeviceConnect(dpPoleScope);
         } else if(SelectedCameras[0] == "MainCamera") {
-            qDebug() << "MainCamera Connected Success!";
+            qInfo() << "MainCamera Connected Success!";
             dpMainCamera = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
             systemdevicelist.system_devices[20].isConnect = true;
             AfterDeviceConnect(dpMainCamera);
@@ -1780,7 +1874,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     }
 
     if(ConnectedTELESCOPEList.size() == 1) {
-        qDebug() << "Mount Connected Success!";
+        qInfo() << "Mount Connected Success!";
         dpMount = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
         systemdevicelist.system_devices[0].isConnect = true;
         AfterDeviceConnect(dpMount);
@@ -1792,6 +1886,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     }
 
     if(ConnectedFOCUSERList.size() == 1) {
+        qInfo() << "Focuser Connected Success!";
         dpFocuser = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
         systemdevicelist.system_devices[22].isConnect = true;
         AfterDeviceConnect(dpFocuser);
@@ -1803,6 +1898,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     }
 
     if(ConnectedFILTERList.size() == 1) {
+        qInfo() << "Filter Connected Success!";
         dpCFW = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
         systemdevicelist.system_devices[21].isConnect = true;
         AfterDeviceConnect(dpCFW);
@@ -1813,9 +1909,9 @@ void MainWindow::ConnectAllDeviceOnce() {
         }
     }
     
-    qDebug() << "Each Device Only Has One:" << EachDeviceOne;
+    qInfo() << "Each Device Only Has One:" << EachDeviceOne;
     if(EachDeviceOne) {
-        AfterDeviceConnect();
+        // AfterDeviceConnect();
     } else {
         emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
     }
@@ -1834,7 +1930,7 @@ void MainWindow::AutoConnectAllDevice() {
     int SelectedDriverNum = Tools::getDriverNumFromSystemDeviceList(systemdevicelist);
     if (SelectedDriverNum == 0)
     {
-        qDebug() << "System Connect | Error: No driver in system device list";
+        qWarning() << "System Connect | Error: No driver in system device list";
         emit wsThread->sendMessageToClient("ConnectFailed:No driver in system device list.");
         return;
     }
@@ -1865,7 +1961,7 @@ void MainWindow::AutoConnectAllDevice() {
                 if (item == driverName)
                 {
                     isFound = true;
-                    qDebug() << "System Connect | found one duplite driver,do not start it again" << driverName;
+                    qWarning() << "System Connect | found one duplite driver,do not start it again" << driverName;
                     break;
                 }
             }
@@ -1884,24 +1980,31 @@ void MainWindow::AutoConnectAllDevice() {
 
     if (indi_Client->isServerConnected() == false)
     {
-        qDebug() << "System Connect | ERROR:can not find server";
+        qWarning() << "System Connect | ERROR:can not find server";
         return;
     }
 
     if (indi_Client->GetDeviceCount() == 0)
     {
-        qDebug() << "System Connect | Error:No device found";
+        qWarning() << "System Connect | Error:No device found";
         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
         return;
     }
 
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
-        qDebug() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
+        qInfo() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
         indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+
+        int waitTime = 0;
+        while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5) {
+            qInfo() << "Wait for Connect" << indi_Client->GetDeviceNameFromList(i).c_str();
+            QThread::msleep(1000);  // 等待1秒
+            waitTime++;
+        }
     }
 
-    sleep(5);
+    // sleep(5);
     Tools::printSystemDeviceList(systemdevicelist);
 
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)   //  indi_Client->GetDeviceFromList(i)
@@ -1923,34 +2026,35 @@ void MainWindow::AutoConnectAllDevice() {
                 }
             }
         } else {
-            qDebug() << "\033[1;31m Connect Faild device: \033[0m" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            qDebug() << "\033[1;31m Connect failed device: \033[0m" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            qWarning() << "Connect failed device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
         }
     }
 
     Tools::printSystemDeviceList(systemdevicelist);
 
     if (systemdevicelist.system_devices[0].dp != NULL){
-        qDebug() << "Find dpMount";
+        qInfo() << "Find dpMount";
         dpMount = systemdevicelist.system_devices[0].dp;
     } 
     if (systemdevicelist.system_devices[1].dp != NULL){
-        qDebug() << "Find dpGuider";
+        qInfo() << "Find dpGuider";
         dpGuider = systemdevicelist.system_devices[1].dp;
     }  
     if (systemdevicelist.system_devices[2].dp != NULL){
-        qDebug() << "Find dpPoleScope";
+        qInfo() << "Find dpPoleScope";
         dpPoleScope = systemdevicelist.system_devices[2].dp;
     }   
     if (systemdevicelist.system_devices[20].dp != NULL){
-        qDebug() << "Find dpMainCamera";
+        qInfo() << "Find dpMainCamera";
         dpMainCamera = systemdevicelist.system_devices[20].dp;
     } 
     if (systemdevicelist.system_devices[21].dp != NULL){
-        qDebug() << "Find dpCFW";
+        qInfo() << "Find dpCFW";
         dpCFW = systemdevicelist.system_devices[21].dp;
     }
     if (systemdevicelist.system_devices[22].dp != NULL){
-        qDebug() << "Find dpFocuser";
+        qInfo() << "Find dpFocuser";
         dpFocuser = systemdevicelist.system_devices[22].dp;
     }
         
@@ -1961,7 +2065,7 @@ void MainWindow::AutoConnectAllDevice() {
 void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 {
     indi_Client->PrintDevices();
-    qDebug() << "DeviceType:" << DeviceType << "," << "DeviceName:" << indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName();
+    qInfo() << "DeviceType:" << DeviceType << "," << "DeviceName:" << indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName();
 
     if (DeviceType == "Guider")
     {
@@ -2007,7 +2111,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 void MainWindow::UnBindingDevice(QString DeviceType)
 {
     indi_Client->PrintDevices();
-    qDebug() << "DeviceType:" << DeviceType;
+    qInfo() << "DeviceType:" << DeviceType;
 
     if (DeviceType == "Guider")
     {
@@ -2029,7 +2133,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     }
     else if (DeviceType == "MainCamera")
     {
-        qDebug() << "DeviceName:" << dpMainCamera->getDeviceName();
+        qInfo() << "DeviceName:" << dpMainCamera->getDeviceName();
         
         int DeviceIndex;
         for (int i = 0; i < indi_Client->GetDeviceCount(); i++)   //  indi_Client->GetDeviceFromList(i)
@@ -2103,169 +2207,190 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     indi_Client->PrintDevices();
 }
 
-void MainWindow::DeviceConnect()
-{
-    int SelectedDevicesNum = Tools::getTotalDeviceFromSystemDeviceList(systemdevicelist);
-    if (SelectedDevicesNum == 0)
-    {
-        qDebug() << "System Connect | Error: no device in system device list";
-        emit wsThread->sendMessageToClient("ConnectFailed:no device in system device list.");
-        return;
-    }
+// void MainWindow::DeviceConnect()
+// {
+//     int SelectedDevicesNum = Tools::getTotalDeviceFromSystemDeviceList(systemdevicelist);
+//     if (SelectedDevicesNum == 0)
+//     {
+//         qWarning() << "System Connect | Error: no device in system device list";
+//         emit wsThread->sendMessageToClient("ConnectFailed:no device in system device list.");
+//         return;
+//     }
 
-    Tools::cleanSystemDeviceListConnect(systemdevicelist);
-    Tools::printSystemDeviceList(systemdevicelist);
-    disconnectIndiServer(indi_Client);
-    Tools::stopIndiDriverAll(drivers_list);
+//     Tools::cleanSystemDeviceListConnect(systemdevicelist);
+//     Tools::printSystemDeviceList(systemdevicelist);
+//     disconnectIndiServer(indi_Client);
+//     Tools::stopIndiDriverAll(drivers_list);
 
-    QString driverName;
-    QVector<QString> nameCheck;
+//     QString driverName;
+//     QVector<QString> nameCheck;
 
-    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-    {
-        driverName = systemdevicelist.system_devices[i].DriverIndiName;
-        if (driverName != "")
-        {
-            bool isFound = false;
-            for (auto item : nameCheck)
-            {
-                if (item == driverName)
-                {
-                    isFound = true;
-                    qDebug() << "System Connect | found one duplite driver,do not start it again" << driverName;
-                    break;
-                }
-            }
+//     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+//     {
+//         driverName = systemdevicelist.system_devices[i].DriverIndiName;
+//         if (driverName != "")
+//         {
+//             bool isFound = false;
+//             for (auto item : nameCheck)
+//             {
+//                 if (item == driverName)
+//                 {
+//                     isFound = true;
+//                     qWarning() << "System Connect | found one duplite driver,do not start it again" << driverName;
+//                     break;
+//                 }
+//             }
 
-            if (isFound == false)
-            {
-                Tools::startIndiDriver(driverName);
-                nameCheck.push_back(driverName);
-            }
-        }
-    }
+//             if (isFound == false)
+//             {
+//                 Tools::startIndiDriver(driverName);
+//                 nameCheck.push_back(driverName);
+//             }
+//         }
+//     }
 
-    sleep(1);
+//     sleep(1);
 
-    connectIndiServer(indi_Client);
+//     connectIndiServer(indi_Client);
 
-    if (indi_Client->isServerConnected() == false)
-    {
-        qDebug() << "System Connect | ERROR:can not find server";
-        return;
-    }
+//     if (indi_Client->isServerConnected() == false)
+//     {
+//         qDebug() << "System Connect | ERROR:can not find server";
+//         return;
+//     }
 
-    if (indi_Client->GetDeviceCount() == 0)
-    {
-        qDebug() << "System Connect | Error:No device found";
-        emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
-        return;
-    }
+//     if (indi_Client->GetDeviceCount() == 0)
+//     {
+//         qDebug() << "System Connect | Error:No device found";
+//         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
+//         return;
+//     }
 
-    uint32_t ret;
-    int index;
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-    {
-        qDebug() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
-        ret = Tools::getIndexFromSystemDeviceListByName(systemdevicelist, QString::fromStdString(indi_Client->GetDeviceNameFromList(i)), index);
-        if (ret == QHYCCD_SUCCESS)
-        {
-            systemdevicelist.system_devices[index].dp = indi_Client->GetDeviceFromList(i);
+//     uint32_t ret;
+//     int index;
+//     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+//     {
+//         qDebug() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
+//         ret = Tools::getIndexFromSystemDeviceListByName(systemdevicelist, QString::fromStdString(indi_Client->GetDeviceNameFromList(i)), index);
+//         if (ret == QHYCCD_SUCCESS)
+//         {
+//             systemdevicelist.system_devices[index].dp = indi_Client->GetDeviceFromList(i);
 
-            if (index == 1)
-            {
-                call_phd_whichCamera(systemdevicelist.system_devices[index].dp->getDeviceName());  // PHD2 Guider Connect
-            }
-            else
-            {
-                indi_Client->connectDevice(systemdevicelist.system_devices[index].dp->getDeviceName());
-            }
-        }
-    }
+//             if (index == 1)
+//             {
+//                 call_phd_whichCamera(systemdevicelist.system_devices[index].dp->getDeviceName());  // PHD2 Guider Connect
+//             }
+//             else
+//             {
+//                 indi_Client->connectDevice(systemdevicelist.system_devices[index].dp->getDeviceName());
+//             }
+//         }
+//     }
 
-    sleep(3);
+//     sleep(3);
 
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-    {
-        ret = Tools::getIndexFromSystemDeviceListByName(systemdevicelist, QString::fromStdString(indi_Client->GetDeviceNameFromList(i)), index);
-        if (ret == QHYCCD_SUCCESS)
-        {
-            if (systemdevicelist.system_devices[index].dp->isConnected() == true)
-            {
-                systemdevicelist.system_devices[index].isConnect = true;
+//     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+//     {
+//         ret = Tools::getIndexFromSystemDeviceListByName(systemdevicelist, QString::fromStdString(indi_Client->GetDeviceNameFromList(i)), index);
+//         if (ret == QHYCCD_SUCCESS)
+//         {
+//             if (systemdevicelist.system_devices[index].dp->isConnected() == true)
+//             {
+//                 systemdevicelist.system_devices[index].isConnect = true;
 
-                if(systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE) {
-                    qDebug() << "\033[1;32m We received a CCD!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-                } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE) {
-                    qDebug() << "\033[1;32m We received a FILTER!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-                } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE) {
-                    qDebug() << "\033[1;32m We received a TELESCOPE!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-                } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE) {
-                    qDebug() << "\033[1;32m We received a FOCUSER!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-                }
-            }
+//                 if(systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE) {
+//                     qDebug() << "\033[1;32m We received a CCD!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
+//                 } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE) {
+//                     qDebug() << "\033[1;32m We received a FILTER!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
+//                 } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE) {
+//                     qDebug() << "\033[1;32m We received a TELESCOPE!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
+//                 } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE) {
+//                     qDebug() << "\033[1;32m We received a FOCUSER!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
+//                 }
+//             }
 
-            if (index == 1)
-            {
-                if (indi_Client->GetDeviceNameFromList(i).find("Simulator") != std::string::npos)
-                {
-                    systemdevicelist.system_devices[index].isConnect = true;
-                }
-            }
-        }
-        else
-        {
-            qDebug() << "System Connect |Warn:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i)) << "is found in the client list but not in pre-select system list" << i;
-        }
-    }
+//             if (index == 1)
+//             {
+//                 if (indi_Client->GetDeviceNameFromList(i).find("Simulator") != std::string::npos)
+//                 {
+//                     systemdevicelist.system_devices[index].isConnect = true;
+//                 }
+//             }
+//         }
+//         else
+//         {
+//             qDebug() << "System Connect |Warn:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i)) << "is found in the client list but not in pre-select system list" << i;
+//         }
+//     }
 
     
-    AfterDeviceConnect();
-}
+//     AfterDeviceConnect();
+// }
 
 void MainWindow::AfterDeviceConnect()
 {
     if (dpMainCamera != NULL)
     {
-        qDebug() << "AfterAllConnected | DeviceName: " << dpMainCamera->getDeviceName();
+        qInfo() << "AfterAllConnected | DeviceName: " << dpMainCamera->getDeviceName();
         emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
+
+        systemdevicelist.system_devices[20].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
 
         indi_Client->setBLOBMode(B_ALSO, dpMainCamera->getDeviceName(), nullptr);
         indi_Client->enableDirectBlobAccess(dpMainCamera->getDeviceName(), nullptr);
 
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
-        qDebug() << "AfterAllConnected | MainCamera SDK version:" << SDKVERSION;
-
-        int X, Y;
-        indi_Client->getCCDFrameInfo(dpMainCamera, X, Y, glMainCCDSizeX, glMainCCDSizeY);
-        qDebug() << "CCDSize:" << glMainCCDSizeX << glMainCCDSizeY;
-        emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
+        qInfo() << "AfterAllConnected | MainCamera SDK version:" << SDKVERSION;
 
         indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
-        qDebug() << "CCD Offset(Value,Min,Max):" << glOffsetValue << "," << glOffsetMin << "," << glOffsetMax;
+        qInfo() << "CCD Offset(Value,Min,Max):" << glOffsetValue << "," << glOffsetMin << "," << glOffsetMax;
         emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
 
         indi_Client->getCCDGain(dpMainCamera, glGainValue, glGainMin, glGainMax);
-        qDebug() << "CCD Gain(Value,Min,Max):" << glGainValue << "," << glGainMin << "," << glGainMax;
+        qInfo() << "CCD Gain(Value,Min,Max):" << glGainValue << "," << glGainMin << "," << glGainMax;
         emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
 
         int maxX, maxY; 
         double pixelsize, pixelsizX, pixelsizY;
         int bitDepth;
         indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-        qDebug() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+        qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+
+        // indi_Client->setCCDBasicInfo(dpMainCamera, 5616, 3744, 6.41, 6.41, 6.41);
+
+        // indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
+        // qDebug() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+
+        if(maxX == 0 && maxY == 0) {
+            QString CameraName = dpMainCamera->getDeviceName();
+            qInfo() << "Camera:" << CameraName;
+            qInfo() << "This may be a DSLRs Camera, need to set Resolution and pixel size.";
+            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
+            if(DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0) {
+                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
+                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
+                qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+            } else {
+                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+            }
+        }
 
         glCameraSize_width = maxX * pixelsize / 1000;
         glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
         glCameraSize_height = maxY * pixelsize / 1000;
         glCameraSize_height = std::round(glCameraSize_height * 10) / 10;
-        qDebug() << "CCD Chip size:" << glCameraSize_width << "," << glCameraSize_height;
+        qInfo() << "CCD Chip size:" << glCameraSize_width << "," << glCameraSize_height;
+
+        int X, Y;
+        indi_Client->getCCDFrameInfo(dpMainCamera, X, Y, glMainCCDSizeX, glMainCCDSizeY);
+        qInfo() << "CCDSize:" << glMainCCDSizeX << glMainCCDSizeY;
+        emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
 
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
-        qDebug() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
+        qInfo() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
         // indi_Client->setTemperature(dpMainCamera, -10);
 
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
@@ -2274,13 +2399,13 @@ void MainWindow::AfterDeviceConnect()
         QString CFWname;
         indi_Client->getCFWSlotName(dpMainCamera, CFWname);
         if(CFWname != "") {
-            qDebug() << "get CFW Slot Name: " << CFWname;
+            qInfo() << "get CFW Slot Name: " << CFWname;
             emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname+" (on camera)");
             isFilterOnCamera = true;
 
             int min, max, pos;
             indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-            qDebug() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+            qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
             emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
         }
     }
@@ -2303,14 +2428,14 @@ void MainWindow::AfterDeviceConnect()
         // datetime= QDateTime::fromString("2023-12-29T12:34:56+00:00",Qt::ISODate);
         // qDebug()<<datetime;
         indi_Client->setTimeUTC(dpMount, datetime);
-        qDebug() << "AfterAllConnected_setTimeUTC |" << datetime;
+        qInfo() << "AfterAllConnected_setTimeUTC |" << datetime;
         indi_Client->getTimeUTC(dpMount, datetime);
-        qDebug() << "AfterAllConnected | TimeUTC: " << datetime.currentDateTimeUtc();
+        qInfo() << "AfterAllConnected | TimeUTC: " << datetime.currentDateTimeUtc();
 
         double a, b, c, d;
         // indi_Client->setTelescopeInfo(dp2,100,500,30,130);
         indi_Client->getTelescopeInfo(dpMount, a, b, c, d);
-        qDebug() << "AfterAllConnected | TelescopeInfo: " << a << b << c << d;
+        qInfo() << "AfterAllConnected | TelescopeInfo: " << a << b << c << d;
 
         indi_Client->getTelescopeRADECJ2000(dpMount, a, b);
         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
@@ -2322,14 +2447,14 @@ void MainWindow::AfterDeviceConnect()
 
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
         glTelescopeTotalSlewRate = total;
-        qDebug() << "TelescopeTotalSlewRate: " << total;
+        qInfo() << "TelescopeTotalSlewRate: " << total;
         emit wsThread->sendMessageToClient("TelescopeTotalSlewRate:" + QString::number(total));
         indi_Client->getTelescopeMaxSlewRateOptions(dpMount, minspeed, maxspeed, speedvalue);
         // indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
         indi_Client->setTelescopeSlewRate(dpMount, total);
         int speed;
         indi_Client->getTelescopeSlewRate(dpMount,speed);
-        qDebug() << "TelescopeCurrentSlewRate: " << speed;
+        qInfo() << "TelescopeCurrentSlewRate: " << speed;
         // emit wsThread->sendMessageToClient("TelescopeCurrentSlewRate:" + QString::number(speed));
         emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(speed));
         indi_Client->setTelescopeTrackEnable(dpMount, true);
@@ -2349,7 +2474,7 @@ void MainWindow::AfterDeviceConnect()
         indi_Client->setTelescopeTrackRate(dpMount, "SIDEREAL");
         QString side;
         indi_Client->getTelescopePierSide(dpMount, side);
-        qDebug() << "AfterAllConnected | TelescopePierSide: " << side;
+        qInfo() << "AfterAllConnected | TelescopePierSide: " << side;
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
     }
 
@@ -2368,7 +2493,7 @@ void MainWindow::AfterDeviceConnect()
         indi_Client->GetAllPropertyName(dpCFW);
         int min, max, pos;
         indi_Client->getCFWPosition(dpCFW, pos, min, max);
-        qDebug() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+        qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
         emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
         if(Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())) != QString())
         {
@@ -2387,7 +2512,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 {
     if (dpMainCamera == dp)
     {
-        qDebug() << "AfterAllConnected | DeviceName: " << dpMainCamera->getDeviceName();
+        qInfo() << "AfterAllConnected | DeviceName: " << dpMainCamera->getDeviceName();
         emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
 
@@ -2398,36 +2523,55 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
-        qDebug() << "AfterAllConnected | MainCamera SDK version:" << SDKVERSION;
-
-        int X, Y;
-        indi_Client->getCCDFrameInfo(dpMainCamera, X, Y, glMainCCDSizeX, glMainCCDSizeY);
-        qDebug() << "CCDSize:" << glMainCCDSizeX << glMainCCDSizeY;
-        emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
+        qInfo() << "AfterAllConnected | MainCamera SDK version:" << SDKVERSION;
 
         indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
-        qDebug() << "CCD Offset(Value,Min,Max):" << glOffsetValue << "," << glOffsetMin << "," << glOffsetMax;
+        qInfo() << "CCD Offset(Value,Min,Max):" << glOffsetValue << "," << glOffsetMin << "," << glOffsetMax;
         emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
 
         indi_Client->getCCDGain(dpMainCamera, glGainValue, glGainMin, glGainMax);
-        qDebug() << "CCD Gain(Value,Min,Max):" << glGainValue << "," << glGainMin << "," << glGainMax;
+        qInfo() << "CCD Gain(Value,Min,Max):" << glGainValue << "," << glGainMin << "," << glGainMax;
         emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
 
         int maxX, maxY; 
         double pixelsize, pixelsizX, pixelsizY;
         int bitDepth;
         indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-        qDebug() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+        qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+
+        // indi_Client->setCCDBasicInfo(dpMainCamera, 5616, 3744, 6.41, 6.41, 6.41);
+
+        // indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
+        // qDebug() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+
+        if(maxX == 0 && maxY == 0) {
+            QString CameraName = dpMainCamera->getDeviceName();
+            qInfo() << "Camera:" << CameraName;
+            qInfo() << "This may be a DSLRs Camera, need to set Resolution and pixel size.";
+            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
+            if(DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0) {
+                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
+                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
+                qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+            } else {
+                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+            }
+        }
 
         glCameraSize_width = maxX * pixelsize / 1000;
         glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
         glCameraSize_height = maxY * pixelsize / 1000;
         glCameraSize_height = std::round(glCameraSize_height * 10) / 10;
-        qDebug() << "CCD Chip size:" << glCameraSize_width << "," << glCameraSize_height;
+        qInfo() << "CCD Chip size:" << glCameraSize_width << "," << glCameraSize_height;
+
+        int X, Y;
+        indi_Client->getCCDFrameInfo(dpMainCamera, X, Y, glMainCCDSizeX, glMainCCDSizeY);
+        qInfo() << "CCDSize:" << glMainCCDSizeX << glMainCCDSizeY;
+        emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
 
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
-        qDebug() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
+        qInfo() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
         // indi_Client->setTemperature(dpMainCamera, -10);
 
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
@@ -2436,13 +2580,13 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         QString CFWname;
         indi_Client->getCFWSlotName(dpMainCamera, CFWname);
         if(CFWname != "") {
-            qDebug() << "get CFW Slot Name: " << CFWname;
+            qInfo() << "get CFW Slot Name: " << CFWname;
             emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname+" (on camera)");
             isFilterOnCamera = true;
 
             int min, max, pos;
             indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-            qDebug() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+            qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
             emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
         }
     }
@@ -2468,14 +2612,14 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         // datetime= QDateTime::fromString("2023-12-29T12:34:56+00:00",Qt::ISODate);
         // qDebug()<<datetime;
         indi_Client->setTimeUTC(dpMount, datetime);
-        qDebug() << "AfterAllConnected_setTimeUTC |" << datetime;
+        qInfo() << "AfterAllConnected_setTimeUTC |" << datetime;
         indi_Client->getTimeUTC(dpMount, datetime);
-        qDebug() << "AfterAllConnected | TimeUTC: " << datetime.currentDateTimeUtc();
+        qInfo() << "AfterAllConnected | TimeUTC: " << datetime.currentDateTimeUtc();
 
         double a, b, c, d;
         // indi_Client->setTelescopeInfo(dp2,100,500,30,130);
         indi_Client->getTelescopeInfo(dpMount, a, b, c, d);
-        qDebug() << "AfterAllConnected | TelescopeInfo: " << a << b << c << d;
+        qInfo() << "AfterAllConnected | TelescopeInfo: " << a << b << c << d;
 
         indi_Client->getTelescopeRADECJ2000(dpMount, a, b);
         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
@@ -2487,14 +2631,14 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
         glTelescopeTotalSlewRate = total;
-        qDebug() << "TelescopeTotalSlewRate: " << total;
+        qInfo() << "TelescopeTotalSlewRate: " << total;
         emit wsThread->sendMessageToClient("TelescopeTotalSlewRate:" + QString::number(total));
         indi_Client->getTelescopeMaxSlewRateOptions(dpMount, minspeed, maxspeed, speedvalue);
         // indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
         indi_Client->setTelescopeSlewRate(dpMount, total);
         int speed;
         indi_Client->getTelescopeSlewRate(dpMount,speed);
-        qDebug() << "TelescopeCurrentSlewRate: " << speed;
+        qInfo() << "TelescopeCurrentSlewRate: " << speed;
         // emit wsThread->sendMessageToClient("TelescopeCurrentSlewRate:" + QString::number(speed));
         emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(speed));
         indi_Client->setTelescopeTrackEnable(dpMount, true);
@@ -2514,7 +2658,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->setTelescopeTrackRate(dpMount, "SIDEREAL");
         QString side;
         indi_Client->getTelescopePierSide(dpMount, side);
-        qDebug() << "AfterAllConnected | TelescopePierSide: " << side;
+        qInfo() << "AfterAllConnected | TelescopePierSide: " << side;
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
     }
 
@@ -2539,7 +2683,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->GetAllPropertyName(dpCFW);
         int min, max, pos;
         indi_Client->getCFWPosition(dpCFW, pos, min, max);
-        qDebug() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+        qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
         emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
         if(Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())) != QString())
         {
@@ -2572,16 +2716,16 @@ void MainWindow::disconnectIndiServer(MyClient *client)
             int num = 0;
             while (dp[i]->isConnected())
             {
-                qDebug("disconnectAllDevice | Waiting for disconnect finish...");
+                qInfo("disconnectAllDevice | Waiting for disconnect finish...");
                 sleep(1);
                 num++;
 
                 if(num > 10) {
-                    qDebug() << "disconnectAllDevice |" << dp[i]->getDeviceName() << "disconnect faild.";
+                    qWarning() << "disconnectAllDevice |" << dp[i]->getDeviceName() << "disconnect failed.";
                     break;
                 }
             }
-            qDebug() << "disconnectAllDevice |" << dp[i]->getDeviceName() << dp[i]->isConnected();
+            qInfo() << "disconnectAllDevice |" << dp[i]->getDeviceName() << dp[i]->isConnected();
         }
     }
 
@@ -2596,9 +2740,9 @@ void MainWindow::disconnectIndiServer(MyClient *client)
         }
         sleep(1);
         // qApp->processEvents();
-        qDebug("wait for client disconnected");
+        qInfo("wait for client disconnected");
     }
-    qDebug("--------------------------------------------------disconnectServer");
+    qInfo("--------------------------------------------------disconnectServer");
     indi_Client->PrintDevices();
     Tools::printSystemDeviceList(systemdevicelist);
 }
@@ -2617,24 +2761,24 @@ void MainWindow::connectIndiServer(MyClient *client)
         }
         sleep(1);
         // qApp->processEvents();
-        qDebug("wait for client connected");
+        qInfo("wait for client connected");
     }
-    qDebug("--------------------------------------------------connectServer");
+    qInfo("--------------------------------------------------connectServer");
     sleep(1);
     client->PrintDevices();
 }
 
 void MainWindow::ClearSystemDeviceList() {
-    qDebug() << "ClearSystemDeviceList";
+    qInfo() << "ClearSystemDeviceList";
     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
     {
         systemdevicelist.system_devices[i].DeviceIndiGroup = -1;
         systemdevicelist.system_devices[i].DeviceIndiName = "";
         systemdevicelist.system_devices[i].DriverFrom = "";
-        systemdevicelist.system_devices[i].DriverIndiName = "";
+        // systemdevicelist.system_devices[i].DriverIndiName = "";
         systemdevicelist.system_devices[i].isConnect = false;
         systemdevicelist.system_devices[i].dp = NULL;
-        systemdevicelist.system_devices[i].Description = "";
+        // systemdevicelist.system_devices[i].Description = "";
     }
     Tools::printSystemDeviceList(systemdevicelist);
 }
@@ -2644,12 +2788,12 @@ void MainWindow::INDI_Capture(int Exp_times)
     glIsFocusingLooping = false;
     double expTime_sec;
     expTime_sec = (double)Exp_times / 1000;
-    qDebug() << "expTime_sec:" << expTime_sec;
+    qInfo() << "expTime_sec:" << expTime_sec;
 
     if (dpMainCamera)
     {
         glMainCameraStatu = "Exposuring";
-        qDebug() << "INDI Capture Statu:" << glMainCameraStatu;
+        qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
 
         int value, min, max;
         indi_Client->getCCDGain(dpMainCamera, value, min, max);
@@ -2667,15 +2811,15 @@ void MainWindow::INDI_Capture(int Exp_times)
     }
     else
     {
-        qDebug() << "dpMainCamera is NULL";
+        qWarning() << "dpMainCamera is NULL";
     }
-    qDebug() << "INDI_Capture | exptime" << expTime_sec;
+    qInfo() << "INDI_Capture | exptime" << expTime_sec;
 }
 
 void MainWindow::INDI_AbortCapture()
 {
     glMainCameraStatu="IDLE";
-    qDebug() << "INDI Capture Statu:" << glMainCameraStatu;
+    qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
     if (dpMainCamera)
     {
         indi_Client->setCCDAbortExposure(dpMainCamera);
@@ -2696,7 +2840,7 @@ void MainWindow::FocusingLooping()
         expTime_sec = (double)glExpTime / 1000;
 
         glMainCameraStatu = "Exposuring";
-        qDebug() << "INDI Capture Statu:" << glMainCameraStatu;
+        qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
 
         QSize cameraResolution{glMainCCDSizeX, glMainCCDSizeY};
         QSize ROI{BoxSideLength, BoxSideLength};
@@ -2713,7 +2857,7 @@ void MainWindow::FocusingLooping()
         }
         else
         {
-            qDebug("Too close to the edge, please reselect the area."); //TODO:
+            qWarning("Too close to the edge, please reselect the area."); //TODO:
             if (cameraX + ROI.width() > glMainCCDSizeX)
                 cameraX = glMainCCDSizeX - ROI.width();
             if (cameraY + ROI.height() > glMainCCDSizeY)
@@ -2784,7 +2928,7 @@ void MainWindow::strechShowImage(cv::Mat img16,QString CFA,bool AutoStretch,bool
          B=blacklevel;
          W=whitelevel;
      }
-     qDebug()<<B<<","<<W;
+     qInfo()<<B<<","<<W;
      Tools::Bit16To8_Stretch(AWBImg16color,AWBImg8color,B,W);
 
     //  Tools::ShowCvImageOnQLabel(AWBImg8color,lable);
@@ -2815,7 +2959,7 @@ void MainWindow::InitPHD2()
 
     if (key_phd == -1)
     {
-        qDebug("ftok_phd");
+        qInfo("ftok_phd");
     }
 
     // build the shared memory
@@ -2823,7 +2967,7 @@ void MainWindow::InitPHD2()
     shmid_phd = shmget(key_phd, BUFSZ_PHD, IPC_CREAT | 0666);
     if (shmid_phd < 0)
     {
-        qDebug("main.cpp | main | shared memory phd shmget ERROR");
+        qInfo("main.cpp | main | shared memory phd shmget ERROR");
         exit(-1);
     }
 
@@ -2831,12 +2975,12 @@ void MainWindow::InitPHD2()
     sharedmemory_phd = (char *)shmat(shmid_phd, NULL, 0);
     if (sharedmemory_phd == NULL)
     {
-        qDebug("main.cpp | main | shared memor phd map ERROR");
+        qInfo("main.cpp | main | shared memor phd map ERROR");
         exit(-1);
     }
 
     // 读共享内存区数据
-    qDebug("data_phd = [%s]\n", sharedmemory_phd);
+    qInfo("data_phd = [%s]\n", sharedmemory_phd);
 
     cmdPHD2->start("phd2");
 
@@ -2856,7 +3000,7 @@ bool MainWindow::connectPHD(void)
     QString versionName = "";
     call_phd_GetVersion(versionName);
 
-    qDebug() << "QSCOPE|connectPHD|version:" << versionName;
+    qInfo() << "QSCOPE|connectPHD|version:" << versionName;
     if (versionName != "")
     {
         // init stellarium operation
@@ -2864,7 +3008,7 @@ bool MainWindow::connectPHD(void)
     }
     else
     {
-        qDebug() << "QSCOPE|connectPHD|error:there is no openPHD2 running";
+        qInfo() << "QSCOPE|connectPHD|error:there is no openPHD2 running";
         return false;
     }
 }
@@ -3074,7 +3218,7 @@ uint32_t MainWindow::call_phd_setExposureTime(unsigned int expTime)
 {
     unsigned int vendcommand;
     unsigned int baseAddress;
-    qDebug() << "call_phd_setExposureTime" << expTime;
+    qInfo() << "call_phd_setExposureTime:" << expTime;
     bzero(sharedmemory_phd, 1024); // 共享内存清空
 
     baseAddress = 0x03;
@@ -3223,6 +3367,38 @@ uint32_t MainWindow::call_phd_StarClick(int x, int y)
     memcpy(sharedmemory_phd + baseAddress + addr, &x, sizeof(int));
     addr = addr + sizeof(int);
     memcpy(sharedmemory_phd + baseAddress + addr, &y, sizeof(int));
+    addr = addr + sizeof(int);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
+uint32_t MainWindow::call_phd_FocalLength(int FocalLength) {
+    qDebug() << "call_phd_FocalLength:" << FocalLength;
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x10;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &FocalLength, sizeof(int));
     addr = addr + sizeof(int);
 
     QElapsedTimer t;
@@ -3415,7 +3591,7 @@ void MainWindow::ShowPHDdata()
             //         indi_Client->getTelescopePierSide(dpMount, FirstTelescopePierSide);
             //     }
             // }
-            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            // emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
 
             QPointF tmp;
             tmp.setX(-dRa * PixelRatio);
@@ -3440,7 +3616,7 @@ void MainWindow::ShowPHDdata()
                 // m_pToolbarWidget->LabelMainStarBox->setStyleSheet("QLabel{border:2px solid rgb(255,255,0);border-radius:3px;background-color:transparent;}");
                 // m_pToolbarWidget->LabelCrossX->setStyleSheet("QLabel{border:1px solid rgb(255,255,0);border-radius:3px;background-color:transparent;}");
                 // m_pToolbarWidget->LabelCrossY->setStyleSheet("QLabel{border:1px solid rgb(255,255,0);border-radius:3px;background-color:transparent;}");
-                qDebug() << "GuiderStatus:InCalibration";
+                qInfo() << "GuiderStatus:InCalibration";
                 emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
             }
 
@@ -3515,7 +3691,7 @@ void MainWindow::ShowPHDdata()
 
         saveGuiderImageAsJPG(image_raw8);
         
-        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+        // emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
 
         // saveGuiderImageAsJPG(PHDImg);
 
@@ -3680,7 +3856,7 @@ void MainWindow::FocuserControl_Goto(int Position)
 
     TargetPosition = Position;
 
-    qDebug() << "TargetPosition: " << TargetPosition;
+    qInfo() << "TargetPosition: " << TargetPosition;
 
     indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
 
@@ -3693,7 +3869,7 @@ void MainWindow::FocuserControl_Goto(int Position)
         if (WaitForFocuserToComplete()) 
         {
             focusTimer.stop();  // 转动完成时停止定时器
-            qDebug() << "Focuser Goto Complete!";
+            qInfo() << "Focuser Goto Complete!";
             FocusingLooping();
         } 
         else 
@@ -3727,12 +3903,12 @@ void MainWindow::AutoFocus()
 
     for(int i = 1; i < OnePassSteps; i++) {
         if (StopAutoFocus) {
-            qDebug("Stop Auto Focus...");
+            qInfo("Stop Auto Focus...");
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        qDebug() << "Pass1: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        qInfo() << "Pass1: HFR-" << i << "(" << HFR << ") Calculation Complete!";
         if (HFR == -1) {
             LostStarNum++;
             if (LostStarNum >= 3) {
@@ -3752,7 +3928,7 @@ void MainWindow::AutoFocus()
     if (result == 0)
     {
         if(R2 < 0.8) {
-            qDebug("R² < 0.8");
+            qWarning("R² < 0.8");
             // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
@@ -3796,12 +3972,12 @@ void MainWindow::AutoFocus()
 
     for(int i = 1; i < OnePassSteps; i++) {
         if (StopAutoFocus) {
-            qDebug("Stop Auto Focus...");
+            qInfo("Stop Auto Focus...");
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        qDebug() << "Pass2: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        qInfo() << "Pass2: HFR-" << i << "(" << HFR << ") Calculation Complete!";
         currentPosition = FocuserControl_getPosition();
         focusMeasures.append(QPointF(currentPosition, HFR));
     }
@@ -3811,7 +3987,7 @@ void MainWindow::AutoFocus()
     if (result_ == 0)
     {
         if(R2 < 0.8) {
-            qDebug("R² < 0.8");
+            qWarning("R² < 0.8");
             // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
@@ -3859,7 +4035,7 @@ void MainWindow::AutoFocus()
         else {
             qDebug() << "The number of points less than and greater than minPoint_X is equal.";
             FocusGotoAndCalFWHM(minPoint_X);
-            qDebug() << "Auto focus complete. Best step: " << minPoint_X;
+            qInfo() << "Auto focus complete. Best step: " << minPoint_X;
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
@@ -3867,20 +4043,20 @@ void MainWindow::AutoFocus()
 
     for(int i = 1; i < Pass3Steps + 1; i++) {
         if (StopAutoFocus) {
-            qDebug("Stop Auto Focus...");
+            qInfo("Stop Auto Focus...");
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        qDebug() << "Pass3: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        qInfo() << "Pass3: HFR-" << i << "(" << HFR << ") Calculation Complete!";
         currentPosition = FocuserControl_getPosition();
         focusMeasures.append(QPointF(currentPosition, HFR));
     }
 
     FocusGotoAndCalFWHM(minPoint_X);
-    qDebug() << "Auto focus complete. Best step: " << minPoint_X;
+    qInfo() << "Auto focus complete. Best step: " << minPoint_X;
     currentPosition = FocuserControl_getPosition();
-    qDebug() << "Current Position : " << currentPosition;
+    qInfo() << "Current Position : " << currentPosition;
     emit wsThread->sendMessageToClient("AutoFocusOver:true");
 }
 
@@ -3902,7 +4078,7 @@ double MainWindow::FocusGotoAndCalFWHM(int steps) {
         {
             FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
             FWHMTimer.stop();
-            qDebug() << "FWHM Calculation Complete!";
+            qInfo() << "FWHM Calculation Complete!";
             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
             loop.quit();
         } 
@@ -3936,7 +4112,7 @@ double MainWindow::FocusMoveAndCalHFR(bool isInward, int steps) {
         {
             FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
             FWHMTimer.stop();
-            qDebug() << "FWHM Calculation Complete!";
+            qInfo() << "FWHM Calculation Complete!";
             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
             loop.quit();
         } 
@@ -3969,7 +4145,7 @@ void MainWindow::FocuserControl_Move(bool isInward, int steps)
     {
         TargetPosition = CurrentPosition - steps;
     }
-    qDebug() << "TargetPosition: " << TargetPosition;
+    qInfo() << "Focuser Move Target Position: " << TargetPosition;
 
     indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
     indi_Client->moveFocuserSteps(dpFocuser, steps);
@@ -3983,7 +4159,7 @@ void MainWindow::FocuserControl_Move(bool isInward, int steps)
         if (WaitForFocuserToComplete()) 
         {
             focusTimer.stop();  // 转动完成时停止定时器
-            qDebug() << "Focuser Move Complete!";
+            qInfo() << "Focuser Move Complete!";
             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
             FocusingLooping();
         } 
@@ -4009,7 +4185,7 @@ int MainWindow::FocuserControl_setSpeed(int speed)
     int value, min, max;
     indi_Client->setFocuserSpeed(dpFocuser, speed);
     indi_Client->getFocuserSpeed(dpFocuser, value, min, max);
-    qDebug() << "Focuser Speed: " << value << "," << min << "," << max;
+    qInfo() << "Focuser Speed: " << value << "," << min << "," << max;
     return value;
   }
 }
@@ -4020,7 +4196,7 @@ int MainWindow::FocuserControl_getSpeed()
   {
     int value, min, max;
     indi_Client->getFocuserSpeed(dpFocuser, value, min, max);
-    qDebug() << "Focuser Speed: " << value << "," << min << "," << max;
+    qInfo() << "Focuser Speed: " << value << "," << min << "," << max;
     return value;
   }
 }
@@ -4071,7 +4247,7 @@ bool MainWindow::TelescopeControl_Park()
       indi_Client->setTelescopePark(dpMount,false);
     }
     indi_Client->getTelescopePark(dpMount,isPark);
-    qDebug()<<"isPark???:"<<isPark;
+    qInfo()<<"Telescope is Park ???:"<<isPark;
   }
 
   return isPark;
@@ -4092,7 +4268,7 @@ bool MainWindow::TelescopeControl_Track()
       indi_Client->setTelescopeTrackEnable(dpMount,false);
     }
     indi_Client->getTelescopeTrackEnable(dpMount,isTrack);
-    qDebug()<<"isTrack???:"<<isTrack;
+    qInfo()<<"Telescope is Track ???:"<<isTrack;
   }
   return isTrack;
 }
@@ -4412,17 +4588,17 @@ bool MainWindow::WaitForTelescopeToComplete() {
 }
 
 bool MainWindow::WaitForShootToComplete() {
-  qDebug("Wait For Shoot To Complete...");
+  qInfo("Wait For Shoot To Complete...");
   return (ShootStatus != "InProgress");
 }
 
 bool MainWindow::WaitForGuidingToComplete() {
-  qDebug() << "Wait For Guiding To Complete..." << InGuiding;
+  qInfo() << "Wait For Guiding To Complete..." << InGuiding;
   return InGuiding;
 }
 
 bool MainWindow::WaitForTimeToComplete() {
-    qDebug() << "Wait For Time To Complete...";
+    qInfo() << "Wait For Time To Complete...";
     QString TargetTime = m_scheduList[schedule_currentNum].shootTime;
 
     // 如果获取到的目标时间不是完整的时间格式，直接返回 true
@@ -4434,7 +4610,7 @@ bool MainWindow::WaitForTimeToComplete() {
     // 解析目标时间
     QTime targetTime = QTime::fromString(TargetTime, "hh:mm");
 
-    qDebug() << "currentTime:" << currentTime << ", targetTime:" << targetTime;
+    qInfo() << "currentTime:" << currentTime << ", targetTime:" << targetTime;
 
     // 如果目标时间晚于当前时间，返回 false
     if (targetTime > currentTime)
@@ -4453,7 +4629,9 @@ int MainWindow::CaptureImageSave() {
     }
 
     QString CaptureTime = Tools::getFitsCaptureTime("/dev/shm/ccd_simulator.fits");
+    CaptureTime.replace(QRegExp("[^a-zA-Z0-9]"), "_");
     QString resultFileName = CaptureTime + ".fits";
+
     
     std::time_t currentTime = std::time(nullptr);
     std::tm *timeInfo = std::localtime(&currentTime);
@@ -4467,7 +4645,7 @@ int MainWindow::CaptureImageSave() {
 
     // 检查文件是否已存在
     if (QFile::exists(destinationPath)) {
-        std::cerr << "文件已存在，无需保存：" << destinationPath.toStdString() << std::endl;
+        qWarning() << "The file already exists, there is no need to save it again:" << destinationPath;
         emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
         return 0; // 或返回其他状态码
     }
@@ -4477,13 +4655,13 @@ int MainWindow::CaptureImageSave() {
 
     std::ifstream sourceFile(sourcePath, std::ios::binary);
     if (!sourceFile.is_open()) {
-        std::cerr << "无法打开源文件：" << sourcePath << std::endl;
+        qWarning() << "Unable to open source file:" << sourcePath;
         return 1;
     }
 
     std::ofstream destinationFile(destinationPathChar, std::ios::binary);
     if (!destinationFile.is_open()) {
-        std::cerr << "无法创建或打开目标文件：" << destinationPathChar << std::endl;
+        qWarning() << "Unable to create or open target file:" << destinationPathChar;
         return 1;
     }
 
@@ -4519,13 +4697,13 @@ int MainWindow::ScheduleImageSave(QString name, int num)
 
   std::ifstream sourceFile(sourcePath, std::ios::binary);
   if (!sourceFile.is_open()) {
-    std::cerr << "无法打开源文件：" << sourcePath << std::endl;
+    qWarning() << "Unable to open source file:" << sourcePath;
     return 1;
   }
 
   std::ofstream destinationFile(destinationPathChar, std::ios::binary);
   if (!destinationFile.is_open()) {
-    std::cerr << "无法创建或打开目标文件：" << destinationPathChar << std::endl;
+    qWarning() << "Unable to create or open target file:" << destinationPathChar;
     return 1;
   }
 
@@ -4572,16 +4750,16 @@ bool MainWindow::createScheduleDirectory() {
     {
         if (std::filesystem::create_directory(folderName))
         {
-            std::cout << "文件夹创建成功: " << folderName << std::endl;
+            qInfo() << "Folder created successfully: " << QString::fromStdString(folderName);
         }
         else
         {
-            std::cerr << "创建文件夹时发生错误" << std::endl;
+            qWarning() << "An error occurred while creating the folder.";
         }
     }
     else
     {
-        std::cout << "文件夹已存在: " << folderName << std::endl;
+        qInfo() << "The folder already exists: " << QString::fromStdString(folderName);
     }
 }
 
@@ -4615,20 +4793,43 @@ bool MainWindow::createCaptureDirectory() {
     {
         if (std::filesystem::create_directory(folderName))
         {
-            std::cout << "文件夹创建成功: " << folderName << std::endl;
+            qInfo() << "Folder created successfully: " << QString::fromStdString(folderName);
         }
         else
         {
-            std::cerr << "创建文件夹时发生错误" << std::endl;
+            qWarning() << "An error occurred while creating the folder.";
         }
     }
     else
     {
-        std::cout << "文件夹已存在: " << folderName << std::endl;
+        qInfo() << "The folder already exists: " << QString::fromStdString(folderName);
     }
 }
 
+void MainWindow::getClientSettings() {
+    std::string fileName = "config/config.ini";
+    
+    std::unordered_map<std::string, std::string> config;
 
+    Tools::readClientSettings(fileName, config);
+
+    qInfo() << "Current Config:";
+    for (const auto& pair : config) {
+        qInfo() << QString::fromStdString(pair.first) << " = " << QString::fromStdString(pair.second);
+        emit wsThread->sendMessageToClient("ConfigureRecovery:" + QString::fromStdString(pair.first) + ":" + QString::fromStdString(pair.second));
+    }
+}
+
+void MainWindow::setClientSettings(QString ConfigName, QString ConfigValue) {
+    std::string fileName = "config/config.ini";
+    
+    std::unordered_map<std::string, std::string> config;
+
+    config[ConfigName.toStdString()] = ConfigValue.toStdString();
+
+    qInfo() << "Save Client Setting:" << ConfigName << " = " << ConfigValue;
+    Tools::saveClientSettings(fileName, config);
+}
 
 void MainWindow::getConnectedDevices(){
     QString deviceType;
@@ -4636,7 +4837,7 @@ void MainWindow::getConnectedDevices(){
     {
         deviceType = systemdevicelist.system_devices[i].Description;
         if (deviceType != ""){
-            qDebug() << "deviceType[" << i << "]: " << deviceType;
+            qInfo() << "deviceType[" << i << "]: " << deviceType;
             emit wsThread->sendMessageToClient("AddDeviceType:" + deviceType);
         }
     }
@@ -4660,7 +4861,7 @@ void MainWindow::getConnectedDevices(){
     }
 
     for(int i = 0; i < ConnectedDevices.size(); i++){
-        qDebug() << "Device[" << i << "]: " << ConnectedDevices[i].DeviceName;
+        qInfo() << "Device[" << i << "]: " << ConnectedDevices[i].DeviceName;
         emit wsThread->sendMessageToClient("ConnectSuccess:" + ConnectedDevices[i].DeviceType + ":" + ConnectedDevices[i].DeviceName);
 
         if(ConnectedDevices[i].DeviceType == "MainCamera") {
@@ -4671,13 +4872,13 @@ void MainWindow::getConnectedDevices(){
             QString CFWname;
             indi_Client->getCFWSlotName(dpMainCamera, CFWname);
             if(CFWname != "") {
-                qDebug() << "get CFW Slot Name: " << CFWname;
+                qInfo() << "get CFW Slot Name: " << CFWname;
                 emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname +" (on camera)");
                 isFilterOnCamera = true;
 
                 int min, max, pos;
                 indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-                qDebug() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+                qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
                 emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
             }
         }
@@ -4723,10 +4924,7 @@ int MainWindow::MoveFileToUSB(){
 
 void MainWindow::TelescopeControl_SolveSYNC()
 {
-    // get parameters for calculating FOV
     int FocalLength = glFocalLength;
-    double CameraSize_width = glCameraSize_width;
-    double CameraSize_height = glCameraSize_height;
 
     double Ra_Hour;
     double Dec_Degree;
@@ -4737,47 +4935,103 @@ void MainWindow::TelescopeControl_SolveSYNC()
     }
     else
     {
-        qDebug("No Mount Connect.");
+        qWarning("No Mount Connect.");
         return;
     }
     double Ra_Degree = Tools::HourToDegree(Ra_Hour);
 
-    qDebug() << "CurrentRa(Degree):" << Ra_Degree << "," << "CurrentDec(Degree):" << Dec_Degree;
+    qInfo() << "CurrentRa(Degree):" << Ra_Degree << "," << "CurrentDec(Degree):" << Dec_Degree;
 
-    SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator.fits", FocalLength, CameraSize_width, CameraSize_height, false);
+    // SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator.fits", FocalLength, glCameraSize_width, glCameraSize_height, false);
+    SloveResults result;
 
-    qDebug() << "SloveResults: " << result.RA_Degree << "," << result.DEC_Degree;
+    solveTimer.stop();
+    solveTimer.disconnect();
 
-    if (result.DEC_Degree == -1 && result.RA_Degree == -1)
+    QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
+
+    platesolveworker->setParams(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false); // 设置参数
+    platesolveworker->start();
+
+    solveTimer.setSingleShot(true);
+
+    connect(&solveTimer, &QTimer::timeout, [this]()
     {
-        qDebug("Plate Solve Failur");
-        return;
-    }
-    else
-    {
-        if (dpMount != NULL)
+        if (Tools::isSolveImageFinish())
         {
-            INDI::PropertyNumber property = NULL;
-            // indi_Client->syncTelescopeJNow(dpMount,RadToHour(RA_Degree),RadToDegree(DEC_Degree),property);
-            qDebug() << "syncTelescopeJNow | start";
-            QString action = "SYNC";
+            SloveResults result = Tools::ReadSolveResult(SolveImageFileName, SolveImageWidth, SolveImageHeight);
+            qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
 
-            indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);
+            if (result.RA_Degree == -1 && result.DEC_Degree == -1)
+            {
+                qWarning("Solve image failed...");
+                emit wsThread->sendMessageToClient("SolveImagefailed");
+            }
+            else
+            {
+                if (dpMount != NULL)
+                {
+                    INDI::PropertyNumber property = NULL;
+                    qInfo() << "syncTelescopeJNow | start";
+                    QString action = "SYNC";
 
-            qDebug() << "DegreeToHour:" << Tools::DegreeToHour(result.RA_Degree) << "DEC_Degree:" << result.DEC_Degree;
+                    indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);
 
-            indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);
-            qDebug() << "syncTelescopeJNow | end";
-            double a, b;
-            indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
-            qDebug() << "Get_RA_Hour:" << a << "Get_DEC_Degree:" << b;
+                    qInfo() << "DegreeToHour:" << Tools::DegreeToHour(result.RA_Degree) << "DEC_Degree:" << result.DEC_Degree;
+
+                    indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);
+                    qInfo() << "syncTelescopeJNow | end";
+                    double a, b;
+                    indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
+                    qInfo() << "Get_RA_Hour:" << a << "Get_DEC_Degree:" << b;
+                }
+                else
+                {
+                    qWarning("No Mount Connect.");
+                    return;
+                }
+            }
         }
-        else
+        else 
         {
-            qDebug("No Mount Connect.");
-            return;
-        }
-    }
+            solveTimer.start(1000);  // 继续等待
+        } 
+    });
+
+    solveTimer.start(1000);
+
+    // qInfo() << "SloveResults: " << result.RA_Degree << "," << result.DEC_Degree;
+
+    // if (result.DEC_Degree == -1 && result.RA_Degree == -1)
+    // {
+    //     qWarning("Plate Solve Failur");
+    //     return;
+    // }
+    // else
+    // {
+    //     if (dpMount != NULL)
+    //     {
+    //         INDI::PropertyNumber property = NULL;
+    //         // indi_Client->syncTelescopeJNow(dpMount,RadToHour(RA_Degree),RadToDegree(DEC_Degree),property);
+    //         qInfo() << "syncTelescopeJNow | start";
+    //         QString action = "SYNC";
+
+    //         indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);
+
+    //         qInfo() << "DegreeToHour:" << Tools::DegreeToHour(result.RA_Degree) << "DEC_Degree:" << result.DEC_Degree;
+
+    //         indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);
+    //         qInfo() << "syncTelescopeJNow | end";
+    //         double a, b;
+    //         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
+    //         qInfo() << "Get_RA_Hour:" << a << "Get_DEC_Degree:" << b;
+    //     }
+    //     else
+    //     {
+    //         qWarning("No Mount Connect.");
+    //         return;
+    //     }
+    // }
 }
 
 LocationResult MainWindow::TelescopeControl_GetLocation()
@@ -4820,7 +5074,7 @@ SphericalCoordinates MainWindow::TelescopeControl_GetRaDec()
 
 void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
 {
-    qDebug() << "RaDec(Hour):" << Ra_Hour << "," << Dec_Degree;
+    qInfo() << "RaDec(Hour):" << Ra_Hour << "," << Dec_Degree;
 
     // 停止和清理先前的计时器
     telescopeTimer.stop();
@@ -4839,7 +5093,7 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
         if (WaitForTelescopeToComplete()) 
         {
             telescopeTimer.stop();  // 转动完成时停止定时器
-            qDebug() << "Mount Goto Complete!";
+            qInfo() << "Mount Goto Complete!";
         } 
         else 
         {
@@ -4858,18 +5112,18 @@ void MainWindow::DeleteImage(QStringList DelImgPath)
             commandStream << "echo '" << password << "' | sudo -S rm -rf \"./" << DelImgPath[i].toStdString() << "\"";
             std::string command = commandStream.str();
 
-            std::cout << "Deleted command: " << commandStream.str() << std::endl;
+            qInfo() << "Deleted command:" << QString::fromStdString(command);
         
             // 执行系统命令删除文件
             int result = system(command.c_str());
         
             if (result == 0) {
-                std::cout << "Deleted file: " << DelImgPath[i].toStdString() << std::endl;
+                qInfo() << "Deleted file:" << DelImgPath[i];
             } else {
-                std::cerr << "Failed to delete file: " << DelImgPath[i].toStdString() << std::endl;
+                qWarning() << "Failed to delete file:" << DelImgPath[i];
             }
         } else {
-            std::cerr << "Index out of range: " << i << std::endl;
+            qWarning() << "Index out of range: " << i;
         }
     }
 }
@@ -4903,7 +5157,7 @@ void MainWindow::GetImageFiles(std::string ImageFolder) {
         std::string fileName = entry.path().filename().string(); // 获取文件名（包含扩展名）
         ImageFilesNameString += fileName + ";";                // 拼接为字符串
     }
-    qDebug() << "Image Files:" << QString::fromStdString(ImageFilesNameString);
+    qInfo() << "Image Files:" << QString::fromStdString(ImageFilesNameString);
 
     emit wsThread->sendMessageToClient("ImageFilesName|" + QString::fromStdString(ImageFilesNameString));
 }
@@ -4999,7 +5253,7 @@ long long MainWindow::getUSBSpace(const QString &usb_mount_point)
         // std::cout << "U 盘剩余空间大小: " << free_space << " bytes" << std::endl;
         return free_space;
     } else {
-        std::cerr << "获取 U 盘空间信息失败。" << std::endl;
+        qWarning() << "Failed to obtain the space information of the USB flash drive.";
         emit wsThread->sendMessageToClient("getUSBFail:Failed to obtain the space information of the USB flash drive." );
         return -1;
     }
@@ -5021,15 +5275,15 @@ long long MainWindow::getTotalSize(const QStringList &filePaths)
 bool MainWindow::isMountReadOnly(const QString& mountPoint) {
     struct statvfs fsinfo;
     auto mountPointStr = mountPoint.toUtf8().constData();
-    qDebug() << "Checking filesystem information for mount point:" << mountPointStr;
+    qInfo() << "Checking filesystem information for mount point:" << mountPointStr;
 
     if (statvfs(mountPointStr, &fsinfo) != 0) {
-        qCritical() << "Failed to get filesystem information for" << mountPoint << ":" << strerror(errno);
+        qWarning() << "Failed to get filesystem information for" << mountPoint << ":" << strerror(errno);
         emit wsThread->sendMessageToClient(QString("getUSBFail:Failed to get filesystem information for %1, error: %2").arg(mountPoint).arg(strerror(errno)));
         return false;
     }
 
-    qDebug() << "Filesystem flags for" << mountPoint << ":" << fsinfo.f_flag;
+    qInfo() << "Filesystem flags for" << mountPoint << ":" << fsinfo.f_flag;
     return (fsinfo.f_flag & ST_RDONLY) != 0;
 }
 
@@ -5039,7 +5293,7 @@ bool MainWindow::remountReadWrite(const QString& mountPoint, const QString& pass
     QProcess process;
     process.start("sudo", {"-S", "mount", "-o", "remount,rw", mountPoint});
     if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
-        std::cerr << "Failed to execute command: sudo mount" << std::endl;
+        qWarning() << "Failed to execute command: sudo mount";
         emit wsThread->sendMessageToClient("getUSBFail:Failed to execute command: sudo mount -o remount,rw usb." );
         return false;
     }
@@ -5056,7 +5310,7 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
     QDir baseDir(basePath);
     QString usb_mount_point = "";
     if (!baseDir.exists()) {
-        qDebug() << "Base directory does not exist.";
+        qWarning() << "Base directory does not exist.";
         return ;
     }
 
@@ -5071,14 +5325,14 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
     // 检查剩余文件夹数量是否为1
     if (folderList.size() == 1) {
         usb_mount_point = basePath + "/" + folderList.at(0);
-        qDebug() << "USB mount point:" << usb_mount_point;
+        qInfo() << "USB mount point:" << usb_mount_point;
     } else if (folderList.size() == 0)  {
         emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Null");
-        qDebug() << "The directory does not contain exactly one folder excluding CDROM.";
+        qWarning() << "The directory does not contain exactly one folder excluding CDROM.";
         return;
     } else {
         emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Multiple");
-        qDebug() << "The directory does not contain exactly one folder excluding CDROM.";
+        qWarning() << "The directory does not contain exactly one folder excluding CDROM.";
         return;
     }
 
@@ -5089,23 +5343,24 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
         if (storageInfo.isReadOnly()) {
             // 处理1: 该路径为只读设备
            if (!remountReadWrite(usb_mount_point, password)) {
-            std::cerr << "Failed to remount filesystem as read-write" << std::endl;
+            qWarning() << "Failed to remount filesystem as read-write.";
             return;
             }
-            std::cout << "Filesystem remounted as read-write successfully" << std::endl;
+            qInfo() << "Filesystem remounted as read-write successfully.";
         }
-        qDebug() << "此路径为可写设备";
+        qInfo() << "This path is for writable devices.";
     }else{
-        qDebug() << "指定路径不是有效的文件系统或未准备好";
+        qWarning() << "The specified path is not a valid file system or is not ready.";
     }
     long long remaining_space = getUSBSpace(usb_mount_point);
     if (remaining_space == -1){
-        std::cerr << "Check whether a USB flash drive or portable hard drive is inserted!" << std::endl;
+        qWarning() << "Check whether a USB flash drive or portable hard drive is inserted!";
+        emit wsThread->sendMessageToClient("getUSBFail:Check whether a USB flash drive or portable hard drive is inserted!" );
         return ;
     }
     long long totalSize = getTotalSize(RemoveImgPath);
     if (totalSize >= remaining_space) {
-        std::cout << "存储空间不足，无法复制文件到 U 盘!" << std::endl;
+        qWarning() << "Insufficient storage space, unable to copy files to USB drive!";
         emit wsThread->sendMessageToClient("getUSBFail:Not enough storage space to copy files to USB flash drive!" );
         return;
     }
@@ -5120,14 +5375,14 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
         int pos1 = fileName.lastIndexOf("/", pos - 1);
         if (pos ==-1 || pos1 == -1)
         {
-            qDebug() << "path is error!";
+            qWarning() << "path is error!";
             return;
         }
         QString destinationPath = folderPath + fileName.mid(pos1, pos - pos1 + 1);
         QProcess process;
         process.start("sudo", {"-S", "mkdir", "-p", destinationPath});
         if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
-            std::cerr << "Failed to execute command: sudo mkdir" << std::endl;
+            qWarning() << "Failed to execute command: sudo mkdir.";
             emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
             continue;
         }
@@ -5136,7 +5391,7 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
 
         process.start("sudo", {"-S", "cp", "-r", imgPath, destinationPath });
         if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
-            std::cerr << "Failed to execute command: sudo cp" << std::endl;
+            qWarning() << "Failed to execute command: sudo cp.";
             emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
             continue;
         }
@@ -5147,11 +5402,11 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
         QByteArray stderrOutput = process.readAllStandardError();
 
         if (process.exitCode() == 0) {
-            std::cout << "Copied file: " << imgPath.toStdString() << " to " << destinationPath.toStdString() << std::endl;
+            qInfo() << "Copied file: " << imgPath << " to " << destinationPath;
         } else {
-            std::cerr << "Failed to copy file: " << imgPath.toStdString() << " to " << destinationPath.toStdString() << std::endl;
+            qWarning() << "Failed to copy file: " << imgPath << " to " << destinationPath;
             // Print the error reason
-            std::cerr << "Error: " << stderrOutput.constData() << std::endl;
+            qWarning() << "Error: " << stderrOutput.constData();
             emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
             continue;
         }
@@ -5168,7 +5423,7 @@ void MainWindow::USBCheck(){
     QDir baseDir(basePath);
     QString usb_mount_point = "";
     if (!baseDir.exists()) {
-        qDebug() << "Base directory does not exist.";
+        qWarning() << "Base directory does not exist.";
         return ;
     }
 
@@ -5182,7 +5437,7 @@ void MainWindow::USBCheck(){
 
     if (folderList.size() == 1) {
         usb_mount_point = basePath + "/" + folderList.at(0);
-        qDebug() << "USB mount point:" << usb_mount_point;
+        qInfo() << "USB mount point:" << usb_mount_point;
         QString usbName = folderList.join(",");
         message = "USBCheck";
         long long remaining_space = getUSBSpace(usb_mount_point);
@@ -5191,7 +5446,7 @@ void MainWindow::USBCheck(){
             return ;
         }
         message = message + ":" + folderList.at(0) + "," + QString::number(remaining_space);
-        qDebug()<<message;
+        qInfo()<<message;
         emit wsThread->sendMessageToClient(message);
     } else if (folderList.size() == 0) {
         emit wsThread->sendMessageToClient("USBCheck:Null, Null");
@@ -5205,7 +5460,7 @@ void MainWindow::USBCheck(){
 }
 
 void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight) {
-    qDebug("Single Solve Image");
+    qInfo("Single Solve Image");
 
     // 停止和清理先前的计时器
     solveTimer.stop();
@@ -5224,13 +5479,13 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
     {
         if (Tools::isSolveImageFinish())
         {
-            SloveResults result = Tools::ReadSolveResult(Filename, 1024, SolveImageScaledHeight);
-            qDebug() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+            SloveResults result = Tools::ReadSolveResult(Filename, SolveImageWidth, SolveImageHeight);
+            qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
 
             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
             {
-                qDebug("Solve image faild...");
-                emit wsThread->sendMessageToClient("SolveImageFaild");
+                qWarning("Solve image failed...");
+                emit wsThread->sendMessageToClient("SolveImagefailed");
             }
             else
             {
@@ -5252,10 +5507,10 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
 }
 
 void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight) {
-    qDebug("Loop Solve Image");
+    qInfo("Loop Solve Image");
 
     if(!isLoopSolveImage) {
-        qDebug("Loop Solve Image end.");
+        qInfo("Loop Solve Image end.");
         return;
     }
  
@@ -5275,13 +5530,13 @@ void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double Camera
         // 检查赤道仪状态
         if (Tools::isSolveImageFinish())
         {
-            SloveResults result = Tools::ReadSolveResult(Filename, 1024, SolveImageScaledHeight);
-            qDebug() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+            SloveResults result = Tools::ReadSolveResult(Filename, SolveImageWidth, SolveImageHeight);
+            qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
 
             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
             {
-                qDebug("Solve image faild...");
-                emit wsThread->sendMessageToClient("SolveImageFaild");
+                qWarning("Solve image failed...");
+                emit wsThread->sendMessageToClient("SolveImagefailed");
             }
             else
             {
@@ -5308,7 +5563,7 @@ void MainWindow::RecoverySloveResul()
 {
     for (const auto &result : SloveResultList)
     {
-        qDebug() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+        qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
         emit wsThread->sendMessageToClient("SolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
         // emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
     }
@@ -5317,7 +5572,7 @@ void MainWindow::RecoverySloveResul()
 
 void MainWindow::CaptureAndSolve(int ExpTime, bool isLoop) {
     if(isLoop && !isLoopSolveImage) {
-        qDebug("Loop Solve Image end.");
+        qInfo("Loop Solve Image end.");
         return;
     }
 
@@ -5326,7 +5581,7 @@ void MainWindow::CaptureAndSolve(int ExpTime, bool isLoop) {
     captureTimer.disconnect();
 
     ShootStatus = "InProgress";
-    qDebug() << "ShootStatus: " << ShootStatus;
+    qInfo() << "ShootStatus: " << ShootStatus;
     INDI_Capture(ExpTime);
 
     captureTimer.setSingleShot(true);
@@ -5336,7 +5591,7 @@ void MainWindow::CaptureAndSolve(int ExpTime, bool isLoop) {
         {
             EndCaptureAndSolve = false;
             INDI_AbortCapture();
-            qDebug() << "End Capture And Solve!!!";
+            qInfo() << "End Capture And Solve!!!";
             return;
         }
 
@@ -5346,12 +5601,14 @@ void MainWindow::CaptureAndSolve(int ExpTime, bool isLoop) {
             if(!isLoop) {
                 ImageSolveTimer.start();
                 qDebug() << "\033[32m" << "Solve image start." << "\033[0m";
-                SolveImage("/dev/shm/SolveImage.tiff", glFocalLength, glCameraSize_width, glCameraSize_height);
+                qInfo() << "Solve image start.";
+                SolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
                 ImageSolveTime = ImageSolveTimer.elapsed();
                 qDebug() << "\033[32m" << "Solve image completed:" << ImageSolveTime << "milliseconds" << "\033[0m";
+                qInfo() << "Solve image completed:" << ImageSolveTime << "milliseconds";
                 ImageSolveTimer.invalidate();
             } else {
-                LoopSolveImage("/dev/shm/SolveImage.tiff", glFocalLength, glCameraSize_width, glCameraSize_height);
+                LoopSolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
             }
         } 
         else 
@@ -5361,4 +5618,76 @@ void MainWindow::CaptureAndSolve(int ExpTime, bool isLoop) {
     });
 
     captureTimer.start(3000);
+}
+
+
+void MainWindow::editHotspotName(QString newName) {
+    QString command = QString("echo 'quarcs' | sudo -S sed -i 's/^ssid=.*/ssid=%1/' /etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection").arg(newName);
+    
+    qInfo() << "command:" << command;
+    
+    QProcess process;
+    process.start("bash", QStringList() << "-c" << command);
+    process.waitForFinished();
+    
+    QString HostpotName = getHotspotName();
+    qInfo() << "New Hotspot Name:" << HostpotName;
+
+    if(HostpotName == newName) {
+        emit wsThread->sendMessageToClient("EditHotspotNameSuccess");
+        // restart NetworkManager
+        process.start("sudo systemctl restart NetworkManager");
+        process.waitForFinished();
+    } else {
+        emit wsThread->sendMessageToClient("EditHotspotNameFailed");
+        qWarning() << "Edit Hotspot name failed.";
+    }
+}
+
+QString MainWindow::getHotspotName() {
+    QProcess process;
+    process.start("sudo", QStringList() << "cat" << "/etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection");
+    process.waitForFinished();
+    
+    // Get the command output
+    QString output = process.readAllStandardOutput();
+    qInfo() << output;
+
+    // Look for the SSID configuration
+    QString ssidPattern = "ssid=";
+    int index = output.indexOf(ssidPattern);
+    if (index != -1) {
+        int start = index + ssidPattern.length();
+        int end = output.indexOf("\n", start);
+        if (end == -1) end = output.length();
+        return output.mid(start, end - start);
+    }
+    
+    // If SSID is not found, return a default value
+    return "N/A";
+}
+
+void MainWindow::SendDebugToVueClient(const QString &msg)
+{
+    emit wsThread->sendMessageToClient("SendDebugMessage|" + msg);
+}
+
+void MainWindow::customMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg)
+{
+    Q_UNUSED(context);
+
+    if (!instance) {
+        return;
+    }
+
+    // 默认行为：打印到标准输出
+    if (type == QtDebugMsg) {
+        fprintf(stderr, "Debug: %s\n", msg.toLocal8Bit().constData());
+    } else if (type == QtInfoMsg) {
+        fprintf(stdout, "Info: %s\n", msg.toLocal8Bit().constData());
+        instance->SendDebugToVueClient("info|" + msg);
+    } else if (type == QtWarningMsg) {
+        fprintf(stderr, "Warning: %s\n", msg.toLocal8Bit().constData());
+        instance->SendDebugToVueClient("error|" + msg);
+    }
 }

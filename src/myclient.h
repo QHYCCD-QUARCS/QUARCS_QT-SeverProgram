@@ -58,7 +58,8 @@ class MyClient : public INDI::BaseClient
         uint32_t resetCCDFrameInfo(INDI::BaseDevice *dp);  //will reset the ROI to default and reset the BIN to bin11
         uint32_t setCCDCooler(INDI::BaseDevice *dp,bool  enable);
         uint32_t getCCDCooler(INDI::BaseDevice *dp,bool & enable);
-        uint32_t getCCDBasicInfo(INDI::BaseDevice *dp,int &maxX,int &max,double &pixelsize,double &pixelsizX,double &pixelsizY,int &bitDepth);
+        uint32_t getCCDBasicInfo(INDI::BaseDevice *dp,int &maxX,int &maxY,double &pixelsize,double &pixelsizX,double &pixelsizY,int &bitDepth);
+        uint32_t setCCDBasicInfo(INDI::BaseDevice *dp,int maxX,int maxY,double pixelsize,double pixelsizX,double pixelsizY,int bitDepth);
         uint32_t getCCDBinning(INDI::BaseDevice *dp,int &BINX,int &BINY,int &BINXMAX,int &BINYMAX);
         uint32_t setCCDBinnign(INDI::BaseDevice *dp,int BINX,int BINY);
         uint32_t getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QString &CFATYPE);

@@ -41,7 +41,7 @@
 #include <thread> // 确保包含此头文件
 #include <chrono> // 包含用于时间的头文件
 
-#define QT_Client_Version "20241125"
+#define QT_Client_Version "20241231"
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -86,6 +86,7 @@ public:
     void SelectIndiDevice(int systemNumber,int grounpNumber);
 
     bool indi_Driver_Confirm(QString DriverName);
+    bool indi_Driver_Clear();
     void indi_Device_Confirm(QString DeviceName, QString DriverName);
 
     uint32_t clearCheckDeviceExist(QString drivername,bool &isExist);
@@ -151,6 +152,8 @@ public:
     uint32_t call_phd_ClearCalibration(void);
 
     uint32_t call_phd_StarClick(int x, int y);
+
+    uint32_t call_phd_FocalLength(int FocalLength);
 
     void ShowPHDdata();
 
@@ -317,7 +320,10 @@ public:
 
     bool isSingleSolveImage = false;
 
-    int SolveImageScaledHeight;
+    int SolveImageHeight = 0;
+    int SolveImageWidth = 0;
+
+    QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
 
     std::vector<SloveResults> SloveResultList;
 
@@ -405,6 +411,10 @@ public:
 
     void getConnectedDevices();
 
+    void getClientSettings();
+
+    void setClientSettings(QString ConfigName, QString ConfigValue);
+
     void clearConnectedDevices();
 
     bool isStagingImage = false;
@@ -463,6 +473,16 @@ public:
     
     QVector<QString> INDI_Driver_List;
 
+    void editHotspotName(QString newName);
+
+    QString getHotspotName();
+
+    // 非静态函数，用于处理 qDebug 信息
+    void SendDebugToVueClient(const QString &msg);
+
+    // 静态函数，用于安装自定义的消息处理器
+    static void customMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg);
+
 private slots:
     void onMessageReceived(const QString &message);
     // void sendMessage(QString message);
@@ -473,6 +493,8 @@ private:
 
     MyClient *indi_Client;
     QProcess *glIndiServer;
+
+    static MainWindow *instance;
 };
 
 #endif // MAINWINDOW_H
