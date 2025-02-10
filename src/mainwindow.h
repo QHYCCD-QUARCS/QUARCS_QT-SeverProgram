@@ -41,7 +41,7 @@
 #include <thread> // 确保包含此头文件
 #include <chrono> // 包含用于时间的头文件
 
-#define QT_Client_Version "20241231"
+#define QT_Client_Version "20250115"
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -155,6 +155,18 @@ public:
 
     uint32_t call_phd_FocalLength(int FocalLength);
 
+    uint32_t call_phd_MultiStarGuider(bool isMultiStar);
+
+    uint32_t call_phd_CameraPixelSize(double PixelSize);
+
+    uint32_t call_phd_CameraGain(int Gain);
+
+    uint32_t call_phd_CalibrationDuration(int StepSize);
+
+    uint32_t call_phd_RaAggression(int Aggression);
+
+    uint32_t call_phd_DecAggression(int Aggression);
+
     void ShowPHDdata();
 
     void ControlGuide(int Direction, int Duration);
@@ -191,6 +203,7 @@ public:
     int key_phd;
     int shmid_phd;
     bool isGuideCapture = true;
+    // #define BUFSZ_PHD 16590848 33554432
     #define BUFSZ_PHD 16590848
     char *sharedmemory_phd;
 
@@ -221,7 +234,7 @@ public:
     int CaptureViewHeight;
     int BoxSideLength = 500;
     
-    double FWHM;
+    double FWHM = 0;
 
     bool InGuiding = false;
 

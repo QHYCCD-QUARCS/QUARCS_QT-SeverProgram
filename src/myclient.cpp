@@ -72,30 +72,27 @@ void MyClient::updateProperty(INDI::Property property)
 {
     if (property.getType() == INDI_BLOB)
     {
-        CaptureTestTime = CaptureTestTimer.elapsed();
-        qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
-        qInfo() << "Exposure completed:" << CaptureTestTime << "milliseconds";
-        CaptureTestTimer.invalidate();
+        // CaptureTestTime = CaptureTestTimer.elapsed();
+        // qDebug() << "\033[32m" << "Exposure completed:" << CaptureTestTime << "milliseconds" << "\033[0m";
+        // qInfo() << "Exposure completed:" << CaptureTestTime << "milliseconds";
+        // CaptureTestTimer.invalidate();
 
-        qInfo("Recveing image from Server size len name label format %d %d %s %s %s", property.getBLOB()->bp->size,property.getBLOB()->bp->bloblen,property.getBLOB()->bp->name,property.getBLOB()->bp->label,property.getBLOB()->bp->format);
+        // qInfo("Recveing image from Server size len name label format %d %d %s %s %s", property.getBLOB()->bp->size,property.getBLOB()->bp->bloblen,property.getBLOB()->bp->name,property.getBLOB()->bp->label,property.getBLOB()->bp->format);
 
-        std::ofstream myfile;
-        std::string filename="/dev/shm/ccd_simulator.fits";
-        myfile.open(filename, std::ios::out | std::ios::binary);
-        myfile.write(static_cast<char *>(property.getBLOB()->bp->blob), property.getBLOB()->bp->bloblen);
-        myfile.close();
+        // std::ofstream myfile;
+        // std::string filename="/dev/shm/ccd_simulator.fits";
+        // myfile.open(filename, std::ios::out | std::ios::binary);
+        // myfile.write(static_cast<char *>(property.getBLOB()->bp->blob), property.getBLOB()->bp->bloblen);
+        // myfile.close();
 
-        QString devname_;
-        Tools::readFitsHeadForDevName(filename,devname_);
-        std::string devname = devname_.toStdString();
+        // QString devname_;
+        // Tools::readFitsHeadForDevName(filename,devname_);
+        // std::string devname = devname_.toStdString();
 
-        receiveImage(filename, devname);
+        // receiveImage(filename, devname);
     } 
     else if (property.getType() == INDI_TEXT)
     {
-        // qDebug() << "\033[32m" << "INDI new Text(label):" << property.getText()->label << "\033[0m";
-        // qDebug() << "\033[32m" << "INDI new Text(name):" << property.getText()->name << "\033[0m";
-
         auto tvp = property.getText();
         if (tvp->isNameMatch("CCD_FILE_PATH"))
         {

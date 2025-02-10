@@ -4803,21 +4803,14 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   SloveResults result;
   filename = filename.chopped(5);
 
-  QString command_qstr;
-  command_qstr = "wcsinfo " + filename + ".wcs";
-  const char* command;
-  command = command_qstr.toLocal8Bit();
-  qDebug() << command;  // TODO:娉ㄩ噴鎺?  
   QProcess* cmd_test = new QProcess();
-
-  cmd_test->start(command);
-  cmd_test->waitForStarted();
+  cmd_test->start("wcsinfo " + filename + ".wcs");
   cmd_test->waitForFinished();
 
   QString str;
-  str = cmd_test->readAllStandardOutput().data();
+  str = cmd_test->readAllStandardOutput();
 
-  qDebug("%s", qPrintable(str));
+  qDebug("wcsinfo: %s", qPrintable(str));
 
   int pos1 = str.indexOf("ra_center");
   int pos2 = str.indexOf("dec_center");

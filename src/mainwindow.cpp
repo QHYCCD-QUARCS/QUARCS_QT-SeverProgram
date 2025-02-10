@@ -109,7 +109,7 @@ void MainWindow::getHostAddress()
 void MainWindow::onMessageReceived(const QString &message)
 {
     // 处理接收到的消息
-    qDebug() << "Received message in MainWindow:" << message;
+    qInfo() << "Received message in MainWindow:" << message;
     // 分割消息
     QStringList parts = message.split(':');
 
@@ -177,6 +177,17 @@ void MainWindow::onMessageReceived(const QString &message)
         else if(LR == "Target")
         {
             FocusGotoAndCalFWHM(Steps);
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "SyncFocuserStep")
+    {
+        int Steps = parts[1].trimmed().toInt();
+        if(dpFocuser != NULL) {
+            indi_Client->syncFocuserPosition(dpFocuser, Steps);
+            sleep(1);
+            CurrentPosition = FocuserControl_getPosition();
+            qInfo() << "Focuser Current Position: " << CurrentPosition;
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         }
     }
     else if (parts.size() == 5 && parts[0].trimmed() == "RedBox")
@@ -537,15 +548,17 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (message == "GuiderLoopExpSwitch")
     {
-        if (isGuiderLoopExp){
-            isGuiderLoopExp = false;
-            isGuiding = false;
-            call_phd_StopLooping();
-            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
-        } else {
-            isGuiderLoopExp = true;
-            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
-            call_phd_StartLooping();
+        if(dpGuider != NULL) {
+            if (isGuiderLoopExp){
+                isGuiderLoopExp = false;
+                isGuiding = false;
+                call_phd_StopLooping();
+                emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+            } else {
+                isGuiderLoopExp = true;
+                emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+                call_phd_StartLooping();
+            }
         }
     }
 
@@ -687,19 +700,6 @@ void MainWindow::onMessageReceived(const QString &message)
         saveFitsAsPNG(QString::fromStdString("/dev/shm/ccd_simulator.fits"), false);
     }
 
-    else if (parts.size() == 3 && parts[0].trimmed() == "saveCurrentLocation")
-    {
-        glCurrentLocationLat = parts[1].trimmed().toDouble();
-        glCurrentLocationLng = parts[2].trimmed().toDouble();
-    }
-
-    else if (message == "getCurrentLocation") {
-        if(glCurrentLocationLat != 0 && glCurrentLocationLng != 0) {
-            qInfo() << "CurrentLocation:" << glCurrentLocationLat << "," << glCurrentLocationLng;
-            emit wsThread->sendMessageToClient("SetCurrentLocation:" + QString::number(glCurrentLocationLat) + ":" + QString::number(glCurrentLocationLng));
-        }
-    }
-
     else if (message == "getGPIOsStatus") {
         getGPIOsStatus();
     }
@@ -830,6 +830,59 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_FocalLength(FocalLength);
     }
 
+    else if (message == "RestartRaspberryPi") {
+        system("reboot");
+    }
+
+    else if (message == "ShutdownRaspberryPi") {
+        system("shutdown -h now");
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "MultiStarGuider") {
+        bool isMultiStar = (parts[1].trimmed() == "true");
+        qInfo() << "Set Multi Star Guider to" << isMultiStar;
+
+        call_phd_MultiStarGuider(isMultiStar);
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPixelSize") {
+        double PixelSize = parts[1].trimmed().toDouble();
+        qInfo() << "Set Guider Pixel Size to" << PixelSize;
+
+        call_phd_CameraPixelSize(PixelSize);
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderGain") {
+        int Gain = parts[1].trimmed().toInt();
+        qInfo() << "Set Guider Gain to" << Gain;
+
+        call_phd_CameraGain(Gain);
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "CalibrationDuration") {
+        int StepSize = parts[1].trimmed().toInt();
+        qInfo() << "Set Calibration Duration to" << StepSize;
+
+        call_phd_CalibrationDuration(StepSize);
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "RaAggression") {
+        int Aggression = parts[1].trimmed().toInt();
+        qInfo() << "Set Ra Aggression to" << Aggression;
+
+        call_phd_RaAggression(Aggression);
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "DecAggression") {
+        int Aggression = parts[1].trimmed().toInt();
+        qInfo() << "Set Dec Aggression to" << Aggression;
+
+        call_phd_DecAggression(Aggression);
+    }
+
+
+    
+    
 }
 
 void MainWindow::initINDIServer()
@@ -851,10 +904,6 @@ void MainWindow::initINDIClient()
     indi_Client->setImageReceivedCallback(
         [this](const std::string &filename, const std::string &devname)
         {
-            //   responseIndiBlobImage(QString::fromStdString(filename), QString::fromStdString(devname));
-            // ImageSolveTime = ImageSolveTimer.elapsed();
-            // qDebug() << "\033[32m" << "Exposure completed:" << ImageSolveTime << "milliseconds" << "\033[0m";
-            // ImageSolveTimer.invalidate();
             // 曝光完成
             if(dpMainCamera!=NULL){
                 if(dpMainCamera->getDeviceName()==devname)
@@ -879,15 +928,23 @@ void MainWindow::initINDIClient()
 
     indi_Client->setMessageReceivedCallback(
         [this](const std::string &message) {
-            qDebug("[INDI SERVER] %s", message.c_str());
-            QStringList parts = QString::fromStdString(message.c_str()).split('[');
-            if(parts.size() == 2) {
-                qInfo() << "[INDI SERVER]" << "[" + parts[1];
-            } else {
-                qInfo() << "[INDI SERVER]" << QString::fromStdString(message.c_str());
+            // qDebug("[INDI SERVER] %s", message.c_str());
+            QString messageStr = QString::fromStdString(message.c_str());
+
+            if (messageStr.contains("Telescope focal length is missing.") || 
+                messageStr.contains("Telescope aperture is missing.")
+               ) 
+            {
+                // 跳过打印
+                return;
             }
 
-            // emit wsThread->sendMessageToClient("INDIServerDebug|" + QString::fromStdString(message.c_str()));
+            QStringList parts = messageStr.split('[');
+            if(parts.size() == 2) {
+                qInfo() << "[INDI SERVER][" + parts[1];
+            } else {
+                qInfo() << "[INDI SERVER]" + messageStr;
+            }
 
             std::regex regexPattern(R"(OnStep slew/syncError:\s*(.*))");
             std::smatch matchResult;
@@ -1825,8 +1882,10 @@ void MainWindow::ConnectAllDeviceOnce() {
             }  
             qInfo() << "Driver:" << indi_Client->GetDeviceFromList(i)->getDriverExec() << "Device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
         } else {
-            qDebug() << "\033[1;31m Connect failed device: \033[0m" << indi_Client->GetDeviceFromList(i)->getDeviceName();
-            qWarning() << "Connect failed device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            QString DeviceName = indi_Client->GetDeviceFromList(i)->getDeviceName();
+            qDebug() << "\033[1;31m Connect failed device: \033[0m" << DeviceName;
+            qWarning() << "Connect failed device:" << DeviceName;
+            emit wsThread->sendMessageToClient("ConnectFailed:Connect device failed:" + DeviceName);
         }
     }
 
@@ -2026,8 +2085,10 @@ void MainWindow::AutoConnectAllDevice() {
                 }
             }
         } else {
-            qDebug() << "\033[1;31m Connect failed device: \033[0m" << indi_Client->GetDeviceFromList(i)->getDeviceName();
-            qWarning() << "Connect failed device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            QString DeviceName = indi_Client->GetDeviceFromList(i)->getDeviceName();
+            qDebug() << "\033[1;31m Connect failed device: \033[0m" << DeviceName;
+            qWarning() << "Connect failed device:" << DeviceName;
+            emit wsThread->sendMessageToClient("ConnectFailed:Connect device failed:" + DeviceName);
         }
     }
 
@@ -2483,7 +2544,10 @@ void MainWindow::AfterDeviceConnect()
         emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()));
         ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
         indi_Client->GetAllPropertyName(dpFocuser);
-        indi_Client->syncFocuserPosition(dpFocuser, 0);
+        // indi_Client->syncFocuserPosition(dpFocuser, 0);
+        CurrentPosition = FocuserControl_getPosition();
+        qInfo() << "AfterAllConnected | Focuser Current Position: " << CurrentPosition;
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
     }
 
     if (dpCFW != NULL)
@@ -2670,7 +2734,10 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         systemdevicelist.system_devices[22].DeviceIndiName = QString::fromUtf8(dpFocuser->getDeviceName());
 
         indi_Client->GetAllPropertyName(dpFocuser);
-        indi_Client->syncFocuserPosition(dpFocuser, 0);
+        // indi_Client->syncFocuserPosition(dpFocuser, 0);
+        CurrentPosition = FocuserControl_getPosition();
+        qInfo() << "AfterAllConnected | Focuser Current Position: " << CurrentPosition;
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
     }
 
     if (dpCFW == dp)
@@ -2893,7 +2960,7 @@ void MainWindow::strechShowImage(cv::Mat img16,QString CFA,bool AutoStretch,bool
 
     Tools::Bit16To8_Stretch(img16,image_raw8,B,W);
 
-    saveGuiderImageAsJPG(image_raw8);
+    // saveGuiderImageAsJPG(image_raw8);
 
 
     image_raw8.release();
@@ -2932,7 +2999,7 @@ void MainWindow::strechShowImage(cv::Mat img16,QString CFA,bool AutoStretch,bool
      Tools::Bit16To8_Stretch(AWBImg16color,AWBImg8color,B,W);
 
     //  Tools::ShowCvImageOnQLabel(AWBImg8color,lable);
-    saveGuiderImageAsJPG(AWBImg8color);
+    // saveGuiderImageAsJPG(AWBImg8color);
 
     AWBImg16.release();
     AWBImg16color.release();
@@ -2959,7 +3026,7 @@ void MainWindow::InitPHD2()
 
     if (key_phd == -1)
     {
-        qInfo("ftok_phd");
+        qDebug("ftok_phd");
     }
 
     // build the shared memory
@@ -2967,7 +3034,7 @@ void MainWindow::InitPHD2()
     shmid_phd = shmget(key_phd, BUFSZ_PHD, IPC_CREAT | 0666);
     if (shmid_phd < 0)
     {
-        qInfo("main.cpp | main | shared memory phd shmget ERROR");
+        qDebug("main.cpp | main | shared memory phd shmget ERROR");
         exit(-1);
     }
 
@@ -2975,12 +3042,12 @@ void MainWindow::InitPHD2()
     sharedmemory_phd = (char *)shmat(shmid_phd, NULL, 0);
     if (sharedmemory_phd == NULL)
     {
-        qInfo("main.cpp | main | shared memor phd map ERROR");
+        qDebug("main.cpp | main | shared memor phd map ERROR");
         exit(-1);
     }
 
     // 读共享内存区数据
-    qInfo("data_phd = [%s]\n", sharedmemory_phd);
+    qDebug("data_phd = [%s]\n", sharedmemory_phd);
 
     cmdPHD2->start("phd2");
 
@@ -3414,6 +3481,198 @@ uint32_t MainWindow::call_phd_FocalLength(int FocalLength) {
         return true;
 }
 
+uint32_t MainWindow::call_phd_MultiStarGuider(bool isMultiStar) {
+    qDebug() << "call_phd_MultiStarGuider:" << isMultiStar;
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x11;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &isMultiStar, sizeof(bool));
+    addr = addr + sizeof(bool);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
+uint32_t MainWindow::call_phd_CameraPixelSize(double PixelSize) {
+    qDebug() << "call_phd_CameraPixelSize:" << PixelSize;
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x12;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &PixelSize, sizeof(double));
+    addr = addr + sizeof(double);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
+uint32_t MainWindow::call_phd_CameraGain(int Gain) {
+    qDebug() << "call_phd_CameraGain:" << Gain;
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x13;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &Gain, sizeof(int));
+    addr = addr + sizeof(int);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
+uint32_t MainWindow::call_phd_CalibrationDuration(int StepSize) {
+    qDebug() << "call_phd_CalibrationDuration:" << StepSize;
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x14;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &StepSize, sizeof(int));
+    addr = addr + sizeof(int);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
+uint32_t MainWindow::call_phd_RaAggression(int Aggression) {
+    qDebug() << "call_phd_RaAggression:" << Aggression;
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x15;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &Aggression, sizeof(int));
+    addr = addr + sizeof(int);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
+uint32_t MainWindow::call_phd_DecAggression(int Aggression) {
+    qDebug() << "call_phd_DecAggression:" << Aggression;
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x16;
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    unsigned char addr = 0;
+    memcpy(sharedmemory_phd + baseAddress + addr, &Aggression, sizeof(int));
+    addr = addr + sizeof(int);
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+        return false; // timeout
+    else
+        return true;
+}
+
 void MainWindow::ShowPHDdata()
 {
     unsigned int currentPHDSizeX = 1;
@@ -3533,14 +3792,18 @@ void MainWindow::ShowPHDdata()
     glPHD_ShowLockCross = showLockedCross;
 
     glPHD_Stars.clear();
-    for (int i = 0; i < MultiStarNumber; i++)
+    // qDebug() << "MultiStarNumber:" << MultiStarNumber;
+    emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+    for (int i = 1; i < MultiStarNumber; i++)
     {
-        if (i > 30)
+        if (i > 12)
             break;
         QPoint p;
         p.setX(MultiStarX[i]);
         p.setY(MultiStarY[i]);
         glPHD_Stars.push_back(p);
+        // qDebug() << "MultiStar[" << i << "]:" << MultiStarX[i] << ", " << MultiStarY[i];
+        emit wsThread->sendMessageToClient("PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY)+ ":" + QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
     }
 
     // if (glPHD_StarX != 0 && glPHD_StarY != 0)
@@ -3567,85 +3830,45 @@ void MainWindow::ShowPHDdata()
         }
     // }
 
-    unsigned int byteCount;
-    byteCount = currentPHDSizeX * currentPHDSizeY * (bitDepth / 8);
-
-    mem_offset = 2048;
-
-    unsigned char m = sharedmemory_phd[2047];
-
     if (sharedmemory_phd[2047] == 0x02 && bitDepth > 0 && currentPHDSizeX > 0 && currentPHDSizeY > 0)
     {
         // 导星过程中的数据
-        // qDebug() << guideDataIndicator << "dRa:" << dRa << "dDec:" << dDec
-        //          << "rmsX:" << RMSErrorX << "rmsY:" << RMSErrorY
-        //          << "rmsTotal:" << RMSErrorTotal << "SNR:" << SNR;
-                unsigned char phdstatu;
+        unsigned char phdstatu;
         call_phd_checkStatus(phdstatu);
 
         if (dRa != 0 && dDec != 0)
         {
-            // if(FirstRecordTelescopePierSide) {
-            //     if(dpMount != NULL) {
-            //         FirstRecordTelescopePierSide = false;
-            //         indi_Client->getTelescopePierSide(dpMount, FirstTelescopePierSide);
-            //     }
-            // }
-            // emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
-
             QPointF tmp;
             tmp.setX(-dRa * PixelRatio);
             tmp.setY(dDec * PixelRatio);
             glPHD_rmsdate.append(tmp);
-            //   m_pToolbarWidget->guiderLabel->Series_err->append(-dRa * PixelRatio, -dDec * PixelRatio);
             emit wsThread->sendMessageToClient("AddScatterChartData:" + QString::number(-dRa * PixelRatio) + ":" + QString::number(-dDec * PixelRatio));
-
-            // 曲线的数值
-            // qDebug() << "Ra|Dec: " << -dRa * PixelRatio << "," << dDec * PixelRatio;
 
             // 图像中的小绿框
             if (InGuiding == true)
             {
-                // m_pToolbarWidget->LabelMainStarBox->setStyleSheet("QLabel{border:2px solid rgb(0,255,0);border-radius:3px;background-color:transparent;}");
-                // m_pToolbarWidget->LabelCrossX->setStyleSheet("QLabel{border:1px solid rgb(0,255,0);border-radius:3px;background-color:transparent;}");
-                // m_pToolbarWidget->LabelCrossY->setStyleSheet("QLabel{border:1px solid rgb(0,255,0);border-radius:3px;background-color:transparent;}");
                 emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
             }
             else
             {
-                // m_pToolbarWidget->LabelMainStarBox->setStyleSheet("QLabel{border:2px solid rgb(255,255,0);border-radius:3px;background-color:transparent;}");
-                // m_pToolbarWidget->LabelCrossX->setStyleSheet("QLabel{border:1px solid rgb(255,255,0);border-radius:3px;background-color:transparent;}");
-                // m_pToolbarWidget->LabelCrossY->setStyleSheet("QLabel{border:1px solid rgb(255,255,0);border-radius:3px;background-color:transparent;}");
-                qInfo() << "GuiderStatus:InCalibration";
                 emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
             }
 
             if (StarLostAlert == true)
             {
-                // m_pToolbarWidget->LabelMainStarBox->setStyleSheet("QLabel{border:2px solid rgb(255,0,0);border-radius:3px;background-color:transparent;}");
-                // m_pToolbarWidget->LabelCrossX->setStyleSheet("QLabel{border:1px solid rgb(255,0,0);border-radius:3px;background-color:transparent;}");
-                // m_pToolbarWidget->LabelCrossY->setStyleSheet("QLabel{border:1px solid rgb(255,0,0);border-radius:3px;background-color:transparent;}");
                 emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
             }
 
             emit wsThread->sendMessageToClient("AddRMSErrorData:" + QString::number(RMSErrorX, 'f', 3) + ":" + QString::number(RMSErrorX, 'f', 3));
         }
-        // m_pToolbarWidget->guiderLabel->RMSErrorX_value->setPlainText(QString::number(RMSErrorX, 'f', 3));
-        // m_pToolbarWidget->guiderLabel->RMSErrorY_value->setPlainText(QString::number(RMSErrorY, 'f', 3));
-
-        // m_pToolbarWidget->guiderLabel->GuiderDataRA->clear();
-        // m_pToolbarWidget->guiderLabel->GuiderDataDEC->clear();
 
         for (int i = 0; i < glPHD_rmsdate.size(); i++)
         {
-            //   m_pToolbarWidget->guiderLabel->GuiderDataRA ->append(i, glPHD_rmsdate[i].x());
-            //   m_pToolbarWidget->guiderLabel->GuiderDataDEC->append(i, glPHD_rmsdate[i].y());
             if (i == glPHD_rmsdate.size() - 1)
             {
                 emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
                 if (i > 50)
                 {
-                    // m_pToolbarWidget->guiderLabel->AxisX_Graph->setRange(i-100,i);
                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
                 } else {
                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(0) + ":" + QString::number(50));
@@ -3653,7 +3876,11 @@ void MainWindow::ShowPHDdata()
             }
         }
 
+        unsigned int byteCount;
+        byteCount = currentPHDSizeX * currentPHDSizeY * (bitDepth / 8);
+
         unsigned char *srcData = new unsigned char[byteCount];
+
         mem_offset = 2048;
 
         memcpy(srcData, sharedmemory_phd + mem_offset, byteCount);
@@ -3690,30 +3917,6 @@ void MainWindow::ShowPHDdata()
         Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
 
         saveGuiderImageAsJPG(image_raw8);
-        
-        // emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
-
-        // saveGuiderImageAsJPG(PHDImg);
-
-        // refreshGuideImage(PHDImg, "MONO");
-
-        int centerX = glPHD_StarX; // Replace with your X coordinate
-        int centerY = glPHD_StarY; // Replace with your Y coordinate
-
-        int cropSize = 20; // Size of the cropped region
-
-        // Calculate crop region
-        int startX = std::max(0, centerX - cropSize / 2);
-        int startY = std::max(0, centerY - cropSize / 2);
-        int endX = std::min(PHDImg.cols - 1, centerX + cropSize / 2);
-        int endY = std::min(PHDImg.rows - 1, centerY + cropSize / 2);
-
-        // Crop the image using OpenCV's ROI (Region of Interest) functionality
-        cv::Rect cropRegion(startX, startY, endX - startX + 1, endY - startY + 1);
-        cv::Mat croppedImage = PHDImg(cropRegion).clone();
-
-        // strechShowImage(croppedImage, m_pToolbarWidget->guiderLabel->ImageLable,m_pToolbarWidget->histogramLabel->hisLabel,"MONO",false,false,0,0,65535,1.0,1.7,100,false);
-        // m_pToolbarWidget->guiderLabel->ImageLable->setScaledContents(true);
 
         delete[] srcData;
         img8.release();
@@ -3870,6 +4073,7 @@ void MainWindow::FocuserControl_Goto(int Position)
         {
             focusTimer.stop();  // 转动完成时停止定时器
             qInfo() << "Focuser Goto Complete!";
+            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
             FocusingLooping();
         } 
         else 
@@ -3879,6 +4083,10 @@ void MainWindow::FocuserControl_Goto(int Position)
     });
 
     focusTimer.start(100);
+  }
+  else 
+  {
+    emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
   }
 }
 
@@ -4171,6 +4379,10 @@ void MainWindow::FocuserControl_Move(bool isInward, int steps)
 
     focusTimer.start(100);
 
+  }
+  else 
+  {
+    emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
   }
 }
 
@@ -4842,20 +5054,6 @@ void MainWindow::getConnectedDevices(){
         }
     }
 
-
-    // for (int i = 0; i < ConnectedCCDList.size(); i++){
-    //     emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedCCDList[i])->getDeviceName())); // already allocated
-    // }
-    // for (int i = 0; i < ConnectedTELESCOPEList.size(); i++){
-    //     emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i])->getDeviceName()));
-    // }
-    // for (int i = 0; i < ConnectedFOCUSERList.size(); i++){
-    //     emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i])->getDeviceName()));
-    // }
-    // for (int i = 0; i < ConnectedFILTERList.size(); i++){
-    //     emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFILTERList[i])->getDeviceName()));
-    // }
-
     for(int i = 0; i < indi_Client->GetDeviceCount(); i++){
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:Device:" + QString::number(i) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(i)->getDeviceName()));
     }
@@ -4870,16 +5068,18 @@ void MainWindow::getConnectedDevices(){
             emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
 
             QString CFWname;
-            indi_Client->getCFWSlotName(dpMainCamera, CFWname);
-            if(CFWname != "") {
-                qInfo() << "get CFW Slot Name: " << CFWname;
-                emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname +" (on camera)");
-                isFilterOnCamera = true;
+            if(dpMainCamera != NULL) {
+                indi_Client->getCFWSlotName(dpMainCamera, CFWname);
+                if(CFWname != "") {
+                    qInfo() << "get CFW Slot Name: " << CFWname;
+                    emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname +" (on camera)");
+                    isFilterOnCamera = true;
 
-                int min, max, pos;
-                indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-                qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
-                emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+                    int min, max, pos;
+                    indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
+                    qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+                    emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+                }
             }
         }
     }
@@ -5494,7 +5694,7 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
                 }
                 SloveResultList.push_back(result);
                 emit wsThread->sendMessageToClient("SolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
-                // emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
+                emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
             }
         }
         else 
