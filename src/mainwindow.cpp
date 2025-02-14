@@ -113,15 +113,18 @@ void MainWindow::onMessageReceived(const QString &message)
     // 分割消息
     QStringList parts = message.split(':');
 
+    // 选中的驱动名称
     if (parts.size() == 2 && parts[0].trimmed() == "ConfirmIndiDriver")
     {
         QString driverName = parts[1].trimmed();
         indi_Driver_Confirm(driverName);
     }
+    // 清除选中的驱动
     else if (message == "ClearIndiDriver")
     {
         indi_Driver_Clear();
     }
+    // 选中的设备名称
     else if (parts.size() == 3 && parts[0].trimmed() == "ConfirmIndiDevice")
     {
         QString deviceName = parts[1].trimmed();
@@ -129,6 +132,7 @@ void MainWindow::onMessageReceived(const QString &message)
         // connectDevice(x);
         indi_Device_Confirm(deviceName, driverName);
     }
+    // 绑定的设备
     else if (parts.size() == 3 && parts[0].trimmed() == "BindingDevice")
     {
         QString devicetype = parts[1].trimmed();
@@ -136,18 +140,21 @@ void MainWindow::onMessageReceived(const QString &message)
         // connectDevice(x);
         BindingDevice(devicetype, deviceindex);
     }
+    // 设备解绑
     else if (parts.size() == 2 && parts[0].trimmed() == "UnBindingDevice")
     {
         QString devicetype = parts[1].trimmed();
         // connectDevice(x);
         UnBindingDevice(devicetype);
     }
+    // 选取INDI设备
     else if (parts.size() == 3 && parts[0].trimmed() == "SelectIndiDriver")
     {
         QString Group = parts[1].trimmed();
         int ListNum = parts[2].trimmed().toInt();
         printDevGroups2(drivers_list, ListNum, Group);
     }
+    // 主相机曝光
     else if (parts.size() == 2 && parts[0].trimmed() == "takeExposure")
     {
         int ExpTime = parts[1].trimmed().toInt();
@@ -155,6 +162,7 @@ void MainWindow::onMessageReceived(const QString &message)
         INDI_Capture(ExpTime);
         glExpTime = ExpTime;
     }
+    // 电调速度修改
     else if (parts.size() == 2 && parts[0].trimmed() == "focusSpeed")
     {
         int Speed = parts[1].trimmed().toInt();
@@ -162,6 +170,7 @@ void MainWindow::onMessageReceived(const QString &message)
         int Speed_ = FocuserControl_setSpeed(Speed);
         emit wsThread->sendMessageToClient("FocusChangeSpeedSuccess:" + QString::number(Speed_));
     }
+    // 电调移动控制
     else if (parts.size() == 3 && parts[0].trimmed() == "focusMove")
     {
         QString LR = parts[1].trimmed();
@@ -179,6 +188,7 @@ void MainWindow::onMessageReceived(const QString &message)
             FocusGotoAndCalFWHM(Steps);
         }
     }
+    // 同步电调的步数
     else if (parts.size() == 2 && parts[0].trimmed() == "SyncFocuserStep")
     {
         int Steps = parts[1].trimmed().toInt();
@@ -190,6 +200,7 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         }
     }
+    // ROI选取框的位置
     else if (parts.size() == 5 && parts[0].trimmed() == "RedBox")
     {
         int x = parts[1].trimmed().toInt();
@@ -202,29 +213,35 @@ void MainWindow::onMessageReceived(const QString &message)
         CaptureViewHeight = height;
         qDebug() << "RedBox:" << glROI_x << glROI_y << CaptureViewWidth << CaptureViewHeight;
     }
+    // ROI选取框的大小修改
     else if (parts.size() == 2 && parts[0].trimmed() == "RedBoxSizeChange")
     {
         BoxSideLength = parts[1].trimmed().toInt();
         qDebug() << "BoxSideLength:" << BoxSideLength;
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
     }
+    // 自动调焦
     else if (message == "AutoFocus")
     {
         AutoFocus();
     }
+    // 终止自动调焦
     else if (message == "StopAutoFocus")
     {
         StopAutoFocus = true;
     }
+    // 终止主相机曝光
     else if (message == "abortExposure")
     {
         INDI_AbortCapture();
     }
+    // 连接所有设备
     else if (message == "connectAllDevice")
     {
         // DeviceConnect();
         ConnectAllDeviceOnce();
     }
+    // 一键连接上次成功连接的所有设备
     else if (message == "autoConnectAllDevice")
     {
         // DeviceConnect();
@@ -235,6 +252,7 @@ void MainWindow::onMessageReceived(const QString &message)
         // QString Dev = connectIndiServer();
         // websocket->messageSend("AddDevice:"+Dev);
     }
+    // 断开所有设备连接
     else if (message == "disconnectAllDevice")
     {
         disconnectIndiServer(indi_Client);
@@ -246,6 +264,7 @@ void MainWindow::onMessageReceived(const QString &message)
         Tools::InitSystemDeviceList();
         Tools::initSystemDeviceList(systemdevicelist);
     }
+    // 赤道仪的移动方向控制
     else if (message == "MountMoveWest")
     {
         if (dpMount != NULL)
@@ -253,6 +272,7 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setTelescopeMoveWE(dpMount, "WEST");
         }
     }
+    // 赤道仪的移动方向控制
     else if (message == "MountMoveEast")
     {
         if (dpMount != NULL)
@@ -260,6 +280,7 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setTelescopeMoveWE(dpMount, "EAST");
         }
     }
+    // 赤道仪的移动方向控制
     else if (message == "MountMoveNorth")
     {
         if (dpMount != NULL)
@@ -267,6 +288,7 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setTelescopeMoveNS(dpMount, "NORTH");
         }
     }
+    // 赤道仪的移动方向控制
     else if (message == "MountMoveSouth")
     {
         if (dpMount != NULL)
@@ -274,6 +296,7 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setTelescopeMoveNS(dpMount, "SOUTH");
         }
     }
+    // 终止赤道仪的移动
     else if (message == "MountMoveAbort")
     {
         if (dpMount != NULL)
@@ -281,6 +304,7 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setTelescopeAbortMotion(dpMount);
         }
     }
+    // 赤道仪Park
     else if (message == "MountPark")
     {
         if (dpMount != NULL)
@@ -296,6 +320,7 @@ void MainWindow::onMessageReceived(const QString &message)
             }
         }
     }
+    // 开启赤道仪的跟踪
     else if (message == "MountTrack")
     {
         if (dpMount != NULL)
@@ -311,6 +336,7 @@ void MainWindow::onMessageReceived(const QString &message)
             }
         }
     }
+    // 控制赤道仪回到Home位
     else if (message == "MountHome")
     {
         if (dpMount != NULL)
@@ -318,6 +344,7 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setTelescopeHomeInit(dpMount,"SLEWHOME");
         }
     }
+    // 同步赤道仪的位置
     else if (message == "MountSYNC")
     {
         if (dpMount != NULL)
@@ -325,7 +352,7 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setTelescopeHomeInit(dpMount,"SYNCHOME");
         }
     }
-
+    // 赤道仪的转动速度切换
     else if (message == "MountSpeedSwitch")
     {
         if (dpMount != NULL)
@@ -350,23 +377,27 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 主相机拍摄图像的GainR设置
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainR")
     {
         ImageGainR = parts[1].trimmed().toDouble();
         qInfo() << "GainR is set to " << ImageGainR;
     }
 
+    // 主相机拍摄图像的GainB设置
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainB")
     {
         ImageGainB = parts[1].trimmed().toDouble();
         qInfo() << "GainB is set to " << ImageGainB;
     }
 
+    // 计划任务表数据
     else if (parts[0].trimmed() == "ScheduleTabelData")
     {
         ScheduleTabelData(message);
     }
 
+    // 控制赤道仪Goto到指定位置
     else if (parts.size() == 4 && parts[0].trimmed() == "MountGoto")
     {
         QStringList RaDecList = message.split(',');
@@ -386,52 +417,62 @@ void MainWindow::onMessageReceived(const QString &message)
         MountGoto(Ra_Hour, Dec_Degree);
     }
 
+    // 终止计划任务表的执行
     else if (message == "StopSchedule")
     {
         StopSchedule = true;
     }
 
+    // 手动保存主相机拍摄的图像
     else if (message == "CaptureImageSave")
     {
         CaptureImageSave();
     }
 
+    // 获取客户端的配置选项信息
     else if (message == "getClientSettings")
     {
         getClientSettings();
     }
 
+    // 获取已经成功连接的设备
     else if (message == "getConnectedDevices")
     {
         getConnectedDevices();
     }
 
+    // 获取上一次拍摄的图像
     else if (message == "getStagingImage")
     {
         getStagingImage();
     }
 
+    // 恢复计划任务表之前的数据
     else if (parts[0].trimmed() == "StagingScheduleData")
     {
         isStagingScheduleData = true;
         StagingScheduleData = message;
     }
 
+    // 获取计划任务表之前的数据
     else if (message == "getStagingScheduleData")
     {
         getStagingScheduleData();
     }
 
+    // 恢复导星之前的数据
     else if (message == "getStagingGuiderData")
     {
         getStagingGuiderData();
     }
 
+    // 保存主相机的曝光时间选项列表
     else if (parts[0].trimmed() == "ExpTimeList")
     {
         Tools::saveExpTimeList(message);
     }
 
+    // 获取主相机的曝光时间选项列表
     else if (message == "getExpTimeList")
     {
         if (Tools::readExpTimeList() != QString()){
@@ -439,6 +480,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 获取主相机的拍摄状态
     else if (message == "getCaptureStatus")
     {
         qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
@@ -448,6 +490,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 设置滤镜轮旋转到目标位
     else if (parts[0].trimmed() == "SetCFWPosition")
     {
         int pos = parts[1].trimmed().toInt();
@@ -469,6 +512,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 保存滤镜轮档位选项列表
     else if (parts[0].trimmed() == "CFWList")
     {
         if(isFilterOnCamera) {
@@ -486,6 +530,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 获取滤镜轮档位选项列表
     else if (message == "getCFWList")
     {
         if(isFilterOnCamera) {
@@ -515,12 +560,14 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 清除导星的校准数据
     else if (message == "ClearCalibrationData")
     {
         ClearCalibrationData = true;
         qInfo() << "ClearCalibrationData: " << ClearCalibrationData;
     }
 
+    // 导星开关
     else if (message == "GuiderSwitch")
     {
         if (isGuiding){
@@ -546,6 +593,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 导星的循环拍摄开关
     else if (message == "GuiderLoopExpSwitch")
     {
         if(dpGuider != NULL) {
@@ -562,6 +610,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 导星重新校准
     else if (message == "PHD2Recalibrate")
     {
         call_phd_ClearCalibration();
@@ -576,11 +625,13 @@ void MainWindow::onMessageReceived(const QString &message)
         // call_phd_StarClick(641,363);
     }
 
+    // 导星相机的曝光时间切换
     else if (parts[0].trimmed() == "GuiderExpTimeSwitch")
     {
         call_phd_setExposureTime(parts[1].toInt());
     }
 
+    // 清除导星的数据
     else if (message == "clearGuiderData")
     {
         glPHD_rmsdate.clear();
@@ -595,6 +646,7 @@ void MainWindow::onMessageReceived(const QString &message)
     //     }
     // }
 
+    // 赤道仪解析同步
     else if (parts.size() == 2 && parts[0].trimmed() == "SolveSYNC")
     {
         glFocalLength = parts[1].trimmed().toInt();
@@ -608,12 +660,14 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 清理调焦数据
     else if (message == "ClearDataPoints")
     {
         // FWHM Data
         dataPoints.clear();
     }
 
+    // 获取图像保存的所有文件夹名称
     else if (message == "ShowAllImageFolder")
     {
         std::string allFile = GetAllFile();
@@ -621,12 +675,14 @@ void MainWindow::onMessageReceived(const QString &message)
         emit wsThread->sendMessageToClient("ShowAllImageFolder:" + QString::fromStdString(allFile));
         
     }
+    // 将图像文件移动到USB设备
     else if (parts.size() == 2 && parts[0].trimmed() == "MoveFileToUSB")
     {
         QStringList ImagePath= parseString(parts[1].trimmed().toStdString(),ImageSaveBasePath);
         RemoveImageToUsb(ImagePath);
         
     }
+    // 删除图像文件
     else if (parts[0].trimmed() == "DeleteFile")
     {
         QString ImagePathString = message; // 创建副本
@@ -635,15 +691,17 @@ void MainWindow::onMessageReceived(const QString &message)
         QStringList ImagePath= parseString(ImagePathString.toStdString(),ImageSaveBasePath);
         DeleteImage(ImagePath);
     }
+    // USB设备检测
     else if (message == "USBCheck"){
         USBCheck();
     }
+    // 获取图像文件
     else if (parts.size() == 2 && parts[0].trimmed() == "GetImageFiles")
     {
         std::string FolderPath= parts[1].trimmed().toStdString();
         GetImageFiles(FolderPath);
     }
-
+    // 读取图像文件并在Vue客户端进行展示
     else if (parts[0].trimmed() == "ReadImageFile") {
         QString ImagePath = message; // 创建副本
         ImagePath.replace("ReadImageFile:", "image/");
@@ -654,6 +712,7 @@ void MainWindow::onMessageReceived(const QString &message)
         saveFitsAsPNG(ImagePath, false);
     }
 
+    // 图像解析
     else if (parts.size() == 2 && parts[0].trimmed() == "SolveImage")
     {
         glFocalLength = parts[1].trimmed().toInt();
@@ -666,6 +725,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 开启图像循环拍摄以及解析
     else if (parts.size() == 2 && parts[0].trimmed() == "startLoopSolveImage") {
         glFocalLength = parts[1].trimmed().toInt();
 
@@ -678,32 +738,39 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 终止图像循环拍摄以及解析
     else if (message == "stopLoopSolveImage") {
         qInfo("Set isLoopSolveImage false");
         isLoopSolveImage = false;
     }
 
+    // 终止主相机拍摄以及图像解析
     else if (message == "EndCaptureAndSolve") {
         qInfo("Set EndCaptureAndSolve true");
         EndCaptureAndSolve = true;
     }
 
+    // 获取之前的图像解析数据
     else if (message == "getStagingSolveResult") {
         RecoverySloveResul();
     }
 
+    // 清除图像解析的结果保存列表
     else if (message == "ClearSloveResultList") {
         ClearSloveResultList();
     }
 
+    // 获取原始的主相机拍摄图像
     else if (message == "getOriginalImage") {
         saveFitsAsPNG(QString::fromStdString("/dev/shm/ccd_simulator.fits"), false);
     }
 
+    // 获取树莓派GPIO的状态
     else if (message == "getGPIOsStatus") {
         getGPIOsStatus();
     }
 
+    // 蓝盒子的输出电源开关
     else if (parts.size() == 2 && parts[0].trimmed() == "SwitchOutPutPower")
     {
         int index = parts[1].trimmed().toInt();
@@ -733,6 +800,7 @@ void MainWindow::onMessageReceived(const QString &message)
         emit wsThread->sendMessageToClient("OutPutPowerStatus:" + QString::number(index) + ":" + QString::number(value));
     }
 
+    // 设置主相机拍摄图像的合并
     else if (parts.size() == 2 && parts[0].trimmed() == "SetBinning") {
         glMainCameraBinning = parts[1].trimmed().toInt();
         qInfo() << "Set Binning to " << glMainCameraBinning;
@@ -742,6 +810,7 @@ void MainWindow::onMessageReceived(const QString &message)
         // }
     }
 
+    // 设置主相机的制冷温度 
     else if (parts.size() == 2 && parts[0].trimmed() == "SetCameraTemperature") {
         double CameraTemperature = parts[1].trimmed().toDouble();
         qInfo() << "Set Camera Temperature to " << CameraTemperature;
@@ -751,6 +820,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 设置主相机的增益
     else if (parts.size() == 2 && parts[0].trimmed() == "SetCameraGain") {
         int CameraGain = parts[1].trimmed().toInt();
         qInfo() << "Set Camera Gain to " << CameraGain;
@@ -760,6 +830,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 导星图像中选取的星点坐标
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
     {
         int CanvasWidth = parts[1].trimmed().toInt();
@@ -782,21 +853,25 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 获取客户端的版本号
     else if (message == "getQTClientVersion") {
         emit wsThread->sendMessageToClient("QTClientVersion:" + QString::fromUtf8(QT_Client_Version));
     }
 
+    // 获取树莓派的热点名称
     else if (message == "getHotspotName") {
         QString HostpotName = getHotspotName();
         qInfo() << "HotspotName:" << HostpotName;
         emit wsThread->sendMessageToClient("HotspotName:" + HostpotName);
     }
 
+    // 编辑树莓派热点名称
     else if (parts.size() == 2 && parts[0].trimmed() == "editHotspotName") {
         QString HostpotName = parts[1].trimmed();
         editHotspotName(HostpotName);
     }
 
+    // 单反相机的信息
     else if (parts.size() == 4 && parts[0].trimmed() == "DSLRCameraInfo") {
         int Width = parts[1].trimmed().toInt();
         int Height = parts[2].trimmed().toInt();
@@ -816,6 +891,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    // 将配置保存至本地文件中
     else if (parts.size() == 3 && parts[0].trimmed() == "saveToConfigFile") {
         QString ConfigName = parts[1].trimmed();
         QString ConfigValue = parts[2].trimmed();
@@ -823,6 +899,7 @@ void MainWindow::onMessageReceived(const QString &message)
         setClientSettings(ConfigName, ConfigValue);
     }
 
+    // 导星镜焦距设置
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderFocalLength") {
         int FocalLength = parts[1].trimmed().toInt();
         qInfo() << "Set Guider Focal Length to " << FocalLength;
@@ -830,14 +907,17 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_FocalLength(FocalLength);
     }
 
+    // 重启树莓派
     else if (message == "RestartRaspberryPi") {
         system("reboot");
     }
 
+    // 树莓派关机
     else if (message == "ShutdownRaspberryPi") {
         system("shutdown -h now");
     }
 
+    // 多星导星开关
     else if (parts.size() == 2 && parts[0].trimmed() == "MultiStarGuider") {
         bool isMultiStar = (parts[1].trimmed() == "true");
         qInfo() << "Set Multi Star Guider to" << isMultiStar;
@@ -845,6 +925,7 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_MultiStarGuider(isMultiStar);
     }
 
+    // 导星镜像素大小设置
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPixelSize") {
         double PixelSize = parts[1].trimmed().toDouble();
         qInfo() << "Set Guider Pixel Size to" << PixelSize;
@@ -852,6 +933,7 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_CameraPixelSize(PixelSize);
     }
 
+    // 导星镜增益设置
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderGain") {
         int Gain = parts[1].trimmed().toInt();
         qInfo() << "Set Guider Gain to" << Gain;
@@ -859,6 +941,7 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_CameraGain(Gain);
     }
 
+    // PHD2导星校准时长设置
     else if (parts.size() == 2 && parts[0].trimmed() == "CalibrationDuration") {
         int StepSize = parts[1].trimmed().toInt();
         qInfo() << "Set Calibration Duration to" << StepSize;
@@ -866,6 +949,7 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_CalibrationDuration(StepSize);
     }
 
+    // PHD2导星算法Ra轴修正强度设置
     else if (parts.size() == 2 && parts[0].trimmed() == "RaAggression") {
         int Aggression = parts[1].trimmed().toInt();
         qInfo() << "Set Ra Aggression to" << Aggression;
@@ -873,6 +957,7 @@ void MainWindow::onMessageReceived(const QString &message)
         call_phd_RaAggression(Aggression);
     }
 
+    // PHD2导星算法Dec轴修正强度设置
     else if (parts.size() == 2 && parts[0].trimmed() == "DecAggression") {
         int Aggression = parts[1].trimmed().toInt();
         qInfo() << "Set Dec Aggression to" << Aggression;
@@ -1363,51 +1448,6 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
         dataString += QString::number(star.x) + "|" + QString::number(star.y) + "|" + QString::number(star.HFR) + ":";
     }
     emit wsThread->sendMessageToClient("DetectedStars:" + dataString);
-}
-
-cv::Mat MainWindow::colorImage(cv::Mat img16)
-{
-    // color camera, need to do debayer and color balance
-    cv::Mat AWBImg16;
-    cv::Mat AWBImg16color;
-    cv::Mat AWBImg16mono;
-    cv::Mat AWBImg8color;
-
-    uint16_t B=0;
-    uint16_t W=65535;
-
-    AWBImg16.create(img16.rows, img16.cols, CV_16UC1);
-    AWBImg16color.create(img16.rows, img16.cols, CV_16UC3);
-    AWBImg16mono.create(img16.rows, img16.cols, CV_16UC1);
-    AWBImg8color.create(img16.rows, img16.cols, CV_8UC3);
-
-    Tools::ImageSoftAWB(img16, AWBImg16, MainCameraCFA, ImageGainR, ImageGainB, 30); // image software Auto White Balance is done in RAW image.
-    cv::cvtColor(AWBImg16, AWBImg16color, CV_BayerRG2BGR);
-
-    cv::cvtColor(AWBImg16color, AWBImg16mono, cv::COLOR_BGR2GRAY);
-
-    // cv::cvtColor(AWBImg16, AWBImg16color, CV_BayerRG2RGB);
-
-    // cv::cvtColor(AWBImg16color, AWBImg16mono, cv::COLOR_RGB2GRAY);
-
-    if (AutoStretch == true)
-    {
-        Tools::GetAutoStretch(AWBImg16mono, 0, B, W);
-    }
-    else
-    {
-        B = 0;
-        W = 65535;
-    }
-    qInfo() << "GetAutoStretch:" << B << "," << W;
-    Tools::Bit16To8_Stretch(AWBImg16color, AWBImg8color, B, W);
-
-    return AWBImg16color;
-
-    AWBImg16.release();
-    AWBImg16color.release();
-    AWBImg16mono.release();
-    AWBImg8color.release();
 }
 
 void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
@@ -2936,81 +2976,6 @@ void MainWindow::FocusingLooping()
     }
 }
 
-void MainWindow::refreshGuideImage(cv::Mat img16, QString CFA)
-{
-    // strechShowImage(img16, CFA, true, true, 0, 0, 65535, 1.0, 1.7, 100, true);
-}
-
-void MainWindow::strechShowImage(cv::Mat img16,QString CFA,bool AutoStretch,bool AWB,int AutoStretchMode,uint16_t blacklevel,uint16_t whitelevel,double ratioRG,double ratioBG,uint16_t offset,bool updateHistogram){
-
-   uint16_t B=0;
-   uint16_t W=65535;
-
- if(CFA=="MONO") {
-  //mono camera, do not do debayer and color balance process
-     cv::Mat image_raw8;
-     image_raw8.create(img16.rows,img16.cols,CV_8UC1);
-
-     if(AutoStretch==true){
-        Tools::GetAutoStretch(img16,AutoStretchMode,B,W);
-     } else {
-        B=blacklevel;
-        W=whitelevel;
-     }
-
-    Tools::Bit16To8_Stretch(img16,image_raw8,B,W);
-
-    // saveGuiderImageAsJPG(image_raw8);
-
-
-    image_raw8.release();
- }
-
- else{
-      //color camera, need to do debayer and color balance
-     cv::Mat AWBImg16;
-     cv::Mat AWBImg16color;
-     cv::Mat AWBImg16mono;
-     cv::Mat AWBImg8color;
-    #ifdef ImageDebug
-     qDebug()<<"strechShowImage | color camera";
-    #endif
-     AWBImg16.create(img16.rows,img16.cols,CV_16UC1);
-     AWBImg16color.create(img16.rows,img16.cols,CV_16UC3);
-     AWBImg16mono.create(img16.rows,img16.cols,CV_16UC1);
-     AWBImg8color.create(img16.rows,img16.cols,CV_8UC3);
-
-     Tools::ImageSoftAWB(img16,AWBImg16,CFA,ratioRG,ratioBG,offset);  //image software Auto White Balance is done in RAW image.
-     cv::cvtColor(AWBImg16,AWBImg16color,CV_BayerRG2BGR);
-    //  qDebug()<<"strechShowImage | 1";
-     cv::cvtColor(AWBImg16color,AWBImg16mono,cv::COLOR_BGR2GRAY);
-    //  qDebug()<<"strechShowImage | 2";
-
-     if(AutoStretch==true){
-        Tools::GetAutoStretch(AWBImg16mono,AutoStretchMode,B,W);
-     }
-
-
-     else{
-         B=blacklevel;
-         W=whitelevel;
-     }
-     qInfo()<<B<<","<<W;
-     Tools::Bit16To8_Stretch(AWBImg16color,AWBImg8color,B,W);
-
-    //  Tools::ShowCvImageOnQLabel(AWBImg8color,lable);
-    // saveGuiderImageAsJPG(AWBImg8color);
-
-    AWBImg16.release();
-    AWBImg16color.release();
-    AWBImg16mono.release();
-    AWBImg8color.release();
- }
- glMainCameraStatu="IDLE";
- #ifdef ImageDebug
- qDebug() << "strechShowImage:" << glMainCameraStatu;
- #endif
-}
 
 void MainWindow::InitPHD2()
 {
