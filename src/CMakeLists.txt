@@ -7,6 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(QT_COMPONENTS
   Core
+  
   Gui
   Widgets
   Concurrent
@@ -24,6 +25,8 @@ find_package(OpenCV REQUIRED)
 
 find_package(StellarSolver REQUIRED)
 
+find_package(Qt5 COMPONENTS Core Network WebSockets SerialPort REQUIRED)
+
 add_executable(client
   main.cpp
   websocketclient.h websocketclient.cpp
@@ -32,6 +35,7 @@ add_executable(client
   myclient.h myclient.cpp
   websocketthread.h websocketthread.cpp
   platesolveworker.h platesolveworker.cpp
+  Logger.h Logger.cpp
 )
 
 target_link_libraries(client PRIVATE
@@ -76,6 +80,11 @@ target_link_libraries(client PRIVATE
     Qt${QT_VERSION_MAJOR}::Concurrent
     Qt${QT_VERSION_MAJOR}::Network
     Qt${QT_VERSION_MAJOR}::WebSockets
+    Qt${QT_VERSION_MAJOR}::SerialPort
     ${StellarSolver_LIBS}
 )
+
+# 复制配置文件到构建目录
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/../qhyccd.ini
+     DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 

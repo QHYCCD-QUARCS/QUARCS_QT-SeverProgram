@@ -28,8 +28,8 @@ MyClient::MyClient()
 {
 
 //   pMain = gui;
-
-  qInfo()<<"MyClient::MyClent"<<gethostid()<<getPort()<<getegid()<<geteuid();
+  Logger::Log("indi_client | MyClient::MyClent", LogLevel::INFO, DeviceType::MAIN);
+//   qInfo()<<"MyClient::MyClent"<<gethostid()<<getPort()<<getegid()<<geteuid();
 }
 
 //************************************************************************
@@ -57,15 +57,15 @@ void MyClient::newProperty(INDI::Property property)
 void MyClient::newDevice(INDI::BaseDevice baseDevice){
 //the new Device is a callback function , the connect server will trig it. it can be override here
 
-    qDebug() << "\033[1;33m ++++++ New Device ++++++\033[0m";
+    // Logger::Log("indi_client | newDevice", LogLevel::INFO, DeviceType::MAIN);
 
     const char *DeviceName = baseDevice.getDeviceName();
 
     AddDevice(baseDevice,baseDevice.getDeviceName());
 
-    qInfo() << "New DeviceName:" << DeviceName << ", " << "GetDeviceCount:" << GetDeviceCount();
+    Logger::Log("indi_client | newDevice | New DeviceName:" + std::string(DeviceName) + ", GetDeviceCount:" + std::to_string(GetDeviceCount()), LogLevel::INFO, DeviceType::MAIN);
 
-    qDebug() << "\033[1;33m ++++++++++++++++++++++++ \033[0m";
+    // Logger::Log("indi_client | newDevice | +++++++++++++++++++++++++++++++++", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MyClient::updateProperty(INDI::Property property)
@@ -98,11 +98,12 @@ void MyClient::updateProperty(INDI::Property property)
         {
             auto filepath = tvp->findWidgetByName("FILE_PATH");
             if (filepath){
-                qDebug() << "\033[32m" << "New Capture Image Save To" << QString(filepath->getText()) << "\033[0m";
-                qInfo() << "New Capture Image Save To" << QString(filepath->getText());
+                Logger::Log("indi_client | updateProperty | New Capture Image Save To" + QString(filepath->getText()).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+                // qDebug() << "\033[32m" << "New Capture Image Save To" << QString(filepath->getText()) << "\033[0m";
+                // qInfo() << "New Capture Image Save To" << QString(filepath->getText());
 
                 CaptureTestTime = CaptureTestTimer.elapsed();
-                qInfo() << "Exposure completed:" << CaptureTestTime << "milliseconds";
+                Logger::Log("indi_client | updateProperty | Exposure completed:" + std::to_string(CaptureTestTime) + "ms", LogLevel::INFO, DeviceType::CAMERA);
                 CaptureTestTimer.invalidate();
 
                 QString devname_;
@@ -110,6 +111,7 @@ void MyClient::updateProperty(INDI::Property property)
                 std::string devname = devname_.toStdString();
 
                 receiveImage(QString(filepath->getText()).toStdString(), devname);
+                Logger::Log("indi_client | updateProperty | receiveImage | " + QString(filepath->getText()).toStdString() + ", " + devname, LogLevel::INFO, DeviceType::CAMERA);
             }  
         }
     } else if (property.getType() == INDI_NUMBER) {
@@ -153,16 +155,18 @@ void MyClient::ClearDevices() {
 }
 
 QString MyClient::PrintDevices() {
-    qDebug() << "\033[1;36m--------- INDI Device List ---------\033[0m";
-    qInfo() << "--------- INDI Device List ---------";
+    // qDebug() << "\033[1;36m--------- INDI Device List ---------\033[0m";
+    // qInfo() << "--------- INDI Device List ---------";
+    Logger::Log(" --------- INDI Device List ---------", LogLevel::INFO, DeviceType::MAIN);
     QString dev;
     if(deviceNames.size()==0){
-        qInfo()<<"myclient.cpp | PrintDevices | no device exist";
+        Logger::Log("indi_client | PrintDevices | no device exist", LogLevel::INFO, DeviceType::MAIN);
     }
 
     else{
         for (int i = 0; i < deviceNames.size(); i++) {
-            qInfo() << i << deviceNames[i].c_str() << deviceList[i]->getDriverExec();
+            std::string logMessage = "indi_client | PrintDevices | Device " + std::to_string(i) + ": " + deviceNames[i] + " (Driver: " + deviceList[i]->getDriverExec() + ")";
+            Logger::Log(logMessage, LogLevel::INFO, DeviceType::MAIN);
             if (i > 0)
             {
                 dev.append("|"); // 添加分隔符
@@ -172,8 +176,7 @@ QString MyClient::PrintDevices() {
             dev.append(QString::number(i)); // 添加deviceNames元素
         }
     }
-    qDebug()<<"\033[1;36m------------------------------------\033[0m";
-    qInfo()<<"------------------------------------";
+    // Logger::Log("indi_client | PrintDevices | ------------------------------------", LogLevel::INFO, DeviceType::MAIN);
     return dev;
 }
 
@@ -225,7 +228,7 @@ void MyClient::disconnectAllDevice(void){
     //disconnect all device in the device list
     // INDI::BaseDevice *dp;
     QVector<INDI::BaseDevice *> dp;
-    qInfo()<<"disconnectAllDevice"<<deviceList.size();
+    Logger::Log("indi_client | disconnectAllDevice", LogLevel::INFO, DeviceType::MAIN);
     PrintDevices();
     for(int i=0;i<GetDeviceCount();i++)
     {
@@ -235,10 +238,10 @@ void MyClient::disconnectAllDevice(void){
             disconnectDevice(dp[i]->getDeviceName());
             while (dp[i]->isConnected())
             {
-                qInfo("disconnectAllDevice | Waiting for disconnect finish...");
+                Logger::Log("indi_client | disconnectAllDevice | Waiting for disconnect finish...", LogLevel::INFO, DeviceType::MAIN);
                 sleep(1);
             }
-            qInfo() << "disconnectAllDevice |" << dp[i]->getDeviceName() << dp[i]->isConnected();
+            Logger::Log("indi_client | disconnectAllDevice | " + std::string(dp[i]->getDeviceName()) + " " + std::to_string(dp[i]->isConnected()), LogLevel::INFO, DeviceType::MAIN);
         }
     }
 }
@@ -270,7 +273,7 @@ void MyClient::GetAllPropertyName(INDI::BaseDevice *dp)
         const char *propertyType = PropertyTypeToString(property->getType());
         // 在此处处理属性
         // propertyName 包含了属性的名称
-        qInfo() << "propertyName:" << propertyName << ", propertyType:" << propertyType;
+        Logger::Log("indi_client | GetAllPropertyName | " + std::string(propertyName) + ", " + std::string(propertyType), LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
@@ -306,11 +309,11 @@ uint32_t MyClient::setTemperature(INDI::BaseDevice *dp,double value)
 
     if (!ccdTemperature.isValid())
     {
-        qWarning("Error: unable to find CCD_TEMPERATURE property...");
+        Logger::Log("indi_client | setTemperature | Error: unable to find CCD_TEMPERATURE property...", LogLevel::WARNING, DeviceType::MAIN);
         return QHYCCD_ERROR;
     }
 
-    qInfo("Setting temperature to %g C.", value);
+    Logger::Log("indi_client | setTemperature | Setting temperature to " + std::to_string(value) + " C.", LogLevel::INFO, DeviceType::MAIN);
     ccdTemperature[0].setValue(value);
     sendNewProperty(ccdTemperature);
     return QHYCCD_SUCCESS;
@@ -346,16 +349,15 @@ uint32_t MyClient::takeExposure(INDI::BaseDevice *dp,double seconds)
 
     if (!ccdExposure.isValid())
     {
-        qWarning("Error: unable to find CCD Simulator CCD_EXPOSURE property...");
+        Logger::Log("indi_client | takeExposure | Error: unable to find CCD Simulator CCD_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     CaptureTestTimer.start();
-    qDebug() << "\033[32m" << "Exposure start." << "\033[0m";
-    qInfo() << "Exposure start.";
+    Logger::Log("indi_client | takeExposure | Exposure start.", LogLevel::INFO, DeviceType::CAMERA);
 
     // Take a 1 second exposure
-    qInfo("Taking a %g second exposure.", seconds);
+    Logger::Log("indi_client | takeExposure | Taking a " + std::to_string(seconds) + " second exposure.", LogLevel::INFO, DeviceType::CAMERA);
     ccdExposure[0].setValue(seconds);
     sendNewProperty(ccdExposure);
     return QHYCCD_SUCCESS;
@@ -367,7 +369,7 @@ uint32_t MyClient::setCCDAbortExposure(INDI::BaseDevice *dp)
 
      if (!ccdabort.isValid())
      {
-         qWarning("Error: unable to find  CCD_ABORT_EXPOSURE property...");
+         Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
          return QHYCCD_ERROR;
      }
 
@@ -385,7 +387,7 @@ uint32_t MyClient::getCCDFrameInfo(INDI::BaseDevice *dp,int &X,int &Y,int &WIDTH
 
     if (!ccdFrameInfo.isValid())
     {
-        qWarning("Error: unable to find CCD Simulator ccdFrameInfo property...");
+        Logger::Log("indi_client | getCCDFrameInfo | Error: unable to find CCD Simulator ccdFrameInfo property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -394,7 +396,7 @@ uint32_t MyClient::getCCDFrameInfo(INDI::BaseDevice *dp,int &X,int &Y,int &WIDTH
     WIDTH = ccdFrameInfo->np[2].value;
     HEIGHT = ccdFrameInfo->np[3].value;
 
-    qInfo()<<"getCCDFrameInfo"<<X<<Y<<WIDTH<<HEIGHT;
+    Logger::Log("indi_client | getCCDFrameInfo | " + std::to_string(X) + ", " + std::to_string(Y) + ", " + std::to_string(WIDTH) + ", " + std::to_string(HEIGHT), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -404,11 +406,11 @@ uint32_t MyClient::setCCDFrameInfo(INDI::BaseDevice *dp,int X,int Y,int WIDTH,in
 
     if (!ccdFrameInfo.isValid())
     {
-        qWarning("Error: unable to find CCD Simulator ccdFrameInfo property...");
+        Logger::Log("indi_client | setCCDFrameInfo | Error: unable to find CCD Simulator ccdFrameInfo property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    qInfo()<<"setCCDFrameInfo"<<X<<Y<<WIDTH<<HEIGHT;
+    Logger::Log("indi_client | setCCDFrameInfo | " + std::to_string(X) + ", " + std::to_string(Y) + ", " + std::to_string(WIDTH) + ", " + std::to_string(HEIGHT), LogLevel::INFO, DeviceType::CAMERA);
 
     ccdFrameInfo[0].setValue(X);
     ccdFrameInfo[1].setValue(Y);
@@ -424,7 +426,7 @@ uint32_t MyClient::resetCCDFrameInfo(INDI::BaseDevice *dp)
 
     if (!resetFrameInfo.isValid())
     {
-        qWarning("Error: unable to find resetCCDFrameInfo property...");
+        Logger::Log("indi_client | resetCCDFrameInfo | Error: unable to find resetCCDFrameInfo property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -444,11 +446,11 @@ uint32_t MyClient::setCCDCooler(INDI::BaseDevice *dp,bool enable)
 
     if (!ccdCooler.isValid())
     {
-        qWarning("Error: unable to find CCD_COOLER property...");
+        Logger::Log("indi_client | setCCDCooler | Error: unable to find CCD_COOLER property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    qInfo() << "setCCDCooler" << enable;
+    Logger::Log("indi_client | setCCDCooler | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
 
     if(enable==false)  ccdCooler[0].setState(ISS_OFF);
     else               ccdCooler[0].setState(ISS_ON);
@@ -463,11 +465,11 @@ uint32_t MyClient::getCCDCooler(INDI::BaseDevice *dp,bool & enable)
 
     if (!ccdCooler.isValid())
     {
-        qWarning("Error: unable to find CCD_COOLER property...");
+        Logger::Log("indi_client | getCCDCooler | Error: unable to find CCD_COOLER property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    qInfo() << "getCCDCooler" << ccdCooler[0].getState();
+    Logger::Log("indi_client | getCCDCooler | " + std::to_string(ccdCooler[0].getState()), LogLevel::INFO, DeviceType::CAMERA);
 
     if(ccdCooler[0].getState()==ISS_OFF) enable=false;
     else                                 enable=true;
@@ -481,7 +483,7 @@ uint32_t MyClient::getCCDBasicInfo(INDI::BaseDevice *dp,int &maxX,int &maxY,doub
 
     if (!ccdInfo.isValid())
     {
-        qWarning("Error: unable to find  CCD_INFO property...");
+        Logger::Log("indi_client | getCCDBasicInfo | Error: unable to find  CCD_INFO property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -491,7 +493,7 @@ uint32_t MyClient::getCCDBasicInfo(INDI::BaseDevice *dp,int &maxX,int &maxY,doub
     pixelsizX = ccdInfo->np[3].value;
     pixelsizY = ccdInfo->np[4].value;
     bitDepth  = ccdInfo->np[5].value;
-    qInfo()<<"getCCDBasicInfo"<<maxX<<maxY<<pixelsize<<pixelsizX<<pixelsizY<<bitDepth;
+    Logger::Log("indi_client | getCCDBasicInfo | " + std::to_string(maxX) + ", " + std::to_string(maxY) + ", " + std::to_string(pixelsize) + ", " + std::to_string(pixelsizX) + ", " + std::to_string(pixelsizY) + ", " + std::to_string(bitDepth), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -500,7 +502,7 @@ uint32_t MyClient::setCCDBasicInfo(INDI::BaseDevice *dp,int maxX,int maxY,double
 
     if (!ccdInfo.isValid())
     {
-        qWarning("Error: unable to find  CCD_INFO property...");
+        Logger::Log("indi_client | setCCDBasicInfo | Error: unable to find  CCD_INFO property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -510,7 +512,7 @@ uint32_t MyClient::setCCDBasicInfo(INDI::BaseDevice *dp,int maxX,int maxY,double
     ccdInfo->np[3].value = pixelsizX;
     ccdInfo->np[4].value = pixelsizY;
     ccdInfo->np[5].value = bitDepth;
-    qInfo()<<"setCCDBasicInfo:"<<maxX<<maxY<<pixelsize<<pixelsizX<<pixelsizY<<bitDepth;
+    Logger::Log("indi_client | setCCDBasicInfo | " + std::to_string(maxX) + ", " + std::to_string(maxY) + ", " + std::to_string(pixelsize) + ", " + std::to_string(pixelsizX) + ", " + std::to_string(pixelsizY) + ", " + std::to_string(bitDepth), LogLevel::INFO, DeviceType::CAMERA);
 
     sendNewProperty(ccdInfo);
 
@@ -522,7 +524,7 @@ uint32_t MyClient::getCCDBinning(INDI::BaseDevice *dp,int &BINX,int &BINY,int &B
 
     if (!ccdbinning.isValid())
     {
-        qWarning("Error: unable to find  CCD_BINNING property...");
+        Logger::Log("indi_client | getCCDBinning | Error: unable to find  CCD_BINNING property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -531,7 +533,7 @@ uint32_t MyClient::getCCDBinning(INDI::BaseDevice *dp,int &BINX,int &BINY,int &B
     BINXMAX = ccdbinning->np[0].max;
     BINYMAX = ccdbinning->np[1].max;
 
-    qInfo()<<"getCCDBinning"<<BINX<<BINY<<BINXMAX<<BINYMAX;
+    Logger::Log("indi_client | getCCDBinning | " + std::to_string(BINX) + ", " + std::to_string(BINY) + ", " + std::to_string(BINXMAX) + ", " + std::to_string(BINYMAX), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -541,14 +543,14 @@ uint32_t MyClient::setCCDBinnign(INDI::BaseDevice *dp,int BINX,int BINY){
 
     if (!ccdbinning.isValid())
     {
-        qWarning("Error: unable to find  CCD_BINNING property...");
+        Logger::Log("indi_client | setCCDBinnign | Error: unable to find  CCD_BINNING property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
      }
 
     ccdbinning[0].setValue(BINX);
     ccdbinning[1].setValue(BINY);
     sendNewProperty(ccdbinning);
-    qInfo()<<"setCCDBinnign"<<BINX<<BINY;
+    Logger::Log("indi_client | setCCDBinnign | " + std::to_string(BINX) + ", " + std::to_string(BINY), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -558,7 +560,7 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QS
 
     if (!ccdCFA.isValid())
     {
-        qWarning("Error: unable to find  CCD_CFA property...");
+        Logger::Log("indi_client | getCCDCFA | Error: unable to find  CCD_CFA property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -581,7 +583,7 @@ uint32_t MyClient::getCCDSDKVersion(INDI::BaseDevice *dp, QString &version)
 
     if (!ccdCFA.isValid())
     {
-        qWarning("Error: unable to find  SDK_VERSION property...");
+        Logger::Log("indi_client | getCCDSDKVersion | Error: unable to find  SDK_VERSION property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -602,7 +604,7 @@ uint32_t MyClient::getCCDGain(INDI::BaseDevice *dp,int &value,int &min,int &max)
 
     if (!ccdgain.isValid())
     {
-        qWarning("Error: unable to find  CCD_GAIN property...");
+        Logger::Log("indi_client | getCCDGain | Error: unable to find  CCD_GAIN property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -610,7 +612,7 @@ uint32_t MyClient::getCCDGain(INDI::BaseDevice *dp,int &value,int &min,int &max)
     min   = ccdgain->np[0].min;
     max   = ccdgain->np[0].max;
 
-    qInfo() << "getCCDGain" << value << min << max;
+    Logger::Log("indi_client | getCCDGain | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -619,7 +621,7 @@ uint32_t MyClient::setCCDGain(INDI::BaseDevice *dp,int value){
 
     if (!ccdgain.isValid())
     {
-        qWarning("Error: unable to find  CCD_BINNING property...");
+        Logger::Log("indi_client | setCCDGain | Error: unable to find  CCD_BINNING property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -638,7 +640,7 @@ uint32_t MyClient::getCCDOffset(INDI::BaseDevice *dp,int &value,int &min,int &ma
 
     if (!ccdoffset.isValid())
     {
-        qWarning("Error: unable to find  CCD_OFFSET property...");
+        Logger::Log("indi_client | getCCDOffset | Error: unable to find  CCD_OFFSET property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -646,7 +648,7 @@ uint32_t MyClient::getCCDOffset(INDI::BaseDevice *dp,int &value,int &min,int &ma
     min   = ccdoffset->np[0].min;
     max   = ccdoffset->np[0].max;
 
-    qInfo() << "getCCDOFFSET" << value << min << max;
+    Logger::Log("indi_client | getCCDOffset | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -656,7 +658,7 @@ uint32_t MyClient::setCCDOffset(INDI::BaseDevice *dp,int value)
 
     if (!ccdoffset.isValid())
     {
-        qWarning("Error: unable to find  CCD_BINNING property...");
+        Logger::Log("indi_client | setCCDOffset | Error: unable to find  CCD_OFFSET property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -672,7 +674,7 @@ uint32_t MyClient::getCCDReadMode(INDI::BaseDevice *dp,int &value,int &min,int &
 
     if (!ccdreadmode.isValid())
     {
-        qWarning("Error: unable to find  READ_MODE property...");
+        Logger::Log("indi_client | getCCDReadMode | Error: unable to find  READ_MODE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -680,7 +682,7 @@ uint32_t MyClient::getCCDReadMode(INDI::BaseDevice *dp,int &value,int &min,int &
     min   = ccdreadmode->np[0].min;
     max   = ccdreadmode->np[0].max;
 
-    qInfo() << "getCCDOFFSET" << value << min << max;
+    Logger::Log("indi_client | getCCDReadMode | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -690,7 +692,7 @@ uint32_t MyClient::setCCDReadMode(INDI::BaseDevice *dp,int value)
 
     if (!ccdreadmode.isValid())
     {
-        qWarning("Error: unable to find  READ_MODE property...");
+        Logger::Log("indi_client | setCCDReadMode | Error: unable to find  READ_MODE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -705,7 +707,7 @@ uint32_t MyClient::setCCDUploadModeToLacal(INDI::BaseDevice *dp) {
 
     if (!uploadmode.isValid())
     {
-        qWarning("Error: unable to find UPLOAD_MODE property...");
+        Logger::Log("indi_client | setCCDUploadModeToLacal | Error: unable to find UPLOAD_MODE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -722,7 +724,7 @@ uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefi
 
     if (!upload.isValid())
     {
-        qWarning("Error: unable to find UPLOAD_SETTINGS property...");
+        Logger::Log("indi_client | setCCDUpload | Error: unable to find UPLOAD_SETTINGS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -737,7 +739,7 @@ uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefi
 uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 {
 
-    qInfo()<<"Watching | start";
+    Logger::Log("indi_client | StartWatch | start", LogLevel::INFO, DeviceType::CAMERA);
     // wait for the availability of the device
     watchDevice(dp->getDeviceName(), [this](INDI::BaseDevice device)
     {
@@ -745,7 +747,7 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
         // wait for the availability of the "CONNECTION" property
         device.watchProperty("CONNECTION", [this](INDI::Property)
         {
-            qInfo("Watching | Connect to INDI Driver...");
+            Logger::Log("indi_client | StartWatch | Connect to INDI Driver...", LogLevel::INFO, DeviceType::CAMERA);
 
             //connectDevice("Simple CCD");
         });
@@ -756,7 +758,7 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 
            // if (dp->isConnected())
            // {
-                qInfo("Watching | CCD_TEMPERATURE event ");
+                Logger::Log("indi_client | StartWatch | CCD_TEMPERATURE event ", LogLevel::INFO, DeviceType::CAMERA);
 
                 //setTemperature(-20);
            // }
@@ -764,10 +766,10 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
             // call lambda function if property changed
             property.onUpdate([property, this]()
             {
-                qInfo("Watching | Receving new CCD Temperature: %g C", property[0].getValue());
+                Logger::Log("indi_client | StartWatch | Receving new CCD Temperature: " + std::to_string(property[0].getValue()) + " C", LogLevel::INFO, DeviceType::CAMERA);
                 if (property[0].getValue() == -20)
                 {
-                    qInfo("Watching | CCD temperature reached desired value!");
+                    Logger::Log("indi_client | StartWatch | CCD temperature reached desired value!", LogLevel::INFO, DeviceType::CAMERA);
 
                 }
             });
@@ -791,15 +793,13 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
                 myfile.write(static_cast<char *>(property[0].getBlob()), property[0].getBlobLen());
                 myfile.close();
 
-
-
-                qInfo("Watching | Received image, saved as ccd_simulator.fits");
+                Logger::Log("indi_client | StartWatch | Received image, saved as ccd_simulator.fits", LogLevel::INFO, DeviceType::CAMERA);
             });
         });
     });
 
-        qInfo()<<"Watching | finish";
-        return QHYCCD_SUCCESS;
+    Logger::Log("indi_client | StartWatch | finish", LogLevel::INFO, DeviceType::CAMERA);
+    return QHYCCD_SUCCESS;
 }
 
 /**************************************************************************************
@@ -811,7 +811,7 @@ uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_apert
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_INFO property...");
+        Logger::Log("indi_client | getTelescopeInfo | Error: unable to find  TELESCOPE_INFO property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -819,7 +819,7 @@ uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_apert
     telescope_focal    = property->np[1].value;
     guider_aperature   = property->np[2].value;
     guider_focal       = property->np[3].value;
-    qInfo() << "getTelescopeInfo" << telescope_aperture << telescope_focal << guider_aperature << guider_focal;
+    Logger::Log("indi_client | getTelescopeInfo | " + std::to_string(telescope_aperture) + ", " + std::to_string(telescope_focal) + ", " + std::to_string(guider_aperature) + ", " + std::to_string(guider_focal), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -829,7 +829,7 @@ uint32_t MyClient::setTelescopeInfo(INDI::BaseDevice *dp,double telescope_apertu
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_INFO property...");
+        Logger::Log("indi_client | setTelescopeInfo | Error: unable to find  TELESCOPE_INFO property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -850,7 +850,7 @@ uint32_t MyClient::getTelescopePierSide(INDI::BaseDevice *dp,QString &side)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find TELESCOPE_PIER_SIDE property...");
+        Logger::Log("indi_client | getTelescopePierSide | Error: unable to find TELESCOPE_PIER_SIDE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -867,7 +867,7 @@ uint32_t MyClient::getTelescopeTrackRate(INDI::BaseDevice *dp,QString &rate)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_TRACK_RATE property...");
+        Logger::Log("indi_client | getTelescopeTrackRate | Error: unable to find  TELESCOPE_TRACK_RATE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -875,7 +875,7 @@ uint32_t MyClient::getTelescopeTrackRate(INDI::BaseDevice *dp,QString &rate)
     else if(property[1].getState()==ISS_ON) rate="SOLAR";
     else if(property[2].getState()==ISS_ON) rate="LUNAR"; //??
     else if(property[3].getState()==ISS_ON) rate="CUSTOM";
-    qInfo() << "getTelescopeTrackRate" << rate ;
+    Logger::Log("indi_client | getTelescopeTrackRate | " + rate.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -885,7 +885,7 @@ uint32_t MyClient::setTelescopeTrackRate(INDI::BaseDevice *dp,QString rate)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_TRACK_RATE property...");
+        Logger::Log("indi_client | setTelescopeTrackRate | Error: unable to find  TELESCOPE_TRACK_RATE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -907,7 +907,7 @@ uint32_t MyClient::getTelescopeTrackEnable(INDI::BaseDevice *dp,bool &enable)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_TRACK_STATE property...");
+        Logger::Log("indi_client | getTelescopeTrackEnable | Error: unable to find  TELESCOPE_TRACK_STATE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -924,12 +924,12 @@ uint32_t MyClient::getTelescopeTrackEnable(INDI::BaseDevice *dp,bool &enable)
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "getTelescopeTrackEnable | ERROR : timeout ";
+       Logger::Log("indi_client | getTelescopeTrackEnable | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
 
-    qInfo() << "getTelescopeTrackEnable" << enable ;
+    Logger::Log("indi_client | getTelescopeTrackEnable | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -939,7 +939,7 @@ uint32_t MyClient::setTelescopeTrackEnable(INDI::BaseDevice *dp,bool enable)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_TRACK_STATE property...");
+        Logger::Log("indi_client | setTelescopeTrackEnable | Error: unable to find  TELESCOPE_TRACK_STATE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -974,7 +974,7 @@ uint32_t MyClient::setTelescopeTrackEnable(INDI::BaseDevice *dp,bool enable)
     }
 
     */
-    qInfo()<<"setTelescopeTrackEnable"<< enable;
+    Logger::Log("indi_client | setTelescopeTrackEnable | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -988,7 +988,7 @@ uint32_t MyClient::setTelescopeParkOption(INDI::BaseDevice *dp,QString option)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_TRACK_RATE property...");
+        Logger::Log("indi_client | setTelescopeParkOption | Error: unable to find  TELESCOPE_TRACK_RATE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -998,7 +998,7 @@ uint32_t MyClient::setTelescopeParkOption(INDI::BaseDevice *dp,QString option)
 
 
     sendNewProperty(property);
-    qInfo()<<"setTelescopeParkOption"<< option;
+    Logger::Log("indi_client | setTelescopeParkOption | " + option.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1009,13 +1009,13 @@ uint32_t MyClient::getTelescopeParkPosition(INDI::BaseDevice *dp,double &RA_DEGR
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_PARK_POSITION property...");
+        Logger::Log("indi_client | getTelescopeParkPosition | Error: unable to find  TELESCOPE_PARK_POSITION property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     RA_DEGREE   = property->np[0].value;
     DEC_DEGREE = property->np[1].value;
-    qInfo() << "getTelescopeParkPosition" << RA_DEGREE << DEC_DEGREE ;
+    Logger::Log("indi_client | getTelescopeParkPosition | " + std::to_string(RA_DEGREE) + ", " + std::to_string(DEC_DEGREE), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 
 }
@@ -1025,7 +1025,7 @@ uint32_t MyClient::setTelescopeParkPosition(INDI::BaseDevice *dp,double RA_DEGRE
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_PARK_POSITION property...");
+        Logger::Log("indi_client | setTelescopeParkPosition | Error: unable to find  TELESCOPE_PARK_POSITION property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1034,7 +1034,7 @@ uint32_t MyClient::setTelescopeParkPosition(INDI::BaseDevice *dp,double RA_DEGRE
     property->np[1].value= DEC_DEGREE;
 
     sendNewProperty(property);
-    qInfo()<<"setTelescopeParkPosition"<< RA_DEGREE << DEC_DEGREE;
+    Logger::Log("indi_client | setTelescopeParkPosition | " + std::to_string(RA_DEGREE) + ", " + std::to_string(DEC_DEGREE), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 uint32_t MyClient::getTelescopePark(INDI::BaseDevice *dp,bool &isParked)
@@ -1043,13 +1043,13 @@ uint32_t MyClient::getTelescopePark(INDI::BaseDevice *dp,bool &isParked)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find TELESCOPE_PARK property...");
+        Logger::Log("indi_client | getTelescopePark | Error: unable to find TELESCOPE_PARK property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
     if(property[0].getState()==ISS_ON)        isParked=true;
     else if(property[1].getState()==ISS_ON)   isParked=false;
 
-    qInfo() << "getTelescopePark" << isParked;
+    Logger::Log("indi_client | getTelescopePark | " + std::to_string(isParked), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp,bool isParked)
@@ -1058,7 +1058,7 @@ uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp,bool isParked)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find TELESCOPE_PARK property...");
+        Logger::Log("indi_client | setTelescopePark | Error: unable to find TELESCOPE_PARK property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1073,7 +1073,7 @@ uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp,bool isParked)
         property[1].setState(ISS_OFF);
     }                
     sendNewProperty(property);
-    qInfo() << "setTelescopePark" << isParked;
+    Logger::Log("indi_client | setTelescopePark | " + std::to_string(isParked), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1085,7 +1085,7 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp,QString command)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find HOME_INIT property...");
+        Logger::Log("indi_client | setTelescopeHomeInit | Error: unable to find HOME_INIT property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1112,11 +1112,11 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp,QString command)
     }
 
     if(t.elapsed()>3000){
-       qInfo() << "setTelescopeHomeInit | ERROR : timeout ";
+       Logger::Log("indi_client | setTelescopeHomeInit | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
-    qInfo() << "setTelescopeHomeInit" << command;
+    Logger::Log("indi_client | setTelescopeHomeInit | " + command.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1130,7 +1130,7 @@ uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find TELESCOPE_SLEW_RATE property...");
+        Logger::Log("indi_client | getTelescopeSlewRate | Error: unable to find TELESCOPE_SLEW_RATE property...", LogLevel::WARNING, DeviceType::MOUNT);
         return QHYCCD_ERROR;
     }
 
@@ -1144,9 +1144,15 @@ uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
     else if(property[7].getState()==ISS_ON)   speed=8;
     else if(property[8].getState()==ISS_ON)   speed=9;
     else if(property[9].getState()==ISS_ON)   speed=10;
+    else
+    {
+        Logger::Log("indi_client | getTelescopeSlewRate | Error: unable to find TELESCOPE_SLEW_RATE property...", LogLevel::ERROR, DeviceType::MOUNT);
+        speed = -1;
+        return QHYCCD_ERROR;
+    }
 
-    qInfo() << "getTelescopeSlewRate" << speed ;
-    if(speed>=0 && speed<=9) qInfo()<<property[speed].getLabel();
+    Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed), LogLevel::INFO, DeviceType::MOUNT);
+    if(speed>=0 && speed<=9) Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed) + " " + property[speed].getLabel(), LogLevel::INFO, DeviceType::MOUNT);
 
 
     return QHYCCD_SUCCESS;
@@ -1159,11 +1165,11 @@ uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp,int speed)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find TELESCOPE_SLEW_RATE property...");
+        Logger::Log("indi_client | setTelescopeSlewRate | Error: unable to find TELESCOPE_SLEW_RATE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    qInfo() << "property->count():" << property->count();
+    Logger::Log("indi_client | setTelescopeSlewRate | " + std::to_string(property->count()), LogLevel::INFO, DeviceType::CAMERA);
     if(speed>=0 && speed <= property->count())  
     {
         property[speed-1].setState(ISS_ON);
@@ -1179,7 +1185,7 @@ uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp,int speed)
         sendNewProperty(property);
     }
 
-    qInfo() << "setTelescopeSlewRate" << speed;
+    Logger::Log("indi_client | setTelescopeSlewRate | " + std::to_string(speed), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1190,13 +1196,13 @@ uint32_t MyClient::getTelescopeTotalSlewRate(INDI::BaseDevice *dp,int &total)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find TELESCOPE_SLEW_RATE property...");
+        Logger::Log("indi_client | getTelescopeTotalSlewRate | Error: unable to find TELESCOPE_SLEW_RATE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     total=property->count();
 
-    qInfo() << "getTelescopeTotalSlewRate:" << total;
+    Logger::Log("indi_client | getTelescopeTotalSlewRate:" + std::to_string(total), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1210,7 +1216,7 @@ uint32_t MyClient::getTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int &min,
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find Max slew Rate property...");
+        Logger::Log("indi_client | getTelescopeMaxSlewRateOptions | Error: unable to find Max slew Rate property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1218,7 +1224,7 @@ uint32_t MyClient::getTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int &min,
     min  = property->np[0].min;
     value= property->np[0].value;
 
-    qInfo() << "getTelescopeMaxSlewRateOptions" << max << min << value;
+    Logger::Log("indi_client | getTelescopeMaxSlewRateOptions" + std::to_string(max) + " " + std::to_string(min) + " " + std::to_string(value), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 
 }
@@ -1231,7 +1237,7 @@ uint32_t MyClient::setTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int value
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find Max slew Rate property...");
+        Logger::Log("indi_client | setTelescopeMaxSlewRateOptions | Error: unable to find Max slew Rate property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1246,11 +1252,11 @@ uint32_t MyClient::setTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int value
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "setTelescopeMaxSlewRateOptions | ERROR : timeout ";
+       Logger::Log("indi_client | setTelescopeMaxSlewRateOptions | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
-    qInfo() << "setTelescopeMaxSlewRateOptions" <<value;
+    Logger::Log("indi_client | setTelescopeMaxSlewRateOptions" + std::to_string(value), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1266,7 +1272,7 @@ uint32_t MyClient::setTelescopeAbortMotion(INDI::BaseDevice *dp)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_ABORT_MOTION property...");
+        Logger::Log("indi_client | setTelescopeAbortMotion | Error: unable to find  TELESCOPE_ABORT_MOTION property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1282,14 +1288,14 @@ uint32_t MyClient::getTelescopeMoveWE(INDI::BaseDevice *dp,QString &statu)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_MOTION_WE property...");
+        Logger::Log("indi_client | getTelescopeMoveWE | Error: unable to find  TELESCOPE_MOTION_WE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     if(property[0].getState()==ISS_ON)      {statu="WEST";}
     else if(property[1].getState()==ISS_ON) {statu="EAST";}
     else                                    {statu="STOP";}
-    qInfo() << "getTelescopeMoveWE" << statu ;
+    Logger::Log("indi_client | getTelescopeMoveWE" + statu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1299,7 +1305,7 @@ uint32_t MyClient::setTelescopeMoveWE(INDI::BaseDevice *dp,QString command)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_MOTION_WE property...");
+        Logger::Log("indi_client | setTelescopeMoveWE | Error: unable to find  TELESCOPE_MOTION_WE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1308,7 +1314,7 @@ uint32_t MyClient::setTelescopeMoveWE(INDI::BaseDevice *dp,QString command)
     else if(command=="STOP")    {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);}
 
     sendNewProperty(property);
-    qInfo()<<"setTelescopeMoveWE"<< command;
+    Logger::Log("indi_client | setTelescopeMoveWE" + command.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1318,14 +1324,14 @@ uint32_t MyClient::getTelescopeMoveNS(INDI::BaseDevice *dp,QString &statu)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_MOTION_NS property...");
+        Logger::Log("indi_client | getTelescopeMoveNS | Error: unable to find  TELESCOPE_MOTION_NS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     if(property[0].getState()==ISS_ON)      {statu="NORTH";}
     else if(property[1].getState()==ISS_ON) {statu="SOUTH";}
     else                                    {statu="STOP";}
-    qInfo() << "getTelescopeMoveNS" << statu ;
+    Logger::Log("indi_client | getTelescopeMoveNS" + statu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1335,7 +1341,7 @@ uint32_t MyClient::setTelescopeMoveNS(INDI::BaseDevice *dp,QString command)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TELESCOPE_MOTION_NS property...");
+        Logger::Log("indi_client | setTelescopeMoveNS | Error: unable to find  TELESCOPE_MOTION_NS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1346,7 +1352,7 @@ uint32_t MyClient::setTelescopeMoveNS(INDI::BaseDevice *dp,QString command)
 
 
     sendNewProperty(property);
-    qInfo()<<"setTelescopeMoveNS"<< command;
+    Logger::Log("indi_client | setTelescopeMoveNS" + command.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1354,7 +1360,7 @@ uint32_t MyClient::setTelescopeGuideNS(INDI::BaseDevice* dp, int dir, int time_g
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_TIMED_GUIDE_NS");
     if (!property.isValid()) {
-        qWarning("Error: unable to find TELESCOPE_TIMED_GUIDE_NS property...");
+        Logger::Log("indi_client | setTelescopeGuideNS | Error: unable to find TELESCOPE_TIMED_GUIDE_NS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
     if (dir == 1) {
@@ -1373,7 +1379,7 @@ uint32_t MyClient::setTelescopeGuideWE(INDI::BaseDevice* dp, int dir, int time_g
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_TIMED_GUIDE_WE");
     if (!property.isValid()) {
-        qWarning("Error: unable to find TELESCOPE_TIMED_GUIDE_WE property...");
+        Logger::Log("indi_client | setTelescopeGuideWE | Error: unable to find TELESCOPE_TIMED_GUIDE_WE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
     if (dir == 3)
@@ -1395,7 +1401,7 @@ uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp,QStri
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  ON_COORD_SET property...");
+        Logger::Log("indi_client | setTelescopeActionAfterPositionSet | Error: unable to find  ON_COORD_SET property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1420,11 +1426,11 @@ uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp,QStri
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "setTelescopeActionAfterPositionSet | ERROR : timeout ";
+       Logger::Log("indi_client | setTelescopeActionAfterPositionSet | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
-    qInfo()<<"setTelescopeActionAfterPositionSet" << action;
+    Logger::Log("indi_client | setTelescopeActionAfterPositionSet" + action.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1436,13 +1442,13 @@ uint32_t MyClient::getTelescopeRADECJ2000(INDI::BaseDevice *dp,double & RA_Hours
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  EQUATORIAL_COORD property...");
+        Logger::Log("indi_client | getTelescopeRADECJ2000 | Error: unable to find  EQUATORIAL_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     RA_Hours   = property->np[0].value;
     DEC_Degree = property->np[1].value;
-    qInfo() << "getTelescopeRADECJ2000" << RA_Hours << DEC_Degree ;
+    Logger::Log("indi_client | getTelescopeRADECJ2000" + std::to_string(RA_Hours) + " " + std::to_string(DEC_Degree), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1452,7 +1458,7 @@ uint32_t MyClient::setTelescopeRADECJ2000(INDI::BaseDevice *dp,double RA_Hours,d
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  EQUATORIAL_COORD property...");
+        Logger::Log("indi_client | setTelescopeRADECJ2000 | Error: unable to find  EQUATORIAL_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1471,7 +1477,7 @@ uint32_t MyClient::getTelescopeRADECJNOW(INDI::BaseDevice *dp,double & RA_Hours,
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  EQUATORIAL_EOD_COORD property...");
+        Logger::Log("indi_client | getTelescopeRADECJNOW | Error: unable to find  EQUATORIAL_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1487,7 +1493,7 @@ uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,do
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  EQUATORIAL_EOD_COORD property...");
+        Logger::Log("indi_client | setTelescopeRADECJNOW | Error: unable to find  EQUATORIAL_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1521,13 +1527,13 @@ uint32_t MyClient::getTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double & RA_
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TARGET_EOD_COORD property...");
+        Logger::Log("indi_client | getTelescopeTargetRADECJNOW | Error: unable to find  TARGET_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     RA_Hours   = property->np[0].value;
     DEC_Degree = property->np[1].value;
-    qInfo() << "getTelescopeTargetRADECJNOW" << RA_Hours << DEC_Degree ;
+    Logger::Log("indi_client | getTelescopeTargetRADECJNOW" + std::to_string(RA_Hours) + " " + std::to_string(DEC_Degree), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1537,7 +1543,7 @@ uint32_t MyClient::setTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double RA_Ho
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TARGET_EOD_COORD property...");
+        Logger::Log("indi_client | setTelescopeTargetRADECJNOW | Error: unable to find  TARGET_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -1566,14 +1572,14 @@ uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hour
 
 uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property)
 {
-    qInfo()<<"syncTelescopeJNow | start";
+    Logger::Log("indi_client | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::CAMERA);
     QString action = "SYNC";
 
 
     setTelescopeActionAfterPositionSet(dp,action);
 
     setTelescopeRADECJNOW(dp,RA_Hours,DEC_Degree,property);
-    qInfo()<<"syncTelescopeJNow | end";
+    Logger::Log("indi_client | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::CAMERA);
 }
 
 
@@ -1587,13 +1593,13 @@ uint32_t MyClient::getTelescopetAZALT(INDI::BaseDevice *dp,double & AZ_DEGREE,do
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  HORIZONTAL_COORD property...");
+        Logger::Log("indi_client | getTelescopetAZALT | Error: unable to find  HORIZONTAL_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     ALT_DEGREE   = property->np[0].value;
     AZ_DEGREE    = property->np[1].value;
-    qInfo() << "getTelescopetAZALT" << AZ_DEGREE << ALT_DEGREE ;
+    Logger::Log("indi_client | getTelescopetAZALT" + std::to_string(AZ_DEGREE) + " " + std::to_string(ALT_DEGREE), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1603,7 +1609,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  HORIZONTAL_COORD property...");
+        Logger::Log("indi_client | setTelescopetAZALT | Error: unable to find  HORIZONTAL_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
     property->np[0].value =AZ_DEGREE;
@@ -1623,7 +1629,7 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QStrin
 
         if (!property.isValid())
         {
-            qWarning("Error: unable to find  OnStep Status property...");
+            Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
             return QHYCCD_ERROR;
         }
         
@@ -1641,20 +1647,21 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QStrin
 /**************************************************************************************
 **                                  Focus API
 ***************************************************************************************/
-uint32_t MyClient::getFocuserSpeed(INDI::BaseDevice *dp,int &value ,int &min,int &max)
+uint32_t MyClient::getFocuserSpeed(INDI::BaseDevice *dp,int &value ,int &min,int &max,int &step)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_SPEED");
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_SPEED property...");
+        Logger::Log("indi_client | getFocuserSpeed | Error: unable to find  FOCUS_SPEED property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     value   = property->np[0].value;
     min     = property->np[0].min;
     max     = property->np[0].max;
-    qInfo() << "getFocuserSpeed" << value << min << max ;
+    step    = property->np[0].step;
+    Logger::Log("indi_client | getFocuserSpeed" + std::to_string(value) + " " + std::to_string(min) + " " + std::to_string(max), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1664,14 +1671,14 @@ uint32_t MyClient::setFocuserSpeed(INDI::BaseDevice *dp,int value)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_SPEED property...");
+        Logger::Log("indi_client | setFocuserSpeed | Error: unable to find  FOCUS_SPEED property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
     property->np[0].value =value;
 
     sendNewProperty(property);
 
-    qInfo()<<"setFocuserSpeed"<< value ;
+    Logger::Log("indi_client | setFocuserSpeed" + std::to_string(value), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1681,14 +1688,14 @@ uint32_t MyClient::getFocuserMoveDiretion(INDI::BaseDevice *dp,bool & isDirectio
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_MOTION property...");
+        Logger::Log("indi_client | getFocuserMoveDiretion | Error: unable to find  FOCUS_MOTION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     if(property[0].getState()==ISS_ON)      {isDirectionIn=true;}
     else if(property[1].getState()==ISS_ON) {isDirectionIn=false;}
 
-    qInfo() << "getFocuserMoveDiretion | IN/OUT isDirectionIn:" << isDirectionIn ;
+    Logger::Log("indi_client | getFocuserMoveDiretion | IN/OUT isDirectionIn:" + std::to_string(isDirectionIn), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1698,14 +1705,14 @@ uint32_t MyClient::setFocuserMoveDiretion(INDI::BaseDevice *dp,bool isDirectionI
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_MOTION property...");
+        Logger::Log("indi_client | setFocuserMoveDiretion | Error: unable to find  FOCUS_MOTION property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     if(isDirectionIn==true)   {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
     if(isDirectionIn==false)  {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
     sendNewProperty(property);
-    qInfo() << "setFocuserMoveDiretion | IN/OUT isDirectionIn:" << isDirectionIn ;
+    Logger::Log("indi_client | setFocuserMoveDiretion | IN/OUT isDirectionIn:" + std::to_string(isDirectionIn), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1715,13 +1722,13 @@ uint32_t MyClient::getFocuserMaxLimit(INDI::BaseDevice *dp,int & maxlimit)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_MAX property...");
+        Logger::Log("indi_client | getFocuserMaxLimit | Error: unable to find  FOCUS_MAX property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     maxlimit   = property->np[0].value;
 
-    qInfo() << "getFocuserMaxLimit" << maxlimit ;
+    Logger::Log("indi_client | getFocuserMaxLimit" + std::to_string(maxlimit), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1731,14 +1738,14 @@ uint32_t MyClient::setFocuserMaxLimit(INDI::BaseDevice *dp,int  maxlimit)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_MAX property...");
+        Logger::Log("indi_client | setFocuserMaxLimit | Error: unable to find  FOCUS_MAX property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
     property->np[0].value =maxlimit;
 
     sendNewProperty(property);
 
-    qInfo()<<"setFocuserMaxLimit"<< maxlimit;
+    Logger::Log("indi_client | setFocuserMaxLimit" + std::to_string(maxlimit), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1748,14 +1755,14 @@ uint32_t MyClient::getFocuserReverse(INDI::BaseDevice *dp,bool & isReversed)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_REVERSE_MOTION property...");
+        Logger::Log("indi_client | getFocuserReverse | Error: unable to find  FOCUS_REVERSE_MOTION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     if(property[0].getState()==ISS_ON)      {isReversed=true;}
     else if(property[1].getState()==ISS_ON) {isReversed=false;}
 
-    qInfo() << "getFocuserReverse | IN/OUT isDirectionIn:" << isReversed ;
+    Logger::Log("indi_client | getFocuserReverse | IN/OUT isDirectionIn:" + std::to_string(isReversed), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1765,14 +1772,14 @@ uint32_t MyClient::setFocuserReverse(INDI::BaseDevice *dp,bool  isReversed)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_REVERSE_MOTION property...");
+        Logger::Log("indi_client | setFocuserReverse | Error: unable to find  FOCUS_REVERSE_MOTION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     if(isReversed==true)   {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
     if(isReversed==false)  {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
     sendNewProperty(property);
-    qInfo() << "setFocuserReverse | IN/OUT isDirectionIn:" << isReversed ;
+    Logger::Log("indi_client | setFocuserReverse | IN/OUT isDirectionIn:" + std::to_string(isReversed), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1785,14 +1792,14 @@ uint32_t MyClient::moveFocuserSteps(INDI::BaseDevice *dp,int steps)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  REL_FOCUS_POSITION property...");
+        Logger::Log("indi_client | moveFocuserSteps | Error: unable to find  REL_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
     property->np[0].value =steps;
 
     sendNewProperty(property);
 
-    qInfo()<<"moveFocuserSteps"<< steps;
+    Logger::Log("indi_client | moveFocuserSteps" + std::to_string(steps), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1802,14 +1809,14 @@ uint32_t MyClient::moveFocuserToAbsolutePosition(INDI::BaseDevice *dp,int positi
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  ABS_FOCUS_POSITION property...");
+        Logger::Log("indi_client | moveFocuserToAbsolutePosition | Error: unable to find  ABS_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
     property->np[0].value =position;
 
     sendNewProperty(property);
 
-    qInfo()<<"moveFocuserToAbsolutePosition"<< position;
+    Logger::Log("indi_client | moveFocuserToAbsolutePosition" + std::to_string(position), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1819,7 +1826,7 @@ uint32_t MyClient::getFocuserAbsolutePosition(INDI::BaseDevice *dp,int & positio
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  ABS_FOCUS_POSITION property...");
+        Logger::Log("indi_client | getFocuserAbsolutePosition | Error: unable to find  ABS_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
     
@@ -1827,7 +1834,7 @@ uint32_t MyClient::getFocuserAbsolutePosition(INDI::BaseDevice *dp,int & positio
 
     // sendNewProperty(property);
 
-    qInfo()<<"getFocuserAbsolutePosition: "<< position;
+    Logger::Log("indi_client | getFocuserAbsolutePosition: " + std::to_string(position), LogLevel::DEBUG, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1838,14 +1845,14 @@ uint32_t MyClient::moveFocuserWithTime(INDI::BaseDevice *dp,int msec)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_TIMER property...");
+        Logger::Log("indi_client | moveFocuserWithTime | Error: unable to find  FOCUS_TIMER property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
     property->np[0].value =msec;
 
     sendNewProperty(property);
 
-    qInfo()<<"moveFocuserWithTime"<< msec;
+    Logger::Log("indi_client | moveFocuserWithTime" + std::to_string(msec), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1855,14 +1862,14 @@ uint32_t MyClient::abortFocuserMove(INDI::BaseDevice *dp)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_ABORT_MOTION property...");
+        Logger::Log("indi_client | abortFocuserMove | Error: unable to find  FOCUS_ABORT_MOTION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     property[0].setState(ISS_ON);
     sendNewProperty(property);
 
-    qInfo() << "abortFocuserMove" ;
+    Logger::Log("indi_client | abortFocuserMove", LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1872,14 +1879,14 @@ uint32_t MyClient::syncFocuserPosition(INDI::BaseDevice *dp,int position)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_SYNC property...");
+        Logger::Log("indi_client | syncFocuserPosition | Error: unable to find  FOCUS_SYNC property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
     property->np[0].value =position;
 
     sendNewProperty(property);
 
-    qInfo()<<"syncFocuserPosition"<< position;
+    Logger::Log("indi_client | syncFocuserPosition" + std::to_string(position), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
@@ -1893,12 +1900,12 @@ uint32_t MyClient::getFocuserOutTemperature(INDI::BaseDevice *dp,double &value)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_TEMPERATURE property...");
+        Logger::Log("indi_client | getFocuserOutTemperature | Error: unable to find  FOCUS_TEMPERATURE property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     value = property->np[0].value;
-    qInfo()<<"getFocuserOutTemperature"<< value;
+    Logger::Log("indi_client | getFocuserOutTemperature" + std::to_string(value), LogLevel::INFO, DeviceType::FOCUSER);
 
     return QHYCCD_SUCCESS;
 }
@@ -1911,12 +1918,12 @@ uint32_t MyClient::getFocuserChipTemperature(INDI::BaseDevice *dp,double &value)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FOCUS_TEMPERATURE property...");
+        Logger::Log("indi_client | getFocuserChipTemperature | Error: unable to find  FOCUS_TEMPERATURE property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
 
     value = property->np[0].value;
-    qInfo()<<"getFocuserChipTemperature"<< value;
+    Logger::Log("indi_client | getFocuserChipTemperature" + std::to_string(value), LogLevel::INFO, DeviceType::FOCUSER);
 
     return QHYCCD_SUCCESS;
 }
@@ -1932,7 +1939,7 @@ uint32_t MyClient::getCFWPosition(INDI::BaseDevice *dp,int & position,int &min,i
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FILTER_SLOT property...");
+        Logger::Log("indi_client | getCFWPosition | Error: unable to find  FILTER_SLOT property...", LogLevel::WARNING, DeviceType::CAMERA);
         min=0;
         max=0;
         position=0;
@@ -1943,7 +1950,7 @@ uint32_t MyClient::getCFWPosition(INDI::BaseDevice *dp,int & position,int &min,i
     min        = property->np[0].min;
     max        = property->np[0].max;
 
-    qInfo() << "getCFWCurrentPosition" << position  << min << max ;
+    Logger::Log("indi_client | getCFWPosition" + std::to_string(position) + " " + std::to_string(min) + " " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1953,7 +1960,7 @@ uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp,int position)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FILTER_SLOT property...");
+        Logger::Log("indi_client | setCFWPosition | Error: unable to find  FILTER_SLOT property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
     property->np[0].value =position;
@@ -1966,17 +1973,17 @@ uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp,int position)
 
     int timeout=10000;
     while(t.elapsed()<timeout){
-        qInfo() <<property->getStateAsString();
+        Logger::Log("indi_client | setCFWPosition | State:" + std::string(property->getStateAsString()), LogLevel::DEBUG, DeviceType::CAMERA);
         // qDebug() << "State:" << property->getState();
         QThread::msleep(300);
         if(property->getState()==IPS_OK) {
-            qInfo() <<property->getStateAsString();
+            Logger::Log("indi_client | setCFWPosition | State:" + std::string(property->getStateAsString()), LogLevel::INFO, DeviceType::CAMERA);
             break;  // it will not wait the motor arrived
         }
     }
 
     if(t.elapsed()>timeout){
-       qWarning() << "setCFWPosition | ERROR : timeout ";
+       Logger::Log("indi_client | setCFWPosition | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
@@ -1989,13 +1996,13 @@ uint32_t MyClient::getCFWSlotName(INDI::BaseDevice *dp,QString & name)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FILTER_NAME property...");
+        Logger::Log("indi_client | getCFWSlotName | Error: unable to find  FILTER_NAME property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     name   = property[0].getText();
 
-    qInfo() << "getCFWSlotName" << name;
+    Logger::Log("indi_client | getCFWSlotName" + name.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -2005,7 +2012,7 @@ uint32_t MyClient::setCFWSlotName(INDI::BaseDevice *dp,QString name)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  FILTER_NAME property...");
+        Logger::Log("indi_client | setCFWSlotName | Error: unable to find  FILTER_NAME property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -2025,13 +2032,13 @@ uint32_t MyClient::getDevicePort(INDI::BaseDevice *dp,QString &Device_Port)     
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find DEVICE_PORT property...");
+        Logger::Log("indi_client | getDevicePort | Error: unable to find DEVICE_PORT property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     Device_Port = property[0].getText(); 
 
-    qInfo() << "getDevicePort" << Device_Port;
+    Logger::Log("indi_client | getDevicePort" + Device_Port.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     
     return QHYCCD_SUCCESS;
 }
@@ -2042,7 +2049,7 @@ uint32_t MyClient::setDevicePort(INDI::BaseDevice *dp,QString Device_Port)      
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find DEVICE_PORT property...");
+        Logger::Log("indi_client | setDevicePort | Error: unable to find DEVICE_PORT property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -2050,7 +2057,7 @@ uint32_t MyClient::setDevicePort(INDI::BaseDevice *dp,QString Device_Port)      
 
     sendNewProperty(property);
 
-    qInfo() << "setDevicePort" << Device_Port;
+    Logger::Log("indi_client | setDevicePort" + Device_Port.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     
     return QHYCCD_SUCCESS;
 }
@@ -2061,7 +2068,7 @@ uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TIME_UTC property...");
+        Logger::Log("indi_client | setTimeUTC | Error: unable to find  TIME_UTC property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -2071,8 +2078,8 @@ uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
     QString time_utc = datetime_utc.toString(Qt::ISODate);
     QTimeZone timeZone = datetime.timeZone();
     // Print the time zone offset and abbreviation
-    qInfo() << "setTimeUTC | Time zone offset:" << timeZone.offsetFromUtc(datetime);
-    qInfo() << "setTimeUTC | Time zone abbreviation:" << timeZone.abbreviation(datetime);
+    Logger::Log("indi_client | setTimeUTC | Time zone offset:" + std::to_string(timeZone.offsetFromUtc(datetime)), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("indi_client | setTimeUTC | Time zone abbreviation:" + timeZone.abbreviation(datetime).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     int timezone_hours = (timeZone.offsetFromUtc(datetime_utc))/3600;
 
@@ -2081,12 +2088,12 @@ uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
     QString offset = QString::number(timezone_hours);
 
 
-    qInfo()<<"setTimeUTC"<< time_utc <<offset;
+    Logger::Log("indi_client | setTimeUTC" + time_utc.toStdString() + " " + offset.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     property[0].setText(time_utc.toLatin1().data());
     property[1].setText(offset.toLatin1().data());
 
-    qInfo() << "property[0].setText(time_utc.toLatin1().data());" << time_utc.toLatin1().data();
-    qInfo() << "property[1].setText(offset.toLatin1().data());" << offset.toLatin1().data();
+    Logger::Log("indi_client | setTimeUTC | property[0].setText(time_utc.toLatin1().data());" + std::string(time_utc.toLatin1().data()), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("indi_client | setTimeUTC | property[1].setText(offset.toLatin1().data());" + std::string(offset.toLatin1().data()), LogLevel::INFO, DeviceType::CAMERA);
     
     sendNewProperty(property); 
 
@@ -2098,13 +2105,13 @@ uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "setTimeUTC | ERROR : timeout ";
+       Logger::Log("indi_client | setTimeUTC | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
 
 
-    qInfo()<<"setTimeUTC"<< time_utc << offset;
+    Logger::Log("indi_client | setTimeUTC" + time_utc.toStdString() + " " + offset.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -2115,14 +2122,14 @@ uint32_t MyClient::getTimeUTC(INDI::BaseDevice *dp,QDateTime &datetime)
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  TIME_UTC property...");
+        Logger::Log("indi_client | getTimeUTC | Error: unable to find  TIME_UTC property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     QString time   = property[0].getText();  //ISO8601 string , UTC
     QString offset = property[1].getText();
 
-    qInfo()<<"getTimeUTC"<< time <<offset;
+    Logger::Log("indi_client | getTimeUTC" + time.toStdString() + " " + offset.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     datetime = QDateTime::fromString(time, Qt::ISODate);
     QTimeZone timeZone(offset.toInt()*3600);
@@ -2136,7 +2143,7 @@ uint32_t MyClient::getTimeUTC(INDI::BaseDevice *dp,QDateTime &datetime)
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "getTimeUTC | ERROR : timeout ";
+       Logger::Log("indi_client | getTimeUTC | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
@@ -2151,7 +2158,7 @@ uint32_t MyClient::setLocation(INDI::BaseDevice *dp,double latitude_degree, doub
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  GEOGRAPHIC_COORD property...");
+        Logger::Log("indi_client | setLocation | Error: unable to find  GEOGRAPHIC_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -2171,11 +2178,11 @@ uint32_t MyClient::setLocation(INDI::BaseDevice *dp,double latitude_degree, doub
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "setLocation | ERROR : timeout ";
+       Logger::Log("indi_client | setLocation | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
-    qInfo()<<"setLocation"<< latitude_degree << longitude_degree << elevation;
+    Logger::Log("indi_client | setLocation" + std::to_string(latitude_degree) + " " + std::to_string(longitude_degree) + " " + std::to_string(elevation), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -2185,7 +2192,7 @@ uint32_t MyClient::getLocation(INDI::BaseDevice *dp,double &latitude_degree, dou
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  GEOGRAPHIC_COORD property...");
+        Logger::Log("indi_client | getLocation | Error: unable to find  GEOGRAPHIC_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -2193,7 +2200,7 @@ uint32_t MyClient::getLocation(INDI::BaseDevice *dp,double &latitude_degree, dou
     longitude_degree  = property->np[1].value;
     elevation         = property->np[2].value;
 
-    qInfo()<<"getLocation"<< latitude_degree << longitude_degree << elevation;
+    Logger::Log("indi_client | getLocation" + std::to_string(latitude_degree) + " " + std::to_string(longitude_degree) + " " + std::to_string(elevation), LogLevel::INFO, DeviceType::CAMERA);
 
 
     QElapsedTimer t;
@@ -2204,7 +2211,7 @@ uint32_t MyClient::getLocation(INDI::BaseDevice *dp,double &latitude_degree, dou
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "getLocation | ERROR : timeout ";
+       Logger::Log("indi_client | getLocation | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
@@ -2218,7 +2225,7 @@ uint32_t MyClient::setAtmosphere(INDI::BaseDevice *dp,double temperature, double
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  ATMOSPHERE property...");
+        Logger::Log("indi_client | setAtmosphere | Error: unable to find  ATMOSPHERE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -2236,11 +2243,11 @@ uint32_t MyClient::setAtmosphere(INDI::BaseDevice *dp,double temperature, double
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "setAtmosphere | ERROR : timeout ";
+       Logger::Log("indi_client | setAtmosphere | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 
-    qInfo()<<"setAtmosphere"<< temperature << pressure << humidity;
+    Logger::Log("indi_client | setAtmosphere" + std::to_string(temperature) + " " + std::to_string(pressure) + " " + std::to_string(humidity), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -2250,7 +2257,7 @@ uint32_t MyClient::getAtmosphere(INDI::BaseDevice *dp,double &temperature, doubl
 
     if (!property.isValid())
     {
-        qWarning("Error: unable to find  ATMOSPHERE property...");
+        Logger::Log("indi_client | getAtmosphere | Error: unable to find  ATMOSPHERE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
@@ -2258,7 +2265,7 @@ uint32_t MyClient::getAtmosphere(INDI::BaseDevice *dp,double &temperature, doubl
     pressure      = property->np[1].value;
     humidity      = property->np[2].value;
 
-    qInfo()<<"getsetAtmosphere"<< temperature << pressure << humidity;
+    Logger::Log("indi_client | getAtmosphere" + std::to_string(temperature) + " " + std::to_string(pressure) + " " + std::to_string(humidity), LogLevel::INFO, DeviceType::CAMERA);
 
 
     QElapsedTimer t;
@@ -2269,7 +2276,7 @@ uint32_t MyClient::getAtmosphere(INDI::BaseDevice *dp,double &temperature, doubl
     }
 
     if(t.elapsed()>3000){
-       qWarning() << "getsetAtmosphere | ERROR : timeout ";
+       Logger::Log("indi_client | getAtmosphere | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
        return QHYCCD_ERROR;
     }
 

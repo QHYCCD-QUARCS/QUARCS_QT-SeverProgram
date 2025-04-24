@@ -8,6 +8,8 @@
 #include <functional>
 #include <QElapsedTimer>
 
+#include "Logger.h"
+
 // 回调函数类型定义
 using ImageReceivedCallback = std::function<void(const std::string& filename, const std::string& devname)>;
 
@@ -34,22 +36,15 @@ class MyClient : public INDI::BaseClient
         void RemoveDevice(const std::string& name);
         // 获取当前设备列表的设备数
         int GetDeviceCount() const;
-        // 清空设备列表
+        //
         void ClearDevices();
-        // 打印所有设备
         QString PrintDevices();
-        // 获取指定索引的设备
         INDI::BaseDevice * GetDeviceFromList(int index);
-        // 通过设备名获取设备
         INDI::BaseDevice * GetDeviceFromListWithName(std::string devName);
-        // 获取指定索引的设备名
         std::string GetDeviceNameFromList(int index);
-        // 列出所有设备的属性
         void listAllProperties(INDI::BaseDevice *dp);
-        // 断开所有设备
         void disconnectAllDevice(void);
 
-        // 获取设备所有的属性名
         void GetAllPropertyName(INDI::BaseDevice *dp);
         const char * PropertyTypeToString(INDI_PROPERTY_TYPE type);
 
@@ -137,7 +132,7 @@ class MyClient : public INDI::BaseClient
 
 
         //Focuser API
-        uint32_t getFocuserSpeed(INDI::BaseDevice *dp,int &value ,int &min,int &max);
+        uint32_t getFocuserSpeed(INDI::BaseDevice *dp,int &value ,int &min,int &max,int &step);
         uint32_t setFocuserSpeed(INDI::BaseDevice *dp,int  value);
         uint32_t getFocuserMoveDiretion(INDI::BaseDevice *dp,bool & isDirectionIn);
         uint32_t setFocuserMoveDiretion(INDI::BaseDevice *dp,bool isDirectionIn);

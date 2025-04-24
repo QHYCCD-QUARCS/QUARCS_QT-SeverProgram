@@ -20,6 +20,7 @@
 #include <QApplication>
 #include <QObject>
 #include <QDebug>
+#include "Logger.h"
 
 #include <stellarsolver.h>
 
@@ -92,6 +93,7 @@ struct SystemDevice {
   QString DriverFrom{};      // INDI,ASCOM,NATIVE.
   INDI::BaseDevice *dp;
   bool isConnect = false;
+  bool isBind = false;
 };
 
 struct SystemDeviceList {
@@ -238,7 +240,14 @@ struct CamBin
 class Tools : public QObject {
   Q_OBJECT
   Q_DISABLE_COPY(Tools)
+ protected:
+  static Tools* instance_;
+
  public:
+  static Tools* getInstance() {
+    return instance_;
+  }
+
   static void Initialize();
   static void Release();
 
@@ -247,91 +256,55 @@ class Tools : public QObject {
 
   static DriversList& driversList();
 
-  // 从本地文件中读取SystemList
   static bool LoadSystemListFromXml(const QString& fileName);
-  // 将SystemList列表保存到本地的xml文件里
   static void SaveSystemListToXml(const QString& fileName);
-  // 初始化SystemDeviceList
   static void InitSystemDeviceList();
-  // 清理SystemDeviceList中的设备连接状态
   static void CleanSystemDeviceListConnect();
-  // 获取SystemDeviceList中的设备数量
   static int  GetTotalDeviceFromSystemDeviceList();
-  // 通过设备名字从SystemDeviceList中获取设备的序号
   static bool getIndexFromSystemDeviceListByName(const QString& devname, int& index);
-  // 通过序号清理SystemDeviceList中的设备
   static void ClearSystemDeviceListItem(int index);
   static SystemDeviceList& systemDeviceList();
 
-  // 从本地文件中获取设备驱动列表
   static void readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,std::vector<DevGroup> &dev_groups, std::vector<Device> &devices);
-  // 打印设备列表
   static void printDevGroups2(const DriversList driver_list);
-  // 启动INDI驱动
   static void startIndiDriver(QString driver_name);
-  // 终止INDI驱动
   static void stopIndiDriver(QString driver_name);
-  // 打印设备列表
   static void printSystemDeviceList(SystemDeviceList s);
-  // 从SystemDeviceList中获取相机种类数量
   static QStringList getCameraNumFromSystemDeviceList(SystemDeviceList s);
 
-  // 创建配置文件
   static void makeConfigFile();
-  // 创建主相机图像保存文件夹
   static void makeImageFolder();
-  // 将SystemDeviceList保存到配置文件中
   static void saveSystemDeviceList(SystemDeviceList deviceList);
-  // 从配置文件中读取SystemDeviceList
   static SystemDeviceList readSystemDeviceList();
-  // 将主相机曝光时间选项列表保存到配置文件中
   static void saveExpTimeList(QString List);
-  // 从配置文件中读取主相机曝光时间选项列表
   static QString readExpTimeList();
-  // 将滤镜轮选项列表保存到配置文件中
   static void saveCFWList(QString Name, QString List);
-  // 从配置文件中读取滤镜轮选项列表
   static QString readCFWList(QString Name);
 
-  // 将单反相机信息保存到配置文件中
   static void saveDSLRsInfo(DSLRsInfo DSLRsInfo);
-  // 从配置文件中读取单反相机信息
   static DSLRsInfo readDSLRsInfo(QString Name);
 
-  // 从配置文件中读取客户端设置内容
   static void readClientSettings(const std::string& fileName, std::unordered_map<std::string, std::string>& config);
-  // 将客户端设置内容保存到配置文件中
   static void saveClientSettings(const std::string& fileName, const std::unordered_map<std::string, std::string>& config);
 
-  // 终止所有的INDI驱动
   static void stopIndiDriverAll(const DriversList driver_list);
 
-  // 从Fits图的头信息中读取设备名称
   static uint32_t readFitsHeadForDevName(std::string filename,QString &devname);
 
-  // 通过序号清理SystemDeviceList中的设备
   static void clearSystemDeviceListItem(SystemDeviceList &s,int index);                          //
-  // 初始化SystemDeviceList
-  static void initSystemDeviceList(SystemDeviceList &s);        
-  // 获取SystemDeviceList中的设备数量                                 //
+  static void initSystemDeviceList(SystemDeviceList &s);                                         //
   static int getTotalDeviceFromSystemDeviceList(SystemDeviceList s); 
-  // 从SystemDeviceList中获取相机种类数量
   static int getDriverNumFromSystemDeviceList(SystemDeviceList s);                            //
-  // 清理SystemDeviceList中的设备连接状态
   static void cleanSystemDeviceListConnect(SystemDeviceList &s);                                 //
-  // 通过设备名字从SystemDeviceList中获取设备的序号
   static uint32_t getIndexFromSystemDeviceListByName(SystemDeviceList s,QString devname,int &index);   //
 
-  // 读取Fits图中的图像信息
   static int readFits(const char* fileName, cv::Mat& image);
 
-  // 从Fits图中获取图像拍摄时间
   static QString getFitsCaptureTime(const char* fileName);
 
-  // 读取Fits图中的图像信息
   static int readFits_(const char* fileName, cv::Mat& image);
 
-  // QHYCCD Camera(这部分代码与QHYCCD SDK相关，目前软件里没有使用QHYCCD SDK)
+  // QHYCCD Camera
   static void ConnectQHYCCDSDK();
   static void ScanCamera();
   static void SelectQHYCCDSDKDevice(int systemNumber);
@@ -347,7 +320,7 @@ class Tools : public QObject {
   static qhyccd_handle*& fpgahandle();
   static qhyccd_handle*& maincamhandle();  // unused
 
-  // Image process（图像处理这部分功能目前没有在QT服务端进行，图像处理是在Vue客户端里进行的）
+  // Image process
   static void CvDebugShow(cv::Mat img);
   static QImage ShowHistogram(const cv::Mat& image,QLabel *label);
   static void PaintHistogram(cv::Mat src,QLabel *label);
@@ -368,37 +341,27 @@ class Tools : public QObject {
 
   static cv::Mat SubBackGround(cv::Mat image);
   // static bool DetectStar(cv::Mat image, double threshold, int minArea, cv::Rect& starRect);
-
-  // 计算图像中星点的半高宽
   static FWHM_Result CalculateFWHM(cv::Mat image);
-  // 计算图像中星点的HFR
   static HFR_Result CalculateHFR(cv::Mat image);
 
-  // 计算一阶矩
   static cv::Mat CalMoments(cv::Mat image);
 
-  // 通过StellarSolver库进行星点识别
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
 
-  // 加载Fits图
   static loadFitsResult loadFits(QString fileName);
 
-  // 将cv::Mat类型的图像数据保存为本地的JPG图
   static void SaveMatTo8BitJPG(cv::Mat image);
 
-  // 将cv::Mat类型的图像数据保存为本地的PNG图
   static void SaveMatTo16BitPNG(cv::Mat image);
 
-  // 将cv::Mat类型的图像数据保存为本地的FITS图
   static void SaveMatToFITS(const cv::Mat& image);
 
-  // 根据图像大小，选择适合的 bin 值
   static CamBin mergeImageBasedOnSize(cv::Mat image);
 
-  // 图像平均值合并
   static cv::Mat processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG);
+
   static uint32_t PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin);
-  // 图像合并
+
   static uint32_t PixelsDataSoftBin(uint8_t* srcdata, uint8_t* bindata, uint32_t width, uint32_t height, uint32_t camchannels, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor);
 
   static double getDecAngle(const QString& str);
@@ -461,41 +424,38 @@ class Tools : public QObject {
   static AltAz calculateAltAz(double ra, double dec, double lat, double lon, const std::tm& date);
   static void printDMS(double angle);
   static double DMSToDegree(int degrees, int minutes, double seconds);
-  // 计算视场信息
   static MinMaxFOV calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height);
-  // 判断图像解析是否完成
   static bool WaitForPlateSolveToComplete();
-  // 判断图像解析是否完成
   static bool isSolveImageFinish();
-  // 图像解析
   static SloveResults PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK);
-  // 读取图像解析结果
   static SloveResults ReadSolveResult(QString filename, int imageWidth, int imageHeight);
-  // 分析WCS属性
   static WCSParams extractWCSParams(const QString& wcsInfo);
   static SphericalCoordinates pixelToRaDec(double x, double y, const WCSParams& wcs);
-  // 获取视场的4个角坐标
   static std::vector<SphericalCoordinates> getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight);
 
-  // 拟合二次曲线
+  static StelObjectSelect getStelObjectSelectName();
+
+  static StelObjectSelect getTargetRaDecFromStel(std::string SearchName);
+
   static int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);
 
-  // 计算二次曲线拟合的好坏的指标
   static double calculateRSquared(QVector<QPointF> data, float a, float b, float c);
 
+  static void saveParameter(const QString& deviceCategory, const QString& functionCategory, const QString& parameterValue);
+  static QMap<QString, QString> readParameters(const QString& deviceCategory);
+  
 public slots:
-  // StellarSolver库的Debug输出
   void StellarSolverLogOutput(QString text);
 
-  // 图像解析完成的信号
   SloveResults onSolveFinished(int exitCode);
+
+signals:
+    void parseInfoEmitted(const QString& message);
 
  private:
   Tools();
   ~Tools();
 
-  static Tools* instance_;
-  // 通过StellarSolver库进行星点识别
   QList<FITSImage::Star> FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR);
 };
 

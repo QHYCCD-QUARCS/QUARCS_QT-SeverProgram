@@ -20,17 +20,19 @@ MainWindow *MainWindow::instance = nullptr;
 
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
 {
+    Logger::Initialize();
     getHostAddress();
 
     wsThread = new WebSocketThread(websocketUrl);
     connect(wsThread, &WebSocketThread::receivedMessage, this, &MainWindow::onMessageReceived);
     wsThread->start();
+    Logger::wsThread = wsThread;
 
     // 记住当前实例
     instance = this;
 
     // 安装自定义的消息处理器
-    qInstallMessageHandler(customMessageHandler);
+    // qInstallMessageHandler(customMessageHandler);
 
     InitPHD2();
 
@@ -45,6 +47,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     Tools::initSystemDeviceList(systemdevicelist);
     Tools::makeConfigFile();
     Tools::makeImageFolder();
+    connect(Tools::getInstance(), &Tools::parseInfoEmitted, this, &MainWindow::onParseInfoEmitted);
 
     m_thread = new QThread;
     m_threadTimer = new QTimer;
@@ -65,6 +68,11 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(PHDControlGuide_thread, &QThread::finished, PHDControlGuide_threadTimer, &QTimer::stop);
     connect(PHDControlGuide_thread, &QThread::destroyed, PHDControlGuide_threadTimer, &QTimer::deleteLater);
     PHDControlGuide_thread->start();
+    // getConnectedSerialPorts();
+    
+    // 电调控制初始化
+    focusMoveTimer = new QTimer(this);
+    connect(focusMoveTimer, &QTimer::timeout, this, &MainWindow::HandleFocuserMovementDataPeriodically);
 }
 
 MainWindow::~MainWindow()
@@ -82,127 +90,159 @@ MainWindow::~MainWindow()
 
 void MainWindow::getHostAddress()
 {
-    QList<QNetworkInterface> interfaces = QNetworkInterface::allInterfaces();
-    foreach (const QNetworkInterface &interface, interfaces) {
-        // 排除回环接口和非活动接口
-        if (interface.flags() & QNetworkInterface::IsLoopBack || !(interface.flags() & QNetworkInterface::IsUp))
-            continue;
+    int retryCount = 0;
+    const int maxRetries = 20;
+    const int waitTime = 5000; // 5秒
+
+    while (retryCount < maxRetries)
+    {
+        QList<QNetworkInterface> interfaces = QNetworkInterface::allInterfaces();
+        bool found = false;
+
+        foreach (const QNetworkInterface &interface, interfaces) {
+            // 排除回环接口和非活动接口
+            if (interface.flags() & QNetworkInterface::IsLoopBack || !(interface.flags() & QNetworkInterface::IsUp))
+                continue;
 
         QList<QNetworkAddressEntry> addresses = interface.addressEntries();
         foreach (const QNetworkAddressEntry &address, addresses) {
             if (address.ip().protocol() == QAbstractSocket::IPv4Protocol) {
                 QString localIpAddress = address.ip().toString();
-                qInfo() << "Local IP Address:" << address.ip().toString();
+                Logger::Log("Local IP Address:" + localIpAddress.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
                 if (!localIpAddress.isEmpty()) {
                     QUrl getUrl(QStringLiteral("ws://%1:8600").arg(localIpAddress));
-                    qInfo() << "WebSocket URL:" << getUrl.toString();
+                    Logger::Log("WebSocket URL:" + getUrl.toString().toStdString(), LogLevel::INFO, DeviceType::MAIN);
                     websocketUrl = getUrl;
+                    found = true;
+                    break;
                 } else {
-                    qWarning() << "Failed to get local IP address.";
+                    Logger::Log("Failed to get local IP address.", LogLevel::WARNING, DeviceType::MAIN);
+                }
                 }
             }
+            if (found) break;
         }
+
+        if (found) break;
+
+        retryCount++;
+        QThread::sleep(waitTime / 1000); // 等待5秒
+    }
+
+    if (retryCount == maxRetries) {
+        qCritical() << "Failed to detect any network interfaces after" << maxRetries << "attempts.";
     }
 }
 
 void MainWindow::onMessageReceived(const QString &message)
 {
     // 处理接收到的消息
-    qInfo() << "Received message in MainWindow:" << message;
+    Logger::Log("Received message in MainWindow:" + message.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
     // 分割消息
     QStringList parts = message.split(':');
 
-    // 选中的驱动名称
     if (parts.size() == 2 && parts[0].trimmed() == "ConfirmIndiDriver")
     {
+        Logger::Log("ConfirmIndiDriver:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         QString driverName = parts[1].trimmed();
         indi_Driver_Confirm(driverName);
     }
-    // 清除选中的驱动
     else if (message == "ClearIndiDriver")
     {
+        Logger::Log("ClearIndiDriver", LogLevel::DEBUG, DeviceType::MAIN);
         indi_Driver_Clear();
     }
-    // 选中的设备名称
     else if (parts.size() == 3 && parts[0].trimmed() == "ConfirmIndiDevice")
     {
+        Logger::Log("ConfirmIndiDevice:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         QString deviceName = parts[1].trimmed();
         QString driverName = parts[2].trimmed();
         // connectDevice(x);
         indi_Device_Confirm(deviceName, driverName);
     }
-    // 绑定的设备
     else if (parts.size() == 3 && parts[0].trimmed() == "BindingDevice")
     {
+        Logger::Log("BindingDevice:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         QString devicetype = parts[1].trimmed();
         int deviceindex = parts[2].trimmed().toInt();
         // connectDevice(x);
         BindingDevice(devicetype, deviceindex);
     }
-    // 设备解绑
     else if (parts.size() == 2 && parts[0].trimmed() == "UnBindingDevice")
     {
+        Logger::Log("UnBindingDevice:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         QString devicetype = parts[1].trimmed();
         // connectDevice(x);
         UnBindingDevice(devicetype);
     }
-    // 选取INDI设备
     else if (parts.size() == 3 && parts[0].trimmed() == "SelectIndiDriver")
     {
+        Logger::Log("SelectIndiDriver:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         QString Group = parts[1].trimmed();
         int ListNum = parts[2].trimmed().toInt();
         printDevGroups2(drivers_list, ListNum, Group);
     }
-    // 主相机曝光
     else if (parts.size() == 2 && parts[0].trimmed() == "takeExposure")
     {
+        Logger::Log("takeExposure:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
+        Logger::Log("Accept takeExposure order ,set ExpTime is " + parts[1].trimmed().toStdString() + " ms", LogLevel::DEBUG, DeviceType::CAMERA);
         int ExpTime = parts[1].trimmed().toInt();
-        qDebug() << ExpTime;
         INDI_Capture(ExpTime);
         glExpTime = ExpTime;
     }
-    // 电调速度修改
     else if (parts.size() == 2 && parts[0].trimmed() == "focusSpeed")
     {
+        Logger::Log("change focuser Speed to:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::FOCUSER);
         int Speed = parts[1].trimmed().toInt();
-        qDebug() << Speed;
+        // qDebug() << Speed;
         int Speed_ = FocuserControl_setSpeed(Speed);
         emit wsThread->sendMessageToClient("FocusChangeSpeedSuccess:" + QString::number(Speed_));
     }
-    // 电调移动控制
-    else if (parts.size() == 3 && parts[0].trimmed() == "focusMove")
+    else if (parts.size() == 2 && parts[0].trimmed() == "focusMove")
     {
+        Logger::Log("focuser to " + parts[1].trimmed().toStdString() + " move ", LogLevel::DEBUG, DeviceType::FOCUSER);
         QString LR = parts[1].trimmed();
-        int Steps = parts[2].trimmed().toInt();
+        // int Steps = parts[2].trimmed().toInt();
         if(LR == "Left")
         {
-            FocusMoveAndCalHFR(true,Steps);
+            FocuserControlMove(true);
+            // FocusMoveAndCalHFR(true,Steps);
         }
         else if(LR == "Right")
         {
-            FocusMoveAndCalHFR(false,Steps);
+            // FocusMoveAndCalHFR(false,Steps);
+            FocuserControlMove(false);
         }
-        else if(LR == "Target")
+        // else if(LR == "Target")
+        // {
+        //     FocusGotoAndCalFWHM(Steps);
+        // }
+    }else if (parts.size() == 2 && parts[0].trimmed() == "getFocuserMoveState"){
+        if(isFocusMoveDone && parts[1].trimmed() == "true")
         {
-            FocusGotoAndCalFWHM(Steps);
+            focusMoveEndTime = 2;
         }
     }
-    // 同步电调的步数
+    else if (parts[0].trimmed() == "focusMoveStop")
+    {
+        FocuserControlStop();
+    }
     else if (parts.size() == 2 && parts[0].trimmed() == "SyncFocuserStep")
     {
+        Logger::Log("SyncFocuserStep:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         int Steps = parts[1].trimmed().toInt();
         if(dpFocuser != NULL) {
             indi_Client->syncFocuserPosition(dpFocuser, Steps);
             sleep(1);
             CurrentPosition = FocuserControl_getPosition();
-            qInfo() << "Focuser Current Position: " << CurrentPosition;
+            Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::DEBUG, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         }
     }
-    // ROI选取框的位置
     else if (parts.size() == 5 && parts[0].trimmed() == "RedBox")
     {
+        Logger::Log("RedBox:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString() + ":" + parts[3].trimmed().toStdString() + ":" + parts[4].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         int x = parts[1].trimmed().toInt();
         int y = parts[2].trimmed().toInt();
         int width = parts[3].trimmed().toInt();
@@ -211,39 +251,40 @@ void MainWindow::onMessageReceived(const QString &message)
         glROI_y = y;
         CaptureViewWidth = width;
         CaptureViewHeight = height;
-        qDebug() << "RedBox:" << glROI_x << glROI_y << CaptureViewWidth << CaptureViewHeight;
+        Logger::Log("RedBox:" + std::to_string(glROI_x) + ":" + std::to_string(glROI_y) + ":" + std::to_string(CaptureViewWidth) + ":" + std::to_string(CaptureViewHeight), LogLevel::DEBUG, DeviceType::MAIN);
     }
-    // ROI选取框的大小修改
     else if (parts.size() == 2 && parts[0].trimmed() == "RedBoxSizeChange")
     {
+        Logger::Log("RedBoxSizeChange:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         BoxSideLength = parts[1].trimmed().toInt();
-        qDebug() << "BoxSideLength:" << BoxSideLength;
+        Tools::saveParameter("MainCamera","BoxSideLength",parts[1].trimmed());
+        Logger::Log("BoxSideLength:" + std::to_string(BoxSideLength), LogLevel::DEBUG, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
     }
-    // 自动调焦
     else if (message == "AutoFocus")
     {
-        AutoFocus();
+        // Logger::Log("AutoFocus", LogLevel::INFO, DeviceType::MAIN);
+        // AutoFocus();
     }
-    // 终止自动调焦
     else if (message == "StopAutoFocus")
     {
+        Logger::Log("StopAutoFocus", LogLevel::DEBUG, DeviceType::MAIN);
         StopAutoFocus = true;
     }
-    // 终止主相机曝光
     else if (message == "abortExposure")
     {
+        Logger::Log("abortExposure", LogLevel::DEBUG, DeviceType::CAMERA);
         INDI_AbortCapture();
     }
-    // 连接所有设备
     else if (message == "connectAllDevice")
     {
+        Logger::Log("connectAllDevice", LogLevel::DEBUG, DeviceType::MAIN);
         // DeviceConnect();
         ConnectAllDeviceOnce();
     }
-    // 一键连接上次成功连接的所有设备
     else if (message == "autoConnectAllDevice")
     {
+        Logger::Log("autoConnectAllDevice", LogLevel::DEBUG, DeviceType::MAIN);
         // DeviceConnect();
         AutoConnectAllDevice();
     }
@@ -252,61 +293,69 @@ void MainWindow::onMessageReceived(const QString &message)
         // QString Dev = connectIndiServer();
         // websocket->messageSend("AddDevice:"+Dev);
     }
-    // 断开所有设备连接
     else if (message == "disconnectAllDevice")
     {
+        Logger::Log("disconnectAllDevice ...", LogLevel::DEBUG, DeviceType::MAIN);
         disconnectIndiServer(indi_Client);
+        Logger::Log("disconnectIndiServer ...", LogLevel::DEBUG, DeviceType::MAIN);
         ClearSystemDeviceList();
+        Logger::Log("ClearSystemDeviceList ...", LogLevel::DEBUG, DeviceType::MAIN);
         clearConnectedDevices();
-
+        Logger::Log("clearConnectedDevices ...", LogLevel::DEBUG, DeviceType::MAIN);
+        // 重启indi服务器
         initINDIServer();
+        Logger::Log("initINDIServer ...", LogLevel::DEBUG, DeviceType::MAIN);
         initINDIClient();
+        
+        Logger::Log("initINDIClient ...", LogLevel::DEBUG, DeviceType::MAIN);
         Tools::InitSystemDeviceList();
+        Logger::Log("Tools::InitSystemDeviceList ...", LogLevel::DEBUG, DeviceType::MAIN);
         Tools::initSystemDeviceList(systemdevicelist);
+        Logger::Log("disconnectAllDevice end!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    // 赤道仪的移动方向控制
     else if (message == "MountMoveWest")
     {
+        Logger::Log("MountMoveWest ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveWE(dpMount, "WEST");
         }
     }
-    // 赤道仪的移动方向控制
     else if (message == "MountMoveEast")
     {
+        Logger::Log("MountMoveEast ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveWE(dpMount, "EAST");
         }
     }
-    // 赤道仪的移动方向控制
     else if (message == "MountMoveNorth")
     {
+        Logger::Log("MountMoveNorth ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveNS(dpMount, "NORTH");
         }
     }
-    // 赤道仪的移动方向控制
     else if (message == "MountMoveSouth")
     {
+        Logger::Log("MountMoveSouth ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeMoveNS(dpMount, "SOUTH");
         }
     }
-    // 终止赤道仪的移动
     else if (message == "MountMoveAbort")
     {
+        Logger::Log("MountMoveAbort ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeAbortMotion(dpMount);
         }
     }
-    // 赤道仪Park
     else if (message == "MountPark")
     {
+        Logger::Log("MountPark ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             bool isPark = TelescopeControl_Park();
@@ -320,179 +369,210 @@ void MainWindow::onMessageReceived(const QString &message)
             }
         }
     }
-    // 开启赤道仪的跟踪
     else if (message == "MountTrack")
     {
+        Logger::Log("MountTrack ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             bool isTrack = TelescopeControl_Track();
             if(isTrack)
             {
                 emit wsThread->sendMessageToClient("TelescopeTrack:ON");
+                Logger::Log("TelescopeTrack:ON", LogLevel::DEBUG, DeviceType::MOUNT);
             }
             else
             {
                 emit wsThread->sendMessageToClient("TelescopeTrack:OFF");
+                Logger::Log("TelescopeTrack:OFF", LogLevel::DEBUG, DeviceType::MOUNT);
             }
         }
     }
-    // 控制赤道仪回到Home位
     else if (message == "MountHome")
     {
+        Logger::Log("MountHome ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeHomeInit(dpMount,"SLEWHOME");
         }
     }
-    // 同步赤道仪的位置
     else if (message == "MountSYNC")
     {
+        Logger::Log("MountSYNC ...", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             indi_Client->setTelescopeHomeInit(dpMount,"SYNCHOME");
         }
     }
-    // 赤道仪的转动速度切换
+
     else if (message == "MountSpeedSwitch")
     {
+        Logger::Log("MountSpeedSwitch ", LogLevel::DEBUG, DeviceType::MOUNT);
         if (dpMount != NULL)
         {
             int currentSpeed;
             indi_Client->getTelescopeSlewRate(dpMount,currentSpeed);
-            qInfo() << "Current Speed:" << currentSpeed;
-
-            qDebug() << "Total Speed:" << glTelescopeTotalSlewRate;
+            Logger::Log("Current Speed:" + std::to_string(currentSpeed) + " Total Speed:" + std::to_string(glTelescopeTotalSlewRate), LogLevel::DEBUG, DeviceType::MOUNT);
 
             if(currentSpeed == glTelescopeTotalSlewRate) {
                 indi_Client->setTelescopeSlewRate(dpMount,1);
             } else {
                 indi_Client->setTelescopeSlewRate(dpMount,currentSpeed+1);
-                qInfo() << "Set Speed to:" << currentSpeed;
+                Logger::Log("Set Speed to:" + std::to_string(currentSpeed), LogLevel::DEBUG, DeviceType::MOUNT);
             }
 
             int ChangedSpeed;
             indi_Client->getTelescopeSlewRate(dpMount,ChangedSpeed);
-            qInfo() << "Changed Speed:" << ChangedSpeed;
+            Logger::Log("Changed Speed:" + std::to_string(ChangedSpeed), LogLevel::DEBUG, DeviceType::MOUNT);
             emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(ChangedSpeed));
         }
     }
 
-    // 主相机拍摄图像的GainR设置
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainR")
     {
         ImageGainR = parts[1].trimmed().toDouble();
-        qInfo() << "GainR is set to " << ImageGainR;
+        Logger::Log("GainR is set to " + std::to_string(ImageGainR), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera","ImageGainR",parts[1].trimmed());
     }
 
-    // 主相机拍摄图像的GainB设置
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainB")
     {
         ImageGainB = parts[1].trimmed().toDouble();
-        qInfo() << "GainB is set to " << ImageGainB;
+        Logger::Log("GainB is set to " + std::to_string(ImageGainB), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera","ImageGainB",parts[1].trimmed());
     }
 
-    // 计划任务表数据
+    else if (parts.size() == 2 && parts[0].trimmed() == "ImageOffset")
+    {
+        ImageOffset = parts[1].trimmed().toDouble();
+        Logger::Log("ImageOffset is set to " + std::to_string(ImageOffset), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera","ImageOffset",parts[1].trimmed());
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "ImageCFA")
+    {
+        MainCameraCFA = parts[1].trimmed();
+        Logger::Log("ImageCFA is set to " + MainCameraCFA.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera","ImageCFA",parts[1].trimmed());
+    }
+
     else if (parts[0].trimmed() == "ScheduleTabelData")
     {
         ScheduleTabelData(message);
     }
 
-    // 控制赤道仪Goto到指定位置
     else if (parts.size() == 4 && parts[0].trimmed() == "MountGoto")
     {
-        QStringList RaDecList = message.split(',');
-        QStringList RaList = RaDecList[0].split(':');
-        QStringList DecList = RaDecList[1].split(':');
+        if (dpMount != NULL){
+            Logger::Log("MountGoto ...", LogLevel::DEBUG, DeviceType::MOUNT);
+            QStringList RaDecList = message.split(',');
+            QStringList RaList = RaDecList[0].split(':');
+            QStringList DecList = RaDecList[1].split(':');
 
-        double Ra_Rad, Dec_Rad;
-        Ra_Rad  = RaList[2].trimmed().toDouble();
-        Dec_Rad = DecList[1].trimmed().toDouble();
+            double Ra_Rad, Dec_Rad;
+            Ra_Rad  = RaList[2].trimmed().toDouble();
+            Dec_Rad = DecList[1].trimmed().toDouble();
 
-        qInfo() << "Mount Goto RaDec(Rad):" << Ra_Rad << "," << Dec_Rad;
+            Logger::Log("Mount Goto RaDec(Rad):" + std::to_string(Ra_Rad) + "," + std::to_string(Dec_Rad), LogLevel::DEBUG, DeviceType::MOUNT);
 
-        double Ra_Hour, Dec_Degree;
-        Ra_Hour  = Tools::RadToHour(Ra_Rad);
-        Dec_Degree = Tools::RadToDegree(Dec_Rad);
+            double Ra_Hour, Dec_Degree;
+            Ra_Hour  = Tools::RadToHour(Ra_Rad);
+            Dec_Degree = Tools::RadToDegree(Dec_Rad);
 
-        MountGoto(Ra_Hour, Dec_Degree);
+            MountGoto(Ra_Hour, Dec_Degree);
+            Logger::Log("MountGoto finish!", LogLevel::DEBUG, DeviceType::MOUNT);
+        }else{
+
+        }
+
     }
 
-    // 终止计划任务表的执行
     else if (message == "StopSchedule")
     {
+        Logger::Log("StopSchedule !", LogLevel::DEBUG, DeviceType::MAIN);
         StopSchedule = true;
     }
 
-    // 手动保存主相机拍摄的图像
     else if (message == "CaptureImageSave")
     {
+        Logger::Log("CaptureImageSave ...", LogLevel::DEBUG, DeviceType::MAIN);
         CaptureImageSave();
+        Logger::Log("CaptureImageSave finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 获取客户端的配置选项信息
     else if (message == "getClientSettings")
     {
+        Logger::Log("getClientSettings ...", LogLevel::DEBUG, DeviceType::MAIN);
         getClientSettings();
+        Logger::Log("getClientSettings finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 获取已经成功连接的设备
     else if (message == "getConnectedDevices")
     {
-        getConnectedDevices();
+        // getConnectedDevices();
     }
 
-    // 获取上一次拍摄的图像
     else if (message == "getStagingImage")
     {
+        Logger::Log("Reload Main Camera Image.", LogLevel::DEBUG, DeviceType::MAIN);
         getStagingImage();
+        Logger::Log("Reload Main Camera Image finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 恢复计划任务表之前的数据
     else if (parts[0].trimmed() == "StagingScheduleData")
     {
+        Logger::Log("StagingScheduleData ...", LogLevel::DEBUG, DeviceType::MAIN);
         isStagingScheduleData = true;
         StagingScheduleData = message;
+        Logger::Log("StagingScheduleData finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 获取计划任务表之前的数据
     else if (message == "getStagingScheduleData")
     {
+        Logger::Log("getStagingScheduleData ...", LogLevel::DEBUG, DeviceType::MAIN);
         getStagingScheduleData();
+        Logger::Log("getStagingScheduleData finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 恢复导星之前的数据
     else if (message == "getStagingGuiderData")
     {
+        Logger::Log("getStagingGuiderData ...", LogLevel::DEBUG, DeviceType::MAIN);
         getStagingGuiderData();
+        Logger::Log("getStagingGuiderData finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 保存主相机的曝光时间选项列表
     else if (parts[0].trimmed() == "ExpTimeList")
     {
+        Logger::Log("ExpTimeList ...", LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveExpTimeList(message);
+        Logger::Log("ExpTimeList finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 获取主相机的曝光时间选项列表
     else if (message == "getExpTimeList")
     {
+        Logger::Log("getExpTimeList ...", LogLevel::DEBUG, DeviceType::MAIN);
         if (Tools::readExpTimeList() != QString()){
             emit wsThread->sendMessageToClient(Tools::readExpTimeList());
         }
+        Logger::Log("getExpTimeList finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 获取主相机的拍摄状态
     else if (message == "getCaptureStatus")
     {
-        qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
+        Logger::Log("getCaptureStatus ...", LogLevel::DEBUG, DeviceType::MAIN);
         if (glMainCameraStatu == "Exposuring")
         {
-            emit wsThread->sendMessageToClient("CameraInExposuring:True");
+            if (isFocusLoopShooting) {
+                emit wsThread->sendMessageToClient("CameraInExposuring:False");
+            } else {
+                emit wsThread->sendMessageToClient("CameraInExposuring:True");
+            }
         }
+        Logger::Log("getCaptureStatus finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 设置滤镜轮旋转到目标位
-    else if (parts[0].trimmed() == "SetCFWPosition")
+    else if (parts[0].trimmed() == "SetCFWPosition" && parts.size() == 2)
     {
+        Logger::Log("SetCFWPosition ...", LogLevel::DEBUG, DeviceType::CFW);
         int pos = parts[1].trimmed().toInt();
 
         if(isFilterOnCamera) {
@@ -500,21 +580,21 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 indi_Client->setCFWPosition(dpMainCamera, pos);
                 emit wsThread->sendMessageToClient("SetCFWPositionSuccess:" + QString::number(pos));
-                qInfo() << "Set CFW Position to" << pos << "Success!!!";
+                Logger::Log("Set CFW Position to" + std::to_string(pos) + "Success!!!", LogLevel::DEBUG, DeviceType::CFW);
             }
         } else {
             if (dpCFW != NULL)
             {
                 indi_Client->setCFWPosition(dpCFW, pos);
                 emit wsThread->sendMessageToClient("SetCFWPositionSuccess:" + QString::number(pos));
-                qInfo() << "Set CFW Position to" << pos << "Success!!!";
+                Logger::Log("Set CFW Position to" + std::to_string(pos) + "Success!!!", LogLevel::DEBUG, DeviceType::CFW);
             }
         }
     }
 
-    // 保存滤镜轮档位选项列表
     else if (parts[0].trimmed() == "CFWList")
     {
+        Logger::Log("Save CFWList ...", LogLevel::DEBUG, DeviceType::CFW);
         if(isFilterOnCamera) {
             if (dpMainCamera != NULL)
             {
@@ -528,11 +608,12 @@ void MainWindow::onMessageReceived(const QString &message)
                 Tools::saveCFWList(QString::fromUtf8(dpCFW->getDeviceName()), parts[1]);
             }
         }
+        Logger::Log("Save CFWList finish!", LogLevel::DEBUG, DeviceType::CFW);
     }
 
-    // 获取滤镜轮档位选项列表
     else if (message == "getCFWList")
     {
+        Logger::Log("get CFWList ...", LogLevel::DEBUG, DeviceType::CFW);
         if(isFilterOnCamera) {
             if (dpMainCamera != NULL)
             {
@@ -558,83 +639,117 @@ void MainWindow::onMessageReceived(const QString &message)
                 }
             }
         }
+        Logger::Log("get CFWList finish!", LogLevel::DEBUG, DeviceType::CFW);
     }
 
-    // 清除导星的校准数据
     else if (message == "ClearCalibrationData")
     {
         ClearCalibrationData = true;
-        qInfo() << "ClearCalibrationData: " << ClearCalibrationData;
+        Logger::Log("Clear polar alignment calibration data", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 导星开关
-    else if (message == "GuiderSwitch")
+    else if (parts[0].trimmed() == "GuiderSwitch" && parts.size() == 2)
     {
-        if (isGuiding){
+        Logger::Log("GuiderSwitch ...", LogLevel::INFO, DeviceType::GUIDER);
+        if (isGuiding && parts[1].trimmed() == "false"){
             isGuiding = false;
             call_phd_StopLooping();
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
             isGuiderLoopExp = false;
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
-        } else {
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+            // emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+            Logger::Log("Stop GuiderSwitch finish!", LogLevel::INFO, DeviceType::GUIDER);
+        } else if (!isGuiding && parts[1].trimmed() == "true"){
             isGuiding = true;
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             if (ClearCalibrationData) {
                 ClearCalibrationData = false;
                 call_phd_ClearCalibration();
             }
-
+            Logger::Log("clear calibration data finish!", LogLevel::INFO, DeviceType::GUIDER);
+            
             // call_phd_StartLooping();
             // sleep(1);
             if (glPHD_isSelected == false) {
+                Logger::Log("AutoFindStar is not selected, start AutoFindStar ...", LogLevel::INFO, DeviceType::GUIDER);
                 call_phd_AutoFindStar();
             }
             call_phd_StartGuiding();
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            Logger::Log("Start GuiderSwitch finish!", LogLevel::INFO, DeviceType::GUIDER);
+        } else {
+            if (parts[1].trimmed() == "true") {
+                emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            } else {
+                emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+            }
+            Logger::Log("GuiderSwitch status already set " + parts[1].trimmed().toStdString() + " not change!!!", LogLevel::WARNING, DeviceType::GUIDER);
         }
     }
 
-    // 导星的循环拍摄开关
-    else if (message == "GuiderLoopExpSwitch")
+    else if (parts[0].trimmed() == "GuiderLoopExpSwitch" && parts.size() == 2)
     {
         if(dpGuider != NULL) {
-            if (isGuiderLoopExp){
+            if (isGuiderLoopExp && parts[1].trimmed() == "false"){
+                Logger::Log("Stop GuiderLoopExp ...", LogLevel::INFO, DeviceType::GUIDER);
                 isGuiderLoopExp = false;
                 isGuiding = false;
                 call_phd_StopLooping();
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
-            } else {
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+                Logger::Log("Stop GuiderLoopExp finish!", LogLevel::INFO, DeviceType::GUIDER);
+            } else if (!isGuiderLoopExp && parts[1].trimmed() == "true"){
+                Logger::Log("Start GuiderLoopExp ...", LogLevel::INFO, DeviceType::GUIDER);
                 isGuiderLoopExp = true;
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
                 call_phd_StartLooping();
+                Logger::Log("Start GuiderLoopExp finish!", LogLevel::INFO, DeviceType::GUIDER);
+            }else{
+                Logger::Log("GuiderLoopExp status already set " + parts[1].trimmed().toStdString() + " not change!!!", LogLevel::WARNING, DeviceType::GUIDER);
+                if (parts[1].trimmed() == "true"){
+                    emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+                    emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+                } else {
+                    emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+                    emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+                }
             }
+        }else{
+            Logger::Log("GuiderLoopExp is not connected", LogLevel::INFO, DeviceType::GUIDER);
         }
     }
 
-    // 导星重新校准
     else if (message == "PHD2Recalibrate")
     {
+        Logger::Log("PHD2Recalibrate ...", LogLevel::DEBUG, DeviceType::GUIDER);
         call_phd_ClearCalibration();
         call_phd_StartLooping();
         sleep(1);
 
         call_phd_AutoFindStar();
         call_phd_StartGuiding();
-
+        Logger::Log("PHD2Recalibrate finish!", LogLevel::DEBUG, DeviceType::GUIDER);
         // emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
 
         // call_phd_StarClick(641,363);
     }
 
-    // 导星相机的曝光时间切换
-    else if (parts[0].trimmed() == "GuiderExpTimeSwitch")
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderExpTimeSwitch")
     {
+        Logger::Log("GuiderExpTimeSwitch :" + std::to_string(parts[1].toInt()), LogLevel::DEBUG, DeviceType::GUIDER);
         call_phd_setExposureTime(parts[1].toInt());
+        Logger::Log("GuiderExpTimeSwitch finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
-    // 清除导星的数据
     else if (message == "clearGuiderData")
     {
+        Logger::Log("clearGuiderData ...", LogLevel::DEBUG, DeviceType::GUIDER);
         glPHD_rmsdate.clear();
+        Logger::Log("clearGuiderData finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
     // else if (message == "getGuiderSwitchStatus") 
@@ -646,63 +761,69 @@ void MainWindow::onMessageReceived(const QString &message)
     //     }
     // }
 
-    // 赤道仪解析同步
     else if (parts.size() == 2 && parts[0].trimmed() == "SolveSYNC")
     {
+        Logger::Log("SolveSYNC ...", LogLevel::DEBUG, DeviceType::MAIN);
         glFocalLength = parts[1].trimmed().toInt();
         // glCameraSize_width  = parts[2].trimmed().toDouble();
         // glCameraSize_height = parts[3].trimmed().toDouble();
 
         if(glFocalLength == 0) {
             emit wsThread->sendMessageToClient("FocalLengthError");
+            Logger::Log("FocalLengthError", LogLevel::DEBUG, DeviceType::MAIN);
         } else {
             TelescopeControl_SolveSYNC();
+            Logger::Log("SolveSYNC finish!", LogLevel::DEBUG, DeviceType::MAIN);
         }
     }
 
-    // 清理调焦数据
     else if (message == "ClearDataPoints")
     {
+        Logger::Log("ClearDataPoints ...", LogLevel::DEBUG, DeviceType::MAIN);
         // FWHM Data
         dataPoints.clear();
+        Logger::Log("ClearDataPoints finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 获取图像保存的所有文件夹名称
     else if (message == "ShowAllImageFolder")
     {
+        Logger::Log("ShowAllImageFolder ...", LogLevel::DEBUG, DeviceType::MAIN);
         std::string allFile = GetAllFile();
-        qInfo() << QString::fromStdString(allFile);
         emit wsThread->sendMessageToClient("ShowAllImageFolder:" + QString::fromStdString(allFile));
-        
+        Logger::Log("ShowAllImageFolder finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    // 将图像文件移动到USB设备
     else if (parts.size() == 2 && parts[0].trimmed() == "MoveFileToUSB")
     {
+        Logger::Log("MoveFileToUSB ...", LogLevel::DEBUG, DeviceType::MAIN);
         QStringList ImagePath= parseString(parts[1].trimmed().toStdString(),ImageSaveBasePath);
         RemoveImageToUsb(ImagePath);
-        
+        Logger::Log("MoveFileToUSB finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    // 删除图像文件
     else if (parts[0].trimmed() == "DeleteFile")
     {
+        Logger::Log("DeleteFile ...", LogLevel::DEBUG, DeviceType::MAIN);
         QString ImagePathString = message; // 创建副本
         ImagePathString.replace("DeleteFile:", "");
 
         QStringList ImagePath= parseString(ImagePathString.toStdString(),ImageSaveBasePath);
         DeleteImage(ImagePath);
+        Logger::Log("DeleteFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    // USB设备检测
     else if (message == "USBCheck"){
+        Logger::Log("USBCheck ...", LogLevel::DEBUG, DeviceType::MAIN);
         USBCheck();
+        Logger::Log("USBCheck finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    // 获取图像文件
     else if (parts.size() == 2 && parts[0].trimmed() == "GetImageFiles")
     {
+        Logger::Log("GetImageFiles ...", LogLevel::DEBUG, DeviceType::MAIN);
         std::string FolderPath= parts[1].trimmed().toStdString();
         GetImageFiles(FolderPath);
+        Logger::Log("GetImageFiles finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    // 读取图像文件并在Vue客户端进行展示
+
     else if (parts[0].trimmed() == "ReadImageFile") {
+        Logger::Log("ReadImageFile ...", LogLevel::DEBUG, DeviceType::MAIN);
         QString ImagePath = message; // 创建副本
         ImagePath.replace("ReadImageFile:", "image/");
         // ImagePath.replace(" ", "\\ "); // 转义空格
@@ -710,69 +831,77 @@ void MainWindow::onMessageReceived(const QString &message)
         // ImagePath.replace("]", "\\]"); // 转义右方括号
         // ImagePath.replace(",", "\\,"); // 转义逗号
         saveFitsAsPNG(ImagePath, false);
+        Logger::Log("ReadImageFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 图像解析
     else if (parts.size() == 2 && parts[0].trimmed() == "SolveImage")
     {
+        Logger::Log("SolveImage ...", LogLevel::DEBUG, DeviceType::CAMERA);
         glFocalLength = parts[1].trimmed().toInt();
 
         if(glFocalLength == 0) {
             emit wsThread->sendMessageToClient("FocalLengthError");
+            Logger::Log("SolveImage FocalLengthError", LogLevel::DEBUG, DeviceType::CAMERA);
         } else {
             EndCaptureAndSolve = false;
             CaptureAndSolve(glExpTime, false);
+            Logger::Log("SolveImage finish!", LogLevel::DEBUG, DeviceType::CAMERA);
         }
     }
-
-    // 开启图像循环拍摄以及解析
     else if (parts.size() == 2 && parts[0].trimmed() == "startLoopSolveImage") {
+        Logger::Log("startLoopSolveImage ...", LogLevel::DEBUG, DeviceType::CAMERA);
         glFocalLength = parts[1].trimmed().toInt();
 
         if(glFocalLength == 0) {
             emit wsThread->sendMessageToClient("FocalLengthError");
+            Logger::Log("startLoopSolveImage FocalLengthError", LogLevel::DEBUG, DeviceType::CAMERA);
         } else {
             isLoopSolveImage = true;
             EndCaptureAndSolve = false;
             CaptureAndSolve(glExpTime, true);
+            Logger::Log("startLoopSolveImage finish!", LogLevel::DEBUG, DeviceType::CAMERA);
         }
     }
 
-    // 终止图像循环拍摄以及解析
     else if (message == "stopLoopSolveImage") {
-        qInfo("Set isLoopSolveImage false");
+        Logger::Log("stopLoopSolveImage ...", LogLevel::DEBUG, DeviceType::CAMERA);
         isLoopSolveImage = false;
+        Logger::Log("stopLoopSolveImage finish!", LogLevel::DEBUG, DeviceType::CAMERA);
     }
 
-    // 终止主相机拍摄以及图像解析
     else if (message == "EndCaptureAndSolve") {
-        qInfo("Set EndCaptureAndSolve true");
+        Logger::Log("EndCaptureAndSolve ...", LogLevel::DEBUG, DeviceType::CAMERA);
         EndCaptureAndSolve = true;
+        Logger::Log("EndCaptureAndSolve finish!", LogLevel::DEBUG, DeviceType::CAMERA);
     }
 
-    // 获取之前的图像解析数据
     else if (message == "getStagingSolveResult") {
+        Logger::Log("getStagingSolveResult ...", LogLevel::DEBUG, DeviceType::CAMERA);
         RecoverySloveResul();
+        Logger::Log("getStagingSolveResult finish!", LogLevel::DEBUG, DeviceType::CAMERA);
     }
 
-    // 清除图像解析的结果保存列表
     else if (message == "ClearSloveResultList") {
+        Logger::Log("ClearSloveResultList ...", LogLevel::DEBUG, DeviceType::CAMERA);
         ClearSloveResultList();
+        Logger::Log("ClearSloveResultList finish!", LogLevel::DEBUG, DeviceType::CAMERA);
     }
 
-    // 获取原始的主相机拍摄图像
     else if (message == "getOriginalImage") {
+        Logger::Log("getOriginalImage ...", LogLevel::DEBUG, DeviceType::CAMERA);
         saveFitsAsPNG(QString::fromStdString("/dev/shm/ccd_simulator.fits"), false);
+        Logger::Log("getOriginalImage finish!", LogLevel::DEBUG, DeviceType::CAMERA);
     }
 
-    // 获取树莓派GPIO的状态
     else if (message == "getGPIOsStatus") {
+        Logger::Log("getGPIOsStatus ...", LogLevel::DEBUG, DeviceType::MAIN);
         getGPIOsStatus();
+        Logger::Log("getGPIOsStatus finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 蓝盒子的输出电源开关
     else if (parts.size() == 2 && parts[0].trimmed() == "SwitchOutPutPower")
     {
+        Logger::Log("SwitchOutPutPower ...", LogLevel::DEBUG, DeviceType::MAIN);
         int index = parts[1].trimmed().toInt();
         int value;
 
@@ -798,39 +927,37 @@ void MainWindow::onMessageReceived(const QString &message)
         }
 
         emit wsThread->sendMessageToClient("OutPutPowerStatus:" + QString::number(index) + ":" + QString::number(value));
+        Logger::Log("SwitchOutPutPower finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 设置主相机拍摄图像的合并
     else if (parts.size() == 2 && parts[0].trimmed() == "SetBinning") {
         glMainCameraBinning = parts[1].trimmed().toInt();
-        qInfo() << "Set Binning to " << glMainCameraBinning;
+        Logger::Log("Set Binning to " + std::to_string(glMainCameraBinning), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera","Binning",parts[1].trimmed());
 
         // if(dpMainCamera != NULL) {
         //     indi_Client->setCCDBinnign(dpMainCamera, 2, 2);
         // }
     }
 
-    // 设置主相机的制冷温度 
     else if (parts.size() == 2 && parts[0].trimmed() == "SetCameraTemperature") {
         double CameraTemperature = parts[1].trimmed().toDouble();
-        qInfo() << "Set Camera Temperature to " << CameraTemperature;
+        Logger::Log("Set Camera Temperature to " + std::to_string(CameraTemperature), LogLevel::DEBUG, DeviceType::MAIN);
 
         if(dpMainCamera != NULL) {
             indi_Client->setTemperature(dpMainCamera, CameraTemperature);
         }
     }
 
-    // 设置主相机的增益
     else if (parts.size() == 2 && parts[0].trimmed() == "SetCameraGain") {
         int CameraGain = parts[1].trimmed().toInt();
-        qInfo() << "Set Camera Gain to " << CameraGain;
-
+        Logger::Log("Set Camera Gain to " + std::to_string(CameraGain), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera","Gain",parts[1].trimmed());
         if(dpMainCamera != NULL) {
             indi_Client->setCCDGain(dpMainCamera, CameraGain);
         }
     }
 
-    // 导星图像中选取的星点坐标
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
     {
         int CanvasWidth = parts[1].trimmed().toInt();
@@ -838,41 +965,41 @@ void MainWindow::onMessageReceived(const QString &message)
         int Click_X = parts[3].trimmed().toInt();
         int Click_Y = parts[4].trimmed().toInt();
 
-        qInfo() << "GuiderCanvasClick:" << CanvasWidth << "," << CanvasHeight << "," << Click_X << "," << Click_Y;
+        Logger::Log("GuiderCanvasClick:" + std::to_string(CanvasWidth) + "," + std::to_string(CanvasHeight) + "," + std::to_string(Click_X) + "," + std::to_string(Click_Y), LogLevel::DEBUG, DeviceType::MAIN);
 
         if (glPHD_CurrentImageSizeX != 0 && glPHD_CurrentImageSizeY != 0)
         {
-            qDebug() << "PHD2ImageSize:" << glPHD_CurrentImageSizeX << "," << glPHD_CurrentImageSizeY;
+            Logger::Log("PHD2ImageSize:" + std::to_string(glPHD_CurrentImageSizeX) + "," + std::to_string(glPHD_CurrentImageSizeY), LogLevel::DEBUG, DeviceType::MAIN);
             double ratioZoomX = (double) glPHD_CurrentImageSizeX / CanvasWidth;
             double ratioZoomY = (double) glPHD_CurrentImageSizeY / CanvasHeight;
-            qDebug() << "ratioZoom:" << ratioZoomX << "," << ratioZoomY;
+            Logger::Log("ratioZoom:" + std::to_string(ratioZoomX) + "," + std::to_string(ratioZoomY), LogLevel::DEBUG, DeviceType::MAIN);
             double PHD2Click_X = (double) Click_X * ratioZoomX;
             double PHD2Click_Y = (double) Click_Y * ratioZoomY;
-            qInfo() << "PHD2Click:" << PHD2Click_X << "," << PHD2Click_Y;
+            Logger::Log("PHD2Click:" + std::to_string(PHD2Click_X) + "," + std::to_string(PHD2Click_Y), LogLevel::DEBUG, DeviceType::MAIN);
             call_phd_StarClick(PHD2Click_X, PHD2Click_Y);
         }
     }
 
-    // 获取客户端的版本号
     else if (message == "getQTClientVersion") {
+        Logger::Log("getQTClientVersion ...", LogLevel::DEBUG, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("QTClientVersion:" + QString::fromUtf8(QT_Client_Version));
     }
 
-    // 获取树莓派的热点名称
     else if (message == "getHotspotName") {
         QString HostpotName = getHotspotName();
-        qInfo() << "HotspotName:" << HostpotName;
+        Logger::Log("HotspotName:" + HostpotName.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("HotspotName:" + HostpotName);
     }
 
-    // 编辑树莓派热点名称
     else if (parts.size() == 2 && parts[0].trimmed() == "editHotspotName") {
+        Logger::Log("editHotspotName ...", LogLevel::DEBUG, DeviceType::MAIN);
         QString HostpotName = parts[1].trimmed();
         editHotspotName(HostpotName);
+        Logger::Log("editHotspotName finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 单反相机的信息
     else if (parts.size() == 4 && parts[0].trimmed() == "DSLRCameraInfo") {
+        Logger::Log("DSLRCameraInfo ...", LogLevel::DEBUG, DeviceType::MAIN);
         int Width = parts[1].trimmed().toInt();
         int Height = parts[2].trimmed().toInt();
         double PixelSize = parts[3].trimmed().toDouble();
@@ -888,104 +1015,178 @@ void MainWindow::onMessageReceived(const QString &message)
             DSLRsInfo.PixelSize = PixelSize;
 
             Tools::saveDSLRsInfo(DSLRsInfo);
+            Logger::Log("DSLRCameraInfo finish!", LogLevel::DEBUG, DeviceType::MAIN);
+        } else {
+            Logger::Log("DSLRCameraInfo failed! Main Camera is NULL", LogLevel::DEBUG, DeviceType::MAIN);
         }
+
     }
 
-    // 将配置保存至本地文件中
     else if (parts.size() == 3 && parts[0].trimmed() == "saveToConfigFile") {
+        Logger::Log("saveToConfigFile ...", LogLevel::DEBUG, DeviceType::MAIN);
         QString ConfigName = parts[1].trimmed();
         QString ConfigValue = parts[2].trimmed();
         
         setClientSettings(ConfigName, ConfigValue);
+        Logger::Log("saveToConfigFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 导星镜焦距设置
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderFocalLength") {
         int FocalLength = parts[1].trimmed().toInt();
-        qInfo() << "Set Guider Focal Length to " << FocalLength;
+        Logger::Log("Set Guider Focal Length to " + std::to_string(FocalLength), LogLevel::DEBUG, DeviceType::MAIN);
 
         call_phd_FocalLength(FocalLength);
     }
 
-    // 重启树莓派
     else if (message == "RestartRaspberryPi") {
+        Logger::Log("RestartRaspberryPi ...", LogLevel::DEBUG, DeviceType::MAIN);
         system("reboot");
+        Logger::Log("RestartRaspberryPi finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 树莓派关机
     else if (message == "ShutdownRaspberryPi") {
+        Logger::Log("ShutdownRaspberryPi ...", LogLevel::DEBUG, DeviceType::MAIN);
         system("shutdown -h now");
+        Logger::Log("ShutdownRaspberryPi finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // 多星导星开关
     else if (parts.size() == 2 && parts[0].trimmed() == "MultiStarGuider") {
         bool isMultiStar = (parts[1].trimmed() == "true");
-        qInfo() << "Set Multi Star Guider to" << isMultiStar;
+        Logger::Log("Set Multi Star Guider to" + std::to_string(isMultiStar), LogLevel::DEBUG, DeviceType::MAIN);
 
         call_phd_MultiStarGuider(isMultiStar);
     }
 
-    // 导星镜像素大小设置
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPixelSize") {
         double PixelSize = parts[1].trimmed().toDouble();
-        qInfo() << "Set Guider Pixel Size to" << PixelSize;
+        Logger::Log("Set Guider Pixel Size to" + std::to_string(PixelSize), LogLevel::DEBUG, DeviceType::MAIN);
 
         call_phd_CameraPixelSize(PixelSize);
     }
 
-    // 导星镜增益设置
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderGain") {
         int Gain = parts[1].trimmed().toInt();
-        qInfo() << "Set Guider Gain to" << Gain;
+        Logger::Log("Set Guider Gain to" + std::to_string(Gain), LogLevel::DEBUG, DeviceType::MAIN);
 
         call_phd_CameraGain(Gain);
     }
 
-    // PHD2导星校准时长设置
     else if (parts.size() == 2 && parts[0].trimmed() == "CalibrationDuration") {
         int StepSize = parts[1].trimmed().toInt();
-        qInfo() << "Set Calibration Duration to" << StepSize;
+        Logger::Log("Set Calibration Duration to" + std::to_string(StepSize), LogLevel::DEBUG, DeviceType::MAIN);
 
         call_phd_CalibrationDuration(StepSize);
     }
 
-    // PHD2导星算法Ra轴修正强度设置
     else if (parts.size() == 2 && parts[0].trimmed() == "RaAggression") {
         int Aggression = parts[1].trimmed().toInt();
-        qInfo() << "Set Ra Aggression to" << Aggression;
+        Logger::Log("Set Ra Aggression to" + std::to_string(Aggression), LogLevel::DEBUG, DeviceType::MAIN);
 
         call_phd_RaAggression(Aggression);
     }
 
-    // PHD2导星算法Dec轴修正强度设置
     else if (parts.size() == 2 && parts[0].trimmed() == "DecAggression") {
         int Aggression = parts[1].trimmed().toInt();
-        qInfo() << "Set Dec Aggression to" << Aggression;
+        Logger::Log("Set Dec Aggression to" + std::to_string(Aggression), LogLevel::DEBUG, DeviceType::MAIN);
 
         call_phd_DecAggression(Aggression);
     }
-
-
-    
+    else if (parts.size() == 3 && parts[0].trimmed() == "ConnectDriver")
+    {
+        QString DriverName = parts[1].trimmed();
+        QString DriverType = parts[2].trimmed();
+        Logger::Log("Connect Driver to " + DriverName.toStdString() + " with type " + DriverType.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        ConnectDriver(DriverName, DriverType);
+    }
+    else if (parts.size() == 3 && parts[0].trimmed() == "DisconnectDevice")
+    {
+        QString DeviceName = parts[1].trimmed();
+        QString DeviceType = parts[2].trimmed();
+        Logger::Log("Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ")", LogLevel::DEBUG, DeviceType::MAIN);
+        DisconnectDevice(indi_Client, DeviceName, DeviceType);
+    }else if(message == "loadSelectedDriverList"){
+        Logger::Log("loadSelectedDriverList ...", LogLevel::DEBUG, DeviceType::MAIN);
+        loadSelectedDriverList();
+        Logger::Log("loadSelectedDriverList finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if(message == "loadBindDeviceList"){
+        Logger::Log("loadBindDeviceList ...", LogLevel::DEBUG, DeviceType::MAIN);
+        loadBindDeviceList(indi_Client);
+        Logger::Log("loadBindDeviceList finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if(message == "loadBindDeviceTypeList"){
+        Logger::Log("loadBindDeviceTypeList ...", LogLevel::DEBUG, DeviceType::MAIN);
+        loadBindDeviceTypeList();
+        Logger::Log("loadBindDeviceTypeList finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if(parts.size() == 2 && parts[0].trimmed() == "disconnectSelectDriver"){
+        Logger::Log("disconnect Driver " + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        disconnectDriver(parts[1]);
+        Logger::Log("disconnect Driver " + parts[1].trimmed().toStdString() +" success!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if(parts.size() == 2 && parts[0].trimmed() == "FocuserMoveState"){
+        Logger::Log("FocuserMoveState ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        if (parts[1].trimmed() == "true") {
+            focusMoveEndTime = 2;
+        }
+        Logger::Log("FocuserMoveState finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }else if(parts.size() == 2 && parts[0].trimmed() == "FocusLoopShooting"){
+        Logger::Log("FocusLoopShooting ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        focusLoopShooting(parts[1].trimmed() == "true");
+        Logger::Log("FocusLoopShooting finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }else if(parts[0].trimmed() == "getFocuserLoopingState"){
+        Logger::Log("getFocuserLoopingState ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        getFocuserLoopingState();
+        Logger::Log("getFocuserLoopingState finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }
     
 }
 
 void MainWindow::initINDIServer()
 {
+    Logger::Log("initINDIServer ...", LogLevel::INFO, DeviceType::MAIN);
     system("pkill indiserver");
     system("rm -f /tmp/myFIFO");
     system("mkfifo /tmp/myFIFO");
     glIndiServer = new QProcess();
-    glIndiServer->setReadChannel(QProcess::StandardOutput);
+    // glIndiServer->setReadChannel(QProcess::StandardOutput);
+
+    // // 连接信号到槽函数
+    // connect(glIndiServer, &QProcess::readyReadStandardOutput, this, &MainWindow::handleIndiServerOutput);
+    // connect(glIndiServer, &QProcess::readyReadStandardError, this, &MainWindow::handleIndiServerError);
+
     glIndiServer->start("indiserver -f /tmp/myFIFO -v -p 7624");
+    Logger::Log("initINDIServer finish!", LogLevel::INFO, DeviceType::MAIN);
+}
+
+// void MainWindow::initINDIServer()
+// {
+//     system("pkill indiserver");
+//     system("rm -f /tmp/myFIFO");
+//     system("mkfifo /tmp/myFIFO");
+//     glIndiServer = new QProcess();
+//     glIndiServer->setReadChannel(QProcess::StandardOutput);
+//     glIndiServer->start("indiserver -f /tmp/myFIFO -v -p 7624");
+// }
+
+
+// 槽函数：处理标准输出
+void MainWindow::handleIndiServerOutput()
+{
+    QByteArray output = glIndiServer->readAllStandardOutput();
+    Logger::Log("INDI Server Output: " + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+}
+
+// 槽函数：处理标准错误
+void MainWindow::handleIndiServerError()
+{
+    QByteArray error = glIndiServer->readAllStandardError();
+    Logger::Log("INDI Server Error: " + error.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
 }
 
 void MainWindow::initINDIClient()
 {
+    Logger::Log("initINDIClient ...", LogLevel::INFO, DeviceType::MAIN);
     indi_Client = new MyClient();
     indi_Client->setServer("localhost", 7624);
     indi_Client->setConnectionTimeout(3, 0);
-
+    Logger::Log("setConnectionTimeout is 3 seconds!", LogLevel::INFO, DeviceType::MAIN);
     indi_Client->setImageReceivedCallback(
         [this](const std::string &filename, const std::string &devname)
         {
@@ -996,172 +1197,217 @@ void MainWindow::initINDIClient()
                     if(glIsFocusingLooping == false)
                     {
                         emit wsThread->sendMessageToClient("ExposureCompleted");
+                        Logger::Log("ExposureCompleted", LogLevel::INFO, DeviceType::CAMERA);
                         saveFitsAsPNG(QString::fromStdString(filename), true);    // "/dev/shm/ccd_simulator.fits"
 
                         // saveFitsAsPNG("/dev/shm/SOLVETEST.fits", true);
                     }
                     else
                     {
-                        saveFitsAsJPG(QString::fromStdString(filename));
+                        if (isFocusLoopShooting ){
+                            saveFitsAsJPG(QString::fromStdString(filename), true);
+                            Logger::Log("saveFitsAsJPG", LogLevel::INFO, DeviceType::MAIN);
+                        }
                     }
+                    // Logger::Log("拍摄完成，图像保存完成 finish!", LogLevel::INFO, DeviceType::MAIN);
                     glMainCameraStatu = "Displaying";
                     ShootStatus = "Completed";
+                    focusLoopShooting(isFocusLoopShooting);
                 }
             }
         }
     );
+    Logger::Log("indi_Client->setImageReceivedCallback finish!", LogLevel::INFO, DeviceType::MAIN);
 
     indi_Client->setMessageReceivedCallback(
         [this](const std::string &message) {
-            // qDebug("[INDI SERVER] %s", message.c_str());
+            // qDebug("indi初始信息 %s", message.c_str());
             QString messageStr = QString::fromStdString(message.c_str());
 
+            // 使用正则表达式移除时间戳
+            std::regex timestampRegex(R"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}: )");
+            messageStr = QString::fromStdString(std::regex_replace(messageStr.toStdString(), timestampRegex, ""));
+
+            // qDebug("indi提取后信息 %s", messageStr.toStdString().c_str());
+            // 使用正则表达式提取并移除日志类型
+            std::regex typeRegex(R"(\[(INFO|WARNING|ERROR)\])");
+            std::smatch typeMatch;
+            QString logType;
+            if (std::regex_search(message, typeMatch, typeRegex) && typeMatch.size() > 1) {
+                logType = QString::fromStdString(typeMatch[1].str());
+                // 移除日志类型
+                messageStr = QString::fromStdString(std::regex_replace(messageStr.toStdString(), typeRegex, ""));
+            }
+
             if (messageStr.contains("Telescope focal length is missing.") || 
-                messageStr.contains("Telescope aperture is missing.")
-               ) 
-            {
+                messageStr.contains("Telescope aperture is missing.")) {
                 // 跳过打印
                 return;
             }
-
-            QStringList parts = messageStr.split('[');
-            if(parts.size() == 2) {
-                qInfo() << "[INDI SERVER][" + parts[1];
-            } else {
-                qInfo() << "[INDI SERVER]" + messageStr;
+            if (logType == "WARNING") {
+                DeviceType deviceType = getDeviceTypeFromPartialString(messageStr.toStdString());
+                Logger::Log("[INDI SERVER] " + messageStr.toStdString(), LogLevel::WARNING, deviceType);
+            }else if (logType == "ERROR") {
+                DeviceType deviceType = getDeviceTypeFromPartialString(messageStr.toStdString());
+                Logger::Log("[INDI SERVER] " + messageStr.toStdString(), LogLevel::ERROR, deviceType);
+            }else{  
+                DeviceType deviceType = getDeviceTypeFromPartialString(messageStr.toStdString());
+                Logger::Log("[INDI SERVER] " + messageStr.toStdString(), LogLevel::INFO, deviceType);
             }
 
             std::regex regexPattern(R"(OnStep slew/syncError:\s*(.*))");
             std::smatch matchResult;
 
-            if (std::regex_search(message, matchResult, regexPattern))
-            {
-                if (matchResult.size() > 1)
-                {
+            if (std::regex_search(message, matchResult, regexPattern)) {
+                if (matchResult.size() > 1) {
                     QString errorContent = QString::fromStdString(matchResult[1].str());
-                    qDebug() << "\033[31m" << "OnStep Error: " << errorContent << "\033[0m";
-                    qInfo() << "OnStep Error: " << errorContent;
+                    Logger::Log("OnStep Error: " + errorContent.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                     emit wsThread->sendMessageToClient("OnStep Error:" + errorContent);
                     MountGotoError = true;
                 }
             }
-
         }
     );
+    Logger::Log("indi_Client->setMessageReceivedCallback finish!", LogLevel::INFO, DeviceType::MAIN);
 }
+
+DeviceType MainWindow::getDeviceTypeFromPartialString(const std::string& typeStr) {
+    // 使用find()方法检查字符串中是否包含特定的子字符串
+    if (typeStr.find("Exposure done, downloading image") != std::string::npos || typeStr.find("Download complete") != std::string::npos || typeStr.find("Uploading file.") != std::string::npos || typeStr.find("Image saved to") != std::string::npos) {
+        // Logger::Log("获取的信息类型是相机", LogLevel::INFO, DeviceType::CAMERA);
+        return DeviceType::CAMERA;
+    } else if (0) {
+        // Logger::Log("DeviceType::MOUNT", LogLevel::INFO, DeviceType::MOUNT);
+        return DeviceType::MOUNT;
+    } else {
+        // Logger::Log("DeviceType::MAIN", LogLevel::INFO, DeviceType::MAIN);
+        return DeviceType::MAIN;  
+    }
+}   
 
 void MainWindow::initGPIO() {
-    // 初始化 GPIO_PIN_1
-    // exportGPIO(GPIO_PIN_1);
+    Logger::Log("Initializing GPIO...", LogLevel::INFO, DeviceType::MAIN);
+    // Initialize GPIO_PIN_1
+    exportGPIO(GPIO_PIN_1);
     setGPIODirection(GPIO_PIN_1, "out");
+    Logger::Log("Set direction of GPIO_PIN_1 to output completed!", LogLevel::INFO, DeviceType::MAIN);
 
-    // 初始化 GPIO_PIN_2
-    // exportGPIO(GPIO_PIN_2);
+    // Initialize GPIO_PIN_2
+    exportGPIO(GPIO_PIN_2);
     setGPIODirection(GPIO_PIN_2, "out");
+    Logger::Log("Set direction of GPIO_PIN_2 to output completed!", LogLevel::INFO, DeviceType::MAIN);
 
-    // 设置 GPIO_PIN_1 为高电平
+    // Set GPIO_PIN_1 to high level
     setGPIOValue(GPIO_PIN_1, "1");
-
-    // 设置 GPIO_PIN_2 为高电平
+    Logger::Log("Set GPIO_PIN_1 level to high completed!", LogLevel::INFO, DeviceType::MAIN);
+    // Set GPIO_PIN_2 to high level
     setGPIOValue(GPIO_PIN_2, "1");
+    Logger::Log("Set GPIO_PIN_2 level to high completed!", LogLevel::INFO, DeviceType::MAIN);
+
+    Logger::Log("GPIO initialization completed!", LogLevel::INFO, DeviceType::MAIN);
 }
+
+
 
 void MainWindow::exportGPIO(const char* pin) {
     int fd;
     char buf[64];
 
-    // 导出 GPIO 引脚
+    // Export GPIO pin
     fd = open(GPIO_EXPORT, O_WRONLY);
     if (fd < 0) {
-        qWarning("Failed to open export for writing");
+        Logger::Log("Failed to open export file for writing", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
     snprintf(buf, sizeof(buf), "%s", pin);
     if (write(fd, buf, strlen(buf)) != strlen(buf)) {
-        qInfo("Failed to write to export");
+        Logger::Log("Failed to write to export file", LogLevel::INFO, DeviceType::MAIN);
         close(fd);
         return;
     }
     close(fd);
+    Logger::Log("GPIO pin export successful", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::setGPIODirection(const char* pin, const char* direction) {
     int fd;
     char path[128];
 
-    // 设置 GPIO 方向
+    // Set GPIO direction
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/direction", pin);
     fd = open(path, O_WRONLY);
     if (fd < 0) {
-        qWarning("Failed to open gpio direction for writing");
+        Logger::Log("Failed to open GPIO direction file for writing", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
     if (write(fd, direction, strlen(direction) + 1) != strlen(direction) + 1) {
-        qInfo("Failed to set gpio direction");
+        Logger::Log("Failed to set GPIO direction", LogLevel::INFO, DeviceType::MAIN);
         close(fd);
         return;
     }
     close(fd);
+    Logger::Log("GPIO direction set successfully", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::setGPIOValue(const char* pin, const char* value) {
     int fd;
     char path[128];
 
-    // 设置 GPIO 电平
+    // Set GPIO value
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/value", pin);
     fd = open(path, O_WRONLY);
     if (fd < 0) {
-        qWarning("Failed to open gpio value for writing");
+        Logger::Log("Failed to open GPIO value file for writing", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
     if (write(fd, value, strlen(value) + 1) != strlen(value) + 1) {
-        qInfo("Failed to write to gpio value");
+        Logger::Log("Failed to write to GPIO value", LogLevel::INFO, DeviceType::MAIN);
         close(fd);
         return;
     }
     close(fd);
+    Logger::Log("GPIO value set successfully", LogLevel::INFO, DeviceType::MAIN);
 }
 
 int MainWindow::readGPIOValue(const char* pin) {
     int fd;
     char path[128];
-    char value[3];  // 存储读取的值
+    char value[3];  // Store the read value
 
-    // 构建路径 /sys/class/gpio/gpio[PIN]/value
+    // Construct the path to the GPIO value file
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/value", pin);
 
-    // 打开 GPIO value 文件进行读取
+    // Open the GPIO value file for reading
     fd = open(path, O_RDONLY);
     if (fd < 0) {
-        qWarning("Failed to open gpio value for reading");
-        return -1;  // 返回 -1 表示读取失败
+        Logger::Log("Failed to open GPIO value file for reading", LogLevel::WARNING, DeviceType::MAIN);
+        return -1;  // Return -1 to indicate read failure
     }
 
-    // 读取文件内容
+    // Read the file content
     if (read(fd, value, sizeof(value)) < 0) {
-        qInfo("Failed to read gpio value");
+        Logger::Log("Failed to read GPIO value", LogLevel::INFO, DeviceType::MAIN);
         close(fd);
-        return -1;  // 返回 -1 表示读取失败
+        return -1;  // Return -1 to indicate read failure
     }
 
     close(fd);
 
-    // 判断读取到的值是否为 '1' 或 '0'
+    // Determine if the read value is '1' or '0'
     if (value[0] == '1') {
-        return 1;  // 返回 1 表示高电平
+        return 1;  // Return 1 to indicate high level
     } else if (value[0] == '0') {
-        return 0;  // 返回 0 表示低电平
+        return 0;  // Return 0 to indicate low level
     } else {
-        return -1;  // 如果读取的值不是 '0' 或 '1'，返回 -1
+        return -1;  // If the value is not '0' or '1', return -1
     }
 }
 
 void MainWindow::getGPIOsStatus() {
     int value1 = readGPIOValue(GPIO_PIN_1);
-    emit wsThread->sendMessageToClient("OutPutPowerStatus:" + QString::number(1) + ":" + QString::number(value1));
+    emit wsThread->sendMessageToClient("OutputPowerStatus:1:" + QString::number(value1));
     int value2 = readGPIOValue(GPIO_PIN_2);
-    emit wsThread->sendMessageToClient("OutPutPowerStatus:" + QString::number(2) + ":" + QString::number(value2));
+    emit wsThread->sendMessageToClient("OutputPowerStatus:2:" + QString::number(value2));
 }
 
 void MainWindow::onTimeout()
@@ -1219,165 +1465,194 @@ void MainWindow::onTimeout()
     }
 }
 
-void MainWindow::saveFitsAsJPG(QString filename)
-{
-    cv::Mat image;
-    cv::Mat image16;
-    cv::Mat SendImage;
-    Tools::readFits(filename.toLocal8Bit().constData(), image);
+// void MainWindow::saveFitsAsJPG(QString filename)
+// {
+//     Logger::Log("Starting to save FITS as JPG...", LogLevel::INFO, DeviceType::GUIDER);
+//     cv::Mat image;
+//     cv::Mat image16;
+//     cv::Mat SendImage;
+//     Tools::readFits(filename.toLocal8Bit().constData(), image);
+//     Logger::Log("FITS file read successfully.", LogLevel::INFO, DeviceType::GUIDER);
 
-    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
+//     QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
+//     Logger::Log("Star detection completed.", LogLevel::INFO, DeviceType::GUIDER);
 
-    if(stars.size() != 0){
-        FWHM = stars[0].HFR;
-    }
-    else {
-        FWHM = -1;
-    }   
-    
+//     if(stars.size() != 0){
+//         FWHM = stars[0].HFR;
+//         Logger::Log("FWHM calculated from detected stars.", LogLevel::INFO, DeviceType::GUIDER);
+//     }
+//     else {
+//         FWHM = -1;
+//         Logger::Log("No stars detected, FWHM set to -1.", LogLevel::WARNING, DeviceType::GUIDER);
+//     }   
 
-    if(image16.depth()==8) image.convertTo(image16,CV_16UC1,256,0); //x256  MSB alignment
-    else                   image.convertTo(image16,CV_16UC1,1,0);
+//     if(image16.depth()==8) {
+//         image.convertTo(image16, CV_16UC1, 256, 0); //x256  MSB alignment
+//         Logger::Log("Image converted to 16-bit format with MSB alignment.", LogLevel::INFO, DeviceType::GUIDER);
+//     }
+//     else {
+//         image.convertTo(image16, CV_16UC1, 1, 0);
+//         Logger::Log("Image converted to 16-bit format.", LogLevel::INFO, DeviceType::GUIDER);
+//     }
 
-    if(FWHM != -1){
-        // 在原图上绘制检测结果
-        cv::Point center(stars[0].x, stars[0].y);
-        cv::circle(image16, center, static_cast<int>(FWHM), cv::Scalar(0, 0, 255), 1); // 绘制HFR圆
-        cv::circle(image16, center, 1, cv::Scalar(0, 255, 0), -1);                     // 绘制中心点
-        // 在图像上显示HFR数值
-        std::string hfrText = cv::format("%.2f", stars[0].HFR);
-        cv::putText(image16, hfrText, cv::Point(stars[0].x - FWHM, stars[0].y - FWHM - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
-    }
+//     if(FWHM != -1){
+//         // 在原图上绘制检测结果
+//         cv::Point center(stars[0].x, stars[0].y);
+//         cv::circle(image16, center, static_cast<int>(FWHM), cv::Scalar(0, 0, 255), 1); // Draw HFR circle
+//         cv::circle(image16, center, 1, cv::Scalar(0, 255, 0), -1);                     // Draw center point
+//         std::string hfrText = cv::format("%.2f", stars[0].HFR);
+//         cv::putText(image16, hfrText, cv::Point(stars[0].x - FWHM, stars[0].y - FWHM - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+//         Logger::Log("Annotations for stars added to image.", LogLevel::INFO, DeviceType::GUIDER);
+//     }
 
-    cv::Mat NewImage = image16;
+//     cv::Mat NewImage = image16;
+//     FWHMCalOver = true;
 
-    FWHMCalOver = true;
+//     cv::normalize(NewImage, SendImage, 0, 255, cv::NORM_MINMAX, CV_8U);    // Normalize new image
+//     Logger::Log("Image normalized to 8-bit format.", LogLevel::INFO, DeviceType::GUIDER);
 
-    // 将图像缩放到0-255范围内
-    // cv::normalize(image, SendImage, 0, 255, cv::NORM_MINMAX, CV_8U);    // 原图
-    cv::normalize(NewImage, SendImage, 0, 255, cv::NORM_MINMAX, CV_8U);    // New
+//     QString uniqueId = QUuid::createUuid().toString();
+//     Logger::Log("Unique ID generated for new image.", LogLevel::INFO, DeviceType::GUIDER);
 
-    // 生成唯一ID
-    QString uniqueId = QUuid::createUuid().toString();
+//     // 列出所有以"CaptureImage"为前缀的文件
+//     QDir directory(QString::fromStdString(vueDirectoryPath));
+//     QStringList filters;
+//     filters << "CaptureImage*.jpg"; // 使用通配符来筛选以"CaptureImage"为前缀的jpg文件
+//     QStringList fileList = directory.entryList(filters, QDir::Files);
+//     Logger::Log("Existing image files listed for deletion.", LogLevel::INFO, DeviceType::GUIDER);
 
-    // 列出所有以"CaptureImage"为前缀的文件
-    QDir directory(QString::fromStdString(vueDirectoryPath));
-    QStringList filters;
-    filters << "CaptureImage*.jpg"; // 使用通配符来筛选以"CaptureImage"为前缀的jpg文件
-    QStringList fileList = directory.entryList(filters, QDir::Files);
+//     // 删除所有匹配的文件
+//     for (const auto &file : fileList)
+//     {
+//         QString filePath = QString::fromStdString(vueDirectoryPath) + file;
+//         QFile::remove(filePath);
+//     }
+//     Logger::Log("Old image files deleted.", LogLevel::INFO, DeviceType::GUIDER);
 
-    // 删除所有匹配的文件
-    for (const auto &file : fileList)
-    {
-        QString filePath = QString::fromStdString(vueDirectoryPath) + file;
-        QFile::remove(filePath);
-    }
+//     // 删除前一张图像文件
+//     if (PriorROIImage != "NULL") {
+//         QFile::remove(QString::fromStdString(PriorROIImage));
+//         Logger::Log("Previous ROI image deleted.", LogLevel::INFO, DeviceType::GUIDER);
+//     }
 
-    // 删除前一张图像文件
-    if (PriorROIImage != "NULL") {
-        QFile::remove(QString::fromStdString(PriorROIImage));
-    }
+//     // 保存新的图像带有唯一ID的文件名
+//     std::string fileName = "CaptureImage_" + uniqueId.toStdString() + ".jpg";
+//     std::string filePath = vueDirectoryPath + fileName;
+//     bool saved = cv::imwrite(filePath, SendImage);
+//     Logger::Log("Attempt to save new image file.", LogLevel::INFO, DeviceType::GUIDER);
 
-    // 保存新的图像带有唯一ID的文件名
-    std::string fileName = "CaptureImage_" + uniqueId.toStdString() + ".jpg";
-    std::string filePath = vueDirectoryPath + fileName;
+//     std::string Command = "sudo ln -sf " + filePath + " " + vueImagePath + fileName;
+//     system(Command.c_str());
+//     Logger::Log("Symbolic link created for new image file.", LogLevel::INFO, DeviceType::GUIDER);
 
-    bool saved = cv::imwrite(filePath, SendImage);
+//     PriorROIImage = vueImagePath + fileName;
 
-    std::string Command = "ln -sf " + filePath + " " + vueImagePath + fileName;
-    system(Command.c_str());
+//     if (saved)
+//     {
+//         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName));
 
-    PriorROIImage = vueImagePath + fileName;
+//         if(FWHM != -1){
+//             dataPoints.append(QPointF(CurrentPosition, FWHM));
 
-    if (saved)
-    {
-        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName));
+//             Logger::Log("dataPoints:" + std::to_string(CurrentPosition) + "," + std::to_string(FWHM), LogLevel::INFO, DeviceType::GUIDER);
 
-        if(FWHM != -1){
-            dataPoints.append(QPointF(CurrentPosition, FWHM));
+//             float a, b, c;
+//             Tools::fitQuadraticCurve(dataPoints, a, b, c);
 
-            qInfo() << "dataPoints:" << CurrentPosition << "," << FWHM;
+//             if (dataPoints.size() >= 5) {
+//                 QVector<QPointF> LineData;
 
-            float a, b, c;
-            Tools::fitQuadraticCurve(dataPoints, a, b, c);
+//                 for (float x = CurrentPosition - 3000; x <= CurrentPosition + 3000; x += 10)
+//                 {
+//                     float y = a * x * x + b * x + c;
+//                     LineData.append(QPointF(x, y));
+//                 }
 
-            if (dataPoints.size() >= 5) {
-                QVector<QPointF> LineData;
+//                 // 计算导数为零的 x 坐标
+//                 float x_min = -b / (2 * a);
+//                 minPoint_X = x_min;
+//                 // 计算最小值点的 y 坐标
+//                 float y_min = a * x_min * x_min + b * x_min + c;
 
-                for (float x = CurrentPosition - 3000; x <= CurrentPosition + 3000; x += 10)
-                {
-                    float y = a * x * x + b * x + c;
-                    LineData.append(QPointF(x, y));
-                }
+//                 QString dataString;
+//                 for (const auto &point : LineData)
+//                 {
+//                     dataString += QString::number(point.x()) + "|" + QString::number(point.y()) + ":";
+//                 }
 
-                // 计算导数为零的 x 坐标
-                float x_min = -b / (2 * a);
-                minPoint_X = x_min;
-                // 计算最小值点的 y 坐标
-                float y_min = a * x_min * x_min + b * x_min + c;
+//                 R2 = Tools::calculateRSquared(dataPoints, a, b, c);
+//                 // qInfo() << "RSquared: " << R2;
 
-                QString dataString;
-                for (const auto &point : LineData)
-                {
-                    dataString += QString::number(point.x()) + "|" + QString::number(point.y()) + ":";
-                }
-
-                R2 = Tools::calculateRSquared(dataPoints, a, b, c);
-                qInfo() << "RSquared: " << R2;
-
-                emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
-                emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
-            }    
-        }
-    }
-    else
-    {
-        qWarning() << "Save Image Failed...";
-    }
-}
-
+//                 emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
+//                 emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
+//             }    
+//         }
+//     }
+//     else
+//     {
+//         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
+//     }
+// }
+int a = 0;
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
+    // if (a == 0) {
+    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_47_25_522.fits";
+    //     a++;
+    // }else if (a == 1) {
+    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_43_18_926.fits";
+    //     a++;
+    // }else if (a == 2) {
+    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_37_55_350.fits";
+    //     a++;
+    // }else if (a == 3) {
+    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_36_54_070.fits";
+    //     a=0;
+    // }else{
+    //     a = 0;
+    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_47_25_522.fits";
+    //     a++;
+    // }
+    Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat OriginImage;
-    qInfo() << "Fits Path: " << fitsFileName;
+    Logger::Log("FITS file path: " + fitsFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
 
     if (status != 0)
     {
-        qWarning() << "Failed to read FITS file: " << fitsFileName.toLocal8Bit().constData();
+        Logger::Log("Failed to read FITS file: " + fitsFileName.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
         return status;
     }
 
     bool isColor = !(MainCameraCFA == "");
+    Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Monochrome"), LogLevel::INFO, DeviceType::CAMERA);
 
-    // if(ProcessBin && !isFirstCapture && glMainCameraBinning != 1){
     if(ProcessBin && glMainCameraBinning != 1){
         // 进行 2x2 的合并
         image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, false);
-        qInfo() << "After bin image size:" << image.cols << "," << image.rows;
+        if (image.empty()) {
+            Logger::Log("Failed to process image with binning.", LogLevel::ERROR, DeviceType::CAMERA);
+            return -1;
+        }
+        Logger::Log("Image binned: new size - " + std::to_string(image.cols) + "x" + std::to_string(image.rows), LogLevel::INFO, DeviceType::CAMERA);
     }
-
-    // isFirstCapture = false;
 
     cv::Mat srcImage = image.clone();
     cv::Mat dstImage;
-    qDebug("start medianBlur.");
+    Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
     cv::medianBlur(srcImage, dstImage, 3);
-    qDebug("medianBlur success.");
-    // QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
-    cv::imwrite(SolveImageFileName.toStdString(), dstImage); // TODO:
-    qDebug("image save success.");
-    
-    // Tools::SaveMatTo8BitJPG(image);
-    // Tools::SaveMatTo16BitPNG(image);
+    Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
+
+    cv::imwrite(SolveImageFileName.toStdString(), dstImage);
+    Logger::Log("Blurred image saved to " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+
     Tools::SaveMatToFITS(image);
+    Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
     
     int width = image.cols;
     int height = image.rows;
-    qInfo() << "image size:" << width << "," << height;
-    SolveImageWidth = width;
-    SolveImageHeight = height;
+    Logger::Log("Image dimensions: " + std::to_string(width) + "x" + std::to_string(height), LogLevel::INFO, DeviceType::CAMERA);
     emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
     if(ProcessBin) {
         emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(glMainCameraBinning));
@@ -1388,119 +1663,183 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 
     std::vector<unsigned char> imageData;  //uint16_t
     imageData.assign(image.data, image.data + image.total() * image.channels() * 2);
-    qInfo() << "imageData Size:" << imageData.size() << "," << image.data + image.total() * image.channels();
+    Logger::Log("Image data prepared for binary file.", LogLevel::INFO, DeviceType::CAMERA);
     
     QString uniqueId = QUuid::createUuid().toString();
+    Logger::Log("Unique ID generated: " + uniqueId.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     
     QDir directory(QString::fromStdString(vueDirectoryPath));
     QStringList filters;
     filters << "CaptureImage*.bin";
     QStringList fileList = directory.entryList(filters, QDir::Files);
+    Logger::Log("Existing binary files listed for deletion.", LogLevel::INFO, DeviceType::CAMERA);
     
     for (const auto &file : fileList)
     {
         QString filePath = QString::fromStdString(vueDirectoryPath) + file;
         QFile::remove(filePath);
     }
+    Logger::Log("Old binary files deleted.", LogLevel::INFO, DeviceType::CAMERA);
 
     // 删除前一张图像文件
     if (PriorCaptureImage != "NULL") {
         QFile::remove(QString::fromStdString(PriorCaptureImage));
+        Logger::Log("Previous capture image deleted.", LogLevel::INFO, DeviceType::CAMERA);
     }
     
     std::string fileName_ = "CaptureImage_" + uniqueId.toStdString() + ".bin";
     std::string filePath_ = vueDirectoryPath + fileName_;
     
-    qInfo("Open file for writing.");
+    Logger::Log("Opening file for writing: " + filePath_, LogLevel::INFO, DeviceType::CAMERA);
     std::ofstream outFile(filePath_, std::ios::binary);
     if (!outFile) {
-        qWarning("Failed to open file for writing.");
+        Logger::Log("Failed to open file for writing.", LogLevel::ERROR, DeviceType::CAMERA);
         throw std::runtime_error("Failed to open file for writing.");
     }
 
-    qInfo("Write data to file.");
+    Logger::Log("Writing data to file...", LogLevel::INFO, DeviceType::CAMERA);
     outFile.write(reinterpret_cast<const char*>(imageData.data()), imageData.size());
     if (!outFile) {
-        qWarning("Failed to write data to file.");
+        Logger::Log("Failed to write data to file.", LogLevel::ERROR, DeviceType::CAMERA);
         throw std::runtime_error("Failed to write data to file.");
     }
 
     outFile.close();
     if (!outFile) {
-        qWarning("Failed to close the file properly.");
+        Logger::Log("Failed to close the file properly.", LogLevel::ERROR, DeviceType::CAMERA);
         throw std::runtime_error("Failed to close the file properly.");
     }
 
-    std::string Command = "ln -sf " + filePath_ + " " + vueImagePath + fileName_;
+    std::string Command = "sudo ln -sf " + filePath_ + " " + vueImagePath + fileName_;
     system(Command.c_str());
+    Logger::Log("Symbolic link created for new image file.", LogLevel::INFO, DeviceType::CAMERA);
 
     PriorCaptureImage = vueImagePath + fileName_;
-
     emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(fileName_));
     isStagingImage = true;
-    SavedImage = QString::fromStdString(fileName_);
+    SavedImage = fileName_;
+    Logger::Log("Binary image saved and client notified.", LogLevel::INFO, DeviceType::CAMERA);
 
     QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(false, true);
-
     QString dataString;
     for (const auto &star : stars)
     {
         dataString += QString::number(star.x) + "|" + QString::number(star.y) + "|" + QString::number(star.HFR) + ":";
     }
     emit wsThread->sendMessageToClient("DetectedStars:" + dataString);
+    Logger::Log("Star detection data sent to client.", LogLevel::INFO, DeviceType::CAMERA);
+}
+
+cv::Mat MainWindow::colorImage(cv::Mat img16)
+{
+    Logger::Log("Starting color image processing...", LogLevel::INFO, DeviceType::MAIN);
+    // color camera, need to do debayer and color balance
+    cv::Mat AWBImg16;
+    cv::Mat AWBImg16color;
+    cv::Mat AWBImg16mono;
+    cv::Mat AWBImg8color;
+
+    uint16_t B=0;
+    uint16_t W=65535;
+
+    AWBImg16.create(img16.rows, img16.cols, CV_16UC1);
+    AWBImg16color.create(img16.rows, img16.cols, CV_16UC3);
+    AWBImg16mono.create(img16.rows, img16.cols, CV_16UC1);
+    AWBImg8color.create(img16.rows, img16.cols, CV_8UC3);
+
+    Logger::Log("Matrices for image processing created.", LogLevel::INFO, DeviceType::MAIN);
+    Tools::ImageSoftAWB(img16, AWBImg16, MainCameraCFA, ImageGainR, ImageGainB, 30); // image software Auto White Balance is done in RAW image.
+    Logger::Log("Auto White Balance applied.", LogLevel::INFO, DeviceType::MAIN);
+    cv::cvtColor(AWBImg16, AWBImg16color, CV_BayerRG2BGR);
+    Logger::Log("Image converted from Bayer to BGR.", LogLevel::INFO, DeviceType::MAIN);
+
+    cv::cvtColor(AWBImg16color, AWBImg16mono, cv::COLOR_BGR2GRAY);
+    Logger::Log("Image converted to grayscale.", LogLevel::INFO, DeviceType::MAIN);
+
+    if (AutoStretch == true)
+    {
+        Tools::GetAutoStretch(AWBImg16mono, 0, B, W);
+        Logger::Log("Auto stretch applied.", LogLevel::INFO, DeviceType::MAIN);
+    }
+    else
+    {
+        B = 0;
+        W = 65535;
+        Logger::Log("Auto stretch not applied, using default values.", LogLevel::INFO, DeviceType::MAIN);
+    }
+    Logger::Log("AutoStretch values: B=" + std::to_string(B) + ", W=" + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
+    Tools::Bit16To8_Stretch(AWBImg16color, AWBImg8color, B, W);
+    Logger::Log("Image stretched from 16-bit to 8-bit.", LogLevel::INFO, DeviceType::MAIN);
+
+    AWBImg16.release();
+    AWBImg16color.release();
+    AWBImg16mono.release();
+    AWBImg8color.release();
+    Logger::Log("Temporary matrices released.", LogLevel::INFO, DeviceType::MAIN);
+
+    return AWBImg16color;
 }
 
 void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
 {
+    Logger::Log("Starting to save guider image as JPG...", LogLevel::INFO, DeviceType::GUIDER);
+    
     // 生成唯一ID
     QString uniqueId = QUuid::createUuid().toString();
+    Logger::Log("Generated unique ID for new guider image: " + uniqueId.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
 
-    // 列出所有以"CaptureImage"为前缀的文件
+    // 列出所有以"GuiderImage"为前缀的文件
     QDir directory(QString::fromStdString(vueDirectoryPath));
     QStringList filters;
-    filters << "GuiderImage*.jpg"; // 使用通配符来筛选以"CaptureImage"为前缀的jpg文件
+    filters << "GuiderImage*.jpg"; // 使用通配符来筛选以"GuiderImage"为前缀的jpg文件
     QStringList fileList = directory.entryList(filters, QDir::Files);
+    Logger::Log("Listed existing guider images for deletion.", LogLevel::INFO, DeviceType::GUIDER);
 
     // 删除所有匹配的文件
     for (const auto &file : fileList)
     {
         QString filePath = QString::fromStdString(vueDirectoryPath) + file;
         QFile::remove(filePath);
+        Logger::Log("Deleted guider image file: " + filePath.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
     }
 
     // 删除前一张图像文件
     if (PriorGuiderImage != "NULL") {
         QFile::remove(QString::fromStdString(PriorGuiderImage));
+        Logger::Log("Deleted previous guider image file: " + PriorGuiderImage, LogLevel::INFO, DeviceType::GUIDER);
     }
 
     // 保存新的图像带有唯一ID的文件名
     std::string fileName = "GuiderImage_" + uniqueId.toStdString() + ".jpg";
     std::string filePath = vueDirectoryPath + fileName;
-
     bool saved = cv::imwrite(filePath, Image);
+    Logger::Log("Attempted to save new guider image.", LogLevel::INFO, DeviceType::GUIDER);
 
-    std::string Command = "ln -sf " + filePath + " " + vueImagePath + fileName;
+    std::string Command = "sudo ln -sf " + filePath + " " + vueImagePath + fileName;
     system(Command.c_str());
+    Logger::Log("Created symbolic link for new guider image.", LogLevel::INFO, DeviceType::GUIDER);
 
     PriorGuiderImage = vueImagePath + fileName;
 
     if (saved)
     {
         emit wsThread->sendMessageToClient("SaveGuiderImageSuccess:" + QString::fromStdString(fileName));
+        Logger::Log("Guider image saved successfully and client notified.", LogLevel::INFO, DeviceType::GUIDER);
     }
     else
     {
-        qWarning() << "Save GuiderImage Failed...";
+        Logger::Log("Failed to save guider image.", LogLevel::ERROR, DeviceType::GUIDER);
     }
 }
 
 void MainWindow::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
                                           std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from)
 {
+    Logger::Log("Opening XML file: " + filename, LogLevel::INFO, DeviceType::GUIDER);
     QFile file(QString::fromStdString(filename));
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-        qWarning() << "Open File failed";
+        Logger::Log("Failed to open file: " + filename, LogLevel::ERROR, DeviceType::GUIDER);
         return;
     }
     QXmlStreamReader xml(&file);
@@ -1512,6 +1851,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
             DevGroup dev_group;
             dev_group.group = xml.attributes().value("group").toString().toUtf8().constData();
             drivers_list_from.dev_groups.push_back(dev_group);
+            Logger::Log("Added device group: " + dev_group.group.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
         }
     }
     DIR *dir = opendir("/usr/share/indi");
@@ -1534,7 +1874,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
 
     if (dir == nullptr)
     {
-        qWarning() << "Unable to find INDI drivers directory,Please make sure the path is true";
+        Logger::Log("Unable to find INDI drivers directory at /usr/share/indi", LogLevel::ERROR, DeviceType::GUIDER);
         return;
     }
 
@@ -1545,7 +1885,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
         {
             if (strcmp(entry->d_name + strlen(entry->d_name) - 6, "sk.xml") == 0)
             {
-                continue;
+                continue; // Skip sky charts
             }
             else
             {
@@ -1553,7 +1893,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
                 QFile file(QString::fromStdString(xmlpath));
                 if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
                 {
-                    qWarning() << "Open File failed!!!";
+                    Logger::Log("Failed to open file: " + xmlpath, LogLevel::ERROR, DeviceType::GUIDER);
                 }
 
                 QXmlStreamReader xml(&file);
@@ -1616,30 +1956,35 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
         drivers_list_xmls = drivers_list_xmls_null;
     }
     closedir(dir);
+    Logger::Log("Completed reading and processing INDI driver files.", LogLevel::INFO, DeviceType::GUIDER);
 }
 
 //"Telescopes"|"Focusers"|"CCDs"|"Spectrographs"|"Filter Wheels"|"Auxiliary"|"Domes"|"Weather"|"Agent"
 void MainWindow::printDevGroups2(const DriversList drivers_list, int ListNum, QString group)
 {
-    qDebug("=============================== Print DevGroups ===============================");
+    Logger::Log("Printing device groups for group: " + group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("=============================== Print DevGroups ===============================", LogLevel::INFO, DeviceType::MAIN);
     for (int i = 0; i < drivers_list.dev_groups.size(); i++)
     {
         if (drivers_list.dev_groups[i].group == group)
         {
-            qDebug() << drivers_list.dev_groups[i].group;
+            Logger::Log("Processing device group: " + drivers_list.dev_groups[i].group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            // Uncomment and modify the following lines if you want to log device details and send messages
             // for (int j = 0; j < drivers_list.dev_groups[i].devices.size(); j++)
             // {
             //     qDebug() << QString::fromStdString(drivers_list.dev_groups[i].devices[j].driver_name) << QString::fromStdString(drivers_list.dev_groups[i].devices[j].version) << QString::fromStdString(drivers_list.dev_groups[i].devices[j].label);
+            //     Logger::Log("Device details: " + drivers_list.dev_groups[i].devices[j].label + ", " + drivers_list.dev_groups[i].devices[j].driver_name + ", " + drivers_list.dev_groups[i].devices[j].version, LogLevel::INFO, DeviceType::MAIN);
             //     websocket->messageSend("AddDriver:"+QString::fromStdString(drivers_list.dev_groups[i].devices[j].label)+":"+QString::fromStdString(drivers_list.dev_groups[i].devices[j].driver_name));
             // }
             DeviceSelect(ListNum, i);
         }
     }
+    Logger::Log("Completed printing device groups.", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::DeviceSelect(int systemNumber, int grounpNumber)
 {
-    Tools::clearSystemDeviceListItem(systemdevicelist, systemNumber);
+    // Tools::clearSystemDeviceListItem(systemdevicelist, systemNumber);
     SelectIndiDevice(systemNumber, grounpNumber);
 }
 
@@ -1700,8 +2045,6 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName)
     // }
 
     // qDebug() << "\033[0m\033[1;35m"
-    //          << "on_SystemPageComboBoxIndiDriver_currentIndexChanged Exist:" << isExist << "ret=" << ret << "\033[0m";
-
     // return isExist;
     switch (systemdevicelist.currentDeviceCode)
     {
@@ -1754,9 +2097,8 @@ void MainWindow::indi_Device_Confirm(QString DeviceName, QString DriverName)
     systemdevicelist.system_devices[deviceCode].DeviceIndiGroup = drivers_list.selectedGrounp;
     systemdevicelist.system_devices[deviceCode].DeviceIndiName = DeviceName;
 
-    qDebug() << "\033[0m\033[1;35m"
-             << "system device successfully selected"
-             << "\033[0m";
+    Logger::Log("system device(" + DeviceName.toStdString() + ") successfully selected", LogLevel::INFO, DeviceType::MAIN);
+
     Tools::printSystemDeviceList(systemdevicelist);
 
     Tools::saveSystemDeviceList(systemdevicelist);
@@ -1764,24 +2106,28 @@ void MainWindow::indi_Device_Confirm(QString DeviceName, QString DriverName)
 
 uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
 {
+    Logger::Log("Stopping all INDI drivers.", LogLevel::INFO, DeviceType::MAIN);
     Tools::stopIndiDriverAll(drivers_list);
+    Logger::Log("Starting INDI driver: " + drivername.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     Tools::startIndiDriver(drivername);
 
     sleep(1); // must wait some time here
 
     MyClient *searchClient;
     searchClient = new MyClient();
+    Logger::Log("Initialized new MyClient for device search.", LogLevel::INFO, DeviceType::MAIN);
     searchClient->PrintDevices();
 
     searchClient->setServer("localhost", 7624);
     searchClient->setConnectionTimeout(3, 0);
     searchClient->ClearDevices(); // clear device list
 
+    Logger::Log("Attempting to connect to INDI server at localhost:7624", LogLevel::INFO, DeviceType::MAIN);
     bool connected = searchClient->connectServer();
 
     if (connected == false)
     {
-        qWarning() << "clearCheckDeviceExist | ERROR:can not find server";
+        Logger::Log("Failed to connect to INDI server, can not find server", LogLevel::ERROR, DeviceType::MAIN);
         return QHYCCD_ERROR;
     }
 
@@ -1790,12 +2136,14 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
 
     if (searchClient->GetDeviceCount() == 0)
     {
+        Logger::Log("No devices found on INDI server.", LogLevel::INFO, DeviceType::MAIN);
         searchClient->disconnectServer();
         isExist = false;
         emit wsThread->sendMessageToClient("ScanFailed:No device found.");
         return QHYCCD_SUCCESS;
     }
 
+    Logger::Log("Devices found: " + std::to_string(searchClient->GetDeviceCount()), LogLevel::INFO, DeviceType::MAIN);
     for (int i = 0; i < searchClient->GetDeviceCount(); i++)
     {
         emit wsThread->sendMessageToClient("AddDevice:" + QString::fromStdString(searchClient->GetDeviceNameFromList(i)));
@@ -1805,11 +2153,13 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
     searchClient->ClearDevices();
 
     Tools::stopIndiDriver(drivername);
+    Logger::Log("INDI driver stopped: " + drivername.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     return QHYCCD_SUCCESS;
 }
 
 void MainWindow::ConnectAllDeviceOnce() {
+    Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
     dpMount = nullptr;
     dpGuider = nullptr;
     dpPoleScope = nullptr;
@@ -1820,7 +2170,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     int SelectedDriverNum = Tools::getDriverNumFromSystemDeviceList(systemdevicelist);
     if (SelectedDriverNum == 0)
     {
-        qWarning() << "System Connect | Error: No driver in system device list";
+        Logger::Log("No driver in system device list.", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No driver in system device list.");
         return;
     }
@@ -1830,6 +2180,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     Tools::cleanSystemDeviceListConnect(systemdevicelist);
     disconnectIndiServer(indi_Client);
     Tools::stopIndiDriverAll(drivers_list);
+    
 
     QString driverName;
     QString deviceType;
@@ -1839,9 +2190,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     {
         driverName = systemdevicelist.system_devices[i].DriverIndiName;
         deviceType = systemdevicelist.system_devices[i].Description;
-        if (deviceType != ""){
-            emit wsThread->sendMessageToClient("AddDeviceType:" + deviceType);
-        }
+
         
         if (driverName != "")
         {
@@ -1851,49 +2200,125 @@ void MainWindow::ConnectAllDeviceOnce() {
                 if (item == driverName)
                 {
                     isFound = true;
-                    qWarning() << "System Connect | found one duplite driver,do not start it again" << driverName;
+                    Logger::Log("Found one duplite driver,do not start it again: " + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                     break;
                 }
             }
 
             if (isFound == false)
             {
+                Logger::Log("Start INDI Driver:" + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                 Tools::startIndiDriver(driverName);
                 nameCheck.push_back(driverName);
+                ConnectDriverList.push_back(driverName);
             }
         }
     }
 
     sleep(1);
 
-    connectIndiServer(indi_Client);
-
     if (indi_Client->isServerConnected() == false)
     {
-        qWarning() << "System Connect | ERROR:can not find server";
-        return;
+        Logger::Log("Can not find server.", LogLevel::ERROR, DeviceType::MAIN);
+        connectIndiServer(indi_Client);
+        sleep(1);
     }
 
-    if (indi_Client->GetDeviceCount() == 0)
-    {
-        qWarning() << "System Connect | Error:No device found";
+    QTimer *timer = new QTimer(this);
+    timer->setInterval(1000); // 设置定时器间隔为1000毫秒
+    int time = 0;
+    connect(timer, &QTimer::timeout, this, [this, timer, &time]() {
+        if (indi_Client->GetDeviceCount() > 0 || time >= 10) {
+            timer->stop();
+            timer->deleteLater();
+            sleep(2);
+            continueConnectAllDeviceOnce(); // 继续执行设备连接的剩余部分
+        } else {
+            Logger::Log("Waiting for devices...", LogLevel::INFO, DeviceType::MAIN);
+            time++;
+        }
+    });
+    timer->start();
+}
+
+void MainWindow::continueConnectAllDeviceOnce() {
+    if (indi_Client->GetDeviceCount() == 0) {
+        Logger::Log("Driver start success but no device found", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
         return;
     }
 
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
-        qInfo() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
+        Logger::Log("Start connecting devices:" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
         indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
 
         int waitTime = 0;
         while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5) {
-            qInfo() << "Wait for Connect" << indi_Client->GetDeviceNameFromList(i).c_str();
+            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
             QThread::msleep(1000);  // 等待1秒
             waitTime++;
         }
-    }
+        if (!indi_Client->GetDeviceFromList(i)->isConnected() && indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE) {
+            QString DevicePort;
+            indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+            // 检查指定的端口是否在/dev/serial/by-id目录下存在
+            QFile portFile(DevicePort);
+            if (!portFile.exists()) {
+                Logger::Log("Port " + DevicePort.toStdString() + " does not exist.", LogLevel::ERROR, DeviceType::MAIN);
+                // 获取所有连接的串口
+                QStringList connectedPorts = getConnectedSerialPorts();
+                for (int j = 0; j < connectedPorts.size(); j++) {
 
+                    Logger::Log("Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    if (connectedPorts[j].contains("ttyACM")) {
+                        Logger::Log("Found ttyACM device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    }else {
+                        Logger::Log("Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
+                        continue;
+                    }
+                    QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                    QString link = "";
+                    if (links.isEmpty()) {
+                        Logger::Log("No link found for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    } else {
+                        for (int k = 0; k < links.size(); k++) {
+                            if (areFilesInSameDirectory(links[k], DevicePort)) {
+                                if (link == "") {
+                                    link = links[k];
+                                }else {
+                                    Logger::Log("No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                    link = "";
+                                    break;
+                                }
+                            }
+                        }
+                        if (link == "") {
+                            Logger::Log("No Found link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            continue;
+                        }
+                        Logger::Log("Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        DevicePort = link;
+                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                        indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        waitTime = 0;
+                        while (waitTime < 5)
+                        {
+                            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+
+                            QThread::msleep(1000); // 等待1秒
+                            waitTime++;
+                            if (indi_Client->GetDeviceFromList(i)->isConnected()) {
+                                break;
+                            }
+                        }
+                    }
+        
+                }
+                
+            }
+        }
+    }
     // sleep(10);
 
     ConnectedCCDList.clear();
@@ -1904,27 +2329,22 @@ void MainWindow::ConnectAllDeviceOnce() {
     {
         if(indi_Client->GetDeviceFromList(i)->isConnected()) {
             if(indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE) {
-                qDebug() << "\033[1;32m We received a CCD!\033[0m";
-                qInfo() << "We received a CCD!";
+                Logger::Log("We received a CCD!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedCCDList.push_back(i);
             } else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE) {
-                qDebug() << "\033[1;32m We received a FILTER!\033[0m";
-                qInfo() << "We received a FILTER!";
+                Logger::Log("We received a FILTER!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedFILTERList.push_back(i);
             } else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE) {
-                qDebug() << "\033[1;32m We received a TELESCOPE!\033[0m";
-                qInfo() << "We received a TELESCOPE!";
+                Logger::Log("We received a TELESCOPE!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedTELESCOPEList.push_back(i);
             } else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE) {
-                qDebug() << "\033[1;32m We received a FOCUSER!\033[0m";
-                qInfo() << "We received a FOCUSER!";
+                Logger::Log("We received a FOCUSER!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedFOCUSERList.push_back(i);
             }  
-            qInfo() << "Driver:" << indi_Client->GetDeviceFromList(i)->getDriverExec() << "Device:" << indi_Client->GetDeviceFromList(i)->getDeviceName();
+            Logger::Log("Driver:" + std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) + " Device:" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()), LogLevel::INFO, DeviceType::MAIN);
         } else {
             QString DeviceName = indi_Client->GetDeviceFromList(i)->getDeviceName();
-            qDebug() << "\033[1;31m Connect failed device: \033[0m" << DeviceName;
-            qWarning() << "Connect failed device:" << DeviceName;
+            Logger::Log("Connect failed device:" + DeviceName.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("ConnectFailed:Connect device failed:" + DeviceName);
         }
     }
@@ -1932,23 +2352,39 @@ void MainWindow::ConnectAllDeviceOnce() {
     Tools::printSystemDeviceList(systemdevicelist);
 
     QStringList SelectedCameras = Tools::getCameraNumFromSystemDeviceList(systemdevicelist);
-    qDebug() << "Number of Selected cameras:" << SelectedCameras.size();
+    Logger::Log("Number of Selected cameras:" + std::to_string(SelectedCameras.size()), LogLevel::INFO, DeviceType::MAIN);
     for(auto Camera: SelectedCameras){
-        qDebug() << "Selected Cameras:" << Camera;
+        Logger::Log("Selected Cameras:" + Camera.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     }
 
-    qInfo() << "Number of Connected CCD:" << ConnectedCCDList.size();
-    qInfo() << "Number of Connected TELESCOPE:" << ConnectedTELESCOPEList.size();
-    qInfo() << "Number of Connected FOCUSER:" << ConnectedFOCUSERList.size();
-    qInfo() << "Number of Connected FILTER:" << ConnectedFILTERList.size();
+    Logger::Log("Number of Connected CCD:" + std::to_string(ConnectedCCDList.size()), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("Number of Connected TELESCOPE:" + std::to_string(ConnectedTELESCOPEList.size()), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("Number of Connected FOCUSER:" + std::to_string(ConnectedFOCUSERList.size()), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("Number of Connected FILTER:" + std::to_string(ConnectedFILTERList.size()), LogLevel::INFO, DeviceType::MAIN);
+
+    for (int i = 0; i < indi_Client->GetDeviceCount(); i++){
+        if (indi_Client->GetDeviceFromList(i)->isConnected()) {
+            for (int j = 0; j < systemdevicelist.system_devices.size(); j++) {
+                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec()) {
+                    emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[j].Description);
+                }
+            }
+        }
+    }
+
+    if (ConnectedCCDList.size() <= 0 && ConnectedTELESCOPEList.size() <= 0 && ConnectedFOCUSERList.size() <= 0 && ConnectedFILTERList.size() <= 0) {
+        Logger::Log("No Device Connected", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:No Device Connected");
+        return;
+    }
 
     bool EachDeviceOne = true;
 
     if(SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1) {
-        qInfo() << "The Camera Selected and Connected are Both 1";
+        Logger::Log("The Camera Selected and Connected are Both 1", LogLevel::INFO, DeviceType::MAIN);
         if(SelectedCameras[0] == "Guider") {
             dpGuider = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            // systemdevicelist.system_devices[1].isConnect = true;
+            systemdevicelist.system_devices[1].isConnect = true;
             indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
             sleep(1);
             call_phd_whichCamera(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
@@ -1960,7 +2396,6 @@ void MainWindow::ConnectAllDeviceOnce() {
             systemdevicelist.system_devices[2].isConnect = true;
             AfterDeviceConnect(dpPoleScope);
         } else if(SelectedCameras[0] == "MainCamera") {
-            qInfo() << "MainCamera Connected Success!";
             dpMainCamera = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
             systemdevicelist.system_devices[20].isConnect = true;
             AfterDeviceConnect(dpMainCamera);
@@ -1973,7 +2408,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     }
 
     if(ConnectedTELESCOPEList.size() == 1) {
-        qInfo() << "Mount Connected Success!";
+        Logger::Log("Mount Connected Success and Mount device is only one!", LogLevel::INFO, DeviceType::MAIN);
         dpMount = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
         systemdevicelist.system_devices[0].isConnect = true;
         AfterDeviceConnect(dpMount);
@@ -1985,7 +2420,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     }
 
     if(ConnectedFOCUSERList.size() == 1) {
-        qInfo() << "Focuser Connected Success!";
+        Logger::Log("Focuser Connected Success and Focuser device is only one!", LogLevel::INFO, DeviceType::MAIN);
         dpFocuser = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
         systemdevicelist.system_devices[22].isConnect = true;
         AfterDeviceConnect(dpFocuser);
@@ -1997,7 +2432,7 @@ void MainWindow::ConnectAllDeviceOnce() {
     }
 
     if(ConnectedFILTERList.size() == 1) {
-        qInfo() << "Filter Connected Success!";
+        Logger::Log("Filter Connected Success and Filter device is only one!", LogLevel::INFO, DeviceType::MAIN);
         dpCFW = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
         systemdevicelist.system_devices[21].isConnect = true;
         AfterDeviceConnect(dpCFW);
@@ -2007,8 +2442,9 @@ void MainWindow::ConnectAllDeviceOnce() {
             emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFILTERList[i])->getDeviceName()));
         }
     }
+
     
-    qInfo() << "Each Device Only Has One:" << EachDeviceOne;
+    Logger::Log("Each Device Only Has One:" + std::to_string(EachDeviceOne), LogLevel::INFO, DeviceType::MAIN);
     if(EachDeviceOne) {
         // AfterDeviceConnect();
     } else {
@@ -2029,7 +2465,7 @@ void MainWindow::AutoConnectAllDevice() {
     int SelectedDriverNum = Tools::getDriverNumFromSystemDeviceList(systemdevicelist);
     if (SelectedDriverNum == 0)
     {
-        qWarning() << "System Connect | Error: No driver in system device list";
+        Logger::Log("No driver in system device list", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No driver in system device list.");
         return;
     }
@@ -2048,9 +2484,9 @@ void MainWindow::AutoConnectAllDevice() {
     {
         driverName = systemdevicelist.system_devices[i].DriverIndiName;
         deviceType = systemdevicelist.system_devices[i].Description;
-        if (deviceType != ""){
-            emit wsThread->sendMessageToClient("AddDeviceType:" + deviceType);
-        }
+        // if (deviceType != ""){
+        //     emit wsThread->sendMessageToClient("AddDeviceType:" + deviceType);
+        // }
         
         if (driverName != "")
         {
@@ -2060,44 +2496,63 @@ void MainWindow::AutoConnectAllDevice() {
                 if (item == driverName)
                 {
                     isFound = true;
-                    qWarning() << "System Connect | found one duplite driver,do not start it again" << driverName;
+                    Logger::Log("found one duplite driver,do not start it again" + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                     break;
                 }
             }
 
             if (isFound == false)
             {
+                Logger::Log("Start Connect INDI Driver:" + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                 Tools::startIndiDriver(driverName);
                 nameCheck.push_back(driverName);
+                sleep(1);
             }
+            // Tools::startIndiDriver(driverName);
         }
     }
 
     sleep(1);
 
-    connectIndiServer(indi_Client);
-
     if (indi_Client->isServerConnected() == false)
     {
-        qWarning() << "System Connect | ERROR:can not find server";
-        return;
+        Logger::Log("can not find server", LogLevel::ERROR, DeviceType::MAIN);
+        connectIndiServer(indi_Client);
+        sleep(1);
     }
 
-    if (indi_Client->GetDeviceCount() == 0)
-    {
-        qWarning() << "System Connect | Error:No device found";
+    QTimer *timer = new QTimer(this);
+    timer->setInterval(1000); // 设置定时器间隔为1000毫秒
+    int time = 0;
+    connect(timer, &QTimer::timeout, this, [this, timer, &time]() {
+        if (indi_Client->GetDeviceCount() > 0 || time >= 10) {
+            timer->stop();
+            timer->deleteLater();
+            sleep(2);
+            continueAutoConnectAllDevice(); // 继续执行设备连接的剩余部分
+        } else {
+            Logger::Log("Waiting for devices...", LogLevel::INFO, DeviceType::MAIN);
+            time++;
+        }
+    });
+    timer->start();
+}
+    
+void MainWindow::continueAutoConnectAllDevice(){
+    if (indi_Client->GetDeviceCount() == 0) {
+        Logger::Log("Driver start success but no device found", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
         return;
     }
 
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
-        qInfo() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
+        Logger::Log("Start connecting devices:" + QString::fromStdString(indi_Client->GetDeviceNameFromList(i)).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
 
         int waitTime = 0;
         while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5) {
-            qInfo() << "Wait for Connect" << indi_Client->GetDeviceNameFromList(i).c_str();
+            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
             QThread::msleep(1000);  // 等待1秒
             waitTime++;
         }
@@ -2126,39 +2581,53 @@ void MainWindow::AutoConnectAllDevice() {
             }
         } else {
             QString DeviceName = indi_Client->GetDeviceFromList(i)->getDeviceName();
-            qDebug() << "\033[1;31m Connect failed device: \033[0m" << DeviceName;
-            qWarning() << "Connect failed device:" << DeviceName;
+            Logger::Log("Connect failed device:" + DeviceName.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("ConnectFailed:Connect device failed:" + DeviceName);
+        }
+    }
+
+    for (int i = 0; i < indi_Client->GetDeviceCount(); i++){
+        if (indi_Client->GetDeviceFromList(i)->isConnected()) {
+            for (int j = 0; j < systemdevicelist.system_devices.size(); j++) {
+                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec()) {
+                    emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[j].Description);
+                }
+            }
         }
     }
 
     Tools::printSystemDeviceList(systemdevicelist);
 
     if (systemdevicelist.system_devices[0].dp != NULL){
-        qInfo() << "Find dpMount";
+        Logger::Log("Find dpMount", LogLevel::INFO, DeviceType::MAIN);
         dpMount = systemdevicelist.system_devices[0].dp;
     } 
     if (systemdevicelist.system_devices[1].dp != NULL){
-        qInfo() << "Find dpGuider";
+        Logger::Log("Find dpGuider", LogLevel::INFO, DeviceType::MAIN);
         dpGuider = systemdevicelist.system_devices[1].dp;
     }  
     if (systemdevicelist.system_devices[2].dp != NULL){
-        qInfo() << "Find dpPoleScope";
+        Logger::Log("Find dpPoleScope", LogLevel::INFO, DeviceType::MAIN);
         dpPoleScope = systemdevicelist.system_devices[2].dp;
     }   
     if (systemdevicelist.system_devices[20].dp != NULL){
-        qInfo() << "Find dpMainCamera";
+        Logger::Log("Find dpMainCamera", LogLevel::INFO, DeviceType::MAIN);
         dpMainCamera = systemdevicelist.system_devices[20].dp;
     } 
     if (systemdevicelist.system_devices[21].dp != NULL){
-        qInfo() << "Find dpCFW";
+        Logger::Log("Find dpCFW", LogLevel::INFO, DeviceType::MAIN);
         dpCFW = systemdevicelist.system_devices[21].dp;
     }
     if (systemdevicelist.system_devices[22].dp != NULL){
-        qInfo() << "Find dpFocuser";
+        Logger::Log("Find dpFocuser", LogLevel::INFO, DeviceType::MAIN);
         dpFocuser = systemdevicelist.system_devices[22].dp;
     }
-        
+
+    if (dpFocuser == nullptr && dpMount == nullptr && dpMainCamera == nullptr && dpGuider == nullptr && dpPoleScope == nullptr && dpCFW == nullptr) {
+        Logger::Log("all device connect failed", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:all device connect failed.");
+        return;
+    }
     AfterDeviceConnect();
 
 }
@@ -2166,59 +2635,82 @@ void MainWindow::AutoConnectAllDevice() {
 void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 {
     indi_Client->PrintDevices();
-    qInfo() << "DeviceType:" << DeviceType << "," << "DeviceName:" << indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName();
+    Logger::Log("BindingDevice:" + DeviceType.toStdString() + ":" + QString::number(DeviceIndex).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     if (DeviceType == "Guider")
     {
+        Logger::Log("Binding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpGuider = indi_Client->GetDeviceFromList(DeviceIndex);
         indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
+        Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
         call_phd_whichCamera(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
+        Logger::Log("Call PHD2 Guider Connect", LogLevel::INFO, DeviceType::MAIN);
         systemdevicelist.system_devices[1].isConnect = true;
+        systemdevicelist.system_devices[1].isBind = true;
         AfterDeviceConnect(dpGuider);
+        Logger::Log("Binding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "MainCamera")
     {
+        Logger::Log("Binding MainCamera Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpMainCamera = indi_Client->GetDeviceFromList(DeviceIndex);
         systemdevicelist.system_devices[20].isConnect = true;
+        systemdevicelist.system_devices[20].isBind = true;
         AfterDeviceConnect(dpMainCamera);
+        Logger::Log("Binding MainCamera Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "Mount")
     {
+        Logger::Log("Binding Mount Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpMount = indi_Client->GetDeviceFromList(DeviceIndex);
         systemdevicelist.system_devices[0].isConnect = true;
+        systemdevicelist.system_devices[0].isBind = true;
         AfterDeviceConnect(dpMount);
+        Logger::Log("Binding Mount Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "Focuser")
     {
+        Logger::Log("Binding Focuser Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpFocuser = indi_Client->GetDeviceFromList(DeviceIndex);
         systemdevicelist.system_devices[22].isConnect = true;
+        systemdevicelist.system_devices[22].isBind = true;
         AfterDeviceConnect(dpFocuser);
+        Logger::Log("Binding Focuser Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "PoleCamera")
     {
+        Logger::Log("Binding PoleCamera Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpPoleScope = indi_Client->GetDeviceFromList(DeviceIndex);
         systemdevicelist.system_devices[2].isConnect = true;
+        systemdevicelist.system_devices[2].isBind = true;
         AfterDeviceConnect(dpPoleScope);
+        Logger::Log("Binding PoleCamera Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "CFW")
     {
+        Logger::Log("Binding CFW Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpCFW = indi_Client->GetDeviceFromList(DeviceIndex);
         systemdevicelist.system_devices[21].isConnect = true;
+        systemdevicelist.system_devices[21].isBind = true;
         AfterDeviceConnect(dpCFW);
+        Logger::Log("Binding CFW Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
 void MainWindow::UnBindingDevice(QString DeviceType)
 {
     indi_Client->PrintDevices();
-    qInfo() << "DeviceType:" << DeviceType;
+    Logger::Log("UnBindingDevice:" + DeviceType.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     if (DeviceType == "Guider")
     {
+        Logger::Log("UnBinding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
         indi_Client->disconnectDevice(dpGuider->getDeviceName());
+        Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
         indi_Client->connectDevice(dpGuider->getDeviceName());
+        Logger::Log("Connect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(3);
         int DeviceIndex;
         for (int i = 0; i < indi_Client->GetDeviceCount(); i++)   //  indi_Client->GetDeviceFromList(i)
@@ -2227,14 +2719,15 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-
+        systemdevicelist.system_devices[1].isBind = false;
+        systemdevicelist.system_devices[1].DeviceIndiName = "";
         dpGuider = nullptr;
-
+        Logger::Log("UnBinding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
     }
     else if (DeviceType == "MainCamera")
     {
-        qInfo() << "DeviceName:" << dpMainCamera->getDeviceName();
+        Logger::Log("UnBinding MainCamera Device(" + std::string(dpMainCamera->getDeviceName()) + ") start ...", LogLevel::INFO, DeviceType::MAIN);
         
         int DeviceIndex;
         for (int i = 0; i < indi_Client->GetDeviceCount(); i++)   //  indi_Client->GetDeviceFromList(i)
@@ -2244,7 +2737,15 @@ void MainWindow::UnBindingDevice(QString DeviceType)
             }
         }
 
+        QString CFWname;
+        indi_Client->getCFWSlotName(dpMainCamera, CFWname);
+        if(CFWname != "") {
+            emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
+        }
+        systemdevicelist.system_devices[20].isBind = false;
+        systemdevicelist.system_devices[20].DeviceIndiName = "";
         dpMainCamera = nullptr;
+
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));       //already allocated
     }
@@ -2257,7 +2758,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-
+        systemdevicelist.system_devices[0].isBind = false;
+        systemdevicelist.system_devices[0].DeviceIndiName = "";
         dpMount = nullptr;
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
@@ -2271,7 +2773,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-
+        systemdevicelist.system_devices[22].isBind = false;
+        systemdevicelist.system_devices[22].DeviceIndiName = "";
         dpFocuser = nullptr;
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
@@ -2285,7 +2788,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-
+        systemdevicelist.system_devices[2].isBind = false;
+        systemdevicelist.system_devices[2].DeviceIndiName = "";
         dpPoleScope = nullptr;
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
@@ -2299,7 +2803,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-
+        systemdevicelist.system_devices[21].isBind = false;
+        systemdevicelist.system_devices[21].DeviceIndiName = "";
         dpCFW = nullptr;
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
@@ -2430,49 +2935,44 @@ void MainWindow::UnBindingDevice(QString DeviceType)
 
 void MainWindow::AfterDeviceConnect()
 {
+    Logger::Log("Starting AfterDeviceConnect process.", LogLevel::INFO, DeviceType::MAIN);
+
     if (dpMainCamera != NULL)
     {
-        qInfo() << "AfterAllConnected | DeviceName: " << dpMainCamera->getDeviceName();
-        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+        Logger::Log("MainCamera connected after Device("+QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString()+") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
 
         systemdevicelist.system_devices[20].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
+        systemdevicelist.system_devices[20].isBind = true;
 
         indi_Client->setBLOBMode(B_ALSO, dpMainCamera->getDeviceName(), nullptr);
         indi_Client->enableDirectBlobAccess(dpMainCamera->getDeviceName(), nullptr);
 
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
-        qInfo() << "AfterAllConnected | MainCamera SDK version:" << SDKVERSION;
+        Logger::Log("MainCamera SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
-        qInfo() << "CCD Offset(Value,Min,Max):" << glOffsetValue << "," << glOffsetMin << "," << glOffsetMax;
-        emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
+        Logger::Log("CCD Offset - Value: " + std::to_string(glOffsetValue) + ", Min: " + std::to_string(glOffsetMin) + ", Max: " + std::to_string(glOffsetMax), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getCCDGain(dpMainCamera, glGainValue, glGainMin, glGainMax);
-        qInfo() << "CCD Gain(Value,Min,Max):" << glGainValue << "," << glGainMin << "," << glGainMax;
-        emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
+        Logger::Log("CCD Gain - Value: " + std::to_string(glGainValue) + ", Min: " + std::to_string(glGainMin) + ", Max: " + std::to_string(glGainMax), LogLevel::INFO, DeviceType::MAIN);
 
         int maxX, maxY; 
         double pixelsize, pixelsizX, pixelsizY;
         int bitDepth;
-        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-        qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
-
-        // indi_Client->setCCDBasicInfo(dpMainCamera, 5616, 3744, 6.41, 6.41, 6.41);
-
-        // indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-        // qDebug() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+        Logger::Log("CCD Basic Info - MaxX: " + std::to_string(maxX) + ", MaxY: " + std::to_string(maxY) + ", PixelSize: " + std::to_string(pixelsize), LogLevel::INFO, DeviceType::MAIN);
 
         if(maxX == 0 && maxY == 0) {
             QString CameraName = dpMainCamera->getDeviceName();
-            qInfo() << "Camera:" << CameraName;
-            qInfo() << "This may be a DSLRs Camera, need to set Resolution and pixel size.";
+            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
             DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
             if(DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0) {
                 indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
-                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-                qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
             } else {
                 emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
             }
@@ -2482,17 +2982,16 @@ void MainWindow::AfterDeviceConnect()
         glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
         glCameraSize_height = maxY * pixelsize / 1000;
         glCameraSize_height = std::round(glCameraSize_height * 10) / 10;
-        qInfo() << "CCD Chip size:" << glCameraSize_width << "," << glCameraSize_height;
+        Logger::Log("CCD Chip size - Width: " + std::to_string(glCameraSize_width) + ", Height: " + std::to_string(glCameraSize_height), LogLevel::INFO, DeviceType::MAIN);
 
         int X, Y;
         indi_Client->getCCDFrameInfo(dpMainCamera, X, Y, glMainCCDSizeX, glMainCCDSizeY);
-        qInfo() << "CCDSize:" << glMainCCDSizeX << glMainCCDSizeY;
+        Logger::Log("CCD Frame Info - SizeX: " + std::to_string(glMainCCDSizeX) + ", SizeY: " + std::to_string(glMainCCDSizeY), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
 
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
-        qInfo() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
-        // indi_Client->setTemperature(dpMainCamera, -10);
+        Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
@@ -2500,62 +2999,68 @@ void MainWindow::AfterDeviceConnect()
         QString CFWname;
         indi_Client->getCFWSlotName(dpMainCamera, CFWname);
         if(CFWname != "") {
-            qInfo() << "get CFW Slot Name: " << CFWname;
-            emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname+" (on camera)");
+            Logger::Log("CFW Slot Name: " + CFWname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname + " (on camera):" + QString::fromUtf8(dpMainCamera->getDriverExec()));
             isFilterOnCamera = true;
 
             int min, max, pos;
             indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-            qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+            Logger::Log("CFW Position - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Current: " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+            Logger::Log("CFW connected successfully.", LogLevel::INFO, DeviceType::MAIN);
         }
+        Logger::Log("MainCamera connected successfully.", LogLevel::INFO, DeviceType::MAIN);
     }
 
     if (dpMount != NULL)
     {
-        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()));
+        Logger::Log("Mount connected after Device("+QString::fromUtf8(dpMount->getDeviceName()).toStdString()+") Connect: " + QString::fromUtf8(dpMount->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()) + ":" + QString::fromUtf8(dpMount->getDriverExec()));
         ConnectedDevices.push_back({"Mount", QString::fromUtf8(dpMount->getDeviceName())});
-        QString DevicePort; // add by CJQ 2023.3.3
-        indi_Client->getDevicePort(dpMount, DevicePort);
+        
+        systemdevicelist.system_devices[0].DeviceIndiName = QString::fromUtf8(dpMount->getDeviceName());
+        systemdevicelist.system_devices[0].isBind = true;
 
-        //????
+
+        indi_Client->GetAllPropertyName(dpMount);
+        QString DevicePort;
+        indi_Client->getDevicePort(dpMount, DevicePort);
+        Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
         double glLongitude_radian, glLatitude_radian;
-        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");      //TODO:
+        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");
         glLatitude_radian = Tools::getDecAngle("40° 09' 14.93");
-        //????
+        Logger::Log("Mount location set to Longitude: " + QString::number(Tools::RadToDegree(glLongitude_radian)).toStdString() + ", Latitude: " + QString::number(Tools::RadToDegree(glLatitude_radian)).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->setLocation(dpMount, Tools::RadToDegree(glLatitude_radian), Tools::RadToDegree(glLongitude_radian), 10);
         QDateTime datetime = QDateTime::currentDateTime();
-        // datetime= QDateTime::fromString("2023-12-29T12:34:56+00:00",Qt::ISODate);
-        // qDebug()<<datetime;
         indi_Client->setTimeUTC(dpMount, datetime);
-        qInfo() << "AfterAllConnected_setTimeUTC |" << datetime;
+        Logger::Log("UTC Time set for Mount: " + datetime.toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         indi_Client->getTimeUTC(dpMount, datetime);
-        qInfo() << "AfterAllConnected | TimeUTC: " << datetime.currentDateTimeUtc();
+        Logger::Log("UTC Time: " + datetime.currentDateTimeUtc().toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         double a, b, c, d;
-        // indi_Client->setTelescopeInfo(dp2,100,500,30,130);
         indi_Client->getTelescopeInfo(dpMount, a, b, c, d);
-        qInfo() << "AfterAllConnected | TelescopeInfo: " << a << b << c << d;
+        Logger::Log("Telescope Info - A: " + std::to_string(a) + ", B: " + std::to_string(b) + ", C: " + std::to_string(c) + ", D: " + std::to_string(d), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getTelescopeRADECJ2000(dpMount, a, b);
         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
 
         bool isPark;
         indi_Client->getTelescopePark(dpMount, isPark);
+        Logger::Log("Telescope Park Status: " + std::string(isPark ? "Parked" : "Not Parked"), LogLevel::INFO, DeviceType::MAIN);
 
         int maxspeed, minspeed, speedvalue, total;
-
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
         glTelescopeTotalSlewRate = total;
-        qInfo() << "TelescopeTotalSlewRate: " << total;
+        Logger::Log("Telescope Total Slew Rate: " + std::to_string(total), LogLevel::INFO, DeviceType::MAIN);
+
         emit wsThread->sendMessageToClient("TelescopeTotalSlewRate:" + QString::number(total));
         indi_Client->getTelescopeMaxSlewRateOptions(dpMount, minspeed, maxspeed, speedvalue);
-        // indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
         indi_Client->setTelescopeSlewRate(dpMount, total);
         int speed;
         indi_Client->getTelescopeSlewRate(dpMount,speed);
-        qInfo() << "TelescopeCurrentSlewRate: " << speed;
+        Logger::Log("Current Telescope Slew Rate: " + std::to_string(speed), LogLevel::INFO, DeviceType::MAIN);
         // emit wsThread->sendMessageToClient("TelescopeCurrentSlewRate:" + QString::number(speed));
         emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(speed));
         indi_Client->setTelescopeTrackEnable(dpMount, true);
@@ -2571,34 +3076,48 @@ void MainWindow::AfterDeviceConnect()
         {
             emit wsThread->sendMessageToClient("TelescopeTrack:OFF");
         }
+        Logger::Log("Telescope Tracking Status: " + std::string(isTrack ? "Enabled" : "Disabled"), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->setTelescopeTrackRate(dpMount, "SIDEREAL");
         QString side;
         indi_Client->getTelescopePierSide(dpMount, side);
-        qInfo() << "AfterAllConnected | TelescopePierSide: " << side;
+        Logger::Log("Telescope Pier Side: " + side.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
+        Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
     }
 
     if (dpFocuser != NULL)
     {
-        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()));
+        Logger::Log("Focuser connected after Device(" + QString::fromUtf8(dpFocuser->getDeviceName()).toStdString() + ") Connect: " + dpFocuser->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()) + ":" + QString::fromUtf8(dpFocuser->getDriverExec()));
         ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
+
+        systemdevicelist.system_devices[22].DeviceIndiName = QString::fromUtf8(dpFocuser->getDeviceName());
+        systemdevicelist.system_devices[22].isBind = true;
+        
         indi_Client->GetAllPropertyName(dpFocuser);
         // indi_Client->syncFocuserPosition(dpFocuser, 0);
         CurrentPosition = FocuserControl_getPosition();
-        qInfo() << "AfterAllConnected | Focuser Current Position: " << CurrentPosition;
+        Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        Logger::Log("Focuser connected successfully.", LogLevel::INFO, DeviceType::MAIN);
     }
 
     if (dpCFW != NULL)
     {
-        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()));
+        Logger::Log("CFW connected after Device("+QString::fromUtf8(dpCFW->getDeviceName()).toStdString()+") Connect: " + dpCFW->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
         ConnectedDevices.push_back({"CFW", QString::fromUtf8(dpCFW->getDeviceName())});
+
+        systemdevicelist.system_devices[21].DeviceIndiName = QString::fromUtf8(dpCFW->getDeviceName());
+        systemdevicelist.system_devices[21].isBind = true;
+
         indi_Client->GetAllPropertyName(dpCFW);
         int min, max, pos;
         indi_Client->getCFWPosition(dpCFW, pos, min, max);
-        qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+        Logger::Log("CFW Position - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Current: " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+        Logger::Log("CFW connected successfully.", LogLevel::INFO, DeviceType::MAIN);
         if(Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())) != QString())
         {
             emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));
@@ -2607,56 +3126,57 @@ void MainWindow::AfterDeviceConnect()
 
     if (dpGuider != NULL)
     {
-        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()));
+        Logger::Log("Guider connected after Device("+QString::fromUtf8(dpGuider->getDeviceName()).toStdString()+") Connect: " + dpGuider->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
         ConnectedDevices.push_back({"Guider", QString::fromUtf8(dpGuider->getDeviceName())});
+        Logger::Log("Guider connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+
+        systemdevicelist.system_devices[1].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
+        systemdevicelist.system_devices[1].isBind = true;
     }
+    Logger::Log("All devices connected after successfully.", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 {
     if (dpMainCamera == dp)
     {
-        qInfo() << "AfterAllConnected | DeviceName: " << dpMainCamera->getDeviceName();
-        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+        Logger::Log("MainCamera connected after Device(" + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
 
         systemdevicelist.system_devices[20].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
+        systemdevicelist.system_devices[20].isBind = true;
 
         indi_Client->setBLOBMode(B_ALSO, dpMainCamera->getDeviceName(), nullptr);
         indi_Client->enableDirectBlobAccess(dpMainCamera->getDeviceName(), nullptr);
 
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
-        qInfo() << "AfterAllConnected | MainCamera SDK version:" << SDKVERSION;
+        Logger::Log("MainCamera SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
-        qInfo() << "CCD Offset(Value,Min,Max):" << glOffsetValue << "," << glOffsetMin << "," << glOffsetMax;
         emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
+        Logger::Log("CCD Offset - Value: " + std::to_string(glOffsetValue) + ", Min: " + std::to_string(glOffsetMin) + ", Max: " + std::to_string(glOffsetMax), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getCCDGain(dpMainCamera, glGainValue, glGainMin, glGainMax);
-        qInfo() << "CCD Gain(Value,Min,Max):" << glGainValue << "," << glGainMin << "," << glGainMax;
+        Logger::Log("CCD Gain - Value: " + std::to_string(glGainValue) + ", Min: " + std::to_string(glGainMin) + ", Max: " + std::to_string(glGainMax), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
 
         int maxX, maxY; 
         double pixelsize, pixelsizX, pixelsizY;
         int bitDepth;
-        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-        qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
-
-        // indi_Client->setCCDBasicInfo(dpMainCamera, 5616, 3744, 6.41, 6.41, 6.41);
-
-        // indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-        // qDebug() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+        Logger::Log("CCD Basic Info - MaxX: " + std::to_string(maxX) + ", MaxY: " + std::to_string(maxY) + ", PixelSize: " + std::to_string(pixelsize), LogLevel::INFO, DeviceType::MAIN);
 
         if(maxX == 0 && maxY == 0) {
             QString CameraName = dpMainCamera->getDeviceName();
-            qInfo() << "Camera:" << CameraName;
-            qInfo() << "This may be a DSLRs Camera, need to set Resolution and pixel size.";
+            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
             DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
             if(DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0) {
                 indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
-                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY,  pixelsize, pixelsizX, pixelsizY, bitDepth);
-                qInfo() << "CCD Basic Info:" << maxX << "," << maxY << "," << pixelsize << "," << pixelsizX << "," << pixelsizY << "," << bitDepth;
+                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
             } else {
                 emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
             }
@@ -2666,17 +3186,16 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
         glCameraSize_height = maxY * pixelsize / 1000;
         glCameraSize_height = std::round(glCameraSize_height * 10) / 10;
-        qInfo() << "CCD Chip size:" << glCameraSize_width << "," << glCameraSize_height;
+        Logger::Log("CCD Chip size - Width: " + std::to_string(glCameraSize_width) + ", Height: " + std::to_string(glCameraSize_height), LogLevel::INFO, DeviceType::MAIN);
 
         int X, Y;
         indi_Client->getCCDFrameInfo(dpMainCamera, X, Y, glMainCCDSizeX, glMainCCDSizeY);
-        qInfo() << "CCDSize:" << glMainCCDSizeX << glMainCCDSizeY;
+        Logger::Log("CCD Frame Info - SizeX: " + std::to_string(glMainCCDSizeX) + ", SizeY: " + std::to_string(glMainCCDSizeY), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
 
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
-        qInfo() << "getCCDCFA:" << MainCameraCFA << offsetX << offsetY;
-        // indi_Client->setTemperature(dpMainCamera, -10);
+        Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
@@ -2684,65 +3203,66 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         QString CFWname;
         indi_Client->getCFWSlotName(dpMainCamera, CFWname);
         if(CFWname != "") {
-            qInfo() << "get CFW Slot Name: " << CFWname;
-            emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname+" (on camera)");
+            Logger::Log("CFW Slot Name: " + CFWname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname + " (on camera):" + QString::fromUtf8(dpMainCamera->getDriverExec()));
             isFilterOnCamera = true;
 
             int min, max, pos;
             indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-            qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+            Logger::Log("CFW Position - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Current: " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
         }
+        Logger::Log("MainCamera connected successfully.", LogLevel::INFO, DeviceType::MAIN);
     }
 
     if (dpMount == dp)
     {
-        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()));
+        Logger::Log("Mount connected after Device(" + QString::fromUtf8(dpMount->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMount->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()) + ":" + QString::fromUtf8(dpMount->getDriverExec()));
         ConnectedDevices.push_back({"Mount", QString::fromUtf8(dpMount->getDeviceName())});
 
         systemdevicelist.system_devices[0].DeviceIndiName = QString::fromUtf8(dpMount->getDeviceName());
-
-        QString DevicePort; // add by CJQ 2023.3.3
+        systemdevicelist.system_devices[0].isBind = true;
+        QString DevicePort;
         indi_Client->getDevicePort(dpMount, DevicePort);
+        Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-        //????
         double glLongitude_radian, glLatitude_radian;
-        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");      //TODO:
+        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");
         glLatitude_radian = Tools::getDecAngle("40° 09' 14.93");
-        //????
+        Logger::Log("Mount location set to Longitude: " + QString::number(Tools::RadToDegree(glLongitude_radian)).toStdString() + ", Latitude: " + QString::number(Tools::RadToDegree(glLatitude_radian)).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->setLocation(dpMount, Tools::RadToDegree(glLatitude_radian), Tools::RadToDegree(glLongitude_radian), 10);
         QDateTime datetime = QDateTime::currentDateTime();
-        // datetime= QDateTime::fromString("2023-12-29T12:34:56+00:00",Qt::ISODate);
-        // qDebug()<<datetime;
         indi_Client->setTimeUTC(dpMount, datetime);
-        qInfo() << "AfterAllConnected_setTimeUTC |" << datetime;
+        Logger::Log("UTC Time set for Mount: " + datetime.toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);   
         indi_Client->getTimeUTC(dpMount, datetime);
-        qInfo() << "AfterAllConnected | TimeUTC: " << datetime.currentDateTimeUtc();
+        Logger::Log("UTC Time: " + datetime.currentDateTimeUtc().toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         double a, b, c, d;
-        // indi_Client->setTelescopeInfo(dp2,100,500,30,130);
         indi_Client->getTelescopeInfo(dpMount, a, b, c, d);
-        qInfo() << "AfterAllConnected | TelescopeInfo: " << a << b << c << d;
+        Logger::Log("Telescope Info - a: " + std::to_string(a) + ", b: " + std::to_string(b) + ", c: " + std::to_string(c) + ", d: " + std::to_string(d), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getTelescopeRADECJ2000(dpMount, a, b);
+        Logger::Log("Telescope RA/DEC J2000 - RA: " + std::to_string(a) + ", DEC: " + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
+        Logger::Log("Telescope RA/DEC JNOW - RA: " + std::to_string(a) + ", DEC: " + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
 
         bool isPark;
         indi_Client->getTelescopePark(dpMount, isPark);
+        Logger::Log("Telescope Park Status: " + std::string(isPark ? "Parked" : "Unparked"), LogLevel::INFO, DeviceType::MAIN);
 
         int maxspeed, minspeed, speedvalue, total;
-
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
         glTelescopeTotalSlewRate = total;
-        qInfo() << "TelescopeTotalSlewRate: " << total;
+        Logger::Log("Telescope Total Slew Rate: " + std::to_string(total), LogLevel::INFO, DeviceType::MAIN);
+
         emit wsThread->sendMessageToClient("TelescopeTotalSlewRate:" + QString::number(total));
         indi_Client->getTelescopeMaxSlewRateOptions(dpMount, minspeed, maxspeed, speedvalue);
-        // indi_Client->setTelescopeMaxSlewRateOptions(dpMount, total - 1);
         indi_Client->setTelescopeSlewRate(dpMount, total);
         int speed;
         indi_Client->getTelescopeSlewRate(dpMount,speed);
-        qInfo() << "TelescopeCurrentSlewRate: " << speed;
+        Logger::Log("Current Telescope Slew Rate: " + std::to_string(speed), LogLevel::INFO, DeviceType::MAIN);
         // emit wsThread->sendMessageToClient("TelescopeCurrentSlewRate:" + QString::number(speed));
         emit wsThread->sendMessageToClient("MountSetSpeedSuccess:" + QString::number(speed));
         indi_Client->setTelescopeTrackEnable(dpMount, true);
@@ -2758,52 +3278,59 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         {
             emit wsThread->sendMessageToClient("TelescopeTrack:OFF");
         }
-
+        Logger::Log("Telescope Tracking Status: " + std::string(isTrack ? "Enabled" : "Disabled"), LogLevel::INFO, DeviceType::MAIN);
         indi_Client->setTelescopeTrackRate(dpMount, "SIDEREAL");
         QString side;
         indi_Client->getTelescopePierSide(dpMount, side);
-        qInfo() << "AfterAllConnected | TelescopePierSide: " << side;
+        Logger::Log("Telescope Pier Side: " + side.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
+        Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
     }
 
     if (dpFocuser == dp)
     {
-        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()));
+        Logger::Log("Focuser connected after Device(" + QString::fromUtf8(dpFocuser->getDeviceName()).toStdString() + ") Connect: " + dpFocuser->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()) + ":" + QString::fromUtf8(dpFocuser->getDriverExec()));
         ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
 
         systemdevicelist.system_devices[22].DeviceIndiName = QString::fromUtf8(dpFocuser->getDeviceName());
-
+        systemdevicelist.system_devices[22].isBind = true;
         indi_Client->GetAllPropertyName(dpFocuser);
         // indi_Client->syncFocuserPosition(dpFocuser, 0);
         CurrentPosition = FocuserControl_getPosition();
-        qInfo() << "AfterAllConnected | Focuser Current Position: " << CurrentPosition;
+        Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        Logger::Log("Focuser connected successfully.", LogLevel::INFO, DeviceType::MAIN);
     }
 
     if (dpCFW == dp)
-    {
-        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()));
+    {   
+        Logger::Log("CFW connected after Device("+QString::fromUtf8(dpCFW->getDeviceName()).toStdString()+") Connect: " + dpCFW->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
         ConnectedDevices.push_back({"CFW", QString::fromUtf8(dpCFW->getDeviceName())});
 
         systemdevicelist.system_devices[21].DeviceIndiName = QString::fromUtf8(dpCFW->getDeviceName());
-
+        systemdevicelist.system_devices[21].isBind = true;
         indi_Client->GetAllPropertyName(dpCFW);
         int min, max, pos;
         indi_Client->getCFWPosition(dpCFW, pos, min, max);
-        qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
+        Logger::Log("CFW Position - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Current: " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
         if(Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())) != QString())
         {
             emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));
         }
+        Logger::Log("CFW connected successfully.", LogLevel::INFO, DeviceType::MAIN);
     }
 
     if (dpGuider == dp)
     {
-        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()));
+        Logger::Log("Guider connected after Device("+QString::fromUtf8(dpGuider->getDeviceName()).toStdString()+") Connect: " + dpGuider->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
         ConnectedDevices.push_back({"Guider", QString::fromUtf8(dpGuider->getDeviceName())});
-
+        Logger::Log("Guider connected successfully.", LogLevel::INFO, DeviceType::MAIN);
         systemdevicelist.system_devices[1].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
+        systemdevicelist.system_devices[1].isBind = true;
     }
 
     Tools::saveSystemDeviceList(systemdevicelist);
@@ -2811,10 +3338,11 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
 void MainWindow::disconnectIndiServer(MyClient *client)
 {
+    Logger::Log("disconnectIndiServer start ...", LogLevel::INFO, DeviceType::MAIN);
     // client->disconnectAllDevice();
     QVector<INDI::BaseDevice *> dp;
     
-    for(int i=0;i < client->GetDeviceCount();i++)
+    for(int i=0; i < client->GetDeviceCount(); i++)
     {
         dp.append(client->GetDeviceFromList(i));
         if (dp[i]->isConnected())
@@ -2823,41 +3351,48 @@ void MainWindow::disconnectIndiServer(MyClient *client)
             int num = 0;
             while (dp[i]->isConnected())
             {
-                qInfo("disconnectAllDevice | Waiting for disconnect finish...");
+                Logger::Log("disconnectAllDevice | Waiting for disconnect device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") finish...", LogLevel::INFO, DeviceType::MAIN);
                 sleep(1);
                 num++;
 
                 if(num > 10) {
-                    qWarning() << "disconnectAllDevice |" << dp[i]->getDeviceName() << "disconnect failed.";
+                    Logger::Log("disconnectAllDevice | device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") disconnect failed.", LogLevel::WARNING, DeviceType::MAIN);
                     break;
                 }
             }
-            qInfo() << "disconnectAllDevice |" << dp[i]->getDeviceName() << dp[i]->isConnected();
+            Logger::Log("disconnectAllDevice | device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
         }
     }
+
+    Tools::stopIndiDriverAll(drivers_list);
+    ConnectDriverList.clear();
 
     client->ClearDevices();
     client->disconnectServer();
     int k = 10;
     while (k--)
     {
-        if (client->isServerConnected() == false)
+        if (!client->isServerConnected())
         {
+            Logger::Log("Server disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
             break;
         }
         sleep(1);
         // qApp->processEvents();
-        qInfo("wait for client disconnected");
+        Logger::Log("Waiting for server to disconnect...", LogLevel::INFO, DeviceType::MAIN);
     }
-    qInfo("--------------------------------------------------disconnectServer");
+    Logger::Log("disconnectServer finished.", LogLevel::INFO, DeviceType::MAIN);
     indi_Client->PrintDevices();
     Tools::printSystemDeviceList(systemdevicelist);
 }
 
-void MainWindow::connectIndiServer(MyClient *client)
+bool MainWindow::connectIndiServer(MyClient *client)
 {
+    Logger::Log("connectIndiServer start ...", LogLevel::INFO, DeviceType::MAIN);
     client->setConnectionTimeout(3, 0);
+    Logger::Log("connectIndiServer | clear device list ...", LogLevel::INFO, DeviceType::MAIN);
     client->ClearDevices(); // clear device list
+    Logger::Log("connectIndiServer | connect server ...", LogLevel::INFO, DeviceType::MAIN);
     client->connectServer();
     int k = 10;
     while (k--)
@@ -2868,15 +3403,16 @@ void MainWindow::connectIndiServer(MyClient *client)
         }
         sleep(1);
         // qApp->processEvents();
-        qInfo("wait for client connected");
+        Logger::Log("connectIndiServer | waiting for client connected ...", LogLevel::INFO, DeviceType::MAIN);
     }
-    qInfo("--------------------------------------------------connectServer");
     sleep(1);
     client->PrintDevices();
+    Logger::Log("connectIndiServer finished.", LogLevel::INFO, DeviceType::MAIN);
+    return true;
 }
 
 void MainWindow::ClearSystemDeviceList() {
-    qInfo() << "ClearSystemDeviceList";
+    Logger::Log("ClearSystemDeviceList start ...", LogLevel::INFO, DeviceType::MAIN);
     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
     {
         systemdevicelist.system_devices[i].DeviceIndiGroup = -1;
@@ -2887,166 +3423,360 @@ void MainWindow::ClearSystemDeviceList() {
         systemdevicelist.system_devices[i].dp = NULL;
         // systemdevicelist.system_devices[i].Description = "";
     }
+    Logger::Log("ClearSystemDeviceList finished.", LogLevel::INFO, DeviceType::MAIN);
     Tools::printSystemDeviceList(systemdevicelist);
+    
 }
 
 void MainWindow::INDI_Capture(int Exp_times)
 {
+    Logger::Log("INDI_Capture start ...", LogLevel::INFO, DeviceType::CAMERA);
     glIsFocusingLooping = false;
     double expTime_sec;
     expTime_sec = (double)Exp_times / 1000;
-    qInfo() << "expTime_sec:" << expTime_sec;
+    Logger::Log("INDI_Capture | convert Exp_times to seconds:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
 
     if (dpMainCamera)
     {
         glMainCameraStatu = "Exposuring";
-        qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
+        Logger::Log("INDI_Capture | check Main Camera Status(glMainCameraStatu):" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
         int value, min, max;
-        indi_Client->getCCDGain(dpMainCamera, value, min, max);
-
+        uint32_t ret = indi_Client->getCCDGain(dpMainCamera, value, min, max);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            Logger::Log("INDI_Capture | indi getCCDGain | failed", LogLevel::WARNING, DeviceType::CAMERA);
+        }
+        Logger::Log("INDI_Capture | indi getCCDGain | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
         int BINX, BINY, BINXMAX, BINYMAX;
-        indi_Client->getCCDBinning(dpMainCamera, BINX, BINY, BINXMAX, BINYMAX);
-
-        indi_Client->getCCDOffset(dpMainCamera, value, min, max);
-
-        indi_Client->resetCCDFrameInfo(dpMainCamera);
-
+        ret = indi_Client->getCCDBinning(dpMainCamera, BINX, BINY, BINXMAX, BINYMAX);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            Logger::Log("INDI_Capture | indi getCCDBinning | failed", LogLevel::WARNING, DeviceType::CAMERA);
+        }
+        Logger::Log("INDI_Capture | indi getCCDBinning | BINX:" + std::to_string(BINX) + ", BINY:" + std::to_string(BINY) + ", BINXMAX:" + std::to_string(BINXMAX) + ", BINYMAX:" + std::to_string(BINYMAX), LogLevel::INFO, DeviceType::CAMERA);
+        ret = indi_Client->getCCDOffset(dpMainCamera, value, min, max);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            Logger::Log("INDI_Capture | indi getCCDOffset | failed", LogLevel::WARNING, DeviceType::CAMERA);
+        }
+        Logger::Log("INDI_Capture | indi getCCDOffset | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
+        ret = indi_Client->resetCCDFrameInfo(dpMainCamera);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            Logger::Log("INDI_Capture | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
+        }
+        Logger::Log("INDI_Capture | indi resetCCDFrameInfo", LogLevel::INFO, DeviceType::CAMERA);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
-
-        indi_Client->takeExposure(dpMainCamera, expTime_sec);
+        Logger::Log("INDI_Capture | sendMessageToClient | MainCameraSize:" + QString::number(glMainCCDSizeX).toStdString() + ":" + QString::number(glMainCCDSizeY).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        ret = indi_Client->takeExposure(dpMainCamera, expTime_sec);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            Logger::Log("INDI_Capture | indi takeExposure | failed", LogLevel::WARNING, DeviceType::CAMERA);
+        }
+        Logger::Log("INDI_Capture | indi start takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
     }
     else
     {
-        qWarning() << "dpMainCamera is NULL";
+        Logger::Log("INDI_Capture | dpMainCamera is NULL", LogLevel::WARNING, DeviceType::CAMERA);
     }
-    qInfo() << "INDI_Capture | exptime" << expTime_sec;
+    Logger::Log("INDI_Capture finished.", LogLevel::INFO, DeviceType::CAMERA);
 }
 
 void MainWindow::INDI_AbortCapture()
 {
+    Logger::Log("INDI_AbortCapture start ...", LogLevel::INFO, DeviceType::CAMERA);
     glMainCameraStatu="IDLE";
-    qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
+    Logger::Log("INDI_AbortCapture | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     if (dpMainCamera)
     {
         indi_Client->setCCDAbortExposure(dpMainCamera);
         ShootStatus = "IDLE";
+        Logger::Log("INDI_AbortCapture | ShootStatus:" + ShootStatus.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     }
+    Logger::Log("INDI_AbortCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
 }
 
 void MainWindow::FocusingLooping()
 {
-    // TO BE FIXED: may cause crash
+    Logger::Log("FocusingLooping start ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+    // 检查相机是否连接，如果未连接则记录警告并返回
     if (dpMainCamera == NULL)
+    {
+        Logger::Log("FocusingLooping | dpMainCamera is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
         return;
+    }
 
     glIsFocusingLooping = true;
+    Logger::Log("FocusingLooping | glIsFocusingLooping:" + std::to_string(glIsFocusingLooping), LogLevel::DEBUG, DeviceType::FOCUSER);
+    // 如果相机状态为“显示中”，则开始处理曝光
     if (glMainCameraStatu == "Displaying")
     {
         double expTime_sec;
-        expTime_sec = (double)glExpTime / 1000;
+        expTime_sec = (double)glExpTime / 1000;  // 将曝光时间从毫秒转换为秒
 
         glMainCameraStatu = "Exposuring";
-        qInfo() << "INDI Capture Statu:" << glMainCameraStatu;
+        Logger::Log("FocusingLooping | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::DEBUG, DeviceType::FOCUSER);
 
         QSize cameraResolution{glMainCCDSizeX, glMainCCDSizeY};
         QSize ROI{BoxSideLength, BoxSideLength};
 
-        int cameraX = glROI_x * cameraResolution.width() /
-                      (double)CaptureViewWidth;
-        int cameraY = glROI_y * cameraResolution.height() /
-                      (double)CaptureViewHeight;
+        int cameraX = static_cast<int>(glROI_x * cameraResolution.width() / static_cast<double>(CaptureViewWidth));
+        int cameraY = static_cast<int>(glROI_y * cameraResolution.height() / static_cast<double>(CaptureViewHeight));
 
+        // 确保 cameraX 和 cameraY 是偶数
+        if (cameraX % 2 != 0) {
+            cameraX += 1;
+        }
+        if (cameraY % 2 != 0) {
+            cameraY += 1;
+        }
+
+        // 检查计算出的曝光区域是否在相机的有效范围内
         if (cameraX < glMainCCDSizeX - ROI.width() && cameraY < glMainCCDSizeY - ROI.height())
         {
-            indi_Client->setCCDFrameInfo(dpMainCamera, cameraX, cameraY, BoxSideLength, BoxSideLength); // add by CJQ 2023.2.15
-            indi_Client->takeExposure(dpMainCamera, expTime_sec);
+            Logger::Log("FocusingLooping | set Camera ROI x:" + std::to_string(cameraX) + ", y:" + std::to_string(cameraY)+", width:" + std::to_string(BoxSideLength) + ", height:" + std::to_string(BoxSideLength), LogLevel::DEBUG, DeviceType::FOCUSER);
+            indi_Client->setCCDFrameInfo(dpMainCamera, cameraX, cameraY, BoxSideLength, BoxSideLength); // 设置相机的曝光区域
+            indi_Client->takeExposure(dpMainCamera, expTime_sec);  // 进行曝光
+            Logger::Log("FocusingLooping | takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::DEBUG, DeviceType::FOCUSER);
         }
         else
         {
-            qWarning("Too close to the edge, please reselect the area."); //TODO:
+            Logger::Log("FocusingLooping | Too close to the edge, please reselect the area.", LogLevel::WARNING, DeviceType::FOCUSER); // 如果区域太靠近边缘，记录警告并调整
             if (cameraX + ROI.width() > glMainCCDSizeX)
                 cameraX = glMainCCDSizeX - ROI.width();
             if (cameraY + ROI.height() > glMainCCDSizeY)
                 cameraY = glMainCCDSizeY - ROI.height();
 
-            indi_Client->setCCDFrameInfo(dpMainCamera, cameraX, cameraY, ROI.width(), ROI.height()); // add by CJQ 2023.2.15
+            indi_Client->setCCDFrameInfo(dpMainCamera, cameraX, cameraY, ROI.width(), ROI.height()); // 重新设置曝光区域并进行曝光
             indi_Client->takeExposure(dpMainCamera, expTime_sec);
         }
+    }else{
+        emit wsThread->sendMessageToClient("startFocusLoopSjootingfile:Wait Take Picture Finish!");
     }
+    Logger::Log("FocusingLooping finished.", LogLevel::DEBUG, DeviceType::FOCUSER);
 }
 
+void MainWindow::refreshGuideImage(cv::Mat img16, QString CFA)
+{
+    // strechShowImage(img16, CFA, true, true, 0, 0, 65535, 1.0, 1.7, 100, true);
+}
+
+void MainWindow::strechShowImage(cv::Mat img16,QString CFA,bool AutoStretch,bool AWB,int AutoStretchMode,uint16_t blacklevel,uint16_t whitelevel,double ratioRG,double ratioBG,uint16_t offset,bool updateHistogram){
+    Logger::Log("strechShowImage start ...", LogLevel::INFO, DeviceType::MAIN);
+   uint16_t B=0;
+   uint16_t W=65535;
+
+ if(CFA=="MONO") {
+    //mono camera, do not do debayer and color balance process
+    Logger::Log("strechShowImage | CFA is MONO", LogLevel::INFO, DeviceType::MAIN);
+     cv::Mat image_raw8;
+     image_raw8.create(img16.rows,img16.cols,CV_8UC1);
+
+     if(AutoStretch==true){
+        Tools::GetAutoStretch(img16,AutoStretchMode,B,W);
+     } else {
+        B=blacklevel;
+        W=whitelevel;
+     }
+
+    Tools::Bit16To8_Stretch(img16,image_raw8,B,W);
+
+    // saveGuiderImageAsJPG(image_raw8);
+
+
+    image_raw8.release();
+ }
+
+ else{
+      //color camera, need to do debayer and color balance
+    Logger::Log("strechShowImage | CFA is COLOR", LogLevel::INFO, DeviceType::MAIN);
+     cv::Mat AWBImg16;
+     cv::Mat AWBImg16color;
+     cv::Mat AWBImg16mono;
+     cv::Mat AWBImg8color;
+
+     AWBImg16.create(img16.rows,img16.cols,CV_16UC1);
+     AWBImg16color.create(img16.rows,img16.cols,CV_16UC3);
+     AWBImg16mono.create(img16.rows,img16.cols,CV_16UC1);
+     AWBImg8color.create(img16.rows,img16.cols,CV_8UC3);
+
+     Tools::ImageSoftAWB(img16,AWBImg16,CFA,ratioRG,ratioBG,offset);  //image software Auto White Balance is done in RAW image.
+     cv::cvtColor(AWBImg16,AWBImg16color,CV_BayerRG2BGR);
+    //  qDebug()<<"strechShowImage | 1";
+     cv::cvtColor(AWBImg16color,AWBImg16mono,cv::COLOR_BGR2GRAY);
+    //  qDebug()<<"strechShowImage | 2";
+
+     if(AutoStretch==true){
+        Tools::GetAutoStretch(AWBImg16mono,AutoStretchMode,B,W);
+     }
+
+
+     else{
+         B=blacklevel;
+         W=whitelevel;
+     }
+     Logger::Log("strechShowImage | image stretch | B:" + std::to_string(B) + ", W:" + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
+     Tools::Bit16To8_Stretch(AWBImg16color,AWBImg8color,B,W);
+
+    //  Tools::ShowCvImageOnQLabel(AWBImg8color,lable);
+    // saveGuiderImageAsJPG(AWBImg8color);
+
+    AWBImg16.release();
+    AWBImg16color.release();
+    AWBImg16mono.release();
+    AWBImg8color.release();
+ }
+ glMainCameraStatu="IDLE";
+ Logger::Log("strechShowImage | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+ Logger::Log("strechShowImage finished.", LogLevel::INFO, DeviceType::MAIN);
+}
 
 void MainWindow::InitPHD2()
 {
+    Logger::Log("InitPHD2 start ...", LogLevel::INFO, DeviceType::MAIN);
     isGuideCapture = true;
 
     cmdPHD2 = new QProcess();
-    cmdPHD2->start("pkill phd2");
-    cmdPHD2->waitForStarted();
-    cmdPHD2->waitForFinished();
 
-    key_phd = ftok("../", 2015);
-    key_phd = 0x90;
-
-    if (key_phd == -1)
+    bool connected = false;
+    int retryCount = 3; // 设定重试次数
+    while (retryCount > 0 && !connected)
     {
-        qDebug("ftok_phd");
+        // 杀死所有已存在的 phd2 进程
+        cmdPHD2->start("pkill phd2");
+        sleep(3);
+        cmdPHD2->waitForStarted();
+        cmdPHD2->waitForFinished();
+
+        // 重新生成共享内存，避免之前的进程遗留问题
+        key_phd = 0x90; // 重新设置共享内存的键值
+        shmid_phd = shmget(key_phd, BUFSZ_PHD, IPC_CREAT | 0666); // 获取共享内存
+        if (shmid_phd < 0)
+        {
+            Logger::Log("InitPHD2 | shared memory phd shmget ERROR", LogLevel::ERROR, DeviceType::MAIN);
+            continue;
+        }
+
+        // 映射共享内存
+        sharedmemory_phd = (char *)shmat(shmid_phd, NULL, 0);
+        if (sharedmemory_phd == NULL)
+        {
+            Logger::Log("InitPHD2 | shared memory phd map ERROR", LogLevel::ERROR, DeviceType::MAIN);
+            continue;
+        }
+
+        // 读取共享内存数据
+        Logger::Log("InitPHD2 | data_phd = [" + std::string(sharedmemory_phd) + "]", LogLevel::INFO, DeviceType::MAIN);
+
+        // 启动 phd2 进程
+        cmdPHD2->start("phd2");
+
+        // 等待最多 10 秒尝试连接
+        QElapsedTimer t;
+        t.start();
+        while (t.elapsed() < 10000)
+        {
+            usleep(10000);
+            qApp->processEvents();
+            if (connectPHD() == true)
+            {
+                connected = true;
+                break;
+            }
+        }
+
+        if (!connected)
+        {
+            Logger::Log("InitPHD2 | Failed to connect to phd2. Retrying...", LogLevel::WARNING, DeviceType::MAIN);
+            retryCount--; // 如果连接失败，重试次数减 1
+        }
     }
 
-    // build the shared memory
-    system("ipcs -m"); // 查看共享内存
-    shmid_phd = shmget(key_phd, BUFSZ_PHD, IPC_CREAT | 0666);
-    if (shmid_phd < 0)
+    if (!connected)
     {
-        qDebug("main.cpp | main | shared memory phd shmget ERROR");
-        exit(-1);
+        Logger::Log("InitPHD2 | Failed to connect to phd2 after retries.", LogLevel::ERROR, DeviceType::MAIN);
     }
 
-    // 映射
-    sharedmemory_phd = (char *)shmat(shmid_phd, NULL, 0);
-    if (sharedmemory_phd == NULL)
-    {
-        qDebug("main.cpp | main | shared memor phd map ERROR");
-        exit(-1);
-    }
-
-    // 读共享内存区数据
-    qDebug("data_phd = [%s]\n", sharedmemory_phd);
-
-    cmdPHD2->start("phd2");
-
-    QElapsedTimer t;
-    t.start();
-    while (t.elapsed() < 10000)
-    {
-        usleep(10000);
-        qApp->processEvents();
-        if (connectPHD() == true)
-            break;
-    }
+    Logger::Log("InitPHD2 finished.", LogLevel::INFO, DeviceType::MAIN);
 }
+
+// void MainWindow::InitPHD2()
+// {
+//     Logger::Log("InitPHD2 start ...", LogLevel::INFO, DeviceType::MAIN);
+//     isGuideCapture = true;
+
+//     cmdPHD2 = new QProcess();
+//     cmdPHD2->start("pkill phd2");
+//     cmdPHD2->waitForStarted();
+//     cmdPHD2->waitForFinished();
+
+//     key_phd = ftok("../", 2015);
+//     key_phd = 0x90;
+
+//     if (key_phd == -1)
+//     {
+//         Logger::Log("InitPHD2 | ftok_phd", LogLevel::WARNING, DeviceType::MAIN);
+//     }
+
+//     // build the shared memory
+//     system("ipcs -m"); // 查看共享内存
+//     shmid_phd = shmget(key_phd, BUFSZ_PHD, IPC_CREAT | 0666);
+//     if (shmid_phd < 0)
+//     {
+//         Logger::Log("InitPHD2 | shared memory phd shmget ERROR", LogLevel::ERROR, DeviceType::MAIN);
+//         exit(-1);
+//     }
+
+//     // 映射
+//     sharedmemory_phd = (char *)shmat(shmid_phd, NULL, 0);
+//     if (sharedmemory_phd == NULL)
+//     {
+//         Logger::Log("InitPHD2 | shared memory phd map ERROR", LogLevel::ERROR, DeviceType::MAIN);
+//         exit(-1);
+//     }
+
+//     // 读共享内存区数据
+//     Logger::Log("InitPHD2 | data_phd = [" + std::string(sharedmemory_phd) + "]", LogLevel::INFO, DeviceType::MAIN);
+
+//     cmdPHD2->start("phd2");
+
+//     QElapsedTimer t;
+//     t.start();
+//     while (t.elapsed() < 10000)
+//     {
+//         usleep(10000);
+//         qApp->processEvents();
+//         if (connectPHD() == true)
+//             break;
+//     }
+//     Logger::Log("InitPHD2 finished.", LogLevel::INFO, DeviceType::MAIN);
+// }
 
 bool MainWindow::connectPHD(void)
 {
+    Logger::Log("connectPHD start ...", LogLevel::INFO, DeviceType::MAIN);
     QString versionName = "";
     call_phd_GetVersion(versionName);
 
-    qInfo() << "QSCOPE|connectPHD|version:" << versionName;
+    Logger::Log("connectPHD | version:" + versionName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     if (versionName != "")
     {
         // init stellarium operation
+        Logger::Log("connectPHD Success!", LogLevel::INFO, DeviceType::MAIN);
         return true;
     }
     else
     {
-        qInfo() << "QSCOPE|connectPHD|error:there is no openPHD2 running";
+        Logger::Log("connectPHD | there is no openPHD2 running", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("connectPHD failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
 }
 
 bool MainWindow::call_phd_GetVersion(QString &versionName)
 {
+    Logger::Log("call_phd_GetVersion start ...", LogLevel::INFO, DeviceType::MAIN);
     unsigned int baseAddress;
     unsigned int vendcommand;
     bzero(sharedmemory_phd, 1024); // 共享内存清空
@@ -3070,6 +3800,8 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
     if (t.elapsed() >= 500)
     {
         versionName = "";
+        Logger::Log("call_phd_GetVersion | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_GetVersion failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
     else
@@ -3086,12 +3818,16 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
             {
                 versionName.append(sharedmemory_phd[baseAddress + addr + i]);
             }
+            Logger::Log("call_phd_GetVersion | version:" + versionName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log("call_phd_GetVersion success.", LogLevel::INFO, DeviceType::MAIN);
             return true;
             // qDebug()<<versionName;
         }
         else
         {
             versionName = "";
+            Logger::Log("call_phd_GetVersion | version is empty", LogLevel::ERROR, DeviceType::MAIN);
+            Logger::Log("call_phd_GetVersion failed.", LogLevel::ERROR, DeviceType::MAIN);
             return false;
         }
     }
@@ -3099,6 +3835,7 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
 
 uint32_t MainWindow::call_phd_StartLooping(void)
 {
+    Logger::Log("call_phd_StartLooping start ...", LogLevel::INFO, DeviceType::GUIDER);
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3120,13 +3857,21 @@ uint32_t MainWindow::call_phd_StartLooping(void)
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_StartLooping | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_StartLooping failed.", LogLevel::ERROR, DeviceType::GUIDER);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_StartLooping success.", LogLevel::INFO, DeviceType::GUIDER);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_StopLooping(void)
 {
+    Logger::Log("call_phd_StopLooping start ...", LogLevel::INFO, DeviceType::GUIDER);
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3148,13 +3893,21 @@ uint32_t MainWindow::call_phd_StopLooping(void)
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_StopLooping | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_StopLooping failed.", LogLevel::ERROR, DeviceType::GUIDER);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_StopLooping success.", LogLevel::INFO, DeviceType::GUIDER);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_AutoFindStar(void)
 {
+    Logger::Log("call_phd_AutoFindStar start ...", LogLevel::INFO, DeviceType::GUIDER);
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3176,13 +3929,21 @@ uint32_t MainWindow::call_phd_AutoFindStar(void)
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_AutoFindStar | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_AutoFindStar failed.", LogLevel::ERROR, DeviceType::GUIDER);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_AutoFindStar success.", LogLevel::INFO, DeviceType::GUIDER);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_StartGuiding(void)
 {
+    Logger::Log("call_phd_StartGuiding start ...", LogLevel::INFO, DeviceType::GUIDER);
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3204,13 +3965,21 @@ uint32_t MainWindow::call_phd_StartGuiding(void)
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_StartGuiding | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_StartGuiding failed.", LogLevel::ERROR, DeviceType::GUIDER);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_StartGuiding success.", LogLevel::INFO, DeviceType::GUIDER);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_checkStatus(unsigned char &status)
 {
+    Logger::Log("call_phd_checkStatus start ...", LogLevel::INFO, DeviceType::GUIDER);
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3236,21 +4005,27 @@ uint32_t MainWindow::call_phd_checkStatus(unsigned char &status)
     {
         // timeout
         status = 0;
+        Logger::Log("call_phd_checkStatus | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_checkStatus failed.", LogLevel::ERROR, DeviceType::GUIDER);
         return false;
     }
 
     else
     {
         status = sharedmemory_phd[3];
+        Logger::Log("call_phd_checkStatus | status:" + std::to_string(status), LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log("call_phd_checkStatus success.", LogLevel::INFO, DeviceType::GUIDER);
         return true;
     }
 }
 
 uint32_t MainWindow::call_phd_setExposureTime(unsigned int expTime)
 {
+    Logger::Log("call_phd_setExposureTime start ...", LogLevel::INFO, DeviceType::GUIDER);
     unsigned int vendcommand;
     unsigned int baseAddress;
-    qInfo() << "call_phd_setExposureTime:" << expTime;
+    Logger::Log("call_phd_setExposureTime | expTime:" + std::to_string(expTime), LogLevel::INFO, DeviceType::GUIDER);
+
     bzero(sharedmemory_phd, 1024); // 共享内存清空
 
     baseAddress = 0x03;
@@ -3275,13 +4050,23 @@ uint32_t MainWindow::call_phd_setExposureTime(unsigned int expTime)
     } // wait stellarium run end
 
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_setExposureTime | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_setExposureTime failed.", LogLevel::ERROR, DeviceType::GUIDER);
         return QHYCCD_ERROR; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_setExposureTime success.", LogLevel::INFO, DeviceType::GUIDER);
         return QHYCCD_SUCCESS;
+    }
 }
 
 uint32_t MainWindow::call_phd_whichCamera(std::string Camera)
 {
+    Logger::Log("call_phd_whichCamera start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_whichCamera | Camera:" + Camera, LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3315,13 +4100,23 @@ uint32_t MainWindow::call_phd_whichCamera(std::string Camera)
     } // wait stellarium run end
 
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_whichCamera | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_whichCamera failed.", LogLevel::ERROR, DeviceType::MAIN);
         return QHYCCD_ERROR; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_whichCamera success.", LogLevel::INFO, DeviceType::MAIN);
         return QHYCCD_SUCCESS;
+    }
 }
 
 uint32_t MainWindow::call_phd_ChackControlStatus(int sdk_num)
 {
+    Logger::Log("call_phd_ChackControlStatus start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_ChackControlStatus | sdk_num:" + std::to_string(sdk_num), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3347,13 +4142,21 @@ uint32_t MainWindow::call_phd_ChackControlStatus(int sdk_num)
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_ChackControlStatus | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_ChackControlStatus failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_ChackControlStatus success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_ClearCalibration(void)
 {
+    Logger::Log("call_phd_ClearCalibration start ...", LogLevel::INFO, DeviceType::GUIDER);
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3375,13 +4178,23 @@ uint32_t MainWindow::call_phd_ClearCalibration(void)
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_ClearCalibration | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_ClearCalibration failed.", LogLevel::ERROR, DeviceType::GUIDER);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_ClearCalibration success.", LogLevel::INFO, DeviceType::GUIDER);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_StarClick(int x, int y)
 {
+    Logger::Log("call_phd_StarClick start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_StarClick | x:" + std::to_string(x) + ", y:" + std::to_string(y), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3409,13 +4222,22 @@ uint32_t MainWindow::call_phd_StarClick(int x, int y)
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_StarClick | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_StarClick failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_StarClick success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_FocalLength(int FocalLength) {
-    qDebug() << "call_phd_FocalLength:" << FocalLength;
+    Logger::Log("call_phd_FocalLength start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_FocalLength | FocalLength:" + std::to_string(FocalLength), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3441,13 +4263,22 @@ uint32_t MainWindow::call_phd_FocalLength(int FocalLength) {
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_FocalLength | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_FocalLength failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_FocalLength success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_MultiStarGuider(bool isMultiStar) {
-    qDebug() << "call_phd_MultiStarGuider:" << isMultiStar;
+    Logger::Log("call_phd_MultiStarGuider start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_MultiStarGuider | isMultiStar:" + std::to_string(isMultiStar), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3473,13 +4304,22 @@ uint32_t MainWindow::call_phd_MultiStarGuider(bool isMultiStar) {
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_MultiStarGuider | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_MultiStarGuider failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_MultiStarGuider success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_CameraPixelSize(double PixelSize) {
-    qDebug() << "call_phd_CameraPixelSize:" << PixelSize;
+    Logger::Log("call_phd_CameraPixelSize start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_CameraPixelSize | PixelSize:" + std::to_string(PixelSize), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3505,13 +4345,22 @@ uint32_t MainWindow::call_phd_CameraPixelSize(double PixelSize) {
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_CameraPixelSize | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_CameraPixelSize failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_CameraPixelSize success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_CameraGain(int Gain) {
-    qDebug() << "call_phd_CameraGain:" << Gain;
+    Logger::Log("call_phd_CameraGain start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_CameraGain | Gain:" + std::to_string(Gain), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3537,13 +4386,22 @@ uint32_t MainWindow::call_phd_CameraGain(int Gain) {
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_CameraGain | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_CameraGain failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_CameraGain success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_CalibrationDuration(int StepSize) {
-    qDebug() << "call_phd_CalibrationDuration:" << StepSize;
+    Logger::Log("call_phd_CalibrationDuration start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_CalibrationDuration | StepSize:" + std::to_string(StepSize), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3569,13 +4427,22 @@ uint32_t MainWindow::call_phd_CalibrationDuration(int StepSize) {
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_CalibrationDuration | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_CalibrationDuration failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_CalibrationDuration success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_RaAggression(int Aggression) {
-    qDebug() << "call_phd_RaAggression:" << Aggression;
+    Logger::Log("call_phd_RaAggression start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_RaAggression | Aggression:" + std::to_string(Aggression), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3601,13 +4468,22 @@ uint32_t MainWindow::call_phd_RaAggression(int Aggression) {
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_RaAggression | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_RaAggression failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_RaAggression success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 uint32_t MainWindow::call_phd_DecAggression(int Aggression) {
-    qDebug() << "call_phd_DecAggression:" << Aggression;
+    Logger::Log("call_phd_DecAggression start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("call_phd_DecAggression | Aggression:" + std::to_string(Aggression), LogLevel::INFO, DeviceType::MAIN);
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -3633,13 +4509,21 @@ uint32_t MainWindow::call_phd_DecAggression(int Aggression) {
         // QCoreApplication::processEvents();
     }
     if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_DecAggression | timeout", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("call_phd_DecAggression failed.", LogLevel::ERROR, DeviceType::MAIN);
         return false; // timeout
+    }
     else
+    {
+        Logger::Log("call_phd_DecAggression success.", LogLevel::INFO, DeviceType::MAIN);
         return true;
+    }
 }
 
 void MainWindow::ShowPHDdata()
 {
+    Logger::Log("ShowPHDdata start ...", LogLevel::DEBUG, DeviceType::MAIN);
     unsigned int currentPHDSizeX = 1;
     unsigned int currentPHDSizeY = 1;
     unsigned int bitDepth = 1;
@@ -3672,15 +4556,22 @@ void MainWindow::ShowPHDdata()
     bool StarLostAlert = false;
 
     if (sharedmemory_phd[2047] != 0x02)
+    {
+        Logger::Log("ShowPHDdata | no image comes", LogLevel::DEBUG, DeviceType::MAIN);
+        // sleep(1); // 如果没有图像，等待1秒
         return; // if there is no image comes, return
+    }
 
     mem_offset = 1024;
     // guide image dimention data
     memcpy(&currentPHDSizeX, sharedmemory_phd + mem_offset, sizeof(unsigned int));
+    Logger::Log("ShowPHDdata | get currentPHDSizeX:" + std::to_string(currentPHDSizeX), LogLevel::DEBUG, DeviceType::MAIN);
     mem_offset = mem_offset + sizeof(unsigned int);
     memcpy(&currentPHDSizeY, sharedmemory_phd + mem_offset, sizeof(unsigned int));
+    Logger::Log("ShowPHDdata | get currentPHDSizeY:" + std::to_string(currentPHDSizeY), LogLevel::DEBUG, DeviceType::MAIN);
     mem_offset = mem_offset + sizeof(unsigned int);
     memcpy(&bitDepth, sharedmemory_phd + mem_offset, sizeof(unsigned char));
+    Logger::Log("ShowPHDdata | get bitDepth:" + std::to_string(bitDepth), LogLevel::DEBUG, DeviceType::MAIN);
     mem_offset = mem_offset + sizeof(unsigned char);
 
     mem_offset = mem_offset + sizeof(int); // &sdk_num
@@ -3691,62 +4582,87 @@ void MainWindow::ShowPHDdata()
 
     // guide error data
     guideDataIndicator = sharedmemory_phd[guideDataIndicatorAddress];
+    Logger::Log("ShowPHDdata | get guideDataIndicator:" + std::to_string(guideDataIndicator), LogLevel::DEBUG, DeviceType::GUIDER);
 
     mem_offset = mem_offset + sizeof(unsigned char);
     memcpy(&dRa, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get dRa:" + std::to_string(dRa), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&dDec, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&SNR, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get SNR:" + std::to_string(SNR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&MASS, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get MASS:" + std::to_string(MASS), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
 
     memcpy(&RADUR, sharedmemory_phd + mem_offset, sizeof(int));
+    Logger::Log("ShowPHDdata | get RADUR:" + std::to_string(RADUR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(int);
     memcpy(&DECDUR, sharedmemory_phd + mem_offset, sizeof(int));
+    Logger::Log("ShowPHDdata | get DECDUR:" + std::to_string(DECDUR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(int);
 
     memcpy(&RADIR, sharedmemory_phd + mem_offset, sizeof(char));
+    Logger::Log("ShowPHDdata | get RADIR:" + std::to_string(RADIR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(char);
     memcpy(&DECDIR, sharedmemory_phd + mem_offset, sizeof(char));
+    Logger::Log("ShowPHDdata | get DECDIR:" + std::to_string(DECDIR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(char);
 
     memcpy(&RMSErrorX, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get RMSErrorX:" + std::to_string(RMSErrorX), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&RMSErrorY, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get RMSErrorY:" + std::to_string(RMSErrorY), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&RMSErrorTotal, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get RMSErrorTotal:" + std::to_string(RMSErrorTotal), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&PixelRatio, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get PixelRatio:" + std::to_string(PixelRatio), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&StarLostAlert, sharedmemory_phd + mem_offset, sizeof(bool));
+    Logger::Log("ShowPHDdata | get StarLostAlert:" + std::to_string(StarLostAlert), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
     memcpy(&InGuiding, sharedmemory_phd + mem_offset, sizeof(bool));
+    Logger::Log("ShowPHDdata | get InGuiding:" + std::to_string(InGuiding), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
 
     mem_offset = 1024 + 200;
     memcpy(&isSelected, sharedmemory_phd + mem_offset, sizeof(bool));
+    Logger::Log("ShowPHDdata | get isSelected:" + std::to_string(isSelected), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
     memcpy(&StarX, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get StarX:" + std::to_string(StarX), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&StarY, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get StarY:" + std::to_string(StarY), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&showLockedCross, sharedmemory_phd + mem_offset, sizeof(bool));
+    Logger::Log("ShowPHDdata | get showLockedCross:" + std::to_string(showLockedCross), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
     memcpy(&LockedPositionX, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get LockedPositionX:" + std::to_string(LockedPositionX), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&LockedPositionY, sharedmemory_phd + mem_offset, sizeof(double));
+    Logger::Log("ShowPHDdata | get LockedPositionY:" + std::to_string(LockedPositionY), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&MultiStarNumber, sharedmemory_phd + mem_offset, sizeof(unsigned char));
+    Logger::Log("ShowPHDdata | get MultiStarNumber:" + std::to_string(MultiStarNumber), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(unsigned char);
     memcpy(MultiStarX, sharedmemory_phd + mem_offset, sizeof(MultiStarX));
+    Logger::Log("ShowPHDdata | get MultiStarX , MultistarX length:" + std::to_string(sizeof(MultiStarX)), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(MultiStarX);
     memcpy(MultiStarY, sharedmemory_phd + mem_offset, sizeof(MultiStarY));
+    Logger::Log("ShowPHDdata | get MultiStarY , MultistarY length:" + std::to_string(sizeof(MultiStarY)), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(MultiStarY);
 
     sharedmemory_phd[guideDataIndicatorAddress] = 0x00; // have been read back
 
+    
     glPHD_isSelected = isSelected;
     glPHD_StarX = StarX;
     glPHD_StarY = StarY;
@@ -3756,8 +4672,9 @@ void MainWindow::ShowPHDdata()
     glPHD_LockPositionY = LockedPositionY;
     glPHD_ShowLockCross = showLockedCross;
 
+    Logger::Log("ShowPHDdata | clear glPHD_Stars", LogLevel::DEBUG, DeviceType::GUIDER);
     glPHD_Stars.clear();
-    // qDebug() << "MultiStarNumber:" << MultiStarNumber;
+    Logger::Log("ShowPHDdata | send ClearPHD2MultiStars", LogLevel::DEBUG, DeviceType::GUIDER);
     emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
     for (int i = 1; i < MultiStarNumber; i++)
     {
@@ -3771,6 +4688,7 @@ void MainWindow::ShowPHDdata()
         emit wsThread->sendMessageToClient("PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY)+ ":" + QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
     }
 
+    Logger::Log("ShowPHDdata | send PHD2StarBoxView and PHD2StarBoxPosition", LogLevel::DEBUG, DeviceType::GUIDER);
     // if (glPHD_StarX != 0 && glPHD_StarY != 0)
     // {
         if (glPHD_isSelected == true)
@@ -3784,6 +4702,7 @@ void MainWindow::ShowPHDdata()
             emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
         }
 
+        Logger::Log("ShowPHDdata | send PHD2StarCrossView and PHD2StarCrossPosition", LogLevel::DEBUG, DeviceType::GUIDER);
         if (glPHD_ShowLockCross == true)
         {
             emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
@@ -3800,42 +4719,54 @@ void MainWindow::ShowPHDdata()
         // 导星过程中的数据
         unsigned char phdstatu;
         call_phd_checkStatus(phdstatu);
-
+        Logger::Log("ShowPHDdata | phdstatu:" + std::to_string(phdstatu), LogLevel::DEBUG, DeviceType::GUIDER);
+        Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
         if (dRa != 0 && dDec != 0)
         {
+            Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
             QPointF tmp;
             tmp.setX(-dRa * PixelRatio);
             tmp.setY(dDec * PixelRatio);
             glPHD_rmsdate.append(tmp);
+            Logger::Log("ShowPHDdata | send AddScatterChartData", LogLevel::DEBUG, DeviceType::GUIDER);
             emit wsThread->sendMessageToClient("AddScatterChartData:" + QString::number(-dRa * PixelRatio) + ":" + QString::number(-dDec * PixelRatio));
 
             // 图像中的小绿框
             if (InGuiding == true)
             {
+                Logger::Log("ShowPHDdata | send GuiderStatus:InGuiding", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
             }
             else
             {
+                Logger::Log("ShowPHDdata | send GuiderStatus:InCalibration", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
             }
 
             if (StarLostAlert == true)
             {
+                Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:2");
             }
 
             emit wsThread->sendMessageToClient("AddRMSErrorData:" + QString::number(RMSErrorX, 'f', 3) + ":" + QString::number(RMSErrorX, 'f', 3));
         }
-
+        Logger::Log("ShowPHDdata | glPHD_rmsdate.size():" + std::to_string(glPHD_rmsdate.size()), LogLevel::DEBUG, DeviceType::GUIDER);
         for (int i = 0; i < glPHD_rmsdate.size(); i++)
         {
             if (i == glPHD_rmsdate.size() - 1)
             {
+                Logger::Log("ShowPHDdata | send AddLineChartData", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
                 if (i > 50)
                 {
+                    Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
                 } else {
+                    Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(0) + ":" + QString::number(50));
                 }
             }
@@ -3847,15 +4778,16 @@ void MainWindow::ShowPHDdata()
         unsigned char *srcData = new unsigned char[byteCount];
 
         mem_offset = 2048;
-
+        Logger::Log("ShowPHDdata | mem_offset:" + std::to_string(mem_offset), LogLevel::DEBUG, DeviceType::GUIDER);
         memcpy(srcData, sharedmemory_phd + mem_offset, byteCount);
+        Logger::Log("ShowPHDdata | get srcData", LogLevel::DEBUG, DeviceType::GUIDER);
         sharedmemory_phd[2047] = 0x00; // 0x00= image has been read
 
+        Logger::Log("ShowPHDdata | guider image start to process ...", LogLevel::DEBUG, DeviceType::GUIDER);
         cv::Mat img8;
         cv::Mat PHDImg;
 
         img8.create(currentPHDSizeY, currentPHDSizeX, CV_8UC1);
-
         if (bitDepth == 16)
             PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_16UC1);
         else
@@ -3871,6 +4803,7 @@ void MainWindow::ShowPHDdata()
 
         if (AutoStretch == true)
         {
+            Logger::Log("ShowPHDdata | Tools::GetAutoStretch", LogLevel::DEBUG, DeviceType::GUIDER);
             Tools::GetAutoStretch(PHDImg, 0, B, W);
         }
         else
@@ -3879,21 +4812,23 @@ void MainWindow::ShowPHDdata()
             W = 65535;
         }
 
+        Logger::Log("ShowPHDdata | Tools::Bit16To8_Stretch", LogLevel::DEBUG, DeviceType::GUIDER);
         Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
 
+        Logger::Log("ShowPHDdata | saveGuiderImageAsJPG", LogLevel::DEBUG, DeviceType::GUIDER);
         saveGuiderImageAsJPG(image_raw8);
 
+        Logger::Log("ShowPHDdata | guider image process done", LogLevel::DEBUG, DeviceType::GUIDER);
         delete[] srcData;
         img8.release();
         PHDImg.release();
+        Logger::Log("ShowPHDdata finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 }
 
 void MainWindow::ControlGuide(int Direction, int Duration)
 {
-    // qDebug() << "\033[32m"
-    //          << "ControlGuide: "
-    //          << "\033[0m" << Direction << "," << Duration;
+    Logger::Log("ControlGuide start ...", LogLevel::INFO, DeviceType::GUIDER);
     switch (Direction)
     {
     case 1:
@@ -3901,8 +4836,10 @@ void MainWindow::ControlGuide(int Direction, int Duration)
         if (dpMount != NULL)
         {
             if(isMeridianFlipped) {
+                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:0, Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
                 indi_Client->setTelescopeGuideNS(dpMount, 0, Duration);
             } else {
+                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
                 indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
             }
         }
@@ -3913,8 +4850,10 @@ void MainWindow::ControlGuide(int Direction, int Duration)
         if (dpMount != NULL)
         {
             if(isMeridianFlipped) {
+                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:1, Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
                 indi_Client->setTelescopeGuideNS(dpMount, 1, Duration);
             } else {
+                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
                 indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
             }
         }
@@ -3923,7 +4862,8 @@ void MainWindow::ControlGuide(int Direction, int Duration)
     case 2:
     {
         if (dpMount != NULL)
-        {
+        {   
+            Logger::Log("ControlGuide | setTelescopeGuideWE Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
             indi_Client->setTelescopeGuideWE(dpMount, Direction, Duration);
         }
         break;
@@ -3932,6 +4872,7 @@ void MainWindow::ControlGuide(int Direction, int Duration)
     {
         if (dpMount != NULL)
         {
+            Logger::Log("ControlGuide | setTelescopeGuideWE Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
             indi_Client->setTelescopeGuideWE(dpMount, Direction, Duration);
         }
         break;
@@ -3939,6 +4880,7 @@ void MainWindow::ControlGuide(int Direction, int Duration)
     default:
         break; //
     }
+    Logger::Log("ControlGuide finish!", LogLevel::INFO, DeviceType::GUIDER);
 }
 
 void MainWindow::getTimeNow(int index)
@@ -3966,11 +4908,13 @@ void MainWindow::getTimeNow(int index)
 
 void MainWindow::onPHDControlGuideTimeout()
 {
+    Logger::Log("PHD2 Control Guide is Timeout !", LogLevel::DEBUG, DeviceType::MAIN);
     GetPHD2ControlInstruct();
 }
 
 void MainWindow::GetPHD2ControlInstruct()
 {
+    Logger::Log("GetPHD2ControlInstruct start ...", LogLevel::DEBUG, DeviceType::MAIN);
     std::lock_guard<std::mutex> lock(receiveMutex);
 
     unsigned int mem_offset;
@@ -3988,6 +4932,7 @@ void MainWindow::GetPHD2ControlInstruct()
     int ControlInstruct = 0;
 
     memcpy(&ControlInstruct, sharedmemory_phd + mem_offset, sizeof(int));
+    Logger::Log("GetPHD2ControlInstruct | get ControlInstruct:" + std::to_string(ControlInstruct), LogLevel::DEBUG, DeviceType::MAIN);
     int mem_offset_sdk_num = mem_offset;
     mem_offset = mem_offset + sizeof(int);
 
@@ -3998,124 +4943,132 @@ void MainWindow::GetPHD2ControlInstruct()
     if (sdk_num != 0)
     {
         getTimeNow(sdk_num);
-        // std::cout << "\033[31m"
-        //           << "PHD2ControlTelescope: "
-        //           << "\033[0m" << sdk_num << "," << sdk_direction << ","
-        //           << sdk_duration << std::endl;
+        Logger::Log("GetPHD2ControlInstruct | PHD2ControlTelescope:" + std::to_string(sdk_num) + "," + std::to_string(sdk_direction) + "," + std::to_string(sdk_duration), LogLevel::DEBUG, DeviceType::MAIN);
     }
     if (sdk_duration != 0)
     {
         MainWindow::ControlGuide(sdk_direction, sdk_duration);
 
         memcpy(sharedmemory_phd + mem_offset_sdk_num, &zero, sizeof(int));
-
+        Logger::Log("GetPHD2ControlInstruct | set ControlInstruct to 0", LogLevel::DEBUG, DeviceType::MAIN);
         call_phd_ChackControlStatus(sdk_num); // set pFrame->ControlStatus = 0;
     }
+    Logger::Log("GetPHD2ControlInstruct finish!", LogLevel::DEBUG, DeviceType::MAIN);
 }
 
 void MainWindow::FocuserControl_Goto(int Position)
 {
-  if (dpFocuser != NULL) 
-  {
-    focusTimer.stop();
-    focusTimer.disconnect();
+    Logger::Log("FocuserControl_Goto start ...", LogLevel::INFO, DeviceType::MAIN);
+    if (dpFocuser != NULL) 
+    {
+        focusTimer.stop();
+        focusTimer.disconnect();
 
-    CurrentPosition = FocuserControl_getPosition();
-
-    TargetPosition = Position;
-
-    qInfo() << "TargetPosition: " << TargetPosition;
-
-    indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
-
-    focusTimer.setSingleShot(true);
-
-    connect(&focusTimer, &QTimer::timeout, [this]() {
         CurrentPosition = FocuserControl_getPosition();
-        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
-        
-        if (WaitForFocuserToComplete()) 
-        {
-            focusTimer.stop();  // 转动完成时停止定时器
-            qInfo() << "Focuser Goto Complete!";
-            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-            FocusingLooping();
-        } 
-        else 
-        {
-            focusTimer.start(100);  // 继续等待
-        } 
-    });
+        Logger::Log("FocuserControl_Goto | CurrentPosition:" + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
+        TargetPosition = Position;
 
-    focusTimer.start(100);
-  }
-  else 
-  {
-    emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
-  }
+        Logger::Log("FocuserControl_Goto | TargetPosition:" + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::MAIN);
+
+        indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
+        Logger::Log("FocuserControl_Goto | start Goto focuser ...", LogLevel::INFO, DeviceType::MAIN);
+
+        focusTimer.setSingleShot(true);
+
+        connect(&focusTimer, &QTimer::timeout, [this]() {
+            CurrentPosition = FocuserControl_getPosition();
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+            
+            if (WaitForFocuserToComplete()) 
+            {
+                focusTimer.stop();  // 转动完成时停止定时器
+                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+                FocusingLooping();
+            } 
+            else 
+            {
+                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+                Logger::Log("FocuserControl_Goto | continue wait for focuser to complete ...", LogLevel::INFO, DeviceType::MAIN);
+                // focusTimer.start(100);  // 继续等待
+            } 
+        });
+
+        focusTimer.start(100);
+    }
+    else 
+    {
+        Logger::Log("FocuserControl_Goto | dpFocuser is NULL", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
+    }
+    Logger::Log("FocuserControl_Goto finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::AutoFocus() 
 {
-    StopAutoFocus = false;
-    int stepIncrement = 100;
+    Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
+    StopAutoFocus = false; // 初始化停止自动对焦标志为false
+    int stepIncrement = 100; // 每次移动的步长
 
-    bool isInward = true;
+    bool isInward = true; // 初始移动方向为向内
 
-    FocusMoveAndCalHFR(!isInward, stepIncrement * 5);
+    Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
+    FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
 
-    int initialPosition = FocuserControl_getPosition();
-    int currentPosition = initialPosition;
+    int initialPosition = FocuserControl_getPosition(); // 获取初始位置
+    int currentPosition = initialPosition; // 当前对焦器位置
 
-    int Pass3Steps;
+    int Pass3Steps; // 第三阶段的步数
 
-    QVector<QPointF> focusMeasures;
+    QVector<QPointF> focusMeasures; // 存储对焦测量值
 
-    int OnePassSteps = 8;
-    int LostStarNum = 0;
+    int OnePassSteps = 8; // 每个阶段的步数
+    int LostStarNum = 0; // 丢失星点的计数
 
+    Logger::Log("AutoFocus | to move focuser 5 steps inward ...", LogLevel::INFO, DeviceType::MAIN);
+    // 第一阶段：向内移动并计算HFR
     for(int i = 1; i < OnePassSteps; i++) {
-        if (StopAutoFocus) {
-            qInfo("Stop Auto Focus...");
+        if (StopAutoFocus) { // 检查是否停止自动对焦
+            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
-        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        qInfo() << "Pass1: HFR-" << i << "(" << HFR << ") Calculation Complete!";
-        if (HFR == -1) {
+        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement); // 计算HFR(半光通量半径)
+        Logger::Log("AutoFocus | Pass1: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+        if (HFR == -1) { // 检查HFR是否有效
             LostStarNum++;
-            if (LostStarNum >= 3) {
-                qDebug("Too many number of lost star points.");
+            if (LostStarNum >= 3) { // 如果丢失星点超过3次，返回初始位置
+                Logger::Log("AutoFocus | Too many number of lost star points.", LogLevel::INFO, DeviceType::MAIN);
                 FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
-                qDebug("Returned to the starting point.");
+                Logger::Log("AutoFocus | Returned to the starting point.", LogLevel::INFO, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("AutoFocusOver:true");
                 return;
             }
         }
-        currentPosition = FocuserControl_getPosition();
-        focusMeasures.append(QPointF(currentPosition, HFR));
+        currentPosition = FocuserControl_getPosition(); // 更新当前对焦器位置
+        focusMeasures.append(QPointF(currentPosition, HFR)); // 记录测量值
     }
 
+    // 拟合抛物线并检查结果
     float a, b, c;
     int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
     if (result == 0)
     {
-        if(R2 < 0.8) {
-            qWarning("R² < 0.8");
-            // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
+        if(R2 < 0.8) { // 检查拟合的R²值
+            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
 
-        if(a < 0) {
-            // 抛物线的开口向下
-            qDebug("抛物线的开口向下");
-            // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
+        if(a < 0) { // 检查抛物线的开口方向
+            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
         }
 
         int countLessThan = 0;
         int countGreaterThan = 0;
 
+        // 统计测量点相对于最小点的分布
         for (const QPointF &point : focusMeasures)
         {
             if (point.x() < minPoint_X)
@@ -4128,47 +5081,48 @@ void MainWindow::AutoFocus()
             }
         }
 
+        // 根据分布调整对焦器
         if (countLessThan > countGreaterThan) {
-            qDebug() << "More points are less than minPoint_X.";
+            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
             if(a > 0) {
-                // 抛物线的开口向上
                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
             } 
         }
         else if (countGreaterThan > countLessThan) {
-            qDebug() << "More points are greater than minPoint_X.";
+            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
             if(a < 0) {
                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
             }
         }
     }
 
+    // 第二阶段：继续向内移动并计算HFR
     for(int i = 1; i < OnePassSteps; i++) {
         if (StopAutoFocus) {
-            qInfo("Stop Auto Focus...");
+            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        qInfo() << "Pass2: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        Logger::Log("AutoFocus | Pass2: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
         currentPosition = FocuserControl_getPosition();
         focusMeasures.append(QPointF(currentPosition, HFR));
     }
 
+    // 再次拟合抛物线并检查结果
+    Logger::Log("AutoFocus | to fit quadratic curve again ...", LogLevel::INFO, DeviceType::MAIN);
     float a_, b_, c_;
     int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
     if (result_ == 0)
     {
         if(R2 < 0.8) {
-            qWarning("R² < 0.8");
-            // FocusMoveAndCalHFR(!isInward, stepIncrement * 10);
+            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
 
         if(a_ < 0) {
-            // 抛物线的开口向下
-            qDebug("抛物线的开口向下"); 
+            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
         }
 
         int countLessThan = 0;
@@ -4186,19 +5140,20 @@ void MainWindow::AutoFocus()
             }
         }
 
+        // 根据分布调整对焦器
         if (countLessThan > countGreaterThan) {
-            qDebug() << "More points are less than minPoint_X.";
+            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
             Pass3Steps = countLessThan-countGreaterThan;
-            qDebug() << "Pass3Steps: " << Pass3Steps;
+            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
 
             FocusGotoAndCalFWHM(minPoint_X);
 
             FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
         }
         else if (countGreaterThan > countLessThan) {
-            qDebug() << "More points are greater than minPoint_X.";
+            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
             Pass3Steps = countGreaterThan - countLessThan;
-            qDebug() << "Pass3Steps: " << Pass3Steps;
+            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
 
             FocusGotoAndCalFWHM(minPoint_X);
             if(countLessThan > 0){
@@ -4206,31 +5161,32 @@ void MainWindow::AutoFocus()
             }
         }
         else {
-            qDebug() << "The number of points less than and greater than minPoint_X is equal.";
+            Logger::Log("AutoFocus | The number of points less than and greater than minPoint_X is equal.", LogLevel::INFO, DeviceType::MAIN);
             FocusGotoAndCalFWHM(minPoint_X);
-            qInfo() << "Auto focus complete. Best step: " << minPoint_X;
+            Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
     }
 
+    // 第三阶段：根据Pass3Steps调整对焦器
     for(int i = 1; i < Pass3Steps + 1; i++) {
         if (StopAutoFocus) {
-            qInfo("Stop Auto Focus...");
+            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("AutoFocusOver:true");
             return;
         }
         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        qInfo() << "Pass3: HFR-" << i << "(" << HFR << ") Calculation Complete!";
+        Logger::Log("AutoFocus | Pass3: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
         currentPosition = FocuserControl_getPosition();
         focusMeasures.append(QPointF(currentPosition, HFR));
     }
 
-    FocusGotoAndCalFWHM(minPoint_X);
-    qInfo() << "Auto focus complete. Best step: " << minPoint_X;
+    FocusGotoAndCalFWHM(minPoint_X); // 移动到最佳位置
+    Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
     currentPosition = FocuserControl_getPosition();
-    qInfo() << "Current Position : " << currentPosition;
-    emit wsThread->sendMessageToClient("AutoFocusOver:true");
+    Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
+    emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
 }
 
 double MainWindow::FocusGotoAndCalFWHM(int steps) {
@@ -4251,13 +5207,13 @@ double MainWindow::FocusGotoAndCalFWHM(int steps) {
         {
             FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
             FWHMTimer.stop();
-            qInfo() << "FWHM Calculation Complete!";
+            Logger::Log("FocusGotoAndCalFWHM | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
             loop.quit();
         } 
         else 
         {
-            FWHMTimer.start(1000);  // 继续等待
+            // FWHMTimer.start(1000);  // 继续等待
         }
     });
 
@@ -4267,88 +5223,245 @@ double MainWindow::FocusGotoAndCalFWHM(int steps) {
     return FWHM;
 }
 
+void MainWindow::HandleFocuserMovementDataPeriodically() {
+    if (!isFocusMoveDone) {
+        focusMoveTimer->stop();
+        return;
+    }
+
+    CurrentPosition = FocuserControl_getPosition();
+    if (CurrentPosition == INT_MIN) {
+        Logger::Log("HandleFocuserMovementDataPeriodically | get current position failed!", LogLevel::WARNING, DeviceType::FOCUSER);
+    } else {
+        // Logger::Log("HandleFocuserMovementDataPeriodically | Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+    }
+
+    bool isInward = this->currentDirection; // 假设您有一个成员变量来存储当前的移动方向
+    if (isInward) {
+        if (CurrentPosition != TargetPosition && CurrentPosition-TargetPosition <= 1000) {
+        
+        }else if (CurrentPosition == TargetPosition){
+            int steps = 60000+CurrentPosition;
+            if (steps > 60000) {
+                steps = 60000;
+                TargetPosition = CurrentPosition - steps;
+            }else{
+                TargetPosition = -60000;
+            }
+            indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
+            indi_Client->moveFocuserSteps(dpFocuser, steps);
+            
+            Logger::Log("HandleFocuserMovementDataPeriodically | CurrentPosition: " + std::to_string(CurrentPosition) + " ,set move steps "+ std::to_string(steps) + " ,backward inward", LogLevel::INFO, DeviceType::FOCUSER);
+        }else{
+            Logger::Log("Moving inward ... , CurrentPosition: " + std::to_string(CurrentPosition) , LogLevel::INFO, DeviceType::FOCUSER);
+        }
+    } else if (!isInward) {
+        if (TargetPosition-CurrentPosition <= 1000) {
+            int steps = 60000-CurrentPosition;
+            if (steps > 60000) {
+                steps = 60000;
+                TargetPosition = CurrentPosition + steps;
+            }else{
+                TargetPosition = 60000;
+            }
+
+            indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
+            indi_Client->moveFocuserSteps(dpFocuser, steps);
+            Logger::Log("HandleFocuserMovementDataPeriodically | CurrentPosition: " + std::to_string(CurrentPosition) + " ,set move steps "+ std::to_string(steps) + " ,backward outward", LogLevel::INFO, DeviceType::FOCUSER);
+        }else{
+            Logger::Log("Moving outward ... , CurrentPosition: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
+        }
+    }
+    focusMoveEndTime -= 0.5;
+    if (focusMoveEndTime <= 0) {
+        FocuserControlStop();
+    }else if (focusMoveEndTime > 0 && focusMoveEndTime <= 1) {
+        emit wsThread->sendMessageToClient("getFocuserMoveState");
+    }
+}
+
+void MainWindow::FocuserControlMove(bool isInward) {
+    this->currentDirection = isInward; // 更新当前方向
+    if (dpFocuser == NULL) {
+        Logger::Log("FocuserControlMove | dpFocuser is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
+        return;
+    }
+    focusMoveEndTime = 2;
+    isFocusMoveDone = true;
+    CurrentPosition = FocuserControl_getPosition();
+    TargetPosition = CurrentPosition;
+    if (CurrentPosition == 60000 && !isInward) {
+        emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+        focusMoveTimer->stop();
+        return;
+    }else if (CurrentPosition == -60000 && isInward) {
+        emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+        focusMoveTimer->stop();
+        return;
+    }
+    focusMoveTimer->start(1000);
+}
+
+void MainWindow::FocuserControlStop() {
+    Logger::Log("focusMoveStop | Stop Focuser Move", LogLevel::INFO, DeviceType::FOCUSER);
+    isFocusMoveDone = false;
+    if(dpFocuser != NULL) {
+        indi_Client->abortFocuserMove(dpFocuser);
+    }else{
+        Logger::Log("focusMoveStop | dpFocuser is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+    }
+    if(focusMoveTimer->isActive()) {
+        focusMoveTimer->stop();
+    }
+    CurrentPosition = FocuserControl_getPosition();
+    emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+    if (updatePositionTimer != nullptr) {
+        // 添加计时器以定期更新位置
+        updatePositionTimer->stop();
+        updatePositionTimer->deleteLater();
+        updatePositionTimer = nullptr;
+    } 
+    updatePositionTimer = new QTimer(this);
+    updatePositionTimer->setInterval(1000); // 设置计时器间隔为1000毫秒
+    updateCount = 0; // 初始化计数器    
+
+    connect(updatePositionTimer, &QTimer::timeout, [this]() {
+        if (isFocusMoveDone || updateCount >= 3) {
+            updatePositionTimer->stop();
+            updatePositionTimer->deleteLater();
+            updatePositionTimer = nullptr;
+            Logger::Log("focusMoveStop | Timer manually released", LogLevel::INFO, DeviceType::FOCUSER);
+            return;
+        }
+        CurrentPosition = FocuserControl_getPosition();
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        Logger::Log("focusMoveStop | Current Focuser Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
+        updateCount++;
+    });
+
+    updatePositionTimer->start(); // 启动计时器
+    
+    Logger::Log("focusMoveStop | Current Focuser Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
+}
+
+void MainWindow::CheckFocuserMoveOrder() {
+    emit wsThread->sendMessageToClient("getFocuserMoveState");
+}
+
 double MainWindow::FocusMoveAndCalHFR(bool isInward, int steps) {
+    // 记录开始移动和计算FWHM的日志
+    Logger::Log("FocusMoveAndCalHFR start ...", LogLevel::INFO, DeviceType::FOCUSER);
     QEventLoop loop;
     double FWHM = 0;
 
-    // 停止和清理先前的计时器
+    // 停止并断开之前的计时器连接，准备新的操作
     FWHMTimer.stop();
     FWHMTimer.disconnect();
 
+    // 设置FWHM计算未完成的标志
     FWHMCalOver = false;
+    // 调用移动焦点器的函数，传入移动方向和步数
     FocuserControl_Move(isInward, steps);
 
+    // 设置计时器为单次触发
     FWHMTimer.setSingleShot(true);
 
+    // 连接计时器的超时信号到处理函数，用于处理FWHM计算
     connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
-        if (FWHMCalOver) 
+        if (FWHMCalOver) // 如果FWHM计算完成
         {
-            FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
-            FWHMTimer.stop();
-            qInfo() << "FWHM Calculation Complete!";
+            FWHM = this->FWHM;  // 获取计算结果
+            FWHMTimer.stop();  // 停止计时器
+            // 记录FWHM计算完成的日志
+            Logger::Log("FocusMoveAndCalHFR | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::FOCUSER);
+            // 发送计算完成的消息给客户端
             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-            loop.quit();
+            loop.quit();  // 退出事件循环
         } 
         else 
         {
-            FWHMTimer.start(1000);  // 继续等待
+            // FWHMTimer.start(1000);  // 如果FWHM未计算完成，重新启动计时器，继续等待
         }
     });
 
-    FWHMTimer.start(1000);
-    loop.exec();  // 等待事件循环直到调用 loop.quit()
+    FWHMTimer.start(1000);  // 启动计时器，等待FWHM计算
+    loop.exec();  // 进入事件循环，等待计时器信号或计算完成
 
-    return FWHM;
+    return FWHM;  // 返回计算得到的FWHM值
 }
 
 void MainWindow::FocuserControl_Move(bool isInward, int steps)
 {
-  if (dpFocuser != NULL) 
-  {
-    focusTimer.stop();
-    focusTimer.disconnect();
-
-    CurrentPosition = FocuserControl_getPosition();
-
-    if(isInward == false)
+    // 记录开始移动焦点器的日志
+    Logger::Log("FocuserControl_Move start ...", LogLevel::INFO, DeviceType::FOCUSER);
+    if (dpFocuser != NULL) 
     {
-        TargetPosition = CurrentPosition + steps;
-    }
-    else
-    {
-        TargetPosition = CurrentPosition - steps;
-    }
-    qInfo() << "Focuser Move Target Position: " << TargetPosition;
+        // 停止并断开焦点器移动的计时器
+        focusTimer.stop();
+        focusTimer.disconnect();
 
-    indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
-    indi_Client->moveFocuserSteps(dpFocuser, steps);
-
-    focusTimer.setSingleShot(true);
-
-    connect(&focusTimer, &QTimer::timeout, [this]() {
+        // 获取当前焦点器的位置
         CurrentPosition = FocuserControl_getPosition();
-        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
-        
-        if (WaitForFocuserToComplete()) 
-        {
-            focusTimer.stop();  // 转动完成时停止定时器
-            qInfo() << "Focuser Move Complete!";
-            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-            FocusingLooping();
-        } 
-        else 
-        {
-            focusTimer.start(100);  // 继续等待
-        } 
-    });
 
-    focusTimer.start(100);
+        // 根据移动方向计算目标位置
+        if(isInward == false)
+        {
+            TargetPosition = CurrentPosition + steps;
+        }
+        else
+        {
+            TargetPosition = CurrentPosition - steps;
+        }
+        // 记录目标位置的日志
+        Logger::Log("FocuserControl_Move | Target Position: " + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::FOCUSER);
 
-  }
-  else 
-  {
-    emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
-  }
+        // 设置焦点器的移动方向并执行移动
+        indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
+        indi_Client->moveFocuserSteps(dpFocuser, steps);
+
+        // 设置计时器为单次触发
+        focusTimer.setSingleShot(true);
+
+        // 连接计时器的超时信号到处理函数，用于监控焦点器的移动状态
+        connect(&focusTimer, &QTimer::timeout, [this]() {
+            // 更新当前位置
+            CurrentPosition = FocuserControl_getPosition();
+            // 向客户端发送当前位置和目标位置
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+            
+            // 检查焦点器是否已经到达目标位置
+            if (WaitForFocuserToComplete()) 
+            {
+                // 停止计时器
+                focusTimer.stop();
+                // 记录焦点器移动完成的日志
+                Logger::Log("FocuserControl_Move | Focuser Move Complete!", LogLevel::INFO, DeviceType::FOCUSER);
+                // 向客户端发送焦点器移动完成的消息
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+                // 执行焦点循环处理
+                FocusingLooping();
+            } 
+            else 
+            {
+                // 如果焦点器未到达目标位置，重新启动计时器，继续等待
+                // focusTimer.start(100);
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+            } 
+        });
+
+        // 启动计时器
+        focusTimer.start(100);
+    }
+    else 
+    {
+        // 如果焦点器对象不存在，记录日志并发送错误消息
+        Logger::Log("FocuserControl_Move | dpFocuser is NULL", LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
+    }
+    // 记录焦点器移动结束的日志
+    Logger::Log("FocuserControl_Move finish!", LogLevel::INFO, DeviceType::FOCUSER);
 }
 
 bool MainWindow::WaitForFocuserToComplete() {
@@ -4357,35 +5470,47 @@ bool MainWindow::WaitForFocuserToComplete() {
 
 int MainWindow::FocuserControl_setSpeed(int speed)
 {
+  Logger::Log("FocuserControl_setSpeed start ...", LogLevel::DEBUG, DeviceType::FOCUSER);
   if (dpFocuser != NULL) 
   {
-    int value, min, max;
+    int value, min, max, step;
     indi_Client->setFocuserSpeed(dpFocuser, speed);
-    indi_Client->getFocuserSpeed(dpFocuser, value, min, max);
-    qInfo() << "Focuser Speed: " << value << "," << min << "," << max;
+    indi_Client->getFocuserSpeed(dpFocuser, value, min, max, step);
+    Logger::Log("FocuserControl_setSpeed | Focuser Speed: " + std::to_string(value) + "," + std::to_string(min) + "," + std::to_string(max) + "," + std::to_string(step), LogLevel::INFO, DeviceType::FOCUSER);
     return value;
   }
+  Logger::Log("FocuserControl_setSpeed finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
 }
 
 int MainWindow::FocuserControl_getSpeed()
 {
+  Logger::Log("FocuserControl_getSpeed start ...", LogLevel::DEBUG, DeviceType::FOCUSER);
   if (dpFocuser != NULL) 
   {
-    int value, min, max;
-    indi_Client->getFocuserSpeed(dpFocuser, value, min, max);
-    qInfo() << "Focuser Speed: " << value << "," << min << "," << max;
+    int value, min, max, step;
+    indi_Client->getFocuserSpeed(dpFocuser, value, min, max, step);
+    Logger::Log("FocuserControl_getSpeed | Focuser Speed: " + std::to_string(value) + "," + std::to_string(min) + "," + std::to_string(max) + "," + std::to_string(step), LogLevel::INFO, DeviceType::FOCUSER);
     return value;
   }
+  Logger::Log("FocuserControl_getSpeed finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
 }
 
 int MainWindow::FocuserControl_getPosition()
 {
+  Logger::Log("FocuserControl_getPosition start ...", LogLevel::DEBUG, DeviceType::FOCUSER);
   if (dpFocuser != NULL) 
   {
     int value;
     indi_Client->getFocuserAbsolutePosition(dpFocuser, value);
+    Logger::Log("FocuserControl_getPosition | Focuser Position: " + std::to_string(value), LogLevel::DEBUG, DeviceType::FOCUSER);
     return value;
   }
+  else
+  {
+    Logger::Log("FocuserControl_getPosition | dpFocuser is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+    return INT_MIN; // 使用 INT_MIN 作为特殊的错误值
+  }
+  Logger::Log("FocuserControl_getPosition finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
 }
 
 void MainWindow::TelescopeControl_Goto(double Ra,double Dec)
@@ -4424,7 +5549,7 @@ bool MainWindow::TelescopeControl_Park()
       indi_Client->setTelescopePark(dpMount,false);
     }
     indi_Client->getTelescopePark(dpMount,isPark);
-    qInfo()<<"Telescope is Park ???:"<<isPark;
+    Logger::Log("TelescopeControl_Park | Telescope is Park ???:" + std::to_string(isPark), LogLevel::INFO, DeviceType::MAIN);
   }
 
   return isPark;
@@ -4445,45 +5570,60 @@ bool MainWindow::TelescopeControl_Track()
       indi_Client->setTelescopeTrackEnable(dpMount,false);
     }
     indi_Client->getTelescopeTrackEnable(dpMount,isTrack);
-    qInfo()<<"Telescope is Track ???:"<<isTrack;
+    Logger::Log("TelescopeControl_Track | Telescope is Track ???:" + std::to_string(isTrack), LogLevel::INFO, DeviceType::MAIN);
   }
   return isTrack;
 }
 
+
+// TODO: 任务计划表数据解析
 void MainWindow::ScheduleTabelData(QString message)
 {
     ScheduleTargetNames.clear();
     m_scheduList.clear();
     schedule_currentShootNum = 0;
     QStringList ColDataList = message.split('[');
-    for (int i = 1; i < ColDataList.size(); ++i) {
-        QString ColData = ColDataList[i];   // ",M 24, Ra:4.785693,Dec:-0.323759,12:00:00,1 s,Ha,,Bias,ON,],"
+    for (int i = 1; i < ColDataList.size(); ++i)
+    {
+        QString ColData = ColDataList[i]; // ",M 24, Ra:4.785693,Dec:-0.323759,12:00:00,1 s,Ha,,Bias,ON,],"
         ScheduleData rowData;
         qDebug() << "ColData[" << i << "]:" << ColData;
 
         QStringList RowDataList = ColData.split(',');
-        for (int j = 1; j < 10; ++j) {
-            if(j == 1){
+        for (int j = 1; j < 10; ++j)
+        {
+            if (j == 1)
+            {
                 rowData.shootTarget = RowDataList[j];
+                rowData.shootType = RowDataList[j + 7];
                 qDebug() << "Target:" << rowData.shootTarget;
+                qDebug() << "Type:" << rowData.shootType;
                 // 将 shootTarget 添加到 ScheduleTargetNames 中
                 if (!ScheduleTargetNames.isEmpty())
                 {
                     ScheduleTargetNames += ",";
                 }
-                ScheduleTargetNames += rowData.shootTarget;
-            } else if(j == 2){
+                ScheduleTargetNames += rowData.shootTarget + "," + rowData.shootType ;
+            }
+            else if (j == 2)
+            {
                 QStringList parts = RowDataList[j].split(':');
                 rowData.targetRa = Tools::RadToHour(parts[1].toDouble());
                 qDebug() << "Ra:" << rowData.targetRa;
-            } else if(j == 3){
+            }
+            else if (j == 3)
+            {
                 QStringList parts = RowDataList[j].split(':');
                 rowData.targetDec = Tools::RadToDegree(parts[1].toDouble());
                 qDebug() << "Dec:" << rowData.targetDec;
-            } else if(j == 4){
+            }
+            else if (j == 4)
+            {
                 rowData.shootTime = RowDataList[j];
                 qDebug() << "Time:" << rowData.shootTime;
-            } else if(j == 5){
+            }
+            else if (j == 5)
+            {
                 QStringList parts = RowDataList[j].split(' ');
                 QString value = parts[0];
                 QString unit = parts[1];
@@ -4491,26 +5631,38 @@ void MainWindow::ScheduleTabelData(QString message)
                     rowData.exposureTime = value.toInt() * 1000; // Convert seconds to milliseconds
                 else if (unit == "ms")
                     rowData.exposureTime = value.toInt(); // Milliseconds
-                if (rowData.exposureTime == 0) {
+                if (rowData.exposureTime == 0)
+                {
                     rowData.exposureTime = 1000;
                     qDebug() << "Exptime error, Exptime = 1000 ms";
                 }
                 qDebug() << "Exptime:" << rowData.exposureTime;
-            } else if(j == 6){
+            }
+            else if (j == 6)
+            {
                 rowData.filterNumber = RowDataList[j];
                 qDebug() << "CFW:" << rowData.filterNumber;
-            } else if(j == 7){
-                if(RowDataList[j] == "") {
+            }
+            else if (j == 7)
+            {
+                if (RowDataList[j] == "")
+                {
                     rowData.repeatNumber = 1;
                     qDebug() << "Repeat error, Repeat = 1";
-                } else {
+                }
+                else
+                {
                     rowData.repeatNumber = RowDataList[j].toInt();
                 }
                 qDebug() << "Repeat:" << rowData.repeatNumber;
-            } else if(j == 8){
-                rowData.shootType = RowDataList[j];
-                qDebug() << "Type:" << rowData.shootType;
-            } else if(j == 9){
+            }
+            // else if (j == 8)
+            // {
+            //     rowData.shootType = RowDataList[j];
+            //     qDebug() << "Type:" << rowData.shootType;
+            // }
+            else if (j == 9)
+            {
                 rowData.resetFocusing = (RowDataList[j] == "ON");
                 qDebug() << "Focus:" << rowData.resetFocusing;
             }
@@ -4522,18 +5674,20 @@ void MainWindow::ScheduleTabelData(QString message)
     startSchedule();
 }
 
+
 void MainWindow::startSchedule()
 {
     createScheduleDirectory();
-    if (schedule_currentNum >= 0 && schedule_currentNum < m_scheduList.size()) 
+    if (schedule_currentNum >= 0 && schedule_currentNum < m_scheduList.size())
     {
+        qDebug() << "startSchedule...";
         schedule_ExpTime = m_scheduList[schedule_currentNum].exposureTime;
         schedule_RepeatNum = m_scheduList[schedule_currentNum].repeatNumber;
         schedule_CFWpos = m_scheduList[schedule_currentNum].filterNumber.toInt();
         StopSchedule = false;
-        startTimeWaiting(); 
-    } 
-    else 
+        startTimeWaiting();
+    }
+    else
     {
         qDebug() << "Index out of range, Schedule is complete!";
         StopSchedule = true;
@@ -4546,23 +5700,26 @@ void MainWindow::startSchedule()
     }
 }
 
-void MainWindow::nextSchedule() {
+void MainWindow::nextSchedule()
+{
     // next schedule...
     schedule_currentNum++;
     qDebug() << "next schedule...";
     startSchedule();
 }
 
-void MainWindow::startTimeWaiting() 
+void MainWindow::startTimeWaiting()
 {
+    qDebug() << "startTimeWaiting...";
     // 停止和清理先前的计时器
     timewaitingTimer.stop();
     timewaitingTimer.disconnect();
-
     // 启动等待的定时器
-   timewaitingTimer.setSingleShot(true);
+    timewaitingTimer.setSingleShot(true);
 
-    connect(&timewaitingTimer, &QTimer::timeout, [this]() {
+    
+    connect(&timewaitingTimer, &QTimer::timeout, [this]()
+            {
         if (StopSchedule)
         {
             StopSchedule = false;
@@ -4573,21 +5730,25 @@ void MainWindow::startTimeWaiting()
         if (WaitForTimeToComplete()) 
         {
             timewaitingTimer.stop();  // 完成时停止定时器
-            qDebug() << "Time Waiting Complete!";
+            qDebug() << "Time Waiting Complete...";
 
             startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
         } 
         else 
         {
             timewaitingTimer.start(1000);  // 继续等待
-        } 
-    });
+        } });
 
     timewaitingTimer.start(1000);
 }
 
-void MainWindow::startMountGoto(double ra, double dec)  // Ra:Hour, Dec:Degree
+ 
+
+
+
+void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 {
+    qDebug() << "startMountGoto...";
     // 停止和清理先前的计时器
     telescopeTimer.stop();
     telescopeTimer.disconnect();
@@ -4599,12 +5760,13 @@ void MainWindow::startMountGoto(double ra, double dec)  // Ra:Hour, Dec:Degree
     call_phd_StopLooping();
     GuidingHasStarted = false;
 
-    sleep(2); //赤道仪的状态更新有一定延迟
+    sleep(2); // 赤道仪的状态更新有一定延迟
 
     // 启动等待赤道仪转动的定时器
     telescopeTimer.setSingleShot(true);
 
-    connect(&telescopeTimer, &QTimer::timeout, [this]() {
+    connect(&telescopeTimer, &QTimer::timeout, [this]()
+            {
         if (StopSchedule)
         {
             StopSchedule = false;
@@ -4633,20 +5795,71 @@ void MainWindow::startMountGoto(double ra, double dec)  // Ra:Hour, Dec:Degree
 
             if(GuidingHasStarted == false)
             {
+                qDebug() << "Mount Goto Complete...";
                 startGuiding();
+                // startSetCFW(schedule_CFWpos);
             }
         } 
         else 
         {
             telescopeTimer.start(1000);  // 继续等待
-        } 
-    });
+        } });
 
     telescopeTimer.start(1000);
 }
 
-void MainWindow::startGuiding() 
+
+
+
+
+
+
+// 检查是否需要中天翻转
+// bool needsMeridianFlip(double currentRA, double targetRA, double longitude) {
+   
+//     // 计算时角（Hour Angle）
+//     double hourAngle = currentRA - targetRA;
+
+//     // 考虑经度的影响
+//     hourAngle += longitude / 15.0; // 经度转换为时角
+
+//     // 如果时角大于12小时（即目标在子午线西侧），则需要翻转
+//     if (hourAngle > 12.0) {
+//         return true;
+//     }
+//     return false;
+// }
+
+// // 执行观测流程
+// void performObservation(
+//     double currentRA, double currentDec,
+//     double targetRA, double targetDec,
+//     double observatoryLongitude) {
+
+// // 检查是否需要中天翻转
+// if (needsMeridianFlip(currentRA, targetRA, observatoryLongitude)) {
+// std::cout << "Meridian flip is needed." << std::endl;
+
+// // 将望远镜移动到安全位置（例如，天顶）
+// startMountGoto(12.0, 90.0);
+
+// // 执行中天翻转
+// std::cout << "Performing meridian flip..." << std::endl;
+// std::this_thread::sleep_for(std::chrono::seconds(60)); // 模拟翻转时间
+
+// // 移动到目标位置
+// startMountGoto(targetRA, targetDec);
+// } else {
+// std::cout << "No meridian flip needed. Moving directly to target." << std::endl;
+// startMountGoto(targetRA, targetDec);
+// }
+// }
+
+//qiangzhijiaozhun 
+
+void MainWindow::startGuiding()
 {
+    qDebug() << "startGuiding...";
     // 停止和清理先前的计时器
     guiderTimer.stop();
     guiderTimer.disconnect();
@@ -4660,7 +5873,8 @@ void MainWindow::startGuiding()
     // 启动等待赤道仪转动的定时器
     guiderTimer.setSingleShot(true);
 
-    connect(&guiderTimer, &QTimer::timeout, [this]() {
+    connect(&guiderTimer, &QTimer::timeout, [this]()
+            {
         if (StopSchedule)
         {
             StopSchedule = false;
@@ -4672,7 +5886,7 @@ void MainWindow::startGuiding()
         if (WaitForGuidingToComplete()) 
         {
             guiderTimer.stop();  // 转动完成时停止定时器
-            qDebug() << "Guiding Complete!";
+            qDebug() << "Guiding Complete...";
 
             // startCapture(schedule_ExpTime);
             startSetCFW(schedule_CFWpos);
@@ -4680,24 +5894,31 @@ void MainWindow::startGuiding()
         else 
         {
             guiderTimer.start(1000);  // 继续等待
-        } 
-    });
+        } });
 
     guiderTimer.start(1000);
 }
 
 void MainWindow::startSetCFW(int pos)
 {
-    if (isFilterOnCamera) {
-        if (dpMainCamera != NULL) {
+    qDebug() << "startSetCFW...";
+    if (isFilterOnCamera)
+    {
+        if (dpMainCamera != NULL)
+        {
             qDebug() << "schedule CFW pos:" << pos;
             indi_Client->setCFWPosition(dpMainCamera, pos);
+            qDebug() << "CFW Goto Complete...";
             startCapture(schedule_ExpTime);
         }
-    } else {
-        if (dpCFW != NULL) {
+    }
+    else
+    {
+        if (dpCFW != NULL)
+        {
             qDebug() << "schedule CFW pos:" << pos;
             indi_Client->setCFWPosition(dpCFW, pos);
+            qDebug() << "CFW Goto Complete...";
             startCapture(schedule_ExpTime);
         }
     }
@@ -4705,6 +5926,7 @@ void MainWindow::startSetCFW(int pos)
 
 void MainWindow::startCapture(int ExpTime)
 {
+    qDebug() << "startCapture...";
     // 停止和清理先前的计时器
     captureTimer.stop();
     captureTimer.disconnect();
@@ -4712,11 +5934,12 @@ void MainWindow::startCapture(int ExpTime)
     ShootStatus = "InProgress";
     qDebug() << "ShootStatus: " << ShootStatus;
     INDI_Capture(ExpTime);
-    schedule_currentShootNum ++;
+    schedule_currentShootNum++;
 
     captureTimer.setSingleShot(true);
 
-    connect(&captureTimer, &QTimer::timeout, [this]() {
+    connect(&captureTimer, &QTimer::timeout, [this]()
+            {
         if (StopSchedule)
         {
             StopSchedule = false;
@@ -4746,7 +5969,7 @@ void MainWindow::startCapture(int ExpTime)
                 // schedule_currentNum ++;
                 // qDebug() << "next schedule...";
                 // startSchedule();
-
+                qDebug() << "Capture Goto Complete...";
                 nextSchedule();
             }
 
@@ -4754,34 +5977,37 @@ void MainWindow::startCapture(int ExpTime)
         else 
         {
             captureTimer.start(1000);  // 继续等待
-        } 
-    });
+        } });
 
     captureTimer.start(1000);
 }
 
-bool MainWindow::WaitForTelescopeToComplete() {
-  return (TelescopeControl_Status().status != "Slewing");
+bool MainWindow::WaitForTelescopeToComplete()
+{
+    return (TelescopeControl_Status().status != "Slewing");
 }
 
-bool MainWindow::WaitForShootToComplete() {
-  qInfo("Wait For Shoot To Complete...");
-  return (ShootStatus != "InProgress");
+bool MainWindow::WaitForShootToComplete()
+{
+    qInfo("Wait For Shoot To Complete...");
+    return (ShootStatus != "InProgress");
 }
 
-bool MainWindow::WaitForGuidingToComplete() {
-  qInfo() << "Wait For Guiding To Complete..." << InGuiding;
-  return InGuiding;
+bool MainWindow::WaitForGuidingToComplete()
+{
+    qInfo() << "Wait For Guiding To Complete..." << InGuiding;
+    return InGuiding;
 }
 
-bool MainWindow::WaitForTimeToComplete() {
+bool MainWindow::WaitForTimeToComplete()
+{
     qInfo() << "Wait For Time To Complete...";
     QString TargetTime = m_scheduList[schedule_currentNum].shootTime;
 
     // 如果获取到的目标时间不是完整的时间格式，直接返回 true
     if (TargetTime.length() != 5 || TargetTime[2] != ':')
         return true;
-    
+
     // 获取当前时间
     QTime currentTime = QTime::currentTime();
     // 解析目标时间
@@ -4792,16 +6018,19 @@ bool MainWindow::WaitForTimeToComplete() {
     // 如果目标时间晚于当前时间，返回 false
     if (targetTime > currentTime)
         return false;
-    
+
     // 目标时间早于或等于当前时间，返回 true
     return true;
 }
 
-int MainWindow::CaptureImageSave() {
+int MainWindow::CaptureImageSave()
+{
+    qDebug() << "CaptureImageSave...";
     createCaptureDirectory();
-    const char* sourcePath = "/dev/shm/ccd_simulator.fits";
+    const char *sourcePath = "/dev/shm/ccd_simulator.fits";
 
-    if (!QFile::exists("/dev/shm/ccd_simulator.fits")) {
+    if (!QFile::exists("/dev/shm/ccd_simulator.fits"))
+    {
         emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
     }
 
@@ -4809,7 +6038,6 @@ int MainWindow::CaptureImageSave() {
     CaptureTime.replace(QRegExp("[^a-zA-Z0-9]"), "_");
     QString resultFileName = CaptureTime + ".fits";
 
-    
     std::time_t currentTime = std::time(nullptr);
     std::tm *timeInfo = std::localtime(&currentTime);
     char buffer[80];
@@ -4818,26 +6046,29 @@ int MainWindow::CaptureImageSave() {
     // 指定目标目录
     QString destinationDirectory = ImageSaveBaseDirectory + "/CaptureImage";
 
-    QString destinationPath = destinationDirectory  + "/" + buffer + "/" + resultFileName;
+    QString destinationPath = destinationDirectory + "/" + buffer + "/" + resultFileName;
 
     // 检查文件是否已存在
-    if (QFile::exists(destinationPath)) {
+    if (QFile::exists(destinationPath))
+    {
         qWarning() << "The file already exists, there is no need to save it again:" << destinationPath;
         emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
         return 0; // 或返回其他状态码
     }
 
     // 将QString转换为const char*
-    const char* destinationPathChar = destinationPath.toUtf8().constData();
+    const char *destinationPathChar = destinationPath.toUtf8().constData();
 
     std::ifstream sourceFile(sourcePath, std::ios::binary);
-    if (!sourceFile.is_open()) {
+    if (!sourceFile.is_open())
+    {
         qWarning() << "Unable to open source file:" << sourcePath;
         return 1;
     }
 
     std::ofstream destinationFile(destinationPathChar, std::ios::binary);
-    if (!destinationFile.is_open()) {
+    if (!destinationFile.is_open())
+    {
         qWarning() << "Unable to create or open target file:" << destinationPathChar;
         return 1;
     }
@@ -4848,48 +6079,52 @@ int MainWindow::CaptureImageSave() {
     destinationFile.close();
 
     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
+    qDebug() << "CaptureImageSaveStatus Goto Complete...";
     return 0;
 }
 
 int MainWindow::ScheduleImageSave(QString name, int num)
 {
-  const char* sourcePath = "/dev/shm/ccd_simulator.fits";
+    qDebug() << "ScheduleImageSave...";
+    const char *sourcePath = "/dev/shm/ccd_simulator.fits";
 
-  name.replace(' ', '_');
-  QString resultFileName = QString("%1-%2.fits").arg(name).arg(num);
+    name.replace(' ', '_');
+    QString resultFileName = QString("%1-%2.fits").arg(name).arg(num);
 
-  std::time_t currentTime = std::time(nullptr);
-  std::tm *timeInfo = std::localtime(&currentTime);
-  char buffer[80];
-  std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
+    std::time_t currentTime = std::time(nullptr);
+    std::tm *timeInfo = std::localtime(&currentTime);
+    char buffer[80];
+    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
 
-  // 指定目标目录
-  QString destinationDirectory = ImageSaveBaseDirectory + "/ScheduleImage";
+    // 指定目标目录
+    QString destinationDirectory = ImageSaveBaseDirectory + "/ScheduleImage";
 
-  // 拼接目标文件路径
-  QString destinationPath = destinationDirectory  + "/" + buffer + " " + QTime::currentTime().toString("hh") + "h (" + ScheduleTargetNames + ")" + "/" + resultFileName;
+    // 拼接目标文件路径
+    QString destinationPath = destinationDirectory + "/" + buffer + " " + QTime::currentTime().toString("hh") + "h (" + ScheduleTargetNames  +")" + "/" + resultFileName;
 
-  // 将QString转换为const char*
-  const char* destinationPathChar = destinationPath.toUtf8().constData();
+    // 将QString转换为const char*
+    const char *destinationPathChar = destinationPath.toUtf8().constData();
 
-  std::ifstream sourceFile(sourcePath, std::ios::binary);
-  if (!sourceFile.is_open()) {
-    qWarning() << "Unable to open source file:" << sourcePath;
-    return 1;
-  }
+    std::ifstream sourceFile(sourcePath, std::ios::binary);
+    if (!sourceFile.is_open())
+    {
+        qWarning() << "Unable to open source file:" << sourcePath;
+        return 1;
+    }
 
-  std::ofstream destinationFile(destinationPathChar, std::ios::binary);
-  if (!destinationFile.is_open()) {
-    qWarning() << "Unable to create or open target file:" << destinationPathChar;
-    return 1;
-  }
+    std::ofstream destinationFile(destinationPathChar, std::ios::binary);
+    if (!destinationFile.is_open())
+    {
+        qWarning() << "Unable to create or open target file:" << destinationPathChar;
+        return 1;
+    }
 
-  destinationFile << sourceFile.rdbuf();
+    destinationFile << sourceFile.rdbuf();
 
-  sourceFile.close();
-  destinationFile.close();
-
-  return 0;
+    sourceFile.close();
+    destinationFile.close();
+    qDebug() << "ScheduleImageSave Goto Complete...";
+    return 0;
 }
 
 bool MainWindow::directoryExists(const std::string& path) {
@@ -4898,6 +6133,7 @@ bool MainWindow::directoryExists(const std::string& path) {
 }
 
 bool MainWindow::createScheduleDirectory() {
+    Logger::Log("createScheduleDirectory start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string basePath = ImageSaveBasePath + "/ScheduleImage";
 
     std::time_t currentTime = std::time(nullptr);
@@ -4927,20 +6163,21 @@ bool MainWindow::createScheduleDirectory() {
     {
         if (std::filesystem::create_directory(folderName))
         {
-            qInfo() << "Folder created successfully: " << QString::fromStdString(folderName);
+            Logger::Log("createScheduleDirectory | Folder created successfully: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
         }
         else
         {
-            qWarning() << "An error occurred while creating the folder.";
+            Logger::Log("createScheduleDirectory | An error occurred while creating the folder.", LogLevel::INFO, DeviceType::MAIN);
         }
     }
     else
     {
-        qInfo() << "The folder already exists: " << QString::fromStdString(folderName);
+        Logger::Log("createScheduleDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
 bool MainWindow::createCaptureDirectory() {
+    Logger::Log("createCaptureDirectory start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string basePath = ImageSaveBasePath + "/CaptureImage/";
 
     std::time_t currentTime = std::time(nullptr);
@@ -4970,85 +6207,106 @@ bool MainWindow::createCaptureDirectory() {
     {
         if (std::filesystem::create_directory(folderName))
         {
-            qInfo() << "Folder created successfully: " << QString::fromStdString(folderName);
+            Logger::Log("createCaptureDirectory | Folder created successfully: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
         }
         else
         {
-            qWarning() << "An error occurred while creating the folder.";
+            Logger::Log("createCaptureDirectory | An error occurred while creating the folder.", LogLevel::INFO, DeviceType::MAIN);
         }
     }
     else
     {
-        qInfo() << "The folder already exists: " << QString::fromStdString(folderName);
+        Logger::Log("createCaptureDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
 void MainWindow::getClientSettings() {
+    Logger::Log("getClientSettings start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string fileName = "config/config.ini";
     
     std::unordered_map<std::string, std::string> config;
 
     Tools::readClientSettings(fileName, config);
 
-    qInfo() << "Current Config:";
+    Logger::Log("getClientSettings | Current Config:", LogLevel::INFO, DeviceType::MAIN);
     for (const auto& pair : config) {
-        qInfo() << QString::fromStdString(pair.first) << " = " << QString::fromStdString(pair.second);
+        Logger::Log("getClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConfigureRecovery:" + QString::fromStdString(pair.first) + ":" + QString::fromStdString(pair.second));
+        if (pair.first == "Coordinates") {
+            std::string coordinate = pair.second;
+            std::stringstream ss(coordinate);
+            std::string item;
+            std::vector<std::string> elements;
+            while (std::getline(ss, item, ',')) {
+                elements.push_back(item);
+            }
+            if (elements.size() == 2) {
+                DEC = std::stod(elements[0]);
+                RA = std::stod(elements[1]);
+            }
+        }
     }
+    Logger::Log("getClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::setClientSettings(QString ConfigName, QString ConfigValue) {
+    Logger::Log("setClientSettings start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string fileName = "config/config.ini";
     
     std::unordered_map<std::string, std::string> config;
 
     config[ConfigName.toStdString()] = ConfigValue.toStdString();
 
-    qInfo() << "Save Client Setting:" << ConfigName << " = " << ConfigValue;
+    Logger::Log("setClientSettings | Save Client Setting:" + ConfigName.toStdString() + " = " + ConfigValue.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     Tools::saveClientSettings(fileName, config);
+    Logger::Log("setClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::getConnectedDevices(){
+    Logger::Log("getConnectedDevices start ...", LogLevel::INFO, DeviceType::MAIN);
     QString deviceType;
+    bool isConnect;
     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-    {
+    {   
         deviceType = systemdevicelist.system_devices[i].Description;
-        if (deviceType != ""){
-            qInfo() << "deviceType[" << i << "]: " << deviceType;
+        isConnect = systemdevicelist.system_devices[i].isConnect;
+        if (deviceType != "" && isConnect){
             emit wsThread->sendMessageToClient("AddDeviceType:" + deviceType);
         }
     }
 
+
+
     for(int i = 0; i < indi_Client->GetDeviceCount(); i++){
-        emit wsThread->sendMessageToClient("DeviceToBeAllocated:Device:" + QString::number(i) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(i)->getDeviceName()));
+        if (indi_Client->GetDeviceFromList(i)->isConnected()){
+            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Device:" + QString::number(i) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(i)->getDeviceName()));
+        }
     }
 
     for(int i = 0; i < ConnectedDevices.size(); i++){
-        qInfo() << "Device[" << i << "]: " << ConnectedDevices[i].DeviceName;
+        Logger::Log("getConnectedDevices | Device[" + std::to_string(i) + "]: " + ConnectedDevices[i].DeviceName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectSuccess:" + ConnectedDevices[i].DeviceType + ":" + ConnectedDevices[i].DeviceName);
 
-        if(ConnectedDevices[i].DeviceType == "MainCamera") {
+        if(ConnectedDevices[i].DeviceType == "MainCamera" && dpMainCamera != NULL) {
             emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
             emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
             emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
 
             QString CFWname;
-            if(dpMainCamera != NULL) {
-                indi_Client->getCFWSlotName(dpMainCamera, CFWname);
-                if(CFWname != "") {
-                    qInfo() << "get CFW Slot Name: " << CFWname;
-                    emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname +" (on camera)");
-                    isFilterOnCamera = true;
+            indi_Client->getCFWSlotName(dpMainCamera, CFWname);
+            if(CFWname != "") {
+                Logger::Log("getConnectedDevices | get CFW Slot Name: " + CFWname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname +" (on camera)");
+                isFilterOnCamera = true;
 
-                    int min, max, pos;
-                    indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-                    qInfo() << "getCFWPosition: " << min << ", " << max << ", " << pos;
-                    emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
-                }
+                int min, max, pos;
+                indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
+                Logger::Log("getConnectedDevices | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
             }
         }
     }
-    
+    Logger::Log("getConnectedDevices finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::clearConnectedDevices() {
@@ -5056,9 +6314,22 @@ void MainWindow::clearConnectedDevices() {
 }
 
 void MainWindow::getStagingImage(){
-    if(isStagingImage){
-        emit wsThread->sendMessageToClient("SaveBinSuccess:" + SavedImage);
+    if(isStagingImage && SavedImage != "" && isFileExists(QString::fromStdString(vueImagePath+SavedImage))){
+        Logger::Log("getStagingImage | ready to upload image: " + SavedImage, LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(SavedImage));
+    }else{
+        Logger::Log("getStagingImage | no image to upload", LogLevel::INFO, DeviceType::MAIN);
     }
+}
+
+bool MainWindow::isFileExists(const QString& filePath) {
+    QFile file(filePath);
+    if (file.exists()) {
+        Logger::Log("isFileExists | file exists: " + filePath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    } else {
+        Logger::Log("isFileExists | file does not exist: " + filePath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    }
+    return file.exists();
 }
 
 void MainWindow::getStagingScheduleData(){
@@ -5089,114 +6360,83 @@ int MainWindow::MoveFileToUSB(){
 
 void MainWindow::TelescopeControl_SolveSYNC()
 {
-    int FocalLength = glFocalLength;
+    Logger::Log("TelescopeControl_SolveSYNC start ...", LogLevel::INFO, DeviceType::MAIN);
+    int FocalLength = glFocalLength;  // 获取焦距
 
     double Ra_Hour;
     double Dec_Degree;
 
     if (dpMount != NULL)
     {
-        indi_Client->getTelescopeRADECJNOW(dpMount, Ra_Hour, Dec_Degree);
+        indi_Client->getTelescopeRADECJNOW(dpMount, Ra_Hour, Dec_Degree);  // 获取当前望远镜的赤经和赤纬
     }
     else
     {
-        qWarning("No Mount Connect.");
-        return;
+        Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
+        return;  // 如果望远镜未连接，记录日志并退出
     }
-    double Ra_Degree = Tools::HourToDegree(Ra_Hour);
+    double Ra_Degree = Tools::HourToDegree(Ra_Hour);  // 将赤经从小时转换为度
 
-    qInfo() << "CurrentRa(Degree):" << Ra_Degree << "," << "CurrentDec(Degree):" << Dec_Degree;
+    Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
 
     // SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator.fits", FocalLength, glCameraSize_width, glCameraSize_height, false);
     SloveResults result;
 
-    solveTimer.stop();
-    solveTimer.disconnect();
+    solveTimer.stop();  // 停止之前的定时器
+    solveTimer.disconnect();  // 断开定时器的连接
 
-    QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
+    // QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});  // 连接解析结果的信号
 
-    platesolveworker->setParams(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false); // 设置参数
-    platesolveworker->start();
+    // platesolveworker->setParams(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false); // 设置解析参数
+    // platesolveworker->start();  // 开始解析
+    Tools::PlateSolve(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false);
 
-    solveTimer.setSingleShot(true);
+    solveTimer.setSingleShot(true);  // 设置定时器为单次触发
 
     connect(&solveTimer, &QTimer::timeout, [this]()
     {
-        if (Tools::isSolveImageFinish())
+        if (Tools::isSolveImageFinish())  // 检查图像解析是否完成
         {
-            SloveResults result = Tools::ReadSolveResult(SolveImageFileName, SolveImageWidth, SolveImageHeight);
-            qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+            SloveResults result = Tools::ReadSolveResult(SolveImageFileName, SolveImageWidth, SolveImageHeight);  // 读取解析结果
+            Logger::Log("TelescopeControl_SolveSYNC | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
             {
-                qWarning("Solve image failed...");
-                emit wsThread->sendMessageToClient("SolveImagefailed");
+                Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
             }
             else
             {
                 if (dpMount != NULL)
                 {
                     INDI::PropertyNumber property = NULL;
-                    qInfo() << "syncTelescopeJNow | start";
+                    Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::MAIN);
                     QString action = "SYNC";
 
-                    indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);
+                    indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
 
-                    qInfo() << "DegreeToHour:" << Tools::DegreeToHour(result.RA_Degree) << "DEC_Degree:" << result.DEC_Degree;
+                    Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
-                    indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);
-                    qInfo() << "syncTelescopeJNow | end";
+                    indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);  // 设置望远镜的目标位置
+                    Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
                     double a, b;
-                    indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
-                    qInfo() << "Get_RA_Hour:" << a << "Get_DEC_Degree:" << b;
+                    indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
+                    Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
                 }
                 else
                 {
-                    qWarning("No Mount Connect.");
-                    return;
+                    Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
+                    return;  // 如果望远镜未连接，记录日志并退出
                 }
             }
         }
         else 
         {
-            solveTimer.start(1000);  // 继续等待
+            solveTimer.start(1000);  // 如果解析未完成，重新启动定时器继续等待
         } 
     });
 
-    solveTimer.start(1000);
-
-    // qInfo() << "SloveResults: " << result.RA_Degree << "," << result.DEC_Degree;
-
-    // if (result.DEC_Degree == -1 && result.RA_Degree == -1)
-    // {
-    //     qWarning("Plate Solve Failur");
-    //     return;
-    // }
-    // else
-    // {
-    //     if (dpMount != NULL)
-    //     {
-    //         INDI::PropertyNumber property = NULL;
-    //         // indi_Client->syncTelescopeJNow(dpMount,RadToHour(RA_Degree),RadToDegree(DEC_Degree),property);
-    //         qInfo() << "syncTelescopeJNow | start";
-    //         QString action = "SYNC";
-
-    //         indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);
-
-    //         qInfo() << "DegreeToHour:" << Tools::DegreeToHour(result.RA_Degree) << "DEC_Degree:" << result.DEC_Degree;
-
-    //         indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);
-    //         qInfo() << "syncTelescopeJNow | end";
-    //         double a, b;
-    //         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
-    //         qInfo() << "Get_RA_Hour:" << a << "Get_DEC_Degree:" << b;
-    //     }
-    //     else
-    //     {
-    //         qWarning("No Mount Connect.");
-    //         return;
-    //     }
-    // }
+    solveTimer.start(1000);  // 启动定时器
 }
 
 LocationResult MainWindow::TelescopeControl_GetLocation()
@@ -5239,7 +6479,8 @@ SphericalCoordinates MainWindow::TelescopeControl_GetRaDec()
 
 void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
 {
-    qInfo() << "RaDec(Hour):" << Ra_Hour << "," << Dec_Degree;
+    Logger::Log("MountGoto start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MountGoto | RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
 
     // 停止和清理先前的计时器
     telescopeTimer.stop();
@@ -5258,7 +6499,7 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
         if (WaitForTelescopeToComplete()) 
         {
             telescopeTimer.stop();  // 转动完成时停止定时器
-            qInfo() << "Mount Goto Complete!";
+            Logger::Log("MountGoto | Mount Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
         } 
         else 
         {
@@ -5266,6 +6507,8 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
         } });
 
     telescopeTimer.start(1000);
+
+    Logger::Log("MountGoto finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::DeleteImage(QStringList DelImgPath)
@@ -5277,24 +6520,25 @@ void MainWindow::DeleteImage(QStringList DelImgPath)
             commandStream << "echo '" << password << "' | sudo -S rm -rf \"./" << DelImgPath[i].toStdString() << "\"";
             std::string command = commandStream.str();
 
-            qInfo() << "Deleted command:" << QString::fromStdString(command);
+            Logger::Log("DeleteImage | Deleted command:" + QString::fromStdString(command).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         
             // 执行系统命令删除文件
             int result = system(command.c_str());
         
             if (result == 0) {
-                qInfo() << "Deleted file:" << DelImgPath[i];
+                Logger::Log("DeleteImage | Deleted file:" + DelImgPath[i].toStdString(), LogLevel::INFO, DeviceType::MAIN);
             } else {
-                qWarning() << "Failed to delete file:" << DelImgPath[i];
+                Logger::Log("DeleteImage | Failed to delete file:" + DelImgPath[i].toStdString(), LogLevel::INFO, DeviceType::MAIN);
             }
         } else {
-            qWarning() << "Index out of range: " << i;
+            Logger::Log("DeleteImage | Index out of range: " + std::to_string(i), LogLevel::WARNING, DeviceType::MAIN);
         }
     }
 }
 
 std::string MainWindow::GetAllFile()
 {
+    Logger::Log("GetAllFile start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string capturePath = ImageSaveBasePath + "/CaptureImage/";
     std::string planPath = ImageSaveBasePath + "/ScheduleImage/";
     std::string resultString;
@@ -5311,10 +6555,12 @@ std::string MainWindow::GetAllFile()
         planString += folderName + ";";
     }
     resultString = captureString + "}:" + planString + '}';
+    Logger::Log("GetAllFile finish!", LogLevel::INFO, DeviceType::MAIN);
     return resultString;
 }
 
 void MainWindow::GetImageFiles(std::string ImageFolder) {
+    Logger::Log("GetImageFiles start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string basePath = ImageSaveBasePath + "/" + ImageFolder + "/";
     std::string ImageFilesNameString = "";
     for (const auto &entry : std::filesystem::directory_iterator(basePath))
@@ -5322,9 +6568,10 @@ void MainWindow::GetImageFiles(std::string ImageFolder) {
         std::string fileName = entry.path().filename().string(); // 获取文件名（包含扩展名）
         ImageFilesNameString += fileName + ";";                // 拼接为字符串
     }
-    qInfo() << "Image Files:" << QString::fromStdString(ImageFilesNameString);
+    Logger::Log("GetImageFiles | Image Files:" + QString::fromStdString(ImageFilesNameString).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-    emit wsThread->sendMessageToClient("ImageFilesName|" + QString::fromStdString(ImageFilesNameString));
+    emit wsThread->sendMessageToClient("ImageFilesName:" + QString::fromStdString(ImageFilesNameString));
+    Logger::Log("GetImageFiles finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
 
@@ -5412,13 +6659,14 @@ QStringList MainWindow::parseString(const std::string &input, const std::string 
 // 返回 U 盘剩余内存
 long long MainWindow::getUSBSpace(const QString &usb_mount_point)
 {
+    Logger::Log("getUSBSpace start ...", LogLevel::INFO, DeviceType::MAIN);
     struct statvfs stat;
     if (statvfs(usb_mount_point.toUtf8().constData(), &stat) == 0) {
         long long free_space = static_cast<long long>(stat.f_bfree) * stat.f_frsize;
-        // std::cout << "U 盘剩余空间大小: " << free_space << " bytes" << std::endl;
+        Logger::Log("getUSBSpace | USB Space: " + std::to_string(free_space) + " bytes", LogLevel::INFO, DeviceType::MAIN);
         return free_space;
     } else {
-        qWarning() << "Failed to obtain the space information of the USB flash drive.";
+        Logger::Log("getUSBSpace | Failed to obtain the space information of the USB flash drive.", LogLevel::WARNING, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("getUSBFail:Failed to obtain the space information of the USB flash drive." );
         return -1;
     }
@@ -5440,15 +6688,15 @@ long long MainWindow::getTotalSize(const QStringList &filePaths)
 bool MainWindow::isMountReadOnly(const QString& mountPoint) {
     struct statvfs fsinfo;
     auto mountPointStr = mountPoint.toUtf8().constData();
-    qInfo() << "Checking filesystem information for mount point:" << mountPointStr;
+    Logger::Log("isMountReadOnly | Checking filesystem information for mount point:" + QString::fromUtf8(mountPointStr).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     if (statvfs(mountPointStr, &fsinfo) != 0) {
-        qWarning() << "Failed to get filesystem information for" << mountPoint << ":" << strerror(errno);
+        Logger::Log("isMountReadOnly | Failed to get filesystem information for" + mountPoint.toStdString() + ":" + strerror(errno), LogLevel::WARNING, DeviceType::MAIN);
         emit wsThread->sendMessageToClient(QString("getUSBFail:Failed to get filesystem information for %1, error: %2").arg(mountPoint).arg(strerror(errno)));
         return false;
     }
 
-    qInfo() << "Filesystem flags for" << mountPoint << ":" << fsinfo.f_flag;
+    Logger::Log("isMountReadOnly | Filesystem flags for" + mountPoint.toStdString() + ":" + std::to_string(fsinfo.f_flag), LogLevel::INFO, DeviceType::MAIN);
     return (fsinfo.f_flag & ST_RDONLY) != 0;
 }
 
@@ -5458,7 +6706,7 @@ bool MainWindow::remountReadWrite(const QString& mountPoint, const QString& pass
     QProcess process;
     process.start("sudo", {"-S", "mount", "-o", "remount,rw", mountPoint});
     if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
-        qWarning() << "Failed to execute command: sudo mount";
+        Logger::Log("remountReadWrite | Failed to execute command: sudo mount", LogLevel::WARNING, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("getUSBFail:Failed to execute command: sudo mount -o remount,rw usb." );
         return false;
     }
@@ -5475,7 +6723,7 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
     QDir baseDir(basePath);
     QString usb_mount_point = "";
     if (!baseDir.exists()) {
-        qWarning() << "Base directory does not exist.";
+        Logger::Log("RemoveImageToUsb | Base directory does not exist.", LogLevel::WARNING, DeviceType::MAIN);
         return ;
     }
 
@@ -5490,14 +6738,14 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
     // 检查剩余文件夹数量是否为1
     if (folderList.size() == 1) {
         usb_mount_point = basePath + "/" + folderList.at(0);
-        qInfo() << "USB mount point:" << usb_mount_point;
+        Logger::Log("RemoveImageToUsb | USB mount point:" + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     } else if (folderList.size() == 0)  {
         emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Null");
-        qWarning() << "The directory does not contain exactly one folder excluding CDROM.";
+        Logger::Log("RemoveImageToUsb | The directory does not contain exactly one folder excluding CDROM.", LogLevel::WARNING, DeviceType::MAIN);
         return;
     } else {
         emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Multiple");
-        qWarning() << "The directory does not contain exactly one folder excluding CDROM.";
+        Logger::Log("RemoveImageToUsb | The directory does not contain exactly one folder excluding CDROM.", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
 
@@ -5508,24 +6756,24 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
         if (storageInfo.isReadOnly()) {
             // 处理1: 该路径为只读设备
            if (!remountReadWrite(usb_mount_point, password)) {
-            qWarning() << "Failed to remount filesystem as read-write.";
+            Logger::Log("RemoveImageToUsb | Failed to remount filesystem as read-write.", LogLevel::WARNING, DeviceType::MAIN);
             return;
             }
-            qInfo() << "Filesystem remounted as read-write successfully.";
+            Logger::Log("RemoveImageToUsb | Filesystem remounted as read-write successfully.", LogLevel::INFO, DeviceType::MAIN);
         }
-        qInfo() << "This path is for writable devices.";
+        Logger::Log("RemoveImageToUsb | This path is for writable devices.", LogLevel::INFO, DeviceType::MAIN);
     }else{
-        qWarning() << "The specified path is not a valid file system or is not ready.";
+        Logger::Log("RemoveImageToUsb | The specified path is not a valid file system or is not ready.", LogLevel::WARNING, DeviceType::MAIN);
     }
     long long remaining_space = getUSBSpace(usb_mount_point);
     if (remaining_space == -1){
-        qWarning() << "Check whether a USB flash drive or portable hard drive is inserted!";
+        Logger::Log("RemoveImageToUsb | Check whether a USB flash drive or portable hard drive is inserted!", LogLevel::WARNING, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("getUSBFail:Check whether a USB flash drive or portable hard drive is inserted!" );
         return ;
     }
     long long totalSize = getTotalSize(RemoveImgPath);
     if (totalSize >= remaining_space) {
-        qWarning() << "Insufficient storage space, unable to copy files to USB drive!";
+        Logger::Log("RemoveImageToUsb | Insufficient storage space, unable to copy files to USB drive!", LogLevel::WARNING, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("getUSBFail:Not enough storage space to copy files to USB flash drive!" );
         return;
     }
@@ -5540,14 +6788,14 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
         int pos1 = fileName.lastIndexOf("/", pos - 1);
         if (pos ==-1 || pos1 == -1)
         {
-            qWarning() << "path is error!";
+            Logger::Log("RemoveImageToUsb | path is error!", LogLevel::WARNING, DeviceType::MAIN);
             return;
         }
         QString destinationPath = folderPath + fileName.mid(pos1, pos - pos1 + 1);
         QProcess process;
         process.start("sudo", {"-S", "mkdir", "-p", destinationPath});
         if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
-            qWarning() << "Failed to execute command: sudo mkdir.";
+            Logger::Log("RemoveImageToUsb | Failed to execute command: sudo mkdir.", LogLevel::WARNING, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
             continue;
         }
@@ -5556,7 +6804,7 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
 
         process.start("sudo", {"-S", "cp", "-r", imgPath, destinationPath });
         if (!process.waitForStarted() || !process.write((password + "\n").toUtf8())) {
-            qWarning() << "Failed to execute command: sudo cp.";
+            Logger::Log("RemoveImageToUsb | Failed to execute command: sudo cp.", LogLevel::WARNING, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
             continue;
         }
@@ -5567,11 +6815,11 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath)
         QByteArray stderrOutput = process.readAllStandardError();
 
         if (process.exitCode() == 0) {
-            qInfo() << "Copied file: " << imgPath << " to " << destinationPath;
+            Logger::Log("RemoveImageToUsb | Copied file: "  + imgPath.toStdString() + " to " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         } else {
-            qWarning() << "Failed to copy file: " << imgPath << " to " << destinationPath;
+            Logger::Log("RemoveImageToUsb | Failed to copy file: " + imgPath.toStdString() + " to " + destinationPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
             // Print the error reason
-            qWarning() << "Error: " << stderrOutput.constData();
+            Logger::Log("RemoveImageToUsb | Error: " + QString::fromUtf8(stderrOutput).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
             continue;
         }
@@ -5588,7 +6836,7 @@ void MainWindow::USBCheck(){
     QDir baseDir(basePath);
     QString usb_mount_point = "";
     if (!baseDir.exists()) {
-        qWarning() << "Base directory does not exist.";
+        Logger::Log("USBCheck | Base directory does not exist.", LogLevel::WARNING, DeviceType::MAIN);
         return ;
     }
 
@@ -5602,16 +6850,16 @@ void MainWindow::USBCheck(){
 
     if (folderList.size() == 1) {
         usb_mount_point = basePath + "/" + folderList.at(0);
-        qInfo() << "USB mount point:" << usb_mount_point;
+        Logger::Log("USBCheck | USB mount point:" + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         QString usbName = folderList.join(",");
         message = "USBCheck";
         long long remaining_space = getUSBSpace(usb_mount_point);
         if (remaining_space == -1){
-            std::cerr << "Check whether a USB flash drive or portable hard drive is inserted!" << std::endl;
+            Logger::Log("USBCheck | Check whether a USB flash drive or portable hard drive is inserted!", LogLevel::WARNING, DeviceType::MAIN);
             return ;
         }
         message = message + ":" + folderList.at(0) + "," + QString::number(remaining_space);
-        qInfo()<<message;
+        Logger::Log("USBCheck | " + message.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient(message);
     } else if (folderList.size() == 0) {
         emit wsThread->sendMessageToClient("USBCheck:Null, Null");
@@ -5625,7 +6873,7 @@ void MainWindow::USBCheck(){
 }
 
 void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight) {
-    qInfo("Single Solve Image");
+    Logger::Log("SolveImage(" + Filename.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
 
     // 停止和清理先前的计时器
     solveTimer.stop();
@@ -5633,10 +6881,11 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
 
     // Tools::PlateSolve(Filename, FocalLength, CameraWidth, CameraHeight, 4656, 3522, false);
 
-    QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
+    // QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
 
-    platesolveworker->setParams(Filename, FocalLength, CameraWidth, CameraHeight, false); // 设置参数
-    platesolveworker->start();
+    // platesolveworker->setParams(Filename, FocalLength, CameraWidth, CameraHeight, false); // 设置参数
+    // platesolveworker->start();
+    Tools::PlateSolve(Filename, FocalLength, CameraWidth, CameraHeight, false);
 
     solveTimer.setSingleShot(true);
 
@@ -5644,12 +6893,13 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
     {
         if (Tools::isSolveImageFinish())
         {
+            sleep(1);
             SloveResults result = Tools::ReadSolveResult(Filename, SolveImageWidth, SolveImageHeight);
-            qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+            Logger::Log("SolveImage | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
             {
-                qWarning("Solve image failed...");
+                Logger::Log("SolveImage | Solve image failed...", LogLevel::WARNING, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("SolveImagefailed");
             }
             else
@@ -5672,20 +6922,23 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
 }
 
 void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight) {
-    qInfo("Loop Solve Image");
+    Logger::Log("LoopSolveImage(" + Filename.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
 
     if(!isLoopSolveImage) {
-        qInfo("Loop Solve Image end.");
+        Logger::Log("LoopSolveImage | Loop Solve Image end.", LogLevel::INFO, DeviceType::MAIN);
         return;
     }
  
     solveTimer.stop();
     solveTimer.disconnect();
+    
 
-    QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
+    // QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});
 
-    platesolveworker->setParams(Filename, FocalLength, CameraWidth, CameraHeight, false); // 设置参数
-    platesolveworker->start();
+    // platesolveworker->setParams(Filename, FocalLength, CameraWidth, CameraHeight, false); // 设置参数
+    // platesolveworker->start();
+    Tools::PlateSolve(Filename, FocalLength, CameraWidth, CameraHeight, false);
+    
 
     // 启动等待赤道仪转动的定时器
     solveTimer.setSingleShot(true);
@@ -5696,19 +6949,21 @@ void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double Camera
         if (Tools::isSolveImageFinish())
         {
             SloveResults result = Tools::ReadSolveResult(Filename, SolveImageWidth, SolveImageHeight);
-            qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+            Logger::Log("LoopSolveImage | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
             {
-                qWarning("Solve image failed...");
+                Logger::Log("LoopSolveImage | Solve image failed...", LogLevel::WARNING, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("SolveImagefailed");
+                emit wsThread->sendMessageToClient("LoopSolveImageFinished");
             }
             else
             {
                 emit wsThread->sendMessageToClient("RealTimeSolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
+                emit wsThread->sendMessageToClient("LoopSolveImageFinished");
             }
 
-            CaptureAndSolve(glExpTime, true);
+            // CaptureAndSolve(glExpTime, true);
         }
         else 
         {
@@ -5728,49 +6983,58 @@ void MainWindow::RecoverySloveResul()
 {
     for (const auto &result : SloveResultList)
     {
-        qInfo() << "Plate Solve Result(RA_Degree, DEC_Degree):" << result.RA_Degree << ", " << result.DEC_Degree;
+        Logger::Log("RecoverySloveResul | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("SolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
-        // emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
+        emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
     }
 }
 
 
 void MainWindow::CaptureAndSolve(int ExpTime, bool isLoop) {
+    // 如果是循环解算模式但当前没有在解算图像，则记录信息并返回
     if(isLoop && !isLoopSolveImage) {
-        qInfo("Loop Solve Image end.");
+        Logger::Log("CaptureAndSolve | Loop Solve Image end.", LogLevel::INFO, DeviceType::MAIN);
         return;
     }
 
-    // 停止和清理先前的计时器
+    // 停止并断开之前的计时器连接，准备新的捕获周期
     captureTimer.stop();
     captureTimer.disconnect();
 
+    // 设置当前拍摄状态为进行中
     ShootStatus = "InProgress";
-    qInfo() << "ShootStatus: " << ShootStatus;
+    Logger::Log("CaptureAndSolve | ShootStatus: " + ShootStatus.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+    // 开始使用指定的曝光时间进行拍摄
     INDI_Capture(ExpTime);
 
+    // 设置计时器为单次触发
     captureTimer.setSingleShot(true);
 
+    // 连接计时器的超时信号到一个匿名函数，处理拍摄和解算后的逻辑
     connect(&captureTimer, &QTimer::timeout, [this, isLoop]() {
+        // 如果需要结束拍摄和解算，则执行中止操作并返回
         if (EndCaptureAndSolve)
         {
             EndCaptureAndSolve = false;
             INDI_AbortCapture();
-            qInfo() << "End Capture And Solve!!!";
+            Logger::Log("CaptureAndSolve | End Capture And Solve!!!", LogLevel::INFO, DeviceType::MAIN);
             return;
         }
-
+        Logger::Log("CaptureAndSolve | WaitForShootToComplete ..." , LogLevel::INFO, DeviceType::MAIN);
+  
+        // 检查拍摄和解算是否完成
         if (WaitForShootToComplete() && Tools::WaitForPlateSolveToComplete()) 
         {
-            captureTimer.stop();  // 转动完成时停止定时器
+            // 停止计时器，表示当前周期任务完成
+            captureTimer.stop();
+            // 根据是否循环解算，执行一次解算或继续循环解算
             if(!isLoop) {
                 ImageSolveTimer.start();
-                qDebug() << "\033[32m" << "Solve image start." << "\033[0m";
-                qInfo() << "Solve image start.";
+                Logger::Log("Solve image start.", LogLevel::INFO, DeviceType::MAIN);
                 SolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
                 ImageSolveTime = ImageSolveTimer.elapsed();
-                qDebug() << "\033[32m" << "Solve image completed:" << ImageSolveTime << "milliseconds" << "\033[0m";
-                qInfo() << "Solve image completed:" << ImageSolveTime << "milliseconds";
+                Logger::Log("Solve image completed:" + std::to_string(ImageSolveTime) + "milliseconds", LogLevel::INFO, DeviceType::MAIN);
                 ImageSolveTimer.invalidate();
             } else {
                 LoopSolveImage(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height);
@@ -5778,25 +7042,28 @@ void MainWindow::CaptureAndSolve(int ExpTime, bool isLoop) {
         } 
         else 
         {
-            captureTimer.start(3000);  // 继续等待
+            // 如果拍摄或解算未完成，重新启动计时器，继续等待
+            captureTimer.start(3000);
         } 
     });
 
+    // 启动计时器，开始等待周期
     captureTimer.start(3000);
 }
 
 
 void MainWindow::editHotspotName(QString newName) {
+    Logger::Log("editHotspotName(" + newName.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
     QString command = QString("echo 'quarcs' | sudo -S sed -i 's/^ssid=.*/ssid=%1/' /etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection").arg(newName);
     
-    qInfo() << "command:" << command;
+    Logger::Log("editHotspotName | command:" + command.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     
     QProcess process;
     process.start("bash", QStringList() << "-c" << command);
     process.waitForFinished();
     
     QString HostpotName = getHotspotName();
-    qInfo() << "New Hotspot Name:" << HostpotName;
+    Logger::Log("editHotspotName | New Hotspot Name:" + HostpotName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     if(HostpotName == newName) {
         emit wsThread->sendMessageToClient("EditHotspotNameSuccess");
@@ -5805,7 +7072,7 @@ void MainWindow::editHotspotName(QString newName) {
         process.waitForFinished();
     } else {
         emit wsThread->sendMessageToClient("EditHotspotNameFailed");
-        qWarning() << "Edit Hotspot name failed.";
+        Logger::Log("editHotspotName | Edit Hotspot name failed.", LogLevel::WARNING, DeviceType::MAIN);
     }
 }
 
@@ -5816,7 +7083,7 @@ QString MainWindow::getHotspotName() {
     
     // Get the command output
     QString output = process.readAllStandardOutput();
-    qInfo() << output;
+    Logger::Log("getHotspotName | output:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     // Look for the SSID configuration
     QString ssidPattern = "ssid=";
@@ -5845,14 +7112,1003 @@ void MainWindow::customMessageHandler(QtMsgType type, const QMessageLogContext &
         return;
     }
 
-    // 默认行为：打印到标准输出
-    if (type == QtDebugMsg) {
-        fprintf(stderr, "Debug: %s\n", msg.toLocal8Bit().constData());
-    } else if (type == QtInfoMsg) {
-        fprintf(stdout, "Info: %s\n", msg.toLocal8Bit().constData());
-        instance->SendDebugToVueClient("info|" + msg);
-    } else if (type == QtWarningMsg) {
-        fprintf(stderr, "Warning: %s\n", msg.toLocal8Bit().constData());
-        instance->SendDebugToVueClient("error|" + msg);
+    QString currentTime = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss");
+    QString typeStr;
+    switch(type) {
+        case QtDebugMsg:
+            typeStr = "Debug";
+            break;
+        case QtInfoMsg:
+            typeStr = "Info"; 
+            break;
+        case QtWarningMsg:
+            typeStr = "Warning";
+            break;
+        case QtCriticalMsg:
+            typeStr = "Critical";
+            break;
+        default:
+            typeStr = "Unknown";
+    }
+
+    // 统一格式化日志消息
+    QString logMessage = QString("[Server] %1 | %2 | %3").arg(currentTime).arg(typeStr).arg(msg);
+
+    // // 将日志消息添加到缓存
+    // instance->logCache.push_back(logMessage);
+
+    // 统一输出到标准错误，无论日志类型
+    fprintf(stderr, "%s\n", logMessage.toLocal8Bit().constData());
+
+    // 发送到客户端的Vue应用，包括日志类型和消息
+    instance->SendDebugToVueClient(typeStr + "|" + msg);
+}
+
+void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
+{
+    Logger::Log("ConnectDriver(" + DriverName.toStdString() + ", " + DriverType.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
+    if (DriverName == "" || DriverType == "")
+    {
+        Logger::Log("ConnectDriver | DriverName(" + DriverName.toStdString() + ") or DriverType(" + DriverType.toStdString() + ") is Null", LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:DriverName or DriverType is Null.");
+        emit wsThread->sendMessageToClient("ConnectDriverFailed:DriverName or DriverType is Null.");
+        return;
+    }
+    int driverCode = -1;
+    bool isDriverConnected = false;
+    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+    {
+        // qInfo() << "systemdevicelist.system_devices["<< i << "].DriverIndiName:" << systemdevicelist.system_devices[i].DriverIndiName;
+        // qInfo() << "systemdevicelist.system_devices["<< i << "].Description:" << systemdevicelist.system_devices[i].Description;
+
+        if (systemdevicelist.system_devices[i].Description == DriverType)
+        {
+            if (systemdevicelist.system_devices[i].isConnect)
+            {
+                Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") is already connected", LogLevel::INFO, DeviceType::MAIN);
+            }
+            else
+            {
+                if (ConnectDriverList.contains(DriverName))
+                {
+                    Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") is already in ConnectDriverList", LogLevel::INFO, DeviceType::MAIN);
+                }
+                else
+                {
+                    Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") is not connected, start to connect", LogLevel::INFO, DeviceType::MAIN);
+                    ConnectDriverList.push_back(DriverName);
+                    Tools::startIndiDriver(DriverName);
+                }
+            }
+            driverCode = i;
+            isDriverConnected = true;
+            break;
+        }
+    }
+    
+    if (!isDriverConnected) {
+        Logger::Log("ConnectDriver | " + DriverType.toStdString() + " Driver(" + DriverName.toStdString() + ") is not selected, start to connect", LogLevel::INFO, DeviceType::MAIN);
+        if (DriverType == "Mount") {
+            driverCode = 0;
+            systemdevicelist.system_devices[0].Description = "Mount";
+            systemdevicelist.system_devices[0].DriverIndiName = DriverName;
+        } else if (DriverType == "Guider") {
+            driverCode = 1;
+            systemdevicelist.system_devices[1].Description = "Guider";
+            systemdevicelist.system_devices[1].DriverIndiName = DriverName;
+        } else if (DriverType == "PoleCamera") {
+            driverCode = 2;
+            systemdevicelist.system_devices[2].Description = "PoleCamera";
+            systemdevicelist.system_devices[2].DriverIndiName = DriverName;
+        } else if (DriverType == "MainCamera") {
+            driverCode = 20;
+            systemdevicelist.system_devices[20].Description = "MainCamera";
+            systemdevicelist.system_devices[20].DriverIndiName = DriverName;
+        } else if (DriverType == "CFW") {
+            driverCode = 21;
+            systemdevicelist.system_devices[21].Description = "CFW";
+            systemdevicelist.system_devices[21].DriverIndiName = DriverName;
+        } else if (DriverType == "Focuser") {
+            driverCode = 22;
+            systemdevicelist.system_devices[22].Description = "Focuser";
+            systemdevicelist.system_devices[22].DriverIndiName = DriverName;
+        }else {
+            Logger::Log("ConnectDriver | DriverType(" + DriverType.toStdString() + ") is not supported.", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectFailed:DriverType is not supported.");
+            emit wsThread->sendMessageToClient("ConnectDriverFailed:DriverType is not supported.");
+            return;
+        }
+        Tools::startIndiDriver(DriverName);
+        ConnectDriverList.push_back(DriverName);
+    }
+    // connectIndiServer(indi_Client);
+    sleep(1);
+    if (indi_Client->isServerConnected() == false)
+    {
+        Logger::Log("ConnectDriver | indi Client is not connected, try to connect", LogLevel::INFO, DeviceType::MAIN);
+        connectIndiServer(indi_Client);
+        if (indi_Client->isServerConnected() == false)
+        {
+            Logger::Log("ConnectDriver | Connect Driver failed", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectFailed:Connect Driver failed.");
+            emit wsThread->sendMessageToClient("ConnectDriverFailed:Connect Driver failed." );
+            return;
+        }
+    }
+    sleep(1);
+    int time = 0;
+    while (time < 10) {
+        if (indi_Client->GetDeviceCount() > 0) {
+            Logger::Log("ConnectDriver | Find device!", LogLevel::INFO, DeviceType::MAIN);
+            break;
+        }
+        Logger::Log("ConnectDriver | Wait find device...", LogLevel::INFO, DeviceType::MAIN);
+        QThread::msleep(1000);
+        time++;
+    }
+    sleep(1);
+    if (indi_Client->GetDeviceCount() == 0)
+    {
+        Logger::Log("ConnectDriver | No device found", LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectDriverFailed:No device found.");
+        return;
+    }
+    // 记录连接的设备的id列表
+    std::vector<int> connectedDeviceIdList;
+    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+    {
+        
+        if (indi_Client->GetDeviceFromList(i)->getDriverExec() == DriverName)
+        {
+            if (indi_Client->GetDeviceFromList(i)->isConnected())
+            {
+                Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is connected", LogLevel::INFO, DeviceType::MAIN);
+                bool isDeviceBind = false;
+                for (int j = 0; j < systemdevicelist.system_devices.size(); j++) {
+                    if (systemdevicelist.system_devices[j].DeviceIndiName == indi_Client->GetDeviceNameFromList(i).c_str()) {
+                        isDeviceBind = true;
+                    }
+                }
+                if (!isDeviceBind) {
+                    Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is not bind, start to disconnect", LogLevel::INFO, DeviceType::MAIN);
+                    indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(i)->getDeviceName());
+                    time = 0;
+                    while (indi_Client->GetDeviceFromList(i)->isConnected() && time < 30) {
+                        Logger::Log("ConnectDriver | Wait for disconnect" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
+                        QThread::msleep(1000);
+                        time++;
+                    }
+                    if (!indi_Client->GetDeviceFromList(i)->isConnected()) {
+                        Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is disconnected, start to connect", LogLevel::INFO, DeviceType::MAIN);
+                    }else {
+                        Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is not disconnected", LogLevel::WARNING, DeviceType::MAIN);
+                    }
+
+                    // Tools::startIndiDriver(DriverName);
+
+                    // qInfo() << "Device(" << indi_Client->GetDeviceFromList(i)->getDeviceName() << ") is not bind";
+                    time = 0;
+                    indi_Client->connectDevice(indi_Client->GetDeviceFromList(i)->getDeviceName());
+                    while (!indi_Client->GetDeviceFromList(i)->isConnected() && time < 15) {
+                        Logger::Log("ConnectDriver | Wait for connect" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ",state:" + std::to_string(indi_Client->GetDeviceFromList(i)->isConnected()), LogLevel::INFO, DeviceType::MAIN);
+                        QThread::msleep(1000);
+                        time++;
+                    }
+                    if (!indi_Client->GetDeviceFromList(i)->isConnected()) {
+                        Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
+                        emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
+                        indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        for (int j = 0; j < connectedDeviceIdList.size(); j++) {
+                            if (connectedDeviceIdList[j] == i) {
+                                connectedDeviceIdList.erase(connectedDeviceIdList.begin() + j);
+                                break;
+                            }
+                        }
+                    }else {
+                        connectedDeviceIdList.push_back(i);
+                    }
+                }else{
+                    Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is bind, is Used", LogLevel::INFO, DeviceType::MAIN);
+                }
+            }
+            else
+            {
+                Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is connecting...", LogLevel::INFO, DeviceType::MAIN);
+                indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                int waitTime = 0;
+                bool connectState = false;
+                while (waitTime < 30)
+                {
+                    Logger::Log("ConnectDriver | Wait for Connect " + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
+                    QThread::msleep(1000); // 等待1秒
+                    waitTime++;
+                    if (indi_Client->GetDeviceFromList(i)->isConnected()) {
+                        connectState = true;
+                        break;
+                    }
+                }
+                if (connectState) {
+                    connectedDeviceIdList.push_back(i);
+                }else {
+                    if (DriverType == "Focuser") {
+                        QString DevicePort;
+                        indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                        // 检查指定的端口是否在/dev/serial/by-id目录下存在
+                        QFile portFile(DevicePort);
+                        if (!portFile.exists()) {
+                            Logger::Log("ConnectDriver | Port " + DevicePort.toStdString() + " does not exist.", LogLevel::WARNING, DeviceType::MAIN);
+                            // 获取所有连接的串口
+                            QStringList connectedPorts = getConnectedSerialPorts();
+                            for (int j = 0; j < connectedPorts.size(); j++) {
+                                Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                if (connectedPorts[j].contains("ttyACM")) {
+                                    Logger::Log("ConnectDriver | Found ttyACM device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                }else {
+                                    Logger::Log("ConnectDriver | Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
+                                    continue;
+                                }
+                                QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                                QString link = "";
+                                if (links.isEmpty()) {
+                                    Logger::Log("ConnectDriver | No link found for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                } else {
+                                    for (int k = 0; k < links.size(); k++) {
+                                        if (areFilesInSameDirectory(links[k], DevicePort)) {
+                                            if (link == "") {
+                                                link = links[k];
+                                            }else {
+                                                Logger::Log("ConnectDriver | No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                                link = "";
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (link == "") {
+                                        Logger::Log("ConnectDriver | No Found link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                        continue;
+                                    }
+                                    Logger::Log("ConnectDriver | Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                    DevicePort = link;
+                                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                                    waitTime = 0;
+                                    connectState = false;
+                                    while (waitTime < 30)
+                                    {
+                                        Logger::Log("ConnectDriver | Wait for Connect" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
+                                        QThread::msleep(1000); // 等待1秒
+                                        waitTime++;
+                                        if (indi_Client->GetDeviceFromList(i)->isConnected()) {
+                                            connectState = true;
+                                            break;
+                                        }
+                                    }
+                                    if (connectState) {
+                                        connectedDeviceIdList.push_back(i);
+                                    }
+                                }
+                 
+                            }
+                            
+                        }
+                    }else{
+                        emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
+                        indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
+                        indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                    }
+                    
+                    
+                    // qWarning() << "Device (" << indi_Client->GetDeviceNameFromList(i).c_str() << ") is not exist";
+                    
+                }
+            }
+            
+        }
+    }
+
+    if (connectedDeviceIdList.size() == 0){
+        Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") No Device found.", LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectDriverFailed:Driver(" + DriverName + ") No Device found.");
+        return;
+    }
+
+    ConnectedCCDList.clear();
+    ConnectedTELESCOPEList.clear();
+    ConnectedFOCUSERList.clear();
+    ConnectedFILTERList.clear();
+
+    // 判断连接设备的类型
+    for (int i = 0; i < connectedDeviceIdList.size(); i++)
+    {
+        if (indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->isConnected())
+        {
+            if (indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE)
+            {
+                Logger::Log("ConnectDriver | We received a CCD!", LogLevel::INFO, DeviceType::MAIN);
+                ConnectedCCDList.push_back(connectedDeviceIdList[i]);
+            }
+            else if (indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE)
+            {
+                Logger::Log("ConnectDriver | We received a FILTER!", LogLevel::INFO, DeviceType::MAIN);
+                ConnectedFILTERList.push_back(connectedDeviceIdList[i]);
+            }
+            else if (indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE)
+            {
+                Logger::Log("ConnectDriver | We received a TELESCOPE!", LogLevel::INFO, DeviceType::MAIN);
+                ConnectedTELESCOPEList.push_back(connectedDeviceIdList[i]);
+            }
+            else if (indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE)
+            {
+                Logger::Log("ConnectDriver | We received a FOCUSER!", LogLevel::INFO, DeviceType::MAIN);
+                ConnectedFOCUSERList.push_back(connectedDeviceIdList[i]);
+            }
+            // qInfo() << "Driver:" << indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDriverExec() << "Device:" << indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDeviceName();
+        }
+        else
+        {
+            Logger::Log("ConnectDriver | Connect failed device:" + std::string(indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDeviceName()), LogLevel::WARNING, DeviceType::MAIN);
+            // emit wsThread->sendMessageToClient("ConnectDriverFailed:Connect failed device:" + indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDeviceName());
+            // emit wsThread->sendMessageToClient("ConnectDriverFailed:Connect failed device:" + indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDeviceName());
+        }
+    }
+
+    QStringList SelectedCameras;
+    for (int i = 0; i < systemdevicelist.system_devices.size(); i++) {
+        if (systemdevicelist.system_devices[i].DriverIndiName == DriverName) {
+            SelectedCameras.push_back(systemdevicelist.system_devices[i].Description);
+        }
+    }
+    Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") supports " + std::to_string(SelectedCameras.size()) + " devices", LogLevel::INFO, DeviceType::MAIN);
+    for (auto Camera : SelectedCameras)
+    {
+        Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") supports " + Camera.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    }
+
+    Logger::Log("ConnectDriver | Number of Connected CCD:" + std::to_string(ConnectedCCDList.size()), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("ConnectDriver | Number of Connected TELESCOPE:" + std::to_string(ConnectedTELESCOPEList.size()), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("ConnectDriver | Number of Connected FOCUSER:" + std::to_string(ConnectedFOCUSERList.size()), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("ConnectDriver | Number of Connected FILTER:" + std::to_string(ConnectedFILTERList.size()), LogLevel::INFO, DeviceType::MAIN);
+
+    // 判断连接设备的数量,
+    bool EachDeviceOne = true;
+
+    if (SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1)
+    {
+        Logger::Log("ConnectDriver | The Camera Selected and Connected are Both 1", LogLevel::INFO, DeviceType::MAIN);
+        if (SelectedCameras[0] == "Guider")
+        {
+            dpGuider = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
+            systemdevicelist.system_devices[1].isConnect = true;
+            indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
+            sleep(1);
+            call_phd_whichCamera(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
+            // PHD2 connect status
+            AfterDeviceConnect(dpGuider);
+        }
+        else if (SelectedCameras[0] == "PoleCamera")
+        {
+            dpPoleScope = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
+            systemdevicelist.system_devices[2].isConnect = true;
+            AfterDeviceConnect(dpPoleScope);
+        }
+        else if (SelectedCameras[0] == "MainCamera")
+        {
+            Logger::Log("ConnectDriver | MainCamera Connected Success!", LogLevel::INFO, DeviceType::MAIN);
+            dpMainCamera = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
+            systemdevicelist.system_devices[20].isConnect = true;
+            AfterDeviceConnect(dpMainCamera);
+        }
+    }
+    else if (SelectedCameras.size() > 1 || ConnectedCCDList.size() > 1)
+    {
+        EachDeviceOne = false;
+        for (int i = 0; i < ConnectedCCDList.size(); i++)
+        {
+            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedCCDList[i])->getDeviceName())); // already allocated
+        }
+    }
+
+    if (ConnectedTELESCOPEList.size() == 1)
+    {
+        Logger::Log("ConnectDriver | Mount Connected Success!", LogLevel::INFO, DeviceType::MAIN);
+        dpMount = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
+        systemdevicelist.system_devices[0].isConnect = true;
+        AfterDeviceConnect(dpMount);
+    }
+    else if (ConnectedTELESCOPEList.size() > 1)
+    {
+        EachDeviceOne = false;
+        for (int i = 0; i < ConnectedTELESCOPEList.size(); i++)
+        {
+            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i])->getDeviceName()));
+        }
+    }
+
+    if (ConnectedFOCUSERList.size() == 1)
+    {
+        Logger::Log("ConnectDriver | Focuser Connected Success!", LogLevel::INFO, DeviceType::MAIN);
+        dpFocuser = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
+        systemdevicelist.system_devices[22].isConnect = true;
+        AfterDeviceConnect(dpFocuser);
+    }
+    else if (ConnectedFOCUSERList.size() > 1)
+    {
+        EachDeviceOne = false;
+        for (int i = 0; i < ConnectedFOCUSERList.size(); i++)
+        {
+            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i])->getDeviceName()));
+        }
+    }
+
+    if (ConnectedFILTERList.size() == 1)
+    {
+        Logger::Log("ConnectDriver | Filter Connected Success!", LogLevel::INFO, DeviceType::MAIN);
+        dpCFW = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
+        systemdevicelist.system_devices[21].isConnect = true;
+        AfterDeviceConnect(dpCFW);
+    }
+    else if (ConnectedFILTERList.size() > 1)
+    {
+        EachDeviceOne = false;
+        for (int i = 0; i < ConnectedFILTERList.size(); i++)
+        {
+            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFILTERList[i])->getDeviceName()));
+        }
+    }
+
+    Logger::Log("Each Device Only Has One:" + std::to_string(EachDeviceOne), LogLevel::INFO, DeviceType::MAIN);
+    if (EachDeviceOne)
+    {
+        // AfterDeviceConnect();
+    }
+    else
+    {
+        emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+    }
+    emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[driverCode].Description);
+    emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+}
+
+void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString DeviceType)
+{
+    if (DeviceName == "" || DeviceType ==""){
+        Logger::Log("DisconnectDevice | DeviceName(" + DeviceName.toStdString() + ") or DeviceType(" + DeviceType.toStdString() + ") is Null", LogLevel::WARNING, DeviceType::MAIN);
+        return;
+    }
+    if (DeviceType == "Not Bind Device"){
+        emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + DeviceType);
+        return;
+    }
+
+
+    Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") start...", LogLevel::INFO, DeviceType::MAIN);
+    int num = 0;
+    int thisDriverhasDevice = 0;
+    bool driverIsUsed = false;
+    bool disconnectsuccess = true;
+    QString disconnectdriverName;
+    QVector<QString> NeedDisconnectDeviceNameList;
+
+    for (int i = 0; i < client->GetDeviceCount(); i++)
+    {
+        if (client->GetDeviceFromList(i)->getDeviceName() == DeviceName )
+        {
+            client->disconnectDevice(client->GetDeviceFromList(i)->getDeviceName());
+            while (client->GetDeviceFromList(i)->isConnected())
+            {
+                Logger::Log("DisconnectDevice | Waiting for disconnect finish...", LogLevel::INFO, DeviceType::MAIN);
+                sleep(1);
+                num++;
+                if (num > 5)
+                {
+                    Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
+                    disconnectsuccess = false;
+                    break;
+                }
+            }
+            if (!disconnectsuccess){
+                break;
+            }
+            Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") success.", LogLevel::INFO, DeviceType::MAIN);
+        
+            emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + DeviceType);
+            break;
+        }
+    }
+    if (!disconnectsuccess){
+        Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("DisconnectDriverFail:" + DeviceType);
+    }
+            
+    if (DeviceType == "MainCamera"){
+        dpMainCamera = NULL;
+        disconnectdriverName = systemdevicelist.system_devices[20].DriverIndiName;
+        systemdevicelist.system_devices[20].isConnect = false;
+        systemdevicelist.system_devices[20].DeviceIndiName = "";
+        systemdevicelist.system_devices[20].DeviceIndiGroup = -1;
+        systemdevicelist.system_devices[20].DriverFrom = "";
+        systemdevicelist.system_devices[20].dp = NULL;
+    }else if (DeviceType == "Guider"){
+        dpGuider = NULL;
+        disconnectdriverName = systemdevicelist.system_devices[1].DriverIndiName;
+        systemdevicelist.system_devices[1].isConnect = false;
+        systemdevicelist.system_devices[1].DeviceIndiName = "";
+        systemdevicelist.system_devices[1].DeviceIndiGroup = -1;
+        systemdevicelist.system_devices[1].DriverFrom = "";
+        systemdevicelist.system_devices[1].dp = NULL;
+    }else if (DeviceType == "PoleCamera"){
+        dpPoleScope = NULL;
+        disconnectdriverName = systemdevicelist.system_devices[2].DriverIndiName;
+        systemdevicelist.system_devices[2].isConnect = false;
+        systemdevicelist.system_devices[2].DeviceIndiName = "";
+        systemdevicelist.system_devices[2].DeviceIndiGroup = -1;
+        systemdevicelist.system_devices[2].DriverFrom = "";
+        systemdevicelist.system_devices[2].dp = NULL;
+    }else if (DeviceType == "Mount"){
+        dpMount = NULL;
+        disconnectdriverName = systemdevicelist.system_devices[0].DriverIndiName;
+        systemdevicelist.system_devices[0].isConnect = false;
+        systemdevicelist.system_devices[0].DeviceIndiName = "";
+        systemdevicelist.system_devices[0].DeviceIndiGroup = -1;
+        systemdevicelist.system_devices[0].DriverFrom = "";
+        systemdevicelist.system_devices[0].dp = NULL;
+    }else if (DeviceType == "Focuser"){
+        dpFocuser = NULL;
+        disconnectdriverName = systemdevicelist.system_devices[22].DriverIndiName;
+        systemdevicelist.system_devices[22].isConnect = false;
+        systemdevicelist.system_devices[22].DeviceIndiName = "";
+        systemdevicelist.system_devices[22].DeviceIndiGroup = -1;
+        systemdevicelist.system_devices[22].DriverFrom = "";
+        systemdevicelist.system_devices[22].dp = NULL;
+    }else if (DeviceType == "CFW"){
+        dpCFW = NULL;
+        disconnectdriverName = systemdevicelist.system_devices[21].DriverIndiName;
+        systemdevicelist.system_devices[21].isConnect = false;
+        systemdevicelist.system_devices[21].DeviceIndiName = "";
+        systemdevicelist.system_devices[21].DeviceIndiGroup = -1;
+        systemdevicelist.system_devices[21].DriverFrom = "";
+        systemdevicelist.system_devices[21].dp = NULL;
+    }
+
+    QStringList SelectedCameras;
+    // QStringList SelectedCameras = Tools::getCameraNumFromSystemDeviceList(systemdevicelist);
+    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+    {
+        // qInfo() << "systemdevicelist.system_devices["<< i <<"].DriverIndiName:" << systemdevicelist.system_devices[i].DriverIndiName;
+        // qInfo() << "systemdevicelist.system_devices["<< i <<"].Description:" << systemdevicelist.system_devices[i].Description;
+        if (systemdevicelist.system_devices[i].Description !="" && systemdevicelist.system_devices[i].isConnect == true){
+            SelectedCameras.push_back(systemdevicelist.system_devices[i].Description);
+        }
+    }
+
+    for (auto it = ConnectedDevices.begin(); it != ConnectedDevices.end(); ) {
+        if (it->DeviceType == DeviceType) {
+            it = ConnectedDevices.erase(it);  // 删除元素并更新迭代器
+        } else {
+            ++it;  // 仅在不删除时递增迭代器
+        }
+    }
+
+    if (SelectedCameras.size() == 0)
+    {
+        Logger::Log("DisconnectDevice | No Device Connected, need to reconnect all devices", LogLevel::INFO, DeviceType::MAIN);
+        disconnectIndiServer(indi_Client);
+        ClearSystemDeviceList();
+        clearConnectedDevices();
+
+        initINDIServer();
+        initINDIClient();
+        Tools::InitSystemDeviceList();
+        Tools::initSystemDeviceList(systemdevicelist);
+        emit wsThread->sendMessageToClient("DisconnectDriverSuccess:all");
+        return;
+    }
+
+    // Tools::startIndiDriver(disconnectdriverName);
+    sleep(1);
+    
+    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+    {
+        if (systemdevicelist.system_devices[i].DriverIndiName == disconnectdriverName)
+        {
+            if (systemdevicelist.system_devices[i].isConnect == true)
+            {
+                driverIsUsed = true;
+                thisDriverhasDevice++;
+            }
+        }
+        // if ( systemdevicelist.system_devices[i].isConnect == false && systemdevicelist.system_devices[i].DeviceIndiName != DeviceName && systemdevicelist.system_devices[i].DeviceIndiName != "")
+        // {
+        //     Logger::Log("DisconnectDevice | Get new device(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + "),try to connect it", LogLevel::INFO, DeviceType::MAIN);
+        //     client->connectDevice(client->GetDeviceFromList(i)->getDeviceName());
+        //     while (!client->GetDeviceFromList(i)->isConnected())
+        //     {
+        //         Logger::Log("DisconnectDevice | Waiting for connect finish...", LogLevel::INFO, DeviceType::MAIN);
+        //         sleep(1);
+        //     }
+        //     if (client->GetDeviceFromList(i)->isConnected())
+        //     {
+        //         Logger::Log("DisconnectDevice | Connect Device(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + ") success.", LogLevel::INFO, DeviceType::MAIN);
+        //     }
+        //     else
+        //     {
+        //         Logger::Log("DisconnectDevice | Connect Device(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
+        //     }
+        // }
+    }
+    num = 0;
+    if (thisDriverhasDevice >= 1 && client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected() == false)
+    {
+        // client->connectDevice(DeviceName.toStdString().c_str());
+        // Logger::Log("DisconnectDevice | This Driver has more than one device is using, need to reconnect device(" + DeviceName.toStdString() + ")", LogLevel::INFO, DeviceType::MAIN);
+        // while (!client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected())
+        // {
+        //     Logger::Log("DisconnectDevice | Waiting for connect finish...", LogLevel::INFO, DeviceType::MAIN);
+        //     sleep(1);
+        //     num++;
+        //     if (num > 10)
+        //     {
+        //         Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
+        //         break;
+        //     }
+        // }
+        // if (client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected())
+        // {
+        //     Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") success.", LogLevel::INFO, DeviceType::MAIN);
+        // }
+        // else
+        // {
+        //     Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
+        // }
+        emit wsThread->sendMessageToClient("disconnectDevicehasortherdevice:"+disconnectdriverName);
+    }else{
+        Tools::stopIndiDriver(disconnectdriverName);
+        int index = ConnectDriverList.indexOf(disconnectdriverName);
+        if (index != -1) { // 如果找到了
+            ConnectDriverList.removeAt(index); // 从列表中删除
+            Logger::Log("Driver removed successfully: " + disconnectdriverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        } else {
+            Logger::Log("Driver not found in list: " + disconnectdriverName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+    emit wsThread->sendMessageToClient("deleteDeviceAllocationList:"+DeviceName);
+
+    // for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+    // {
+    //     Logger::Log("DisconnectDevice | 当前已连接 Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + "),所属驱动:" + std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) + ",状态:" + std::to_string(indi_Client->GetDeviceFromList(i)->isConnected()), LogLevel::INFO, DeviceType::MAIN);
+    // }
+
+}
+
+void MainWindow::initDeviceList()
+{
+  
+}
+
+void MainWindow::loadSelectedDriverList(){
+    QString order = "SelectedDriverList";
+    for(int i = 0; i < systemdevicelist.system_devices.size(); i++){
+        if(systemdevicelist.system_devices[i].Description != ""){
+           order += ":" + systemdevicelist.system_devices[i].Description + ":" + systemdevicelist.system_devices[i].DriverIndiName ;
+        }
+    }
+    // Tools::printSystemDeviceList(systemdevicelist);
+    // Logger::Log("SelectedDriverList | " + order.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    emit wsThread->sendMessageToClient(order);
+}
+
+void MainWindow::loadBindDeviceTypeList(){
+    QString order = "BindDeviceTypeList";
+    for(int i = 0; i < systemdevicelist.system_devices.size(); i++){
+        if(systemdevicelist.system_devices[i].Description != "" && systemdevicelist.system_devices[i].isConnect == true){
+            order += ":" + systemdevicelist.system_devices[i].Description 
+                  + ":" + systemdevicelist.system_devices[i].DeviceIndiName 
+                  + ":" + systemdevicelist.system_devices[i].DriverIndiName
+                  + ":" + (systemdevicelist.system_devices[i].isBind ? "true" : "false");
+            if(systemdevicelist.system_devices[i].Description == "MainCamera" && systemdevicelist.system_devices[i].isBind){
+                emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
+                emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
+                emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
+
+                QString CFWname;
+                indi_Client->getCFWSlotName(dpMainCamera, CFWname);
+                if(CFWname != "") {
+                    Logger::Log("LoadBindDeviceTypeList | get CFW Slot Name: " + CFWname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    // emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname +" (on camera)");
+                    isFilterOnCamera = true;
+                    order += ":CFW:" + CFWname +" (on camera)" + ":"+systemdevicelist.system_devices[i].DriverIndiName+ ":" + (systemdevicelist.system_devices[i].isBind ? "true" : "false");
+                    int min, max, pos;
+                    indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
+                    Logger::Log("LoadBindDeviceTypeList | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+                }
+            }
+        }
+    }
+    Logger::Log("LoadBindDeviceTypeList | Bind Device Type List:" + order.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    emit wsThread->sendMessageToClient(order);
+}
+
+void MainWindow::loadBindDeviceList(MyClient *client){
+    QString order = "BindDeviceList";
+    for(int i = 0; i < client->GetDeviceCount(); i++){
+        if (client->GetDeviceFromList(i)->isConnected() && client->GetDeviceFromList(i)->getDeviceName()!=""){
+            order += ":" + QString::fromUtf8(client->GetDeviceFromList(i)->getDeviceName()) 
+                     + ":" + QString::number(i);
+        }
+    }
+
+
+
+    Logger::Log("LoadBindDeviceList | Bind Device List:" + order.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    emit wsThread->sendMessageToClient(order);
+}
+// 串口通信列表
+QStringList MainWindow::getConnectedSerialPorts() {
+    QStringList activeSerialPortNames;
+    const auto infos = QSerialPortInfo::availablePorts();
+    for (const QSerialPortInfo &info : infos) {
+        QSerialPort serial;
+        serial.setPort(info);
+        if (serial.open(QIODevice::ReadWrite)) {  // 尝试以读写方式打开串口
+            activeSerialPortNames.append(info.portName());
+            serial.close();  // 关闭串口
+        }
+    }
+    return activeSerialPortNames;
+}
+
+QString MainWindow::resolveSerialPort(const QString& symbolicLink) {
+    QFileInfo fileInfo(symbolicLink);
+    if (fileInfo.isSymLink()) {
+        QString target = fileInfo.symLinkTarget();
+        Logger::Log("ResolveSerialPort | real port path:" + target.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        return target;
+    } else {
+        Logger::Log("ResolveSerialPort | provided path is not a symbolic link", LogLevel::WARNING, DeviceType::MAIN);
+        return QString();
+    }
+}
+
+QStringList MainWindow::findLinkToTtyDevice(const QString& directoryPath, const QString& ttyDevice) {
+    QString targetDevice = "/dev/" + ttyDevice;  // 构建完整的设备路径
+    QStringList foundLinks;
+
+    // 使用 QDirIterator 递归遍历目录和子目录
+    QDirIterator it(directoryPath, QDir::Files | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        QFileInfo fileInfo = it.fileInfo();
+        if (fileInfo.isSymLink()) {
+            QString target = fileInfo.symLinkTarget();
+            // 如果符号链接是相对路径，需要将其转换为绝对路径
+            if (QDir::isRelativePath(target)) {
+                target = fileInfo.absoluteDir().absoluteFilePath(target);
+            }
+            // 检查符号链接的目标是否是指定的 tty 设备
+            if (target == targetDevice) {
+                foundLinks.append(fileInfo.absoluteFilePath());
+                Logger::Log("FindLinkToTtyDevice | found link:" + fileInfo.absoluteFilePath().toStdString() + " -> " + target.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+    }
+    // 返回找到的所有符号链接
+    return foundLinks;
+}
+
+bool MainWindow::areFilesInSameDirectory(const QString& path1, const QString& path2) {
+    QFileInfo fileInfo1(path1);
+    QFileInfo fileInfo2(path2);
+
+    // 获取两个文件的目录路径
+    QString dir1 = fileInfo1.absolutePath();
+    QString dir2 = fileInfo2.absolutePath();
+
+    // 比较目录路径是否相同
+    return (dir1 == dir2);
+}
+
+void MainWindow::onParseInfoEmitted(const QString& message){
+    emit wsThread->sendMessageToClient("ParseInfoEmitted:" + message);
+}
+
+void MainWindow::loadParameters(){
+
+}
+
+void MainWindow::disconnectDevice(const QString& deviceName, const QString& description) {
+    for (int i = 0; i < indi_Client->GetDeviceCount(); i++) {
+        if (indi_Client->GetDeviceFromList(i)->getDeviceName() == deviceName) {
+            indi_Client->disconnectDevice(deviceName.toStdString().c_str());
+            int num = 0;
+            bool disconnectSuccess = true;
+            while (indi_Client->GetDeviceFromList(i)->isConnected()) {
+                Logger::Log("Waiting for " + deviceName.toStdString() + " to disconnect...", LogLevel::INFO, DeviceType::MAIN);
+                sleep(1);
+                if (++num > 5) {
+                    Logger::Log("Failed to disconnect " + deviceName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                    disconnectSuccess = false;
+                    break;
+                }
+            }
+            if (disconnectSuccess) {
+                Logger::Log(deviceName.toStdString() + " disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
+                emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
+            }
+            break;
+        }
+    }
+}
+
+void MainWindow::disconnectDriver(QString Driver) {
+    Logger::Log("Starting to disconnect driver: " + Driver.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    for (const auto& device : systemdevicelist.system_devices) {
+        if (device.Description != "" && device.DriverIndiName == Driver && device.isConnect) {
+            disconnectDevice(device.DeviceIndiName, device.Description);
+            if (device.Description == "MainCamera" ) {
+                if (glMainCameraStatu == "Exposuring"){
+                    INDI_AbortCapture();
+                }
+                systemdevicelist.system_devices[20].isConnect = false;
+                systemdevicelist.system_devices[20].DeviceIndiName = "";
+                systemdevicelist.system_devices[20].DeviceIndiGroup = -1;
+                systemdevicelist.system_devices[20].DriverFrom = "";
+                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[20].dp = NULL;
+            }
+            if (device.Description == "Guider") {
+                if (isGuiderLoopExp){
+                    call_phd_StopLooping();
+                    InitPHD2();
+                }
+                systemdevicelist.system_devices[1].isConnect = false;
+                systemdevicelist.system_devices[1].DeviceIndiName = "";
+                systemdevicelist.system_devices[1].DeviceIndiGroup = -1;
+                systemdevicelist.system_devices[1].DriverFrom = "";
+                systemdevicelist.system_devices[1].isBind = false;
+                systemdevicelist.system_devices[1].dp = NULL;
+            }
+            for (auto it = ConnectedDevices.begin(); it != ConnectedDevices.end(); ) {
+                if (it->DeviceType == device.Description) {
+                    it = ConnectedDevices.erase(it);  // 删除元素并更新迭代器
+                } else {
+                    ++it;  // 仅在不删除时递增迭代器
+                }
+            }
+        }
+    }
+    Tools::stopIndiDriver(Driver);
+    int index = ConnectDriverList.indexOf(Driver);
+    if (index != -1) { // 如果找到了
+        ConnectDriverList.removeAt(index); // 从列表中删除
+        Logger::Log("Driver removed successfully: " + Driver.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    } else {
+        Logger::Log("Driver not found in list: " + Driver.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+    }
+    
+    Logger::Log("Driver disconnected: " + Driver.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+}
+
+void MainWindow::focusLoopShooting(bool isLoop){
+    if (isLoop){
+        isFocusLoopShooting = true;
+        if (glMainCameraStatu == "Exposuring"){
+            emit wsThread->sendMessageToClient("startFocusLoopSjootingfile:Wait Take Picture Finish!");
+            isFocusLoopShooting = false;
+            return;
+        }
+        if (dpMainCamera == NULL){
+            emit wsThread->sendMessageToClient("startFocusLoopSjootingfile:MainCamera is not connected!");
+            isFocusLoopShooting = false;
+            return;
+        }
+        FocusingLooping();
+        
+    }else{
+        isFocusLoopShooting = false;
+        if (glMainCameraStatu == "Exposuring" && dpMainCamera != NULL){
+            INDI_AbortCapture();
+        }
+        
+    }
+}
+
+void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
+{
+    cv::Mat image;
+    // 读取FITS文件
+    Tools::readFits(filename.toLocal8Bit().constData(), image);
+
+    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
+
+    for (const auto &star : stars)
+    {
+        // Logger::Log("Star at (" + std::to_string(star.x) + ", " + std::to_string(star.y) + ") with HFR: " + std::to_string(star.HFR), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("focuserROIStarsList:" + QString::number(star.x) + ":" + QString::number(star.y) + ":" + QString::number(star.HFR));
+    }
+
+    // 判断当前相机是否为彩色相机
+    bool isColor = !(MainCameraCFA == "");
+
+    if(ProcessBin && glMainCameraBinning != 1){
+        // 进行 2x2 的合并
+        image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, false);
+        if (image.empty()) {
+            if (isFocusLoopShooting){
+                FocusingLooping();
+            }
+            return;
+        }
+    }
+
+    if (image.depth() == CV_8U) {
+        image.convertTo(image, CV_16UC1, 256, 0);
+    }
+
+    // 将图像转换为16位格式
+    // image.convertTo(image, (image.depth() == 8) ? CV_16UC1 : CV_16UC1, 256, 0);
+
+    // 归一化图像
+    // cv::normalize(image, image, 0, 255, cv::NORM_MINMAX, CV_8U);
+
+    // 删除所有以 "focuserPicture_" 开头的文件
+    for (const auto & entry : std::filesystem::directory_iterator(vueDirectoryPath)) {
+        if (entry.path().filename().string().rfind("focuserPicture_", 0) == 0) {
+            std::filesystem::remove(entry.path());
+        }
+    }
+
+    // 保存新的图像带有唯一ID的文件名
+    time_t now = time(0);
+    tm *ltm = localtime(&now);
+    std::string fileName = "focuserPicture_" + std::to_string(ltm->tm_hour) + std::to_string(ltm->tm_min) + std::to_string(ltm->tm_sec) + ".bin";
+    std::string filePath = vueDirectoryPath + fileName;
+    std::ofstream outFile(filePath, std::ios::binary);
+
+    // 检查文件是否成功打开
+    if (!outFile) {
+        Logger::Log("Failed to open file: " + filePath, LogLevel::WARNING, DeviceType::FOCUSER);
+        if (isFocusLoopShooting){
+            FocusingLooping();
+        }
+        return;
+    }
+
+    // 将图像数据写入到文件中
+    outFile.write(reinterpret_cast<const char*>(image.data), image.total() * image.elemSize());
+
+    // 检查是否成功写入
+    if (!outFile) {
+        Logger::Log("Failed to write to file: " + filePath, LogLevel::ERROR, DeviceType::FOCUSER);
+        if (isFocusLoopShooting){
+            FocusingLooping();
+        }
+        return;
+    }
+
+    outFile.close();
+
+    bool saved = true;
+
+    std::string Command = "ln -sf " + filePath + " " + vueImagePath + fileName;
+    system(Command.c_str());
+    Logger::Log("Symbolic link created for new image file.", LogLevel::DEBUG, DeviceType::FOCUSER);
+
+
+    if (saved)
+    {
+        Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath +",image size:" + std::to_string(image.cols) + "x" + std::to_string(image.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(glROI_x) + ":" + QString::number(glROI_y));
+    }
+}
+
+void MainWindow::getFocuserLoopingState(){
+    if (isFocusLoopShooting){
+        emit wsThread->sendMessageToClient("setFocuserLoopingState:true");
+    }
+    else{
+        emit wsThread->sendMessageToClient("setFocuserLoopingState:false");
     }
 }

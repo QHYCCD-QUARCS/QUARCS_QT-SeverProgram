@@ -74,14 +74,14 @@ void WebSocketClient::onNetworkStateChanged(bool isOnline)
 
 void WebSocketClient::onTextMessageReceived(QString message)
 {
-    qDebug() << "Message received:" << message;
+    // qDebug() << "Message received:" << message;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
     QJsonObject messageObj = doc.object();
-
     if (messageObj["type"].toString() == "Vue_Command")
     {
         // 处理命令
         emit messageReceived(messageObj["message"].toString());
+        // qDebug() << "Message received:" << messageObj["type"].toString() << " " << messageObj["message"].toString();
 
         // 发送确认消息
         sendAcknowledgment(messageObj["msgid"].toString());
@@ -89,6 +89,11 @@ void WebSocketClient::onTextMessageReceived(QString message)
     else if (messageObj["type"].toString() == "Server_msg")
     {
         emit messageReceived(messageObj["message"].toString());
+        // qDebug() << "Message received:" << messageObj["type"].toString() << " " << messageObj["message"].toString();
+    }
+    else
+    {
+        qDebug() << "Message received is undefined type:" << messageObj["type"].toString() << " " << messageObj["message"].toString();
     }
 
     emit closed();

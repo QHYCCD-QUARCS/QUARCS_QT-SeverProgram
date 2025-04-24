@@ -114,12 +114,12 @@ bool Tools::LoadSystemListFromXml(const QString& fileName) {
     file.close();
 
     if (xmlReader.hasError()) {
-      qWarning() << "loadSystemListFromXml | xmlRead has ERROR";
+      Logger::Log("loadSystemListFromXml | xmlRead has ERROR", LogLevel::ERROR, DeviceType::MAIN);
       return false;
     }
 
   } else {
-    qWarning() << "loadSystemListFromXml | ERROR: Can not open file";
+    Logger::Log("loadSystemListFromXml | ERROR: Can not open file", LogLevel::ERROR, DeviceType::MAIN);
     return false;
   }
 
@@ -166,6 +166,7 @@ void Tools::SaveSystemListToXml(const QString& fileName) {
 
 void Tools::InitSystemDeviceList() {
   // pre-define 32 devices
+  systemDeviceList_.system_devices.clear();
   systemDeviceList_.system_devices.reserve(32);
   SystemDevice dev;
   dev.DeviceIndiName = "";
@@ -210,15 +211,11 @@ bool Tools::getIndexFromSystemDeviceListByName(const QString& devname, int& inde
   }
   if (i < 32) {
     index = i;
-    qInfo() << "getIndexFromSystemDeviceListByName | found device in system list. "
-                "device name"
-             << devname << "index" << index;
+    Logger::Log("getIndexFromSystemDeviceListByName | found device in system list. " + devname.toStdString() + "index" + std::to_string(index), LogLevel::INFO, DeviceType::MAIN);
     return true;
   } else {
     index = 0;
-    qWarning() << "getIndexFromSystemDeviceListByName | not found device in system "
-                "list, devname"
-             << devname;
+    Logger::Log("getIndexFromSystemDeviceListByName | not found device in system list, devname" + devname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     return false;
   }
 }
@@ -240,8 +237,7 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
     QFile file(QString::fromStdString(filename));
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-        // 处理打开文件失败的情况
-        qWarning() << "Fail to open Drivers List file.";
+        Logger::Log("readDriversListFromFiles | Fail to open Drivers List file.", LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
     QXmlStreamReader xml(&file);
@@ -277,7 +273,7 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
 
     if (dir == nullptr)
     {
-        qWarning() << "Unable to find INDI drivers directory, Please make sure the path is true.";
+        Logger::Log("readDriversListFromFiles | Unable to find INDI drivers directory, Please make sure the path is true.", LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
@@ -300,8 +296,7 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
                 QFile file(QString::fromStdString(xmlpath));
                 if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
                 {
-                    // 处理打开文件失败的情况
-                    qWarning() << "Open File failed!!!";
+                    Logger::Log("readDriversListFromFiles | Open File failed!!!", LogLevel::ERROR, DeviceType::MAIN);
                 }
 
                 QXmlStreamReader xml(&file);
@@ -373,16 +368,16 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
 
 void Tools::printDevGroups2(const DriversList driver_list)
 {
-    qDebug("printDevGroups2===============================");
+    Logger::Log("===============Group List================", LogLevel::INFO, DeviceType::MAIN);
     // qDebug() << "Number of groups:" << driver_list.dev_groups.size();
     for (int i = 0; i < driver_list.dev_groups.size(); i++)
     {
         // qDebug() << QString::fromStdString(driver_list.dev_groups[i].group);
-        qDebug() << driver_list.dev_groups[i].group;
+        Logger::Log("printDevGroups2 | " + driver_list.dev_groups[i].group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         // qDebug() << "Number of devices:" << driver_list.dev_groups[i].devices.size();
         for (int j = 0; j < driver_list.dev_groups[i].devices.size(); j++)
         {
-            qDebug() << QString::fromStdString(driver_list.dev_groups[i].devices[j].driver_name) << QString::fromStdString(driver_list.dev_groups[i].devices[j].version) << QString::fromStdString(driver_list.dev_groups[i].devices[j].label);
+            Logger::Log("printDevGroups2 | " + driver_list.dev_groups[i].devices[j].driver_name + " " + driver_list.dev_groups[i].devices[j].version + " " + driver_list.dev_groups[i].devices[j].label, LogLevel::INFO, DeviceType::MAIN);
         }
     }
 }
@@ -417,17 +412,17 @@ void Tools::printSystemDeviceList(SystemDeviceList s){
 
 
 
-    qInfo()<<"*****************System Device Selected***************"<<s.system_devices.size();
+    Logger::Log("===============System Device Selected================", LogLevel::INFO, DeviceType::MAIN);
     QString dpName;
     for (int i=0;i<s.system_devices.size();i++){
           if(s.system_devices[i].dp==NULL) dpName="NULL";
           else                             dpName=s.system_devices[i].dp->getDeviceName();
 
           if(s.system_devices[i].DriverIndiName != "") {
-            qInfo()<< i << s.system_devices[i].DeviceIndiGroup << s.system_devices[i].DriverFrom << s.system_devices[i].DriverIndiName << s.system_devices[i].DeviceIndiName << s.system_devices[i].Description <<s.system_devices[i].isConnect <<dpName;
+            Logger::Log("printSystemDeviceList | " + std::to_string(i) + " " + std::to_string(s.system_devices[i].DeviceIndiGroup) + " " + s.system_devices[i].DriverFrom.toStdString() + " " + s.system_devices[i].DriverIndiName.toStdString() + " " + s.system_devices[i].DeviceIndiName.toStdString() + " " + s.system_devices[i].Description.toStdString() + " " + std::to_string(s.system_devices[i].isConnect) + " " + dpName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
           }
     }
-    qInfo() << "******************************************************";
+      Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
 }
 
 QStringList Tools::getCameraNumFromSystemDeviceList(SystemDeviceList s) {
@@ -455,25 +450,25 @@ void Tools::makeConfigFile() {
     // 如果目录不存在，则创建
     if (!std::filesystem::exists(directory)) {
         if (std::filesystem::create_directory(directory)) {
-            qInfo() << "Configuration folder created successfully: " << QString::fromStdString(directory);
+            Logger::Log("makeConfigFile | Configuration folder created successfully: " + directory, LogLevel::INFO, DeviceType::MAIN);
         } else {
-            qWarning() << "An error occurred while creating the configuration folder.";
+            Logger::Log("makeConfigFile | An error occurred while creating the configuration folder.", LogLevel::ERROR, DeviceType::MAIN);
             return;  // 如果文件夹创建失败，退出
         }
     } else {
-        qWarning() << "The configuration folder already exists: " << QString::fromStdString(directory);
+        Logger::Log("makeConfigFile | The configuration folder already exists: " + directory, LogLevel::INFO, DeviceType::MAIN);
     }
 
     // 如果配置文件不存在，则创建空配置文件
     if (!std::filesystem::exists(filename)) {
         std::ofstream configFile(filename);  // 在 config 文件夹中创建空文件
         if (configFile) {
-            qInfo() << "Configuration file created successfully: " << QString::fromStdString(filename);
+            Logger::Log("makeConfigFile | Configuration file created successfully: " + filename, LogLevel::INFO, DeviceType::MAIN);
         } else {
-            qWarning() << "An error occurred while creating the configuration file.";
+            Logger::Log("makeConfigFile | An error occurred while creating the configuration file.", LogLevel::ERROR, DeviceType::MAIN);
         }
     } else {
-        qWarning() << "The configuration file already exists: " << QString::fromStdString(filename);
+        Logger::Log("makeConfigFile | The configuration file already exists: " + filename, LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
@@ -485,38 +480,38 @@ void Tools::makeImageFolder() {
     {
         if (std::filesystem::create_directory(directory))
         {
-            qInfo() << "Image folder created successfully: " << QString::fromStdString(directory);
+            Logger::Log("makeImageFolder | Image folder created successfully: " + directory, LogLevel::INFO, DeviceType::MAIN);
 
             // 创建子文件夹 CaptureImage
             std::string captureDirectory = directory + "/CaptureImage";
             if (std::filesystem::create_directory(captureDirectory))
             {
-                qInfo() << "Subfolder created successfully: " << QString::fromStdString(captureDirectory);
+                Logger::Log("makeImageFolder | Subfolder created successfully: " + captureDirectory, LogLevel::INFO, DeviceType::MAIN);
             }
             else
             {
-                qWarning() << "Error occurred while creating CaptureImage subfolders.";
+                Logger::Log("makeImageFolder | Error occurred while creating CaptureImage subfolders.", LogLevel::ERROR, DeviceType::MAIN);
             }
 
             // 创建子文件夹 ScheduleImage
             std::string scheduleDirectory = directory + "/ScheduleImage";
             if (std::filesystem::create_directory(scheduleDirectory))
             {
-                qInfo() << "Subfolder created successfully: " << QString::fromStdString(captureDirectory);
+                Logger::Log("makeImageFolder | Subfolder created successfully: " + scheduleDirectory, LogLevel::INFO, DeviceType::MAIN);
             }
             else
             {
-                qWarning() << "Error occurred while creating ScheduleImage subfolders.";
+                Logger::Log("makeImageFolder | Error occurred while creating ScheduleImage subfolders.", LogLevel::ERROR, DeviceType::MAIN);
             }
         }
         else
         {
-            qWarning() << "An error occurred while creating the image folder.";
+            Logger::Log("makeImageFolder | An error occurred while creating the image folder.", LogLevel::ERROR, DeviceType::MAIN);
         }
     }
     else
     {
-        qWarning() << "The image folder already exists: " << QString::fromStdString(directory);
+        Logger::Log("makeImageFolder | The image folder already exists: " + directory, LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
@@ -527,7 +522,7 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
     // 检查文件夹是否存在，如果不存在就创建
     if (!std::filesystem::exists(directory)) {
         if (!std::filesystem::create_directory(directory)) {
-            qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+            Logger::Log("saveSystemDeviceList | An error occurred while creating the configuration folder: " + directory, LogLevel::ERROR, DeviceType::MAIN);
             return;
         }
     }
@@ -565,7 +560,7 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
     // 打开文件进行写入（覆盖模式）
     std::ofstream outfile(filename, std::ios::out | std::ios::trunc);  // 打开文件以覆盖内容
     if (!outfile.is_open()) {
-        qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
+        Logger::Log("saveSystemDeviceList | An error occurred while opening the configuration file for writing: " + filename, LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
@@ -595,7 +590,7 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
 
     // 关闭文件
     outfile.close();
-    qInfo() << "The device list has been saved to the configuration file: " << QString::fromStdString(filename);
+    Logger::Log("saveSystemDeviceList | The device list has been saved to the configuration file: " + filename, LogLevel::INFO, DeviceType::MAIN);
 }
 
 SystemDeviceList Tools::readSystemDeviceList() {
@@ -604,7 +599,7 @@ SystemDeviceList Tools::readSystemDeviceList() {
     std::ifstream infile(filename);
 
     if (!infile.is_open()) {
-        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
+        Logger::Log("readSystemDeviceList | Error occurred while opening file for reading: " + filename, LogLevel::ERROR, DeviceType::MAIN);
         return deviceList;
     }
 
@@ -667,7 +662,7 @@ void Tools::saveExpTimeList(QString List)
     // 检查文件夹是否存在，如果不存在就创建
     if (!std::filesystem::exists(directory)) {
         if (!std::filesystem::create_directory(directory)) {
-            qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+            Logger::Log("saveExpTimeList | An error occurred while creating the configuration folder: " + directory, LogLevel::ERROR, DeviceType::MAIN);
             return;
         }
     }
@@ -705,7 +700,7 @@ void Tools::saveExpTimeList(QString List)
     // 打开文件进行写入（覆盖模式）
     std::ofstream outfile(filename, std::ios::out | std::ios::trunc);  // 打开文件以覆盖内容
     if (!outfile.is_open()) {
-        qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
+        Logger::Log("saveExpTimeList | An error occurred while opening the configuration file for writing: " + filename, LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
@@ -725,6 +720,111 @@ void Tools::saveExpTimeList(QString List)
     outfile.close();
 }
 
+void Tools::saveParameter(const QString& deviceCategory, const QString& functionCategory, const QString& parameterValue) {
+    std::string directory = "config";  // 配置文件夹名
+    std::string filename = directory + "/config.ini";  // 配置文件路径
+
+    // 检查文件夹是否存在，如果不存在就创建
+    if (!std::filesystem::exists(directory)) {
+        if (!std::filesystem::create_directory(directory)) {
+            Logger::Log("saveParameter | An error occurred while creating the configuration folder: " + directory, LogLevel::ERROR, DeviceType::MAIN);
+            return;
+        }
+    }
+
+    // 读取现有配置文件的内容
+    std::ifstream infile(filename);
+    std::stringstream fileContent;
+    std::string line;
+    bool isInSection = false;
+    std::string sectionHeader = "[" + deviceCategory.toStdString() + "]";
+    std::string endMarker = "(End of " + deviceCategory.toStdString() + " Parameter)";
+
+    // 读取现有文件内容
+    while (std::getline(infile, line)) {
+        fileContent << line << "\n";
+    }
+    infile.close();
+
+    // 查找并更新指定部分
+    std::string content = fileContent.str();
+    size_t pos = content.find(sectionHeader);
+    if (pos != std::string::npos) {
+        size_t endPos = content.find(endMarker, pos);
+        if (endPos != std::string::npos) {
+            // 查找并更新现有参数
+            size_t paramPos = content.find(functionCategory.toStdString() + "=", pos);
+            if (paramPos != std::string::npos && paramPos < endPos) {
+                size_t lineEnd = content.find("\n", paramPos);
+                content.replace(paramPos, lineEnd - paramPos, functionCategory.toStdString() + "=" + parameterValue.toStdString());
+            } else {
+                // 在结束标记之前插入新的参数
+                content.insert(endPos, functionCategory.toStdString() + "=" + parameterValue.toStdString() + "\n");
+            }
+        } else {
+            // 如果没有找到结束标记，添加新的参数和结束标记
+            content.insert(pos + sectionHeader.length(), "\n" + functionCategory.toStdString() + "=" + parameterValue.toStdString() + "\n" + endMarker + "\n");
+        }
+    } else {
+        // 如果没有找到该部分，添加新的部分
+        content += sectionHeader + "\n" + functionCategory.toStdString() + "=" + parameterValue.toStdString() + "\n" + endMarker + "\n\n";
+    }
+
+    // 打开文件进行写入（覆盖模式）
+    std::ofstream outfile(filename, std::ios::out | std::ios::trunc);  // 打开文件以覆盖内容
+    if (!outfile.is_open()) {
+        Logger::Log("saveParameter | An error occurred while opening the configuration file for writing: " + filename, LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
+
+    // 写入更新后的内容
+    outfile << content;
+    outfile.close();
+}
+
+QMap<QString, QString> Tools::readParameters(const QString& deviceCategory) {
+    std::string filename = "config/config.ini";  // 配置文件路径
+    std::ifstream infile(filename);
+
+    QMap<QString, QString> parameters;
+
+    if (!infile.is_open()) {
+        Logger::Log("readParameters | Error occurred while opening file for reading: " + filename, LogLevel::ERROR, DeviceType::MAIN);
+        return parameters;
+    }
+
+    std::string line;
+    bool inSection = false;
+    std::string sectionHeader = "[" + deviceCategory.toStdString() + "]";
+    std::string endMarker = "(End of " + deviceCategory.toStdString() + " Parameter)";
+
+    // 逐行读取 INI 文件
+    while (std::getline(infile, line)) {
+        // 检查是否进入了指定的部分
+        if (line == sectionHeader) {
+            inSection = true;
+            continue; // 跳过这一行，开始读取数据
+        }
+
+        if (inSection) {
+            // 遇到结束标记或下一个部分，停止读取当前部分
+            if (line.empty() || line == endMarker || line[0] == '[') {
+                break;
+            }
+
+            // 解析键值对
+            std::string key, value;
+            std::istringstream lineStream(line);
+            if (std::getline(std::getline(lineStream, key, '='), value)) {
+                parameters.insert(QString::fromStdString(key), QString::fromStdString(value));
+            }
+        }
+    }
+
+    infile.close();
+    return parameters;
+}
+
 QString Tools::readExpTimeList()
 {
     QString ExpTimeList;
@@ -732,7 +832,7 @@ QString Tools::readExpTimeList()
     std::ifstream infile(filename);
 
     if (!infile.is_open()) {
-        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
+        Logger::Log("readExpTimeList | Error occurred while opening file for reading: " + filename, LogLevel::ERROR, DeviceType::MAIN);
         return QString();
     }
 
@@ -787,7 +887,7 @@ void Tools::saveCFWList(QString Name, QString List)
     // 检查文件夹是否存在，如果不存在就创建
     if (!std::filesystem::exists(directory)) {
         if (!std::filesystem::create_directory(directory)) {
-            qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+            Logger::Log("saveCFWList | An error occurred while creating the configuration folder: " + directory, LogLevel::ERROR, DeviceType::MAIN);
             return;
         }
     }
@@ -825,7 +925,7 @@ void Tools::saveCFWList(QString Name, QString List)
     // 打开文件进行写入（覆盖模式）
     std::ofstream outfile(filename, std::ios::out | std::ios::trunc);  // 打开文件以覆盖内容
     if (!outfile.is_open()) {
-        qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
+        Logger::Log("saveCFWList | An error occurred while opening the configuration file for writing: " + filename, LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
@@ -852,7 +952,7 @@ QString Tools::readCFWList(QString Name)
     std::ifstream infile(filename);
 
     if (!infile.is_open()) {
-        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
+        Logger::Log("readCFWList | Error occurred while opening file for reading: " + filename, LogLevel::ERROR, DeviceType::MAIN);
         return QString();
     }
 
@@ -909,7 +1009,7 @@ void Tools::saveDSLRsInfo(DSLRsInfo DSLRsInfo)
   {
     if (!std::filesystem::create_directory(directory))
     {
-      qWarning() << "An error occurred while creating the configuration folder: " << QString::fromStdString(directory);
+      Logger::Log("saveDSLRsInfo | An error occurred while creating the configuration folder: " + directory, LogLevel::ERROR, DeviceType::MAIN);
       return;
     }
   }
@@ -953,7 +1053,7 @@ void Tools::saveDSLRsInfo(DSLRsInfo DSLRsInfo)
   std::ofstream outfile(filename, std::ios::out | std::ios::trunc); // 打开文件以覆盖内容
   if (!outfile.is_open())
   {
-    qWarning() << "An error occurred while opening the configuration file for writing: " << QString::fromStdString(filename);
+    Logger::Log("saveDSLRsInfo | An error occurred while opening the configuration file for writing: " + filename, LogLevel::ERROR, DeviceType::MAIN);
     return;
   }
 
@@ -982,7 +1082,7 @@ DSLRsInfo Tools::readDSLRsInfo(QString Name)
 
   if (!infile.is_open())
   {
-    qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(filename);
+    Logger::Log("readDSLRsInfo | Error occurred while opening file for reading: " + filename, LogLevel::ERROR, DeviceType::MAIN);
     return DSLRsInfo;
   }
 
@@ -1043,7 +1143,7 @@ DSLRsInfo Tools::readDSLRsInfo(QString Name)
 void Tools::readClientSettings(const std::string& fileName, std::unordered_map<std::string, std::string>& config) {
     std::ifstream file(fileName);
     if (!file.is_open()) {
-        qWarning() << "Error occurred while opening file for reading: " << QString::fromStdString(fileName);
+        Logger::Log("readClientSettings | Error occurred while opening file for reading: " + fileName, LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
@@ -1090,7 +1190,7 @@ void Tools::saveClientSettings(const std::string& fileName, const std::unordered
   inputFile.close();
 
   std::string content = fileContents.str();
-  std::string section = "[ClientSettings]";
+  std::string section = "[ClientSettings]\n";
   size_t sectionPos = content.find(section);
 
   if (sectionPos == std::string::npos)
@@ -1121,11 +1221,13 @@ void Tools::saveClientSettings(const std::string& fileName, const std::unordered
         // 找到了该项，更新其值
         size_t endPos = clientSettingsSection.find("\n", pos);
         clientSettingsSection.replace(pos + pair.first.size() + 3, endPos - pos - pair.first.size() - 3, pair.second);
+        Logger::Log("updateClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
       }
       else
       {
         // 没有找到该项，添加新的配置项
         clientSettingsSection += pair.first + " = " + pair.second + "\n";
+        Logger::Log("addClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
       }
     }
 
@@ -1141,9 +1243,9 @@ void Tools::saveClientSettings(const std::string& fileName, const std::unordered
 
 void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
     //clear one device
-    qInfo()<<"index:"<<index;
+    Logger::Log("clearSystemDeviceListItem | index:" + std::to_string(index), LogLevel::INFO, DeviceType::MAIN);
     if (s.system_devices.empty()) {
-        qInfo()<<"s.system_devices is nullptr";
+        Logger::Log("clearSystemDeviceListItem | s.system_devices is nullptr", LogLevel::INFO, DeviceType::MAIN);
     }
     else {
         s.system_devices[index].Description="";
@@ -1153,17 +1255,18 @@ void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
         s.system_devices[index].DriverFrom="";
         s.system_devices[index].DriverIndiName="";
         s.system_devices[index].isConnect=false;
-        qInfo()<<"SystemDeviceListItem already cleared.";
+        Logger::Log("clearSystemDeviceListItem | SystemDeviceListItem already cleared.", LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
 void Tools::initSystemDeviceList(SystemDeviceList &s){
+    s.system_devices.clear();
     s.system_devices.reserve(32); //pre-define 32 devices
     SystemDevice dev;
     dev.DeviceIndiName="";
     dev.DeviceIndiGroup=-1;
     dev.DeviceIndiName="";
-    dev.DriverFrom="";      //DriverFrom 用于存储驱动类型。如果来自于INDI，则是“INDI"  如果来自于QHYCCD SDK  则是”QHYCCDSDK"
+    dev.DriverFrom="";      //DriverFrom 用于存储驱动类型。如果来自于INDI，则是"INDI"  如果来自于QHYCCD SDK  则是"QHYCCDSDK"
     dev.isConnect=false;
     dev.dp=NULL;
 
@@ -1208,12 +1311,12 @@ uint32_t Tools::getIndexFromSystemDeviceListByName(SystemDeviceList s,QString de
     }
     if(i<32) {
         index=i;
-        qInfo()<<"getIndexFromSystemDeviceListByName | found device in system list. device name" << devname<< "index" <<index;
+        Logger::Log("getIndexFromSystemDeviceListByName | found device in system list. device name" + devname.toStdString() + "index" + std::to_string(index), LogLevel::INFO, DeviceType::MAIN);
         return QHYCCD_SUCCESS;
     }
     else{
         index=0;
-        qWarning()<<"getIndexFromSystemDeviceListByName | not found device in system list, devname"<<devname;
+        Logger::Log("getIndexFromSystemDeviceListByName | not found device in system list, devname" + devname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         return QHYCCD_ERROR;
     }
 
@@ -1229,7 +1332,7 @@ void Tools::startIndiDriver(QString driver_name)
     s.append("> /tmp/myFIFO");
     system(s.toUtf8().constData());
     // qDebug() << "startIndiDriver" << driver_name;
-    qInfo() << "Start INDI Driver | DriverName: " << driver_name;
+    Logger::Log("startIndiDriver | Start Connecting INDI Driver : " + driver_name.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 }
 
 void Tools::stopIndiDriver(QString driver_name)
@@ -1253,7 +1356,7 @@ void Tools::stopIndiDriverAll(const DriversList driver_list)
     indiserver = true;
     if (!indiserver)
     {
-        qWarning("stopIndiDriverAll | ERROR | INDI DRIVER NOT running");
+        Logger::Log("stopIndiDriverAll | ERROR | INDI DRIVER NOT running", LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
@@ -1423,14 +1526,14 @@ void Tools::ConnectQHYCCDSDK() {
   uint16_t index, value;
   ret = InitQHYCCDResource();
   // EnableQHYCCDMessage(true);
-  qDebug("initqhyccdresosurce %d", ret);
+  Logger::Log("initqhyccdresosurce " + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
   uint32_t devices = 0;
 
   devices = ScanQHYCCD();
-  qDebug("found qhyccd device %d", devices);
+  Logger::Log("found qhyccd device " + std::to_string(devices), LogLevel::INFO, DeviceType::MAIN);
 
   if (devices < 1) {
-    qDebug() << "SelectQHYCCDSDKDevice | No QHYCCD SDK Device Found";
+    Logger::Log("SelectQHYCCDSDKDevice | No QHYCCD SDK Device Found", LogLevel::INFO, DeviceType::MAIN);
     return;
   }
 
@@ -1449,14 +1552,14 @@ void Tools::ConnectQHYCCDSDK() {
 
     if (strcmp(cameraName, "QHY5III485") == 0) {
       fpgahandle_ = OpenQHYCCD(camid_);
-      qDebug("Found FPGA device:%d", fpgahandle_);
+      Logger::Log("Found FPGA device:" + std::to_string(reinterpret_cast<uintptr_t>(fpgahandle_)), LogLevel::INFO, DeviceType::MAIN);
     } else if (strcmp(cameraName, "QHY5III178") == 0) {
       guiderhandle_ = OpenQHYCCD(camid_);
-      qDebug("Found guider device:%d", guiderhandle_);
+      Logger::Log("Found guider device:" + std::to_string(reinterpret_cast<uintptr_t>(guiderhandle_)), LogLevel::INFO, DeviceType::MAIN);
     } else if (strcmp(cameraName, "POLEMASTER") == 0) {
       // polerhandle_ = OpenQHYCCD(camid_);
       guiderhandle_ = OpenQHYCCD(camid_);
-      qDebug("Found poler device:%d", polerhandle_);
+      Logger::Log("Found poler device:" + std::to_string(reinterpret_cast<uintptr_t>(guiderhandle_)), LogLevel::INFO, DeviceType::MAIN);
     }
   }
 }
@@ -1466,39 +1569,37 @@ void Tools::ScanCamera() {
     int ret;
     camhandle_ = OpenQHYCCD(camid_);
     if (camhandle_ != NULL) {
-      qDebug("Open QHYCCD success.\n");
+      Logger::Log("Open QHYCCD success.\n", LogLevel::INFO, DeviceType::MAIN);
     } else {
-      qDebug("Open QHYCCD failure.\n");
+      Logger::Log("Open QHYCCD failure.\n", LogLevel::INFO, DeviceType::MAIN);
     }
 
     ret = IsQHYCCDControlAvailable(camhandle_, CAM_SINGLEFRAMEMODE);
     if (QHYCCD_ERROR == ret) {
-      qDebug("The detected camera is not support single frame.");
+      Logger::Log("The detected camera is not support single frame.", LogLevel::INFO, DeviceType::MAIN);
       // release sdk resources
       ret = ReleaseQHYCCDResource();
       if (QHYCCD_SUCCESS == ret) {
-        qDebug("SDK resources released.");
+        Logger::Log("SDK resources released.", LogLevel::INFO, DeviceType::MAIN);
       } else {
-        qDebug() << "Cannot release SDK resources, error:" << ret;
+        Logger::Log("Cannot release SDK resources, error:" + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
       }
     }
 
     int mode = 0;
     ret = SetQHYCCDStreamMode(camhandle_, mode);
     if (QHYCCD_SUCCESS == ret) {
-      qDebug() << "SetQHYCCDStreamMode set to:" << mode << "success.";
+      Logger::Log("SetQHYCCDStreamMode set to:" + std::to_string(mode) + "success.", LogLevel::INFO, DeviceType::MAIN);
     } else {
-      qDebug() << "SetQHYCCDStreamMode:" << mode << "failure, error:" << ret;
+      Logger::Log("SetQHYCCDStreamMode:" + std::to_string(mode) + "failure, error:" + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
     }
-    qDebug() << "\033[0m\033[1;35m"
-             << "initialize camera"
-             << "\033[0m";
+    Logger::Log("\033[0m\033[1;35minitialize camera\033[0m", LogLevel::INFO, DeviceType::MAIN);
     // initialize camera
     ret = InitQHYCCD(camhandle_);
     if (QHYCCD_SUCCESS == ret) {
-      qDebug("InitQHYCCD success.");
+      Logger::Log("InitQHYCCD success.", LogLevel::INFO, DeviceType::MAIN);
     } else {
-      qDebug() << "InitQHYCCD faililure, error:" << ret;
+      Logger::Log("InitQHYCCD faililure, error:" + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
     }
   }
   if ((Tools::systemDeviceList().currentDeviceCode >= 0) &&
@@ -1558,26 +1659,26 @@ cv::Mat Tools::Capture() {
   ret = GetQHYCCDOverScanArea(camhandle_, &overscanStartX, &overscanStartY,
                               &overscanSizeX, &overscanSizeY);
   if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "GetQHYCCDOverScanArea success";
+    Logger::Log("GetQHYCCDOverScanArea success", LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "GetQHYCCDOverScanArea error";
+    Logger::Log("GetQHYCCDOverScanArea error", LogLevel::INFO, DeviceType::MAIN);
     return {};
   }
   ret = GetQHYCCDOverScanArea(camhandle_, &effectiveStartX, &effectiveStartY,
                               &effectiveSizeX, &effectiveSizeY);
   if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "GetQHYCCDEffectiveArea success";
+    Logger::Log("GetQHYCCDEffectiveArea success", LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "GetQHYCCDEffectiveArea error";
+    Logger::Log("GetQHYCCDEffectiveArea error", LogLevel::INFO, DeviceType::MAIN);
     return {};
   }
   ret =
       GetQHYCCDChipInfo(camhandle_, &chipWidthMM, &chipHeightMM, &maxImageSizeX,
                         &maxImageSizeY, &pixelWidthUM, &pixelHeightUM, &bpp);
   if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "GetQHYCCDChipInfo success";
+    Logger::Log("GetQHYCCDChipInfo success", LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "GetQHYCCDChipInfo error";
+    Logger::Log("GetQHYCCDChipInfo error", LogLevel::INFO, DeviceType::MAIN);
     return {};
   }
 
@@ -1589,22 +1690,22 @@ cv::Mat Tools::Capture() {
   ret = IsQHYCCDControlAvailable(camhandle_, CAM_COLOR);
   if (ret == BAYER_GB || ret == BAYER_GR || ret == BAYER_BG ||
       ret == BAYER_RG) {
-    qDebug() << "This is a color camera.";
-    qDebug() << "even this is a color camera, in Single Frame mode THE SDK "
+    Logger::Log("This is a color camera.", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("even this is a color camera, in Single Frame mode THE SDK "
                 "ONLY SUPPORT RAW OUTPUT.So please do not set "
-                "SetQHYCCDDebayerOnOff() to true;";
+                "SetQHYCCDDebayerOnOff() to true;", LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "This is a mono camera.";
+    Logger::Log("This is a mono camera.", LogLevel::INFO, DeviceType::MAIN);
   }
 
   ret = IsQHYCCDControlAvailable(camhandle_, CONTROL_USBTRAFFIC);
   if (QHYCCD_SUCCESS == ret) {
     ret = SetQHYCCDParam(camhandle_, CONTROL_USBTRAFFIC, USB_TRAFFIC);
     if (QHYCCD_SUCCESS == ret) {
-      qDebug() << "SetQHYCCDParam CONTROL_USBTRAFFIC set to:" << USB_TRAFFIC
-               << "success.";
+      Logger::Log("SetQHYCCDParam CONTROL_USBTRAFFIC set to:" + std::to_string(USB_TRAFFIC)
+               + "success.", LogLevel::INFO, DeviceType::MAIN);
     } else {
-      qDebug() << "SetQHYCCDParam CONTROL_USBTRAFFIC error";
+      Logger::Log("SetQHYCCDParam CONTROL_USBTRAFFIC error", LogLevel::INFO, DeviceType::MAIN);
       getchar();
       return {};
     }
@@ -1614,10 +1715,10 @@ cv::Mat Tools::Capture() {
   if (QHYCCD_SUCCESS == ret) {
     ret = SetQHYCCDParam(camhandle_, CONTROL_GAIN, CHIP_GAIN);
     if (QHYCCD_SUCCESS == ret) {
-      qDebug() << "SetQHYCCDParam CONTROL_GAIN set to:" << CHIP_GAIN
-               << "success.";
+      Logger::Log("SetQHYCCDParam CONTROL_GAIN set to:" + std::to_string(CHIP_GAIN)
+               + "success.", LogLevel::INFO, DeviceType::MAIN);
     } else {
-      qDebug() << "SetQHYCCDParam CONTROL_GAIN error";
+      Logger::Log("SetQHYCCDParam CONTROL_GAIN error", LogLevel::INFO, DeviceType::MAIN);
       getchar();
       return {};
     }
@@ -1627,10 +1728,10 @@ cv::Mat Tools::Capture() {
   if (QHYCCD_SUCCESS == ret) {
     ret = SetQHYCCDParam(camhandle_, CONTROL_OFFSET, CHIP_OFFSET);
     if (QHYCCD_SUCCESS == ret) {
-      qDebug() << "SetQHYCCDParam CONTROL_OFFSET set to:" << CHIP_OFFSET
-               << "success.";
+      Logger::Log("SetQHYCCDParam CONTROL_OFFSET set to:" + std::to_string(CHIP_OFFSET)
+               + "success.", LogLevel::INFO, DeviceType::MAIN);
     } else {
-      qDebug() << "SetQHYCCDParam CONTROL_OFFSET failed.";
+      Logger::Log("SetQHYCCDParam CONTROL_OFFSET failed.", LogLevel::INFO, DeviceType::MAIN);
       getchar();
       return {};
     }
@@ -1638,10 +1739,10 @@ cv::Mat Tools::Capture() {
 
   ret = SetQHYCCDParam(camhandle_, CONTROL_EXPOSURE, EXPOSURE_TIME);
   if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "SetQHYCCDParam CONTROL_EXPOSURE set to:" << EXPOSURE_TIME
-             << "success.";
+    Logger::Log("SetQHYCCDParam CONTROL_EXPOSURE set to:" + std::to_string(EXPOSURE_TIME)
+             + "success.", LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "SetQHYCCDParam CONTROL_EXPOSURE failure";
+    Logger::Log("SetQHYCCDParam CONTROL_EXPOSURE failure", LogLevel::INFO, DeviceType::MAIN);
     getchar();
     return {};
   }
@@ -1649,17 +1750,17 @@ cv::Mat Tools::Capture() {
   ret =
       SetQHYCCDResolution(camhandle_, roiStartX, roiStartY, roiSizeX, roiSizeY);
   if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "SetQHYCCDResolution success.";
+    Logger::Log("SetQHYCCDResolution success.", LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "SetQHYCCDResolution error.";
+    Logger::Log("SetQHYCCDResolution error.", LogLevel::INFO, DeviceType::MAIN);
     return {};
   }
 
   ret = SetQHYCCDBinMode(camhandle_, camBinX, camBinY);
   if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "SetQHYCCDBinMode success.";
+    Logger::Log("SetQHYCCDBinMode success.", LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "SetQHYCCDBinMode error.";
+    Logger::Log("SetQHYCCDBinMode error.", LogLevel::INFO, DeviceType::MAIN);
     return {};
   }
 
@@ -1667,19 +1768,19 @@ cv::Mat Tools::Capture() {
   if (QHYCCD_SUCCESS == ret) {
     ret = SetQHYCCDBitsMode(camhandle_, 16);
     if (QHYCCD_SUCCESS == ret) {
-      qDebug() << "SetQHYCCDBitsMode success.";
+      Logger::Log("SetQHYCCDBitsMode success.", LogLevel::INFO, DeviceType::MAIN);
     } else {
-      qDebug() << "SetQHYCCDBitsMode error.";
+      Logger::Log("SetQHYCCDBitsMode error", LogLevel::INFO, DeviceType::MAIN);
       getchar();
       return {};
     }
   }
 
-  qDebug() << "ExpQHYCCDSingleFrame(camhandle) - start...";
+  Logger::Log("ExpQHYCCDSingleFrame(camhandle) - start...", LogLevel::INFO, DeviceType::MAIN);
   ret = ExpQHYCCDSingleFrame(camhandle_);
-  qDebug() << "ExpQHYCCDSingleFrame(camhandle) - end...";
+  Logger::Log("ExpQHYCCDSingleFrame(camhandle) - end...", LogLevel::INFO, DeviceType::MAIN);
   if (QHYCCD_ERROR != ret) {
-    qDebug() << "ExpQHYCCDSingleFrame success.";
+    Logger::Log("ExpQHYCCDSingleFrame success.", LogLevel::INFO, DeviceType::MAIN);
     if (QHYCCD_READ_DIRECTLY != ret) {
       QElapsedTimer t;
       t.start();
@@ -1689,7 +1790,7 @@ cv::Mat Tools::Capture() {
       qDebug() << t.elapsed();
     }
   } else {
-    qDebug() << "ExpQHYCCDSingleFrame failure, error";
+    Logger::Log("ExpQHYCCDSingleFrame failure, error", LogLevel::INFO, DeviceType::MAIN);
   }
 
   uint32_t length = GetQHYCCDMemLength(camhandle_);
@@ -1697,9 +1798,9 @@ cv::Mat Tools::Capture() {
   if (length > 0) {
     pImgData = new unsigned char[length];
     memset(pImgData, 0, length);
-    qDebug() << "Allocated memory for frame:" << length;
+    Logger::Log("Allocated memory for frame:" + std::to_string(length), LogLevel::INFO, DeviceType::MAIN);
   } else {
-    qDebug() << "Cannot allocate memory for frame.";
+    Logger::Log("Cannot allocate memory for frame.", LogLevel::INFO, DeviceType::MAIN);
     return {};
   }
 
@@ -1710,7 +1811,7 @@ cv::Mat Tools::Capture() {
   ret = GetQHYCCDSingleFrame(camhandle_, &roiSizeX, &roiSizeY, &bpp, &channels,
                              pImgData);
   if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "GetQHYCCDSingleFrame success.";
+    Logger::Log("GetQHYCCDSingleFrame success.", LogLevel::INFO, DeviceType::MAIN);
     // process image here
 
     // emit signalRefreshMainPageMainCameraImage(pImgData,"MONO");
@@ -1723,13 +1824,13 @@ cv::Mat Tools::Capture() {
     cv::imwrite("/dev/shm/SDK_Capture.png", mmat, creat_quality);
     mmat = mmat.clone();
   } else {
-    qDebug() << "GetQHYCCDSingleFrame error";
+    Logger::Log("GetQHYCCDSingleFrame error", LogLevel::INFO, DeviceType::MAIN);
     return {};
   }
 
   delete[] pImgData;
 
-  qDebug() << t.elapsed();
+  Logger::Log("t.elapsed():" + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
 
   /*
   ret = CancelQHYCCDExposingAndReadout(camhandle_);
@@ -1936,7 +2037,7 @@ void Tools::CvDebugShow(cv::Mat img) {
 QImage Tools::ShowHistogram(const cv::Mat& image,QLabel *label) {
   // 将输入图像分成三个通道
   #ifdef ImageDebug
-  qDebug() << "showHistogram |" << image.channels();
+  Logger::Log("showHistogram |" + std::to_string(image.channels()), LogLevel::INFO, DeviceType::MAIN);
   #endif
   QElapsedTimer t;
   t.start();
@@ -1945,7 +2046,7 @@ QImage Tools::ShowHistogram(const cv::Mat& image,QLabel *label) {
 
   if (image.channels() == 3) {
     #ifdef ImageDebug
-    qDebug() << "showHistogram | Draw Histograme color";
+    Logger::Log("showHistogram | Draw Histograme color", LogLevel::INFO, DeviceType::MAIN);
     #endif
     std::vector<cv::Mat> channels;
     cv::split(image, channels);
@@ -1973,9 +2074,8 @@ QImage Tools::ShowHistogram(const cv::Mat& image,QLabel *label) {
     // for three channel.
     int min_maxval = std::min({max_b, max_g, max_r});
     #ifdef ImageDebug
-    qDebug() << "showHistogram | Draw Histograme color | min of max value in 3 "
-                "channels"
-             << min_maxval;
+    Logger::Log("showHistogram | Draw Histograme color | min of max value in 3 "
+                "channels" + std::to_string(min_maxval), LogLevel::INFO, DeviceType::MAIN);
     #endif
     // qDebug()<<min_maxval;
 
@@ -2034,7 +2134,7 @@ QImage Tools::ShowHistogram(const cv::Mat& image,QLabel *label) {
 
   } else {
     #ifdef ImageDebug
-    qDebug() << "showHistogram | Draw Histograme mono";
+    Logger::Log("showHistogram | Draw Histograme mono", LogLevel::INFO, DeviceType::MAIN);
     #endif
     // 绘制直方图
     cv::Mat hist;
@@ -2075,7 +2175,7 @@ QImage Tools::ShowHistogram(const cv::Mat& image,QLabel *label) {
     label->setScaledContents(true);
   }
   #ifdef ImageDebug
-  qDebug() << "showHistogram | used time(ms) " << t.elapsed();
+  Logger::Log("showHistogram | used time(ms) " + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
   #endif
   return ret;
 }
@@ -2127,7 +2227,7 @@ void Tools::PaintHistogram(cv::Mat src,QLabel *label)
         //for color image. need to use the global min_value as the same threshold for three channel.
         int min_maxval = std::min({max_b, max_g, max_r});
         #ifdef ImageDebug
-        qDebug()<<"showHistogram | Draw Histograme color | min of max value in 3 channels"<<min_maxval;
+        Logger::Log("showHistogram | Draw Histograme color | min of max value in 3 channels" + std::to_string(min_maxval), LogLevel::INFO, DeviceType::MAIN);
         #endif
         //qDebug()<<min_maxval;
 
@@ -2267,7 +2367,7 @@ void Tools::ShowCvImageOnQLabel(cv::Mat image,QLabel *label) {
     // Set the QLabel's image to the QImage
   label->setPixmap(QPixmap::fromImage(qtImage));
   #ifdef ImageDebug
-  qDebug()<<"showOpenCV_QLabel_withRotate | used time(ms) "<<t.elapsed();
+  Logger::Log("showOpenCV_QLabel_withRotate | used time(ms) " + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
   #endif
 }
 
@@ -2281,7 +2381,7 @@ void Tools::ShowOpenCV_QLabel_withRotate(cv::Mat img,QLabel *label,int RotateTyp
     w=img.cols;
     h=img.rows;
     #ifdef ImageDebug
-    qDebug()<<"showOpenCV_QLabel_withRotate | "<<w<<h<<img.channels()<<img.type();
+    Logger::Log("showOpenCV_QLabel_withRotate | " + std::to_string(w) + " " + std::to_string(h) + " " + std::to_string(img.channels()) + " " + std::to_string(img.type()), LogLevel::INFO, DeviceType::MAIN);
     #endif
     cv::Mat imgRGB888;
     imgRGB888.create(h,w,CV_8UC3);
@@ -2313,7 +2413,7 @@ void Tools::ShowOpenCV_QLabel_withRotate(cv::Mat img,QLabel *label,int RotateTyp
     }
     else {
       #ifdef ImageDebug
-       qDebug(" showOpenCV_QLabel_withRotate | ERROR : unsupport image type") ;
+       Logger::Log(" showOpenCV_QLabel_withRotate | ERROR : unsupport image type", LogLevel::INFO, DeviceType::MAIN);
        #endif
     }
 
@@ -2359,7 +2459,7 @@ void Tools::ShowOpenCV_QLabel_withRotate(cv::Mat img,QLabel *label,int RotateTyp
     //delete simg;
     imgRGB888.release();
   #ifdef ImageDebug
-    qDebug()<<"showOpenCV_QLabel_withRotate | used time(ms) "<<t.elapsed();
+    Logger::Log("showOpenCV_QLabel_withRotate | used time(ms) " + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
   #endif
 }
 
@@ -2373,8 +2473,8 @@ void Tools::ImageSoftAWB(cv::Mat sourceImg16, cv::Mat& targetImg16, QString CFA,
 
   double gain1, gain2, gain3, gain4;
 
-  qDebug() << "CFA:" << CFA;
-  qDebug() << "gainR:" << gainR << "," << "gainB:" << gainB;
+  Logger::Log("CFA:" + std::string(CFA.toStdString()), LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("gainR:" + std::to_string(gainR) + "," + "gainB:" + std::to_string(gainB), LogLevel::INFO, DeviceType::MAIN);
 
   if (CFA == "RGGB") {
     gain1 = 1.0 * gainR;
@@ -2416,7 +2516,7 @@ void Tools::ImageSoftAWB(cv::Mat sourceImg16, cv::Mat& targetImg16, QString CFA,
     }
   }
 
-  qInfo() << "ImageSoftAWB | used time (ms) " << t.elapsed();
+  Logger::Log("ImageSoftAWB | used time (ms) " + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
 }
 
 void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
@@ -2467,8 +2567,8 @@ void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
     W = 65535;
   }
   #ifdef ImageDebug
-  qDebug() << "getAutoStretch |mean std B W" << mean.val[0] << std.val[0] << B << W;
-  qDebug() << "getAutoStretch | used time(ms) " << t.elapsed();
+  Logger::Log("getAutoStretch |mean std B W" + std::to_string(mean.val[0]) + " " + std::to_string(std.val[0]) + " " + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("getAutoStretch | used time(ms) " + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
   #endif
 }
 
@@ -2490,7 +2590,7 @@ void Tools::Bit16To8_MakeLUT(uint16_t B, uint16_t W, uint8_t* lut) {
     lut[i] = pixel;
   }
   #ifdef ImageDebug
-  qDebug() << "Bit16To8_MakeLUT |" << B << W;
+  Logger::Log("Bit16To8_MakeLUT |" + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
   #endif
 }
 
@@ -2498,7 +2598,7 @@ void Tools::Bit16To8_Stretch(cv::Mat img16, cv::Mat img8, uint16_t B,
                              uint16_t W) {
   // this API support 16bit image input, 3 channel and 1 channel
   #ifdef ImageDebug
-  qDebug() << "Bit16To8_Stretch | start" << B << W;
+  Logger::Log("Bit16To8_Stretch | start" + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
   #endif
   QElapsedTimer t;
   t.start();
@@ -2648,7 +2748,7 @@ void Tools::Bit16To8_Stretch(cv::Mat img16, cv::Mat img8, uint16_t B,
     */
   }
   #ifdef ImageDebug
-  qDebug() << "Bit16To8_Stretch | used time(ms) " << t.elapsed();
+  Logger::Log("Bit16To8_Stretch | used time(ms) " + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
   #endif
   // cvDebugShow(img16);
   // cvDebugShow(img8);
@@ -2762,12 +2862,12 @@ double Tools::getDecAngle(const QString &str)
                 s = x;
                 break;
             default:
-                qDebug() << "internal error, hd = " << hd;
+                Logger::Log("internal error, hd = " + std::to_string(hd), LogLevel::INFO, DeviceType::MAIN);
             }
         }
         else
         {
-            qDebug("getDecAngle failed to parse angle string: "); // << str;
+            Logger::Log("getDecAngle failed to parse angle string: " + str.toStdString(), LogLevel::INFO, DeviceType::MAIN);
             return -0.0;
         }
 
@@ -2800,7 +2900,7 @@ double Tools::getDecAngle(const QString &str)
             // Sanity check - h and N/S not accepted together
             if (isNS)
             {
-                qDebug() << "getDecAngle does not accept ...H...N/S: " << str;
+                Logger::Log("getDecAngle does not accept ...H...N/S: " + str.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                 return -0.0;
             }
             h2d = 15;
@@ -2809,13 +2909,13 @@ double Tools::getDecAngle(const QString &str)
         return deg * 2 * M_PI / 360.;
     }
 
-    qDebug() << "getDecAngle failed to parse angle string: " << str;
+    Logger::Log("getDecAngle failed to parse angle string: " + str.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     return -0.0;
 }
 
 cv::Mat Tools::CalMoments(cv::Mat image)
 {
-  qDebug("CalMoments:1");
+  Logger::Log("CalMoments:1", LogLevel::INFO, DeviceType::MAIN);
   cv::Mat grayImage;
   if(image.channels() == 1)
   {
@@ -2825,7 +2925,7 @@ cv::Mat Tools::CalMoments(cv::Mat image)
   {
     cvtColor(image, grayImage, CV_RGB2GRAY);
   }
-  qDebug("CalMoments:2");
+  Logger::Log("CalMoments:2", LogLevel::INFO, DeviceType::MAIN);
  
 
   return image;
@@ -2845,8 +2945,8 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
     cv::Scalar scalar = mean(gray);
     double Background = scalar.val[0];
 
-    // qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
-    // qDebug() << "Backgroud brightness:" << Background;
+    Logger::Log("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("Backgroud brightness:" + std::to_string(Background), LogLevel::INFO, DeviceType::MAIN);
 
     cv::Mat m = cv::Mat(gray.size(), gray.type(), cv::Scalar(Background));
     cv::Mat dst = cv::Mat::zeros(gray.size(), gray.type());
@@ -2910,7 +3010,7 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHF
 
   if (!result.success)
   {
-    printf("Error in loading FITS file");
+    Logger::Log("Error in loading FITS file", LogLevel::INFO, DeviceType::MAIN);
     return stars;
   }
 
@@ -3004,16 +3104,16 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FIT
   bool success = solver.extract(runHFR);
   if (!success)
   {
-    qWarning() << "Star extraction failed.";
+    Logger::Log("Star extraction failed.", LogLevel::INFO, DeviceType::MAIN);
   }
-  qInfo() << "success extract: " << success;
+  Logger::Log("success extract: " + std::to_string(success), LogLevel::INFO, DeviceType::MAIN);
 
   QList<FITSImage::Star> stars;
 
   stars = solver.getStarList();
 
   // 输出检测到的星点信息
-  qInfo() << "Detected " << stars.size() << " stars.";
+  Logger::Log("Detected " + std::to_string(stars.size()) + " stars.", LogLevel::INFO, DeviceType::MAIN);
   for (const auto &star : stars)
   {
     // std::cout << "Star at (" << star.x << ", " << star.y << ") with HFR: " << star.HFR << std::endl;
@@ -3023,7 +3123,7 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FIT
 }
 
 void Tools::StellarSolverLogOutput(QString text){
-  // qDebug() << "StellarSolver LogOutput: " << text.toUtf8().data();
+  // Logger::Log("StellarSolver LogOutput: " + text.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 }
 
 loadFitsResult Tools::loadFits(QString fileName)
@@ -3044,7 +3144,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_open_diskfile(&fptr, file.toLocal8Bit(), READONLY, &status))
   {
     // logIssue(QString("Error opening fits file %1").arg(file));
-    qWarning() << "Error opening fits file " << file;
+    Logger::Log("Error opening fits file " + file.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
     result.success = false;
     return result;
   }
@@ -3054,7 +3154,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_movabs_hdu(fptr, 1, IMAGE_HDU, &status))
   {
     // logIssue(QString("Could not locate image HDU."));
-    qWarning() << "Could not locate image HDU.";
+    Logger::Log("Could not locate image HDU.", LogLevel::INFO, DeviceType::MAIN);
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -3064,7 +3164,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_get_img_param(fptr, 3, &fitsBitPix, &(stats.ndim), naxes, &status))
   {
     // logIssue(QString("FITS file open error (fits_get_img_param)."));
-    qWarning() << "FITS file open error (fits_get_img_param).";
+    Logger::Log("FITS file open error (fits_get_img_param).", LogLevel::WARNING, DeviceType::MAIN);
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -3073,7 +3173,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (stats.ndim < 2)
   {
     // logIssue("1D FITS images are not supported.");
-    qWarning() << "1D FITS images are not supported.";
+    Logger::Log("1D FITS images are not supported.", LogLevel::WARNING, DeviceType::MAIN);
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -3118,7 +3218,7 @@ loadFitsResult Tools::loadFits(QString fileName)
     break;
   default:
     // logIssue(QString("Bit depth %1 is not supported.").arg(fitsBitPix));
-    qWarning() << "Bit depth %1 is not supported." << fitsBitPix;
+    Logger::Log("Bit depth %1 is not supported." + std::to_string(fitsBitPix), LogLevel::WARNING, DeviceType::MAIN);
 
     fits_close_file(fptr, &status);
     result.success = false;
@@ -3131,7 +3231,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (naxes[0] == 0 || naxes[1] == 0)
   {
     // logIssue(QString("Image has invalid dimensions %1x%2").arg(naxes[0]).arg(naxes[1]));
-    qWarning() << "Image has invalid dimensions." << naxes[0] << naxes[1];
+    Logger::Log("Image has invalid dimensions." + std::to_string(naxes[0]) + " " + std::to_string(naxes[1]), LogLevel::WARNING, DeviceType::MAIN);
   }
 
   stats.width = static_cast<uint16_t>(naxes[0]);
@@ -3151,7 +3251,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (m_ImageBuffer == nullptr)
   {
     // logIssue(QString("FITSData: Not enough memory for image_buffer channel. Requested: %1 bytes ").arg(m_ImageBufferSize));
-    qWarning() << "FITSData: Not enough memory for image_buffer channel. Requested:" << m_ImageBufferSize << "bytes ";
+    Logger::Log("FITSData: Not enough memory for image_buffer channel. Requested:" + std::to_string(m_ImageBufferSize) + "bytes ", LogLevel::WARNING, DeviceType::MAIN);
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -3162,7 +3262,7 @@ loadFitsResult Tools::loadFits(QString fileName)
   if (fits_read_img(fptr, static_cast<uint16_t>(stats.dataType), 1, nelements, nullptr, m_ImageBuffer, &anynullptr, &status))
   {
     // logIssue("Error reading image.");
-    qWarning() << "Error reading image.";
+    Logger::Log("Error reading image.", LogLevel::WARNING, DeviceType::MAIN);
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -3213,14 +3313,14 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     FirstMoment_y = yCoordinate;
 //------------------------------------------------------------
 
-    qInfo() << "Barycentric Coordinate:" << FirstMoment_x << "," << FirstMoment_y;
+    Logger::Log("Barycentric Coordinate:" + std::to_string(FirstMoment_x) + "," + std::to_string(FirstMoment_y), LogLevel::INFO, DeviceType::MAIN);
 
 
     int height = subimage.rows;
     int width = subimage.cols;
 
     ushort Bri1 = subimage.at<ushort>(FirstMoment_y, FirstMoment_x);
-    qInfo() << "Max:" << Bri1;
+    Logger::Log("Max:" + std::to_string(Bri1), LogLevel::INFO, DeviceType::MAIN);
 
     int x_s, x_b;
     // for (int i = FirstMoment_x; i > 0; i--)
@@ -3247,9 +3347,9 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
 
     // double FWHM = (x_b - x_s)/10.0;
     double FWHM = static_cast<double>(x_b-x_s)/10.0;
-    qInfo() << x_b << x_s;
+    Logger::Log("x_b:" + std::to_string(x_b) + " x_s:" + std::to_string(x_s), LogLevel::INFO, DeviceType::MAIN);
 
-    qInfo() << "[[[[[FWHM:" << FWHM << "]]]]]";
+    Logger::Log("[[[[FWHM:" + std::to_string(FWHM) + "]]]]]", LogLevel::INFO, DeviceType::MAIN);
     // qDebug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
 
     cv::Mat imagePoint = image.clone();
@@ -3386,7 +3486,7 @@ cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t c
         outputSize = 4 * (width / camxbin) * (height / camybin);
     }
     else {
-        std::cerr << "Unsupported depth!" << std::endl;
+        Logger::Log("Unsupported depth!", LogLevel::ERROR, DeviceType::MAIN);
         return cv::Mat(); // 返回空Mat
     }
 
@@ -3727,13 +3827,12 @@ uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32
 
 uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t camchannels, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
 {
-  qInfo("QHYCCD | QHYBASE.CPP | PixelsDataSoftBin | width = %d height = %d camchannels = %d depth = %d camxbin = %d camybin = %d iscolor = %d",
-         width, height, camchannels, depth, camxbin, camybin, iscolor);
+  Logger::Log("QHYCCD | QHYBASE.CPP | PixelsDataSoftBin | width = " + std::to_string(width) + " height = " + std::to_string(height) + " camchannels = " + std::to_string(camchannels) + " depth = " + std::to_string(depth) + " camxbin = " + std::to_string(camxbin) + " camybin = " + std::to_string(camybin) + " iscolor = " + std::to_string(iscolor), LogLevel::INFO, DeviceType::MAIN);
   if (iscolor)
   {
     if (depth == 8 && camchannels == 3)
     {
-      qInfo("depth = 8, camchannels = 3");
+      Logger::Log("depth = 8, camchannels = 3", LogLevel::INFO, DeviceType::MAIN);
       unsigned char *data = NULL;
       if (srcdata == bindata)
       {
@@ -3756,7 +3855,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
     }
     else if (depth == 16 && camchannels == 3)
     {
-      qInfo("depth = 16, camchannels = 3");
+      Logger::Log("depth = 16, camchannels = 3", LogLevel::INFO, DeviceType::MAIN);
       unsigned char *data = NULL;
       if (srcdata == bindata)
       {
@@ -3764,14 +3863,14 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
         memcpy(data, srcdata, 2 * width * height * camchannels);
         srcdata = data;
       }
-      qDebug("memcpy 1");
+      Logger::Log("memcpy 1", LogLevel::INFO, DeviceType::MAIN);
       cv::Mat srcMat(cv::Size(2 * width, height), CV_16UC(camchannels));
       cv::Mat dstMat(cv::Size(2 * width / camxbin, height / camybin), CV_16UC(camchannels));
       memcpy(srcMat.data, srcdata, srcMat.cols * srcMat.rows * srcMat.channels());
-      qDebug("memcpy 2");
+      Logger::Log("memcpy 2", LogLevel::INFO, DeviceType::MAIN);
       cv::resize(srcMat, dstMat, cv::Size(dstMat.cols, dstMat.rows));
       memcpy(bindata, dstMat.data, dstMat.cols * dstMat.rows * dstMat.channels());
-      qDebug("memcpy 3");
+      Logger::Log("memcpy 3", LogLevel::INFO, DeviceType::MAIN);
       srcMat.release();
       dstMat.release();
       if (data != NULL)
@@ -3791,7 +3890,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
       }
       if (depth == 8) // camchannels = 1
       {
-        qInfo("depth = 8, camchannels = 1");
+        Logger::Log("depth = 8, camchannels = 1", LogLevel::INFO, DeviceType::MAIN);
         memset(bindata, 0, (width / camxbin) * (height / camybin));
         for (uint32_t i = 0; i < height / camybin / 2; i++)
         {
@@ -3820,9 +3919,9 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
       }
       else if (depth == 16) // camchannels = 1
       {
-        qInfo("depth = 16, camchannels = 1");
+        Logger::Log("depth = 16, camchannels = 1", LogLevel::INFO, DeviceType::MAIN);
         memset(bindata, 0, 2 * (width / camxbin) * (height / camybin));
-        qDebug("memcpy 1");
+        Logger::Log("memcpy 1", LogLevel::INFO, DeviceType::MAIN);
         for (uint32_t i = 0; i < height / camybin / 2; i++)
         {
           uint16_t *pd = (uint16_t *)bindata + width / camxbin * i * 2;
@@ -3850,7 +3949,7 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
       }
       else if (depth == 32) // camchannels = 1
       {
-        qInfo("depth = 32, camchannels = 1");
+        Logger::Log("depth = 32, camchannels = 1", LogLevel::INFO, DeviceType::MAIN);
         memset(bindata, 0, 4 * (width / camxbin) * (height / camybin));
         for (uint32_t i = 0; i < height / camybin / 2; i++)
         {
@@ -3962,12 +4061,12 @@ void Tools::SaveMatTo8BitJPG(cv::Mat image)
 {
   if (image.empty())
   {
-    std::cerr << "输入图像为空，无法保存！" << std::endl;
+    Logger::Log("输入图像为空，无法保存！", LogLevel::ERROR, DeviceType::MAIN);
     return;
   }
 
   // 打印输入图像的信息
-  std::cout << "Input image type: " << image.type() << ", size: " << image.size() << std::endl;
+  Logger::Log("Input image type: " + std::to_string(image.type()) + ", size: " + std::to_string(image.size().width) + "x" + std::to_string(image.size().height), LogLevel::INFO, DeviceType::MAIN);
 
   cv::Mat image16;
   cv::Mat SendImage;
@@ -3975,45 +4074,45 @@ void Tools::SaveMatTo8BitJPG(cv::Mat image)
   // 确保输入图像是8位深度
   if (image.depth() == CV_8U)
   {
-    qDebug("256, 0");
+    Logger::Log("256, 0", LogLevel::INFO, DeviceType::MAIN);
     image.convertTo(image16, CV_16UC1, 256, 0); // x256  MSB alignment
   }
   else if (image.depth() == CV_16U)
   {
-    qDebug("1, 0");
+    Logger::Log("1, 0", LogLevel::INFO, DeviceType::MAIN);
     image.convertTo(image16, CV_16UC1, 1, 0);
   }
   else
   {
-    std::cerr << "Unsupported image depth: " << image.depth() << std::endl;
+    Logger::Log("Unsupported image depth: " + std::to_string(image.depth()), LogLevel::ERROR, DeviceType::MAIN);
     return;
   }
 
   // 打印转换后图像的信息
-  std::cout << "Converted image type: " << image16.type() << ", size: " << image16.size() << std::endl;
+  Logger::Log("Converted image type: " + std::to_string(image16.type()) + ", size: " + std::to_string(image16.size().width) + "x" + std::to_string(image16.size().height), LogLevel::INFO, DeviceType::MAIN);
 
   cv::Mat NewImage = image16;
 
   // 打印新图像的信息
-  std::cout << "New image type: " << NewImage.type() << ", size: " << NewImage.size() << std::endl;
+  Logger::Log("New image type: " + std::to_string(NewImage.type()) + ", size: " + std::to_string(NewImage.size().width) + "x" + std::to_string(NewImage.size().height), LogLevel::INFO, DeviceType::MAIN);
 
   // 将图像缩放到0-255范围内
   cv::normalize(NewImage, SendImage, 0, 255, cv::NORM_MINMAX, CV_8U);
   // cv::convertScaleAbs(NewImage, SendImage, 1 / 256.0);
 
   // 打印最终图像的信息
-  std::cout << "SendImage type: " << SendImage.type() << ", size: " << SendImage.size() << std::endl;
+  Logger::Log("SendImage type: " + std::to_string(SendImage.type()) + ", size: " + std::to_string(SendImage.size().width) + "x" + std::to_string(SendImage.size().height), LogLevel::INFO, DeviceType::MAIN);
 
   std::string outputFilename = "/dev/shm/MatTo8BitJPG.jpg";
   bool saved = cv::imwrite(outputFilename, SendImage);
 
   if (!saved)
   {
-    std::cerr << "图像保存失败！" << std::endl;
+    Logger::Log("图像保存失败！", LogLevel::ERROR, DeviceType::MAIN);
   }
   else
   {
-    std::cout << "图像已成功保存到: " << outputFilename << std::endl;
+    Logger::Log("图像已成功保存到: " + outputFilename, LogLevel::INFO, DeviceType::MAIN);
   }
 }
 
@@ -4021,19 +4120,19 @@ void Tools::SaveMatTo16BitPNG(cv::Mat image)
 {
     if (image.empty())
     {
-        std::cerr << "输入图像为空，无法保存！" << std::endl;
+        Logger::Log("输入图像为空，无法保存！", LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
     // 打印输入图像的信息
-    std::cout << "Input image type: " << image.type() << ", size: " << image.size() << std::endl;
+    Logger::Log("Input image type: " + std::to_string(image.type()) + ", size: " + std::to_string(image.size().width) + "x" + std::to_string(image.size().height), LogLevel::INFO, DeviceType::MAIN);
 
     cv::Mat image16;
 
     // 如果输入图像是 8 位深度，将其转换为 16 位深度
     if (image.depth() == CV_8U)
     {
-        std::cout << "将 8 位图像转换为 16 位..." << std::endl;
+        Logger::Log("将 8 位图像转换为 16 位...", LogLevel::INFO, DeviceType::MAIN);
         image.convertTo(image16, CV_16U, 256.0); // 将8位深度转换为16位深度，x256以扩展范围
     }
     else if (image.depth() == CV_16U)
@@ -4043,29 +4142,29 @@ void Tools::SaveMatTo16BitPNG(cv::Mat image)
     }
     else
     {
-        std::cerr << "Unsupported image depth: " << image.depth() << std::endl;
+        Logger::Log("Unsupported image depth: " + std::to_string(image.depth()), LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
     // 打印转换后图像的信息
-    std::cout << "Converted image type: " << image16.type() << ", size: " << image16.size() << std::endl;
+    Logger::Log("Converted image type: " + std::to_string(image16.type()) + ", size: " + std::to_string(image16.size().width) + "x" + std::to_string(image16.size().height), LogLevel::INFO, DeviceType::MAIN);
 
     std::string outputFilename = "/dev/shm/MatTo16BitPNG.png";
     bool saved = cv::imwrite(outputFilename, image16); // 使用 PNG 格式保存
 
     if (!saved)
     {
-        std::cerr << "图像保存失败！" << std::endl;
+        Logger::Log("图像保存失败！", LogLevel::ERROR, DeviceType::MAIN);
     }
     else
     {
-        std::cout << "图像已成功保存到: " << outputFilename << std::endl;
+        Logger::Log("图像已成功保存到: " + outputFilename, LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
 void Tools::SaveMatToFITS(const cv::Mat& image) {
     if (image.empty()) {
-        std::cerr << "输入图像为空！" << std::endl;
+        Logger::Log("输入图像为空！", LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
@@ -4097,7 +4196,7 @@ void Tools::SaveMatToFITS(const cv::Mat& image) {
     if (status) {
         fits_report_error(stderr, status);  // 输出错误信息
     } else {
-        std::cout << "成功保存图像到 " << filename << std::endl;
+        Logger::Log("成功保存图像到 " + filename, LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
@@ -4144,9 +4243,8 @@ double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
   int msec = datetimeUTC.time().msec();
 
 #ifdef debug
-  qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << datetimeUTC;
-  qDebug() << "tools.cpp|getLST_Degree|datetimeUTC:" << year << month << day
-           << hour << minute << second << msec;
+  Logger::Log("tools.cpp|getLST_Degree|datetimeUTC:" + datetimeUTC.toString("yyyy-MM-dd HH:mm:ss.zzz"), LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("tools.cpp|getLST_Degree|datetimeUTC:" + std::to_string(year) + "-" + std::to_string(month) + "-" + std::to_string(day) + " " + std::to_string(hour) + ":" + std::to_string(minute) + ":" + std::to_string(second) + "." + std::to_string(msec), LogLevel::INFO, DeviceType::MAIN);
 #endif
 
   double jd;
@@ -4156,7 +4254,7 @@ double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
   d = jd - 2451545.0;
 
 #ifdef debug
-  qDebug("tools.cpp|getLST_Degree|d = %f", d);
+  Logger::Log("tools.cpp|getLST_Degree|d = " + std::to_string(d), LogLevel::INFO, DeviceType::MAIN);
 #endif
 
   double UT;
@@ -4164,13 +4262,13 @@ double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
   UT = hour + (minute * 60 + second + (double)msec / 1000) / 3600.0;
 
 #ifdef debug
-  qDebug("tools.cpp|getLST_Degree|UT = %f", UT);
+  Logger::Log("tools.cpp|getLST_Degree|UT = " + std::to_string(UT), LogLevel::INFO, DeviceType::MAIN);
 #endif
 
   double longitude_Degree = RadToDegree(longitude_radian);
 
 #ifdef debug
-  qDebug("tools.cpp|getLST_Degree|longitude (degree) = %f", longitude_Degree);
+  Logger::Log("tools.cpp|getLST_Degree|longitude (degree) = " + std::to_string(longitude_Degree), LogLevel::INFO, DeviceType::MAIN);
 #endif
 
   double LST;
@@ -4178,14 +4276,13 @@ double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
   LST = 100.46 + 0.985647 * d + longitude_Degree + 15 * UT;
 
 #ifdef debug
-  qDebug("tools.cpp|getLST_Degree|LST before range = %f", LST);
+  Logger::Log("tools.cpp|getLST_Degree|LST before range = " + std::to_string(LST), LogLevel::INFO, DeviceType::MAIN);
 #endif
 
   LST = rangeTo(LST, 360.0, 0.0);
 
 #ifdef debug
-  qDebug("tools.cpp|getLST_Degree|LST after  range (degree) %f (hms) %s", LST,
-         qPrintable(radToHmsStr(DegreeToRad(LST), true)));
+  Logger::Log("tools.cpp|getLST_Degree|LST after  range (degree) " + std::to_string(LST) + " (hms) " + radToHmsStr(DegreeToRad(LST), true), LogLevel::INFO, DeviceType::MAIN);
 #endif
 
   return LST;
@@ -4261,8 +4358,7 @@ double Tools::getHA_Degree(double RA_radian, double LST_Degree) {
   HA = rangeTo(HA, 360.0, 0.0);
 
 #ifdef debug
-  qDebug("tools.cpp|getHA|HA (degree) %f (hms) %s", HA,
-         qPrintable(radToHmsStr(DegreeToRad(HA), true)));
+  Logger::Log("tools.cpp|getHA|HA (degree) " + std::to_string(HA) + " (hms) " + radToHmsStr(DegreeToRad(HA), true), LogLevel::INFO, DeviceType::MAIN);
 #endif
 
   return HA;
@@ -4289,12 +4385,8 @@ void Tools::ra_dec_to_alt_az(double ha_radian, double dec_radian,
       az_radian = temp;
   }
 #ifdef debug
-  qDebug("tools.cpp|ra_dec_to_alt_az|az alt (radian):%f %f (Degree) %f %f",
-         az_radian, alt_radian, RadToDegree(az_radian),
-         RadToDegree(alt_radian));
-  qDebug("tools.cpp|ra_dec_to_alt_az|az alt (dms):%s %s",
-         qPrintable(radToDmsStr(az_radian)),
-         qPrintable(radToDmsStr(alt_radian)));
+  Logger::Log("tools.cpp|ra_dec_to_alt_az|az alt (radian):" + std::to_string(az_radian) + " " + std::to_string(alt_radian) + " (Degree) " + std::to_string(RadToDegree(az_radian)) + " " + std::to_string(RadToDegree(alt_radian)), LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("tools.cpp|ra_dec_to_alt_az|az alt (dms):" + radToDmsStr(az_radian) + " " + radToDmsStr(alt_radian), LogLevel::INFO, DeviceType::MAIN);
 #endif
 }
 
@@ -4671,7 +4763,7 @@ SphericalCoordinates Tools::convertToSphericalCoordinates(CartesianCoordinates c
 MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height)
 {
   MinMaxFOV result;
-  qInfo() << "FocalLength: " << FocalLength << ", " << "CameraSize: " << CameraSize_width << ", " << CameraSize_height;
+  Logger::Log("FocalLength: " + std::to_string(FocalLength) + ", " + "CameraSize: " + std::to_string(CameraSize_width) + ", " + std::to_string(CameraSize_height), LogLevel::INFO, DeviceType::MAIN);
 
   double CameraSize_diagonal = sqrt(pow(CameraSize_width, 2) + pow(CameraSize_height, 2));
   // qDebug() << CameraSize_diagonal;
@@ -4684,7 +4776,7 @@ MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double Cam
   result.minFOV = minFOV;
   result.maxFOV = maxFOV;
   
-  qInfo() << "minFov: " << result.minFOV << ", " << "maxFov: " << result.maxFOV;
+  Logger::Log("minFov: " + std::to_string(result.minFOV) + ", " + "maxFov: " + std::to_string(result.maxFOV), LogLevel::INFO, DeviceType::MAIN);
 
   return result;
 }
@@ -4748,6 +4840,7 @@ double Tools::DMSToDegree(int degrees, int minutes, double seconds) {
 
 bool Tools::WaitForPlateSolveToComplete() {
   // qDebug() << "Wait For Plate Solve To Complete.";
+  Logger::Log("Wait For Plate Solve(" + std::to_string(!PlateSolveInProgress) + ") To Complete.", LogLevel::INFO, DeviceType::MAIN);
   return !PlateSolveInProgress;
 }
 
@@ -4755,87 +4848,126 @@ bool Tools::isSolveImageFinish() {
   return isSolveImageFinished;
 }
 
-SloveResults Tools::PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK)
+SloveResults Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK)
 {
-  PlateSolveInProgress = true;
-  isSolveImageFinished = false;
+    PlateSolveInProgress = true;
+    isSolveImageFinished = false;
 
-  SloveResults result;
-  MinMaxFOV FOV;
+    SloveResults result;
+    MinMaxFOV FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
 
-  FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
+    QString MinFOV = QString::number(FOV.minFOV);
+    QString MaxFOV = QString::number(FOV.maxFOV);
 
-  QString MinFOV = QString::number(FOV.minFOV);
-  QString MaxFOV = QString::number(FOV.maxFOV);
+    QProcess* cmd_test = new QProcess();
+    QObject::connect(cmd_test, SIGNAL(finished(int)), instance_, SLOT(onSolveFinished(int)));
 
-  // solve image
-  QProcess* cmd_test = new QProcess();
-  QObject::connect(cmd_test, SIGNAL(finished(int)), instance_, SLOT(onSolveFinished(int)));
+    // 连接输出和错误信号以实时处理输出
+    static QString lastOutput; // 上一次的输出内容
+    static int repeatCount = 0; // 重复次数
 
-  QString command_qstr;
-  // QString filename;
-  if(USEQHYCCDSDK == false)
-  {
-    // filename = "/dev/shm/ccd_simulator";
-    // command_qstr="solve-field " + filename + ".fits" + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-    command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-  }
-  else
-  {
-    filename = "/dev/shm/SDK_Capture";
-    // command_qstr="solve-field " + filename + ".png"  + " --overwrite --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + RA + " --dec " + DEC + " --radius 10 --nsigma 12  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-  }
+    QObject::connect(cmd_test, &QProcess::readyReadStandardOutput, [cmd_test]() {
+        static QString buffer;  // 用于累积输出的缓冲区
+        buffer += cmd_test->readAllStandardOutput();  // 累加新的输出到缓冲区
 
-  const char* command;
-  command = command_qstr.toLocal8Bit();
-  qDebug() << command;  // TODO:注释掉
+        int newlineIndex;
+        while ((newlineIndex = buffer.indexOf('\n')) != -1) {  // 检查是否有新行
+            QString output = buffer.left(newlineIndex).trimmed();  // 获取一行输出
+            buffer.remove(0, newlineIndex + 1);  // 从缓冲区移除这一行
 
-  cmd_test->start(command);
-  cmd_test->waitForStarted();
-  cmd_test->waitForFinished();
+            // 下面是原有的处理逻辑
+            if (output == lastOutput) {
+                repeatCount++;
+                if (repeatCount >= 10) {
+                    Logger::Log("当前解析进度:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    emit instance_->parseInfoEmitted(output);
+                    repeatCount = 0;
+                }
+            } else {
+                lastOutput = output;
+                repeatCount = 1;
+                Logger::Log("当前解析进度:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                emit instance_->parseInfoEmitted(output);
+            }
+        }
+    });
 
-  QApplication::processEvents();
+    QString command_qstr;
+    if (!USEQHYCCDSDK)
+    {
+      // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+      command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+    }
+    else
+    {
+        filename = "/dev/shm/SDK_Capture";
+        // Adjust command if needed
+    }
+    Logger::Log("当前解析命令:" + command_qstr.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    cmd_test->start(command_qstr);
+    cmd_test->waitForStarted();
+    cmd_test->waitForFinished();
+
+    QApplication::processEvents();
+
+    return result;
 }
 
 SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageHeight) {
   isSolveImageFinished = false;
 
   SloveResults result;
-  filename = filename.chopped(5);
+  filename = filename.chopped(5);  // 移除文件名的最后五个字符
 
   QProcess* cmd_test = new QProcess();
+  // cmd_test->start("wcsinfo /dev/shm/Capture_00003_bin.wcs");  // 启动外部程序来读取WCS信息
   cmd_test->start("wcsinfo " + filename + ".wcs");
-  cmd_test->waitForFinished();
+  cmd_test->waitForFinished();  // 等待外部程序执行完成
 
-  QString str;
-  str = cmd_test->readAllStandardOutput();
+  QString str = cmd_test->readAllStandardOutput();  // 读取程序输出的结果
 
-  qDebug("wcsinfo: %s", qPrintable(str));
+  if (str.isEmpty()) {
+    Logger::Log("wcsinfo 输出为空，解析失败", LogLevel::ERROR, DeviceType::MAIN);
+    result.RA_Degree = -1;
+    result.DEC_Degree = -1;
+    PlateSolveInProgress = false;
+    return result;
+  }
 
+  Logger::Log("wcsinfo: " + str.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+  // 查找关键信息的位置
   int pos1 = str.indexOf("ra_center");
   int pos2 = str.indexOf("dec_center");
   int pos3 = str.indexOf("orientation_center");
   int pos4 = str.indexOf("ra_center_h");
-  qDebug("pos 1 2 3 4: %d %d %d %d", pos1, pos2, pos3, pos4);
+  if (pos1 == -1 || pos2 == -1 || pos3 == -1 || pos4 == -1) {
+    Logger::Log("无法在wcsinfo输出中找到必要的关键字", LogLevel::ERROR, DeviceType::MAIN);
+    result.RA_Degree = -1;
+    result.DEC_Degree = -1;
+    PlateSolveInProgress = false;
+    return result;
+  }
+  Logger::Log("pos 1 2 3 4: " + std::to_string(pos1) + " " + std::to_string(pos2) + " " + std::to_string(pos3) + " " + std::to_string(pos4), LogLevel::INFO, DeviceType::MAIN);
 
-  QString str_RA_Degree, str_DEC_Degree, str_Rotation;
+  // 提取并转换坐标信息
+  QString str_RA_Degree = str.mid(pos1 + 10, pos2 - pos1 - 10 - 1);
+  QString str_DEC_Degree = str.mid(pos2 + 11, pos3 - pos2 - 11 - 1);
+  QString str_Rotation = str.mid(pos3 + 19, pos4 - pos3 - 19 - 1);
 
-  str_RA_Degree = str.mid(pos1 + 10, pos2 - pos1 - 10 - 1);
-  str_DEC_Degree = str.mid(pos2 + 11, pos3 - pos2 - 11 - 1);
-  str_Rotation = str.mid(pos3 + 19, pos4 - pos3 - 19 - 1);
+  double RA_Degree = str_RA_Degree.toDouble();
+  double DEC_Degree = str_DEC_Degree.toDouble();
+  double Rotation_Degree = str_Rotation.toDouble();
 
-  double RA_Degree, DEC_Degree, Rotation_Degree;
-  RA_Degree = str_RA_Degree.toDouble();
-  DEC_Degree = str_DEC_Degree.toDouble();
-  Rotation_Degree = str_Rotation.toDouble();
-
+  // 提取WCS参数并计算视场角的四个角的坐标
   WCSParams wcs = extractWCSParams(str);
   std::vector<SphericalCoordinates> corners = getFOVCorners(wcs, imageWidth, imageHeight);
-  std::cout << "FOV Corners (Ra, Dec):" << std::endl;
-  for (const auto &corner : corners)
-  {
-    std::cout << "Ra: " << corner.ra << ", Dec: " << corner.dec << std::endl;
+  Logger::Log("FOV Corners (Ra, Dec):", LogLevel::INFO, DeviceType::MAIN);
+  for (const auto &corner : corners) {
+    Logger::Log("Ra: " + std::to_string(corner.ra) + ", Dec: " + std::to_string(corner.dec), LogLevel::INFO, DeviceType::MAIN);
   }
+
+  // 存储结果
   result.RA_0 = corners[0].ra;
   result.DEC_0 = corners[0].dec;
   result.RA_1 = corners[1].ra;
@@ -4845,27 +4977,17 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   result.RA_3 = corners[3].ra;
   result.DEC_3 = corners[3].dec;
 
-  qInfo("RA DEC Rotation(degree) %f %f %f", RA_Degree, DEC_Degree, Rotation_Degree);
-  if (str == "") {
-    qWarning("Tools:Plate Solve Failur");
-    result.RA_Degree = -1;
-    result.DEC_Degree = -1;
-    PlateSolveInProgress = false;
-    return result;
-  } else {
-    qInfo() << "RA DEC " << QString::number(RA_Degree, 'g', 9) << " " << QString::number(DEC_Degree, 'g', 9);
-    result.RA_Degree = RA_Degree;
-    result.DEC_Degree = DEC_Degree;
-    PlateSolveInProgress = false;
-    return result;
-  }
+  Logger::Log("RA DEC Rotation(degree) " + std::to_string(RA_Degree) + " " + std::to_string(DEC_Degree) + " " + std::to_string(Rotation_Degree), LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("RA DEC " + QString::number(RA_Degree, 'g', 9).toStdString() + " " + QString::number(DEC_Degree, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+  result.RA_Degree = RA_Degree;
+  result.DEC_Degree = DEC_Degree;
+  PlateSolveInProgress = false;
+  return result;
 }
-
 SloveResults Tools::onSolveFinished(int exitCode) {
-  qInfo("Solve Finished!!!");
-  qInfo("Solve Finished!!!");
-  qInfo("Solve Finished!!!");
+  Logger::Log("Solve Finished!!!", LogLevel::INFO, DeviceType::MAIN);
   isSolveImageFinished = true;
+  PlateSolveInProgress = false;
 }
 
 WCSParams Tools::extractWCSParams(const QString& wcsInfo) {
@@ -4889,14 +5011,14 @@ WCSParams Tools::extractWCSParams(const QString& wcsInfo) {
     wcs.cd21 = wcsInfo.mid(pos7 + 5, wcsInfo.indexOf("\n", pos7) - pos7 - 5).toDouble();
     wcs.cd22 = wcsInfo.mid(pos8 + 5, wcsInfo.indexOf("\n", pos8) - pos8 - 5).toDouble();
 
-    qDebug() << "crpix0: " << QString::number(wcs.crpix0, 'g', 9);
-    qDebug() << "crpix1: " << QString::number(wcs.crpix1, 'g', 9);
-    qDebug() << "crval0: " << QString::number(wcs.crval0, 'g', 9);
-    qDebug() << "crval1: " << QString::number(wcs.crval1, 'g', 9);
-    qDebug() << "cd11: " << QString::number(wcs.cd11, 'g', 9);
-    qDebug() << "cd12: " << QString::number(wcs.cd12, 'g', 9);
-    qDebug() << "cd21: " << QString::number(wcs.cd21, 'g', 9);
-    qDebug() << "cd22: " << QString::number(wcs.cd22, 'g', 9);
+    Logger::Log("crpix0: " + QString::number(wcs.crpix0, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("crpix1: " + QString::number(wcs.crpix1, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("crval0: " + QString::number(wcs.crval0, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("crval1: " + QString::number(wcs.crval1, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("cd11: " + QString::number(wcs.cd11, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("cd12: " + QString::number(wcs.cd12, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("cd21: " + QString::number(wcs.cd21, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("cd22: " + QString::number(wcs.cd22, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
     
     return wcs;
 }
@@ -4968,77 +5090,10 @@ double Tools::calculateRSquared(QVector<QPointF> data, float a, float b, float c
         ssTotal += (y - meanY) * (y - meanY);
         ssResidual += (y - yFit) * (y - yFit);
     }
-
     double rSquared = 1 - (ssResidual / ssTotal);
 
     // rSquaredLabel->setText(QString("R²: %1").arg(rSquared));
     return rSquared;
 }
 
-// 2023.12.21 CJQ
-// StelObjectSelect Tools::getStelObjectSelectName() 
-// {
-//   StelObjectSelect Object;
-//   StelObjectMgr* Watch_objectMgr = GETSTELMODULE(StelObjectMgr);
-//   QList<StelObjectP> Watch_Selected = Watch_objectMgr->getSelectedObject();
-//   if (!Watch_Selected.empty()) {
-//     Object.name = Watch_Selected[0]->getEnglishName();
 
-//     double dec_j2000 = 0;
-// 		double ra_j2000 = 0;
-// 		StelUtils::rectToSphe(&ra_j2000,&dec_j2000,Watch_Selected[0]->getJ2000EquatorialPos(StelApp::getInstance().getCore())); 
-
-//     double GOTO_RA = Tools::RadToHour(ra_j2000);
-//     double GOTO_DEC = Tools::RadToDegree(dec_j2000);
-
-//     Object.Ra_Hour = GOTO_RA;
-//     Object.Dec_Degree = GOTO_DEC;
-
-//     return Object;
-//   }
-//   else
-//   {
-//     Object.name = "No Select";
-//     Object.Ra_Hour = 0;
-//     Object.Dec_Degree = 0;
-
-//     return Object;
-//   }
-// }
-
-// 2023.12.21 CJQ
-// StelObjectSelect Tools::getTargetRaDecFromStel(std::string SearchName)
-// {
-//   StelObjectSelect result;
-//   result.name = SearchName.c_str();
-//   StelObjectMgr* Search_objectMgr = GETSTELMODULE(StelObjectMgr);
-// 	StelMovementMgr* Search_mvmgr = GETSTELMODULE(StelMovementMgr);
-
-// 	Search_objectMgr->findAndSelect(SearchName.c_str());
-
-// 	QList<StelObjectP> newSelected = Search_objectMgr->getSelectedObject();
-// 	if (!newSelected.empty())
-// 	{
-// 		// Can't point to home planet
-// 		if (newSelected[0]->getEnglishName()!= StelApp::getInstance().getCore()->getCurrentLocation().planetName)
-// 		{
-//       double dec_j2000 = 0;
-// 		  double ra_j2000 = 0;
-// 		  StelUtils::rectToSphe(&ra_j2000,&dec_j2000,newSelected[0]->getJ2000EquatorialPos(StelApp::getInstance().getCore()));
-// 			Search_mvmgr->moveToObject(newSelected[0], Search_mvmgr->getAutoMoveDuration());
-// 			Search_mvmgr->setFlagTracking(true);
-//       result.Ra_Hour = Tools::RadToHour(ra_j2000);
-//       result.Dec_Degree = Tools::RadToDegree(dec_j2000);
-//       return result;
-// 		}
-// 		else
-//     {
-// 			Search_objectMgr->unSelect();
-//       result.name = "No Target";
-//       result.Ra_Hour = 0;
-//       result.Dec_Degree = 0;
-
-//       return result;
-// 		}	
-// 	}
-// }
