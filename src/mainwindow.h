@@ -244,11 +244,11 @@ public:
     bool isGuiding = false;
     bool isGuiderLoopExp = false;
 
-    int glROI_x;
-    int glROI_y;
-    int CaptureViewWidth;
-    int CaptureViewHeight;
-    int BoxSideLength = 500;
+    double glROI_x = 0;        // ROI的起始x坐标
+    double glROI_y = 0;        // ROI的起始y坐标
+    // int CaptureViewWidth = 0;
+    // int CaptureViewHeight = 0;
+    int BoxSideLength = 300;
     
     double FWHM = 0;
 
@@ -301,6 +301,19 @@ public:
     void focusLoopShooting(bool isLoop); //控制ROi循环拍摄
     void getFocuserLoopingState(); //获取ROi循环拍摄状态
 
+    // 用于同步ROI的信息
+    std::map<std::string, double> roiAndFocuserInfo; // 用于存储ROI信息
+    // roiAndFocuserInfo["ROI_x"] = 0;// ROI的x坐标,是左上角坐标,参考系是原大小的图像
+    // roiAndFocuserInfo["ROI_y"] = 0; // ROI的y坐标,是左上角坐标,参考系是原大小的图像
+    // roiAndFocuserInfo["BoxSideLength"] = 300; // ROI的边长,单位是像素,参考系是原大小的图像
+    // roiAndFocuserInfo["VisibleX"] = 0;      // 可见区域的x坐标,是中心点坐标,参考系是原大小的图像
+    // roiAndFocuserInfo["VisibleY"] = 0;      // 可见区域的y坐标,是中心点坐标,参考系是原大小的图像
+    // roiAndFocuserInfo["Scale"] = 1;        // 缩放比例,1为全图以宽为基准的全部显示,0.1是全图以宽为基准的10%显示
+    // roiAndFocuserInfo["SelectStarX"] = -1; // 选择的星点的x坐标,是中心点坐标,参考系是可视区的图像
+    // roiAndFocuserInfo["SelectStarY"] = -1; // 选择的星点的y坐标,是中心点坐标,参考系是可视区的图像
+    
+    void sendRoiInfo();   // 用于发送ROI信息
+    
 
     QTimer FWHMTimer; 
 

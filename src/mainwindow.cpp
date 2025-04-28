@@ -240,18 +240,24 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         }
     }
-    else if (parts.size() == 5 && parts[0].trimmed() == "RedBox")
+    // else if (parts.size() == 5 && parts[0].trimmed() == "RedBox")
+    // {
+    //     Logger::Log("RedBox:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString() + ":" + parts[3].trimmed().toStdString() + ":" + parts[4].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+    //     int x = parts[1].trimmed().toInt();
+    //     int y = parts[2].trimmed().toInt();
+    //     int width = parts[3].trimmed().toInt();
+    //     int height = parts[4].trimmed().toInt();
+    //     glROI_x = x;
+    //     glROI_y = y;
+    //     CaptureViewWidth = width;
+    //     CaptureViewHeight = height;
+    //     Logger::Log("RedBox:" + std::to_string(glROI_x) + ":" + std::to_string(glROI_y) + ":" + std::to_string(CaptureViewWidth) + ":" + std::to_string(CaptureViewHeight), LogLevel::DEBUG, DeviceType::MAIN);
+    // }
+    else if (parts.size() == 3 && parts[0].trimmed() == "setROIPosition")
     {
-        Logger::Log("RedBox:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString() + ":" + parts[3].trimmed().toStdString() + ":" + parts[4].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-        int x = parts[1].trimmed().toInt();
-        int y = parts[2].trimmed().toInt();
-        int width = parts[3].trimmed().toInt();
-        int height = parts[4].trimmed().toInt();
-        glROI_x = x;
-        glROI_y = y;
-        CaptureViewWidth = width;
-        CaptureViewHeight = height;
-        Logger::Log("RedBox:" + std::to_string(glROI_x) + ":" + std::to_string(glROI_y) + ":" + std::to_string(CaptureViewWidth) + ":" + std::to_string(CaptureViewHeight), LogLevel::DEBUG, DeviceType::MAIN);
+        Logger::Log("setROIPosition:" + parts[1].trimmed().toStdString() + "*" + parts[2].trimmed().toStdString() , LogLevel::INFO, DeviceType::MAIN);
+        glROI_x = parts[1].trimmed().toDouble();
+        glROI_y = parts[2].trimmed().toDouble();
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "RedBoxSizeChange")
     {
@@ -564,7 +570,11 @@ void MainWindow::onMessageReceived(const QString &message)
             if (isFocusLoopShooting) {
                 emit wsThread->sendMessageToClient("CameraInExposuring:False");
             } else {
-                emit wsThread->sendMessageToClient("CameraInExposuring:True");
+                if (isFocusLoopShooting) {
+                    emit wsThread->sendMessageToClient("CameraInExposuring:False");
+                } else {
+                    emit wsThread->sendMessageToClient("CameraInExposuring:True");
+                }
             }
         }
         Logger::Log("getCaptureStatus finish!", LogLevel::DEBUG, DeviceType::MAIN);
@@ -1134,6 +1144,29 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("getFocuserLoopingState ...", LogLevel::DEBUG, DeviceType::FOCUSER);
         getFocuserLoopingState();
         Logger::Log("getFocuserLoopingState finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }else if(parts[0].trimmed() == "getROIInfo"){
+        Logger::Log("getRedBoxState ...", LogLevel::DEBUG, DeviceType::MAIN);
+        sendRoiInfo();
+        Logger::Log("getRedBoxState finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if(parts[0].trimmed() == "sendRedBoxState" && parts.size() == 4){
+        Logger::Log("sendRedBoxState ...", LogLevel::DEBUG, DeviceType::MAIN);
+        roiAndFocuserInfo["BoxSideLength"] = parts[1].trimmed().toDouble();
+        roiAndFocuserInfo["ROI_x"] = parts[2].trimmed().toDouble();
+        roiAndFocuserInfo["ROI_y"] = parts[3].trimmed().toDouble();
+        Logger::Log("sendRedBoxState finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if(parts[0].trimmed() == "sendVisibleArea" && parts.size() == 4){
+        Logger::Log("sendVisibleArea ...", LogLevel::DEBUG, DeviceType::MAIN);
+        roiAndFocuserInfo["VisibleX"] = parts[1].trimmed().toDouble();
+        roiAndFocuserInfo["VisibleY"] = parts[2].trimmed().toDouble();
+        roiAndFocuserInfo["Scale"] = parts[3].trimmed().toDouble();
+    }else if(parts[0].trimmed() == "sendSelectStars" && parts.size() == 3){
+        Logger::Log("sendSelectStars ...", LogLevel::DEBUG, DeviceType::MAIN);
+        roiAndFocuserInfo["SelectStarX"] = parts[1].trimmed().toDouble();
+        roiAndFocuserInfo["SelectStarY"] = parts[2].trimmed().toDouble();
+        Logger::Log("sendSelectStars finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }
+    else{
+        Logger::Log("Unknown message: " + message.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
     }
     
 }
@@ -3510,7 +3543,7 @@ void MainWindow::FocusingLooping()
     glIsFocusingLooping = true;
     Logger::Log("FocusingLooping | glIsFocusingLooping:" + std::to_string(glIsFocusingLooping), LogLevel::DEBUG, DeviceType::FOCUSER);
     // 如果相机状态为“显示中”，则开始处理曝光
-    if (glMainCameraStatu == "Displaying")
+    if (glMainCameraStatu != "Exposuring")
     {
         double expTime_sec;
         expTime_sec = (double)glExpTime / 1000;  // 将曝光时间从毫秒转换为秒
@@ -3521,8 +3554,13 @@ void MainWindow::FocusingLooping()
         QSize cameraResolution{glMainCCDSizeX, glMainCCDSizeY};
         QSize ROI{BoxSideLength, BoxSideLength};
 
-        int cameraX = static_cast<int>(glROI_x * cameraResolution.width() / static_cast<double>(CaptureViewWidth));
-        int cameraY = static_cast<int>(glROI_y * cameraResolution.height() / static_cast<double>(CaptureViewHeight));
+        // int cameraX = static_cast<int>(glROI_x * cameraResolution.width() / static_cast<double>(CaptureViewWidth));
+        // int cameraY = static_cast<int>(glROI_y * cameraResolution.height() / static_cast<double>(CaptureViewHeight));
+
+        Logger::Log("FocusingLooping |当前ROI值 glROI_x:" + std::to_string(glROI_x) + ", glROI_y:" + std::to_string(glROI_y), LogLevel::DEBUG, DeviceType::FOCUSER);
+        int cameraX = static_cast<int>(glROI_x );
+        int cameraY = static_cast<int>(glROI_y );
+
 
         // 确保 cameraX 和 cameraY 是偶数
         if (cameraX % 2 != 0) {
@@ -4523,7 +4561,7 @@ uint32_t MainWindow::call_phd_DecAggression(int Aggression) {
 
 void MainWindow::ShowPHDdata()
 {
-    Logger::Log("ShowPHDdata start ...", LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("ShowPHDdata start ...", LogLevel::DEBUG, DeviceType::MAIN);
     unsigned int currentPHDSizeX = 1;
     unsigned int currentPHDSizeY = 1;
     unsigned int bitDepth = 1;
@@ -4557,7 +4595,7 @@ void MainWindow::ShowPHDdata()
 
     if (sharedmemory_phd[2047] != 0x02)
     {
-        Logger::Log("ShowPHDdata | no image comes", LogLevel::DEBUG, DeviceType::MAIN);
+        // Logger::Log("ShowPHDdata | no image comes", LogLevel::DEBUG, DeviceType::MAIN);
         // sleep(1); // 如果没有图像，等待1秒
         return; // if there is no image comes, return
     }
@@ -4565,13 +4603,13 @@ void MainWindow::ShowPHDdata()
     mem_offset = 1024;
     // guide image dimention data
     memcpy(&currentPHDSizeX, sharedmemory_phd + mem_offset, sizeof(unsigned int));
-    Logger::Log("ShowPHDdata | get currentPHDSizeX:" + std::to_string(currentPHDSizeX), LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("ShowPHDdata | get currentPHDSizeX:" + std::to_string(currentPHDSizeX), LogLevel::DEBUG, DeviceType::MAIN);
     mem_offset = mem_offset + sizeof(unsigned int);
     memcpy(&currentPHDSizeY, sharedmemory_phd + mem_offset, sizeof(unsigned int));
-    Logger::Log("ShowPHDdata | get currentPHDSizeY:" + std::to_string(currentPHDSizeY), LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("ShowPHDdata | get currentPHDSizeY:" + std::to_string(currentPHDSizeY), LogLevel::DEBUG, DeviceType::MAIN);
     mem_offset = mem_offset + sizeof(unsigned int);
     memcpy(&bitDepth, sharedmemory_phd + mem_offset, sizeof(unsigned char));
-    Logger::Log("ShowPHDdata | get bitDepth:" + std::to_string(bitDepth), LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("ShowPHDdata | get bitDepth:" + std::to_string(bitDepth), LogLevel::DEBUG, DeviceType::MAIN);
     mem_offset = mem_offset + sizeof(unsigned char);
 
     mem_offset = mem_offset + sizeof(int); // &sdk_num
@@ -4582,82 +4620,82 @@ void MainWindow::ShowPHDdata()
 
     // guide error data
     guideDataIndicator = sharedmemory_phd[guideDataIndicatorAddress];
-    Logger::Log("ShowPHDdata | get guideDataIndicator:" + std::to_string(guideDataIndicator), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get guideDataIndicator:" + std::to_string(guideDataIndicator), LogLevel::DEBUG, DeviceType::GUIDER);
 
     mem_offset = mem_offset + sizeof(unsigned char);
     memcpy(&dRa, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get dRa:" + std::to_string(dRa), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get dRa:" + std::to_string(dRa), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&dDec, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&SNR, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get SNR:" + std::to_string(SNR), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get SNR:" + std::to_string(SNR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&MASS, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get MASS:" + std::to_string(MASS), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get MASS:" + std::to_string(MASS), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
 
     memcpy(&RADUR, sharedmemory_phd + mem_offset, sizeof(int));
-    Logger::Log("ShowPHDdata | get RADUR:" + std::to_string(RADUR), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get RADUR:" + std::to_string(RADUR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(int);
     memcpy(&DECDUR, sharedmemory_phd + mem_offset, sizeof(int));
-    Logger::Log("ShowPHDdata | get DECDUR:" + std::to_string(DECDUR), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get DECDUR:" + std::to_string(DECDUR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(int);
 
     memcpy(&RADIR, sharedmemory_phd + mem_offset, sizeof(char));
-    Logger::Log("ShowPHDdata | get RADIR:" + std::to_string(RADIR), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get RADIR:" + std::to_string(RADIR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(char);
     memcpy(&DECDIR, sharedmemory_phd + mem_offset, sizeof(char));
-    Logger::Log("ShowPHDdata | get DECDIR:" + std::to_string(DECDIR), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get DECDIR:" + std::to_string(DECDIR), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(char);
 
     memcpy(&RMSErrorX, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get RMSErrorX:" + std::to_string(RMSErrorX), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get RMSErrorX:" + std::to_string(RMSErrorX), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&RMSErrorY, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get RMSErrorY:" + std::to_string(RMSErrorY), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get RMSErrorY:" + std::to_string(RMSErrorY), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&RMSErrorTotal, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get RMSErrorTotal:" + std::to_string(RMSErrorTotal), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get RMSErrorTotal:" + std::to_string(RMSErrorTotal), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&PixelRatio, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get PixelRatio:" + std::to_string(PixelRatio), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get PixelRatio:" + std::to_string(PixelRatio), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&StarLostAlert, sharedmemory_phd + mem_offset, sizeof(bool));
-    Logger::Log("ShowPHDdata | get StarLostAlert:" + std::to_string(StarLostAlert), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get StarLostAlert:" + std::to_string(StarLostAlert), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
     memcpy(&InGuiding, sharedmemory_phd + mem_offset, sizeof(bool));
-    Logger::Log("ShowPHDdata | get InGuiding:" + std::to_string(InGuiding), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get InGuiding:" + std::to_string(InGuiding), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
 
     mem_offset = 1024 + 200;
     memcpy(&isSelected, sharedmemory_phd + mem_offset, sizeof(bool));
-    Logger::Log("ShowPHDdata | get isSelected:" + std::to_string(isSelected), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get isSelected:" + std::to_string(isSelected), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
     memcpy(&StarX, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get StarX:" + std::to_string(StarX), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get StarX:" + std::to_string(StarX), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&StarY, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get StarY:" + std::to_string(StarY), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get StarY:" + std::to_string(StarY), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&showLockedCross, sharedmemory_phd + mem_offset, sizeof(bool));
-    Logger::Log("ShowPHDdata | get showLockedCross:" + std::to_string(showLockedCross), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get showLockedCross:" + std::to_string(showLockedCross), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(bool);
     memcpy(&LockedPositionX, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get LockedPositionX:" + std::to_string(LockedPositionX), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get LockedPositionX:" + std::to_string(LockedPositionX), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&LockedPositionY, sharedmemory_phd + mem_offset, sizeof(double));
-    Logger::Log("ShowPHDdata | get LockedPositionY:" + std::to_string(LockedPositionY), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get LockedPositionY:" + std::to_string(LockedPositionY), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(double);
     memcpy(&MultiStarNumber, sharedmemory_phd + mem_offset, sizeof(unsigned char));
-    Logger::Log("ShowPHDdata | get MultiStarNumber:" + std::to_string(MultiStarNumber), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get MultiStarNumber:" + std::to_string(MultiStarNumber), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(unsigned char);
     memcpy(MultiStarX, sharedmemory_phd + mem_offset, sizeof(MultiStarX));
-    Logger::Log("ShowPHDdata | get MultiStarX , MultistarX length:" + std::to_string(sizeof(MultiStarX)), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get MultiStarX , MultistarX length:" + std::to_string(sizeof(MultiStarX)), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(MultiStarX);
     memcpy(MultiStarY, sharedmemory_phd + mem_offset, sizeof(MultiStarY));
-    Logger::Log("ShowPHDdata | get MultiStarY , MultistarY length:" + std::to_string(sizeof(MultiStarY)), LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | get MultiStarY , MultistarY length:" + std::to_string(sizeof(MultiStarY)), LogLevel::DEBUG, DeviceType::GUIDER);
     mem_offset = mem_offset + sizeof(MultiStarY);
 
     sharedmemory_phd[guideDataIndicatorAddress] = 0x00; // have been read back
@@ -4672,9 +4710,9 @@ void MainWindow::ShowPHDdata()
     glPHD_LockPositionY = LockedPositionY;
     glPHD_ShowLockCross = showLockedCross;
 
-    Logger::Log("ShowPHDdata | clear glPHD_Stars", LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | clear glPHD_Stars", LogLevel::DEBUG, DeviceType::GUIDER);
     glPHD_Stars.clear();
-    Logger::Log("ShowPHDdata | send ClearPHD2MultiStars", LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | send ClearPHD2MultiStars", LogLevel::DEBUG, DeviceType::GUIDER);
     emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
     for (int i = 1; i < MultiStarNumber; i++)
     {
@@ -4688,7 +4726,7 @@ void MainWindow::ShowPHDdata()
         emit wsThread->sendMessageToClient("PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY)+ ":" + QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
     }
 
-    Logger::Log("ShowPHDdata | send PHD2StarBoxView and PHD2StarBoxPosition", LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | send PHD2StarBoxView and PHD2StarBoxPosition", LogLevel::DEBUG, DeviceType::GUIDER);
     // if (glPHD_StarX != 0 && glPHD_StarY != 0)
     // {
         if (glPHD_isSelected == true)
@@ -4702,7 +4740,7 @@ void MainWindow::ShowPHDdata()
             emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
         }
 
-        Logger::Log("ShowPHDdata | send PHD2StarCrossView and PHD2StarCrossPosition", LogLevel::DEBUG, DeviceType::GUIDER);
+    // Logger::Log("ShowPHDdata | send PHD2StarCrossView and PHD2StarCrossPosition", LogLevel::DEBUG, DeviceType::GUIDER);
         if (glPHD_ShowLockCross == true)
         {
             emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
@@ -4719,54 +4757,54 @@ void MainWindow::ShowPHDdata()
         // 导星过程中的数据
         unsigned char phdstatu;
         call_phd_checkStatus(phdstatu);
-        Logger::Log("ShowPHDdata | phdstatu:" + std::to_string(phdstatu), LogLevel::DEBUG, DeviceType::GUIDER);
-        Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | phdstatu:" + std::to_string(phdstatu), LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
         if (dRa != 0 && dDec != 0)
         {
-            Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
+            // Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
             QPointF tmp;
             tmp.setX(-dRa * PixelRatio);
             tmp.setY(dDec * PixelRatio);
             glPHD_rmsdate.append(tmp);
-            Logger::Log("ShowPHDdata | send AddScatterChartData", LogLevel::DEBUG, DeviceType::GUIDER);
+            // Logger::Log("ShowPHDdata | send AddScatterChartData", LogLevel::DEBUG, DeviceType::GUIDER);
             emit wsThread->sendMessageToClient("AddScatterChartData:" + QString::number(-dRa * PixelRatio) + ":" + QString::number(-dDec * PixelRatio));
 
             // 图像中的小绿框
             if (InGuiding == true)
             {
-                Logger::Log("ShowPHDdata | send GuiderStatus:InGuiding", LogLevel::DEBUG, DeviceType::GUIDER);
+                // Logger::Log("ShowPHDdata | send GuiderStatus:InGuiding", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
             }
             else
             {
-                Logger::Log("ShowPHDdata | send GuiderStatus:InCalibration", LogLevel::DEBUG, DeviceType::GUIDER);
+                // Logger::Log("ShowPHDdata | send GuiderStatus:InCalibration", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
             }
 
             if (StarLostAlert == true)
             {
-                Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert", LogLevel::DEBUG, DeviceType::GUIDER);
+                // Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:2");
             }
 
             emit wsThread->sendMessageToClient("AddRMSErrorData:" + QString::number(RMSErrorX, 'f', 3) + ":" + QString::number(RMSErrorX, 'f', 3));
         }
-        Logger::Log("ShowPHDdata | glPHD_rmsdate.size():" + std::to_string(glPHD_rmsdate.size()), LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | glPHD_rmsdate.size():" + std::to_string(glPHD_rmsdate.size()), LogLevel::DEBUG, DeviceType::GUIDER);
         for (int i = 0; i < glPHD_rmsdate.size(); i++)
         {
             if (i == glPHD_rmsdate.size() - 1)
             {
-                Logger::Log("ShowPHDdata | send AddLineChartData", LogLevel::DEBUG, DeviceType::GUIDER);
+                // Logger::Log("ShowPHDdata | send AddLineChartData", LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
                 if (i > 50)
                 {
-                    Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
+                    // Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
                 } else {
-                    Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
+                    // Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(0) + ":" + QString::number(50));
                 }
             }
@@ -4778,12 +4816,12 @@ void MainWindow::ShowPHDdata()
         unsigned char *srcData = new unsigned char[byteCount];
 
         mem_offset = 2048;
-        Logger::Log("ShowPHDdata | mem_offset:" + std::to_string(mem_offset), LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | mem_offset:" + std::to_string(mem_offset), LogLevel::DEBUG, DeviceType::GUIDER);
         memcpy(srcData, sharedmemory_phd + mem_offset, byteCount);
-        Logger::Log("ShowPHDdata | get srcData", LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | get srcData", LogLevel::DEBUG, DeviceType::GUIDER);
         sharedmemory_phd[2047] = 0x00; // 0x00= image has been read
 
-        Logger::Log("ShowPHDdata | guider image start to process ...", LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | guider image start to process ...", LogLevel::DEBUG, DeviceType::GUIDER);
         cv::Mat img8;
         cv::Mat PHDImg;
 
@@ -4803,7 +4841,7 @@ void MainWindow::ShowPHDdata()
 
         if (AutoStretch == true)
         {
-            Logger::Log("ShowPHDdata | Tools::GetAutoStretch", LogLevel::DEBUG, DeviceType::GUIDER);
+            // Logger::Log("ShowPHDdata | Tools::GetAutoStretch", LogLevel::DEBUG, DeviceType::GUIDER);
             Tools::GetAutoStretch(PHDImg, 0, B, W);
         }
         else
@@ -4812,17 +4850,17 @@ void MainWindow::ShowPHDdata()
             W = 65535;
         }
 
-        Logger::Log("ShowPHDdata | Tools::Bit16To8_Stretch", LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | Tools::Bit16To8_Stretch", LogLevel::DEBUG, DeviceType::GUIDER);
         Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
 
-        Logger::Log("ShowPHDdata | saveGuiderImageAsJPG", LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | saveGuiderImageAsJPG", LogLevel::DEBUG, DeviceType::GUIDER);
         saveGuiderImageAsJPG(image_raw8);
 
-        Logger::Log("ShowPHDdata | guider image process done", LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata | guider image process done", LogLevel::DEBUG, DeviceType::GUIDER);
         delete[] srcData;
         img8.release();
         PHDImg.release();
-        Logger::Log("ShowPHDdata finish!", LogLevel::DEBUG, DeviceType::GUIDER);
+        // Logger::Log("ShowPHDdata finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 }
 
@@ -4908,13 +4946,13 @@ void MainWindow::getTimeNow(int index)
 
 void MainWindow::onPHDControlGuideTimeout()
 {
-    Logger::Log("PHD2 Control Guide is Timeout !", LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("PHD2 Control Guide is Timeout !", LogLevel::DEBUG, DeviceType::MAIN);
     GetPHD2ControlInstruct();
 }
 
 void MainWindow::GetPHD2ControlInstruct()
 {
-    Logger::Log("GetPHD2ControlInstruct start ...", LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("GetPHD2ControlInstruct start ...", LogLevel::DEBUG, DeviceType::MAIN);
     std::lock_guard<std::mutex> lock(receiveMutex);
 
     unsigned int mem_offset;
@@ -4932,7 +4970,7 @@ void MainWindow::GetPHD2ControlInstruct()
     int ControlInstruct = 0;
 
     memcpy(&ControlInstruct, sharedmemory_phd + mem_offset, sizeof(int));
-    Logger::Log("GetPHD2ControlInstruct | get ControlInstruct:" + std::to_string(ControlInstruct), LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("GetPHD2ControlInstruct | get ControlInstruct:" + std::to_string(ControlInstruct), LogLevel::DEBUG, DeviceType::MAIN);
     int mem_offset_sdk_num = mem_offset;
     mem_offset = mem_offset + sizeof(int);
 
@@ -4943,17 +4981,17 @@ void MainWindow::GetPHD2ControlInstruct()
     if (sdk_num != 0)
     {
         getTimeNow(sdk_num);
-        Logger::Log("GetPHD2ControlInstruct | PHD2ControlTelescope:" + std::to_string(sdk_num) + "," + std::to_string(sdk_direction) + "," + std::to_string(sdk_duration), LogLevel::DEBUG, DeviceType::MAIN);
+        // Logger::Log("GetPHD2ControlInstruct | PHD2ControlTelescope:" + std::to_string(sdk_num) + "," + std::to_string(sdk_direction) + "," + std::to_string(sdk_duration), LogLevel::DEBUG, DeviceType::MAIN);
     }
     if (sdk_duration != 0)
     {
         MainWindow::ControlGuide(sdk_direction, sdk_duration);
 
         memcpy(sharedmemory_phd + mem_offset_sdk_num, &zero, sizeof(int));
-        Logger::Log("GetPHD2ControlInstruct | set ControlInstruct to 0", LogLevel::DEBUG, DeviceType::MAIN);
+        // Logger::Log("GetPHD2ControlInstruct | set ControlInstruct to 0", LogLevel::DEBUG, DeviceType::MAIN);
         call_phd_ChackControlStatus(sdk_num); // set pFrame->ControlStatus = 0;
     }
-    Logger::Log("GetPHD2ControlInstruct finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("GetPHD2ControlInstruct finish!", LogLevel::DEBUG, DeviceType::MAIN);
 }
 
 void MainWindow::FocuserControl_Goto(int Position)
@@ -5005,189 +5043,189 @@ void MainWindow::FocuserControl_Goto(int Position)
     Logger::Log("FocuserControl_Goto finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
-void MainWindow::AutoFocus() 
-{
-    Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
-    StopAutoFocus = false; // 初始化停止自动对焦标志为false
-    int stepIncrement = 100; // 每次移动的步长
+// void MainWindow::AutoFocus() 
+// {
+//     Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
+//     StopAutoFocus = false; // 初始化停止自动对焦标志为false
+//     int stepIncrement = 100; // 每次移动的步长
 
-    bool isInward = true; // 初始移动方向为向内
+//     bool isInward = true; // 初始移动方向为向内
 
-    Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
-    FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
+//     Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
+//     FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
 
-    int initialPosition = FocuserControl_getPosition(); // 获取初始位置
-    int currentPosition = initialPosition; // 当前对焦器位置
+//     int initialPosition = FocuserControl_getPosition(); // 获取初始位置
+//     int currentPosition = initialPosition; // 当前对焦器位置
 
-    int Pass3Steps; // 第三阶段的步数
+//     int Pass3Steps; // 第三阶段的步数
 
-    QVector<QPointF> focusMeasures; // 存储对焦测量值
+//     QVector<QPointF> focusMeasures; // 存储对焦测量值
 
-    int OnePassSteps = 8; // 每个阶段的步数
-    int LostStarNum = 0; // 丢失星点的计数
+//     int OnePassSteps = 8; // 每个阶段的步数
+//     int LostStarNum = 0; // 丢失星点的计数
 
-    Logger::Log("AutoFocus | to move focuser 5 steps inward ...", LogLevel::INFO, DeviceType::MAIN);
-    // 第一阶段：向内移动并计算HFR
-    for(int i = 1; i < OnePassSteps; i++) {
-        if (StopAutoFocus) { // 检查是否停止自动对焦
-            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement); // 计算HFR(半光通量半径)
-        Logger::Log("AutoFocus | Pass1: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-        if (HFR == -1) { // 检查HFR是否有效
-            LostStarNum++;
-            if (LostStarNum >= 3) { // 如果丢失星点超过3次，返回初始位置
-                Logger::Log("AutoFocus | Too many number of lost star points.", LogLevel::INFO, DeviceType::MAIN);
-                FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
-                Logger::Log("AutoFocus | Returned to the starting point.", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("AutoFocusOver:true");
-                return;
-            }
-        }
-        currentPosition = FocuserControl_getPosition(); // 更新当前对焦器位置
-        focusMeasures.append(QPointF(currentPosition, HFR)); // 记录测量值
-    }
+//     Logger::Log("AutoFocus | to move focuser 5 steps inward ...", LogLevel::INFO, DeviceType::MAIN);
+//     // 第一阶段：向内移动并计算HFR
+//     for(int i = 1; i < OnePassSteps; i++) {
+//         if (StopAutoFocus) { // 检查是否停止自动对焦
+//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement); // 计算HFR(半光通量半径)
+//         Logger::Log("AutoFocus | Pass1: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+//         if (HFR == -1) { // 检查HFR是否有效
+//             LostStarNum++;
+//             if (LostStarNum >= 3) { // 如果丢失星点超过3次，返回初始位置
+//                 Logger::Log("AutoFocus | Too many number of lost star points.", LogLevel::INFO, DeviceType::MAIN);
+//                 FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
+//                 Logger::Log("AutoFocus | Returned to the starting point.", LogLevel::INFO, DeviceType::MAIN);
+//                 emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//                 return;
+//             }
+//         }
+//         currentPosition = FocuserControl_getPosition(); // 更新当前对焦器位置
+//         focusMeasures.append(QPointF(currentPosition, HFR)); // 记录测量值
+//     }
 
-    // 拟合抛物线并检查结果
-    float a, b, c;
-    int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
-    if (result == 0)
-    {
-        if(R2 < 0.8) { // 检查拟合的R²值
-            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
+//     // 拟合抛物线并检查结果
+//     float a, b, c;
+//     int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
+//     if (result == 0)
+//     {
+//         if(R2 < 0.8) { // 检查拟合的R²值
+//             Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
 
-        if(a < 0) { // 检查抛物线的开口方向
-            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
-        }
+//         if(a < 0) { // 检查抛物线的开口方向
+//             Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
+//         }
 
-        int countLessThan = 0;
-        int countGreaterThan = 0;
+//         int countLessThan = 0;
+//         int countGreaterThan = 0;
 
-        // 统计测量点相对于最小点的分布
-        for (const QPointF &point : focusMeasures)
-        {
-            if (point.x() < minPoint_X)
-            {
-                countLessThan++;
-            }
-            else if (point.x() > minPoint_X)
-            {
-                countGreaterThan++;
-            }
-        }
+//         // 统计测量点相对于最小点的分布
+//         for (const QPointF &point : focusMeasures)
+//         {
+//             if (point.x() < minPoint_X)
+//             {
+//                 countLessThan++;
+//             }
+//             else if (point.x() > minPoint_X)
+//             {
+//                 countGreaterThan++;
+//             }
+//         }
 
-        // 根据分布调整对焦器
-        if (countLessThan > countGreaterThan) {
-            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            if(a > 0) {
-                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
-            } 
-        }
-        else if (countGreaterThan > countLessThan) {
-            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            if(a < 0) {
-                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
-            }
-        }
-    }
+//         // 根据分布调整对焦器
+//         if (countLessThan > countGreaterThan) {
+//             Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             if(a > 0) {
+//                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+//             } 
+//         }
+//         else if (countGreaterThan > countLessThan) {
+//             Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             if(a < 0) {
+//                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+//             }
+//         }
+//     }
 
-    // 第二阶段：继续向内移动并计算HFR
-    for(int i = 1; i < OnePassSteps; i++) {
-        if (StopAutoFocus) {
-            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        Logger::Log("AutoFocus | Pass2: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-        currentPosition = FocuserControl_getPosition();
-        focusMeasures.append(QPointF(currentPosition, HFR));
-    }
+//     // 第二阶段：继续向内移动并计算HFR
+//     for(int i = 1; i < OnePassSteps; i++) {
+//         if (StopAutoFocus) {
+//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+//         Logger::Log("AutoFocus | Pass2: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+//         currentPosition = FocuserControl_getPosition();
+//         focusMeasures.append(QPointF(currentPosition, HFR));
+//     }
 
-    // 再次拟合抛物线并检查结果
-    Logger::Log("AutoFocus | to fit quadratic curve again ...", LogLevel::INFO, DeviceType::MAIN);
-    float a_, b_, c_;
-    int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
-    if (result_ == 0)
-    {
-        if(R2 < 0.8) {
-            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
+//     // 再次拟合抛物线并检查结果
+//     Logger::Log("AutoFocus | to fit quadratic curve again ...", LogLevel::INFO, DeviceType::MAIN);
+//     float a_, b_, c_;
+//     int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
+//     if (result_ == 0)
+//     {
+//         if(R2 < 0.8) {
+//             Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
 
-        if(a_ < 0) {
-            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
-        }
+//         if(a_ < 0) {
+//             Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
+//         }
 
-        int countLessThan = 0;
-        int countGreaterThan = 0;
+//         int countLessThan = 0;
+//         int countGreaterThan = 0;
 
-        for (const QPointF &point : focusMeasures)
-        {
-            if (point.x() < minPoint_X)
-            {
-                countLessThan++;
-            }
-            else if (point.x() > minPoint_X)
-            {
-                countGreaterThan++;
-            }
-        }
+//         for (const QPointF &point : focusMeasures)
+//         {
+//             if (point.x() < minPoint_X)
+//             {
+//                 countLessThan++;
+//             }
+//             else if (point.x() > minPoint_X)
+//             {
+//                 countGreaterThan++;
+//             }
+//         }
 
-        // 根据分布调整对焦器
-        if (countLessThan > countGreaterThan) {
-            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            Pass3Steps = countLessThan-countGreaterThan;
-            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
+//         // 根据分布调整对焦器
+//         if (countLessThan > countGreaterThan) {
+//             Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             Pass3Steps = countLessThan-countGreaterThan;
+//             Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
 
-            FocusGotoAndCalFWHM(minPoint_X);
+//             FocusGotoAndCalFWHM(minPoint_X);
 
-            FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
-        }
-        else if (countGreaterThan > countLessThan) {
-            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            Pass3Steps = countGreaterThan - countLessThan;
-            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
+//             FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
+//         }
+//         else if (countGreaterThan > countLessThan) {
+//             Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             Pass3Steps = countGreaterThan - countLessThan;
+//             Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
 
-            FocusGotoAndCalFWHM(minPoint_X);
-            if(countLessThan > 0){
-                FocusMoveAndCalHFR(isInward, stepIncrement * countLessThan);
-            }
-        }
-        else {
-            Logger::Log("AutoFocus | The number of points less than and greater than minPoint_X is equal.", LogLevel::INFO, DeviceType::MAIN);
-            FocusGotoAndCalFWHM(minPoint_X);
-            Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-    }
+//             FocusGotoAndCalFWHM(minPoint_X);
+//             if(countLessThan > 0){
+//                 FocusMoveAndCalHFR(isInward, stepIncrement * countLessThan);
+//             }
+//         }
+//         else {
+//             Logger::Log("AutoFocus | The number of points less than and greater than minPoint_X is equal.", LogLevel::INFO, DeviceType::MAIN);
+//             FocusGotoAndCalFWHM(minPoint_X);
+//             Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//     }
 
-    // 第三阶段：根据Pass3Steps调整对焦器
-    for(int i = 1; i < Pass3Steps + 1; i++) {
-        if (StopAutoFocus) {
-            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        Logger::Log("AutoFocus | Pass3: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-        currentPosition = FocuserControl_getPosition();
-        focusMeasures.append(QPointF(currentPosition, HFR));
-    }
+//     // 第三阶段：根据Pass3Steps调整对焦器
+//     for(int i = 1; i < Pass3Steps + 1; i++) {
+//         if (StopAutoFocus) {
+//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+//         Logger::Log("AutoFocus | Pass3: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+//         currentPosition = FocuserControl_getPosition();
+//         focusMeasures.append(QPointF(currentPosition, HFR));
+//     }
 
-    FocusGotoAndCalFWHM(minPoint_X); // 移动到最佳位置
-    Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
-    currentPosition = FocuserControl_getPosition();
-    Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
-    emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
-}
+//     FocusGotoAndCalFWHM(minPoint_X); // 移动到最佳位置
+//     Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
+//     currentPosition = FocuserControl_getPosition();
+//     Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
+//     emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
+// }
 
 double MainWindow::FocusGotoAndCalFWHM(int steps) {
     QEventLoop loop;
@@ -8111,4 +8149,210 @@ void MainWindow::getFocuserLoopingState(){
     else{
         emit wsThread->sendMessageToClient("setFocuserLoopingState:false");
     }
+}
+
+void MainWindow::sendRoiInfo(){
+    // 检查并获取参数，如果不存在则使用默认值
+    double boxSideLength = roiAndFocuserInfo.count("BoxSideLength") ? roiAndFocuserInfo["BoxSideLength"] : this->BoxSideLength;
+    double roi_x = roiAndFocuserInfo.count("ROI_x") ? roiAndFocuserInfo["ROI_x"] : this->glROI_x;
+    double roi_y = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"] : this->glROI_y;
+    double visibleX = roiAndFocuserInfo.count("VisibleX") ? roiAndFocuserInfo["VisibleX"] : 0;
+    double visibleY = roiAndFocuserInfo.count("VisibleY") ? roiAndFocuserInfo["VisibleY"] : 0;
+    double scale = roiAndFocuserInfo.count("scale") ? roiAndFocuserInfo["scale"] : 1;
+    double selectStarX = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1;
+    double selectStarY = roiAndFocuserInfo.count("SelectStarY") ? roiAndFocuserInfo["SelectStarY"] : -1;
+
+    // 发送参数
+    emit wsThread->sendMessageToClient("SetRedBoxState:" + QString::number(boxSideLength) + ":" + QString::number(roi_x) + ":" + QString::number(roi_y));
+    emit wsThread->sendMessageToClient("SetVisibleArea:" + QString::number(visibleX) + ":" + QString::number(visibleY) + ":" + QString::number(scale));
+    emit wsThread->sendMessageToClient("SetSelectStars:" + QString::number(selectStarX) + ":" + QString::number(selectStarY));
+}
+
+void MainWindow::AutoFocus() 
+{
+    Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
+    StopAutoFocus = false; // 初始化停止自动对焦标志为false
+    int stepIncrement = 100; // 每次移动的步长
+    currentPosition = FocuserControl_getPosition();
+    if (currentPosition > 0){
+        bool isInward = true; // 初始移动方向为向内
+    }else{
+        bool isInward = false; // 初始移动方向为向外
+    }
+    
+
+    Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
+    FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
+
+    int initialPosition = FocuserControl_getPosition(); // 获取初始位置
+    int currentPosition = initialPosition; // 当前对焦器位置
+
+    int Pass3Steps; // 第三阶段的步数
+
+    QVector<QPointF> focusMeasures; // 存储对焦测量值
+
+    int OnePassSteps = 8; // 每个阶段的步数
+    int LostStarNum = 0; // 丢失星点的计数
+
+    Logger::Log("AutoFocus | to move focuser 5 steps inward ...", LogLevel::INFO, DeviceType::MAIN);
+    // 第一阶段：向内移动并计算HFR
+    for(int i = 1; i < OnePassSteps; i++) {
+        if (StopAutoFocus) { // 检查是否停止自动对焦
+            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement); // 计算HFR(半光通量半径)
+        Logger::Log("AutoFocus | Pass1: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+        if (HFR == -1) { // 检查HFR是否有效
+            LostStarNum++;
+            if (LostStarNum >= 3) { // 如果丢失星点超过3次，返回初始位置
+                Logger::Log("AutoFocus | Too many number of lost star points.", LogLevel::INFO, DeviceType::MAIN);
+                FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
+                Logger::Log("AutoFocus | Returned to the starting point.", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("AutoFocusOver:true");
+                return;
+            }
+        }
+        currentPosition = FocuserControl_getPosition(); // 更新当前对焦器位置
+        focusMeasures.append(QPointF(currentPosition, HFR)); // 记录测量值
+    }
+
+    // 拟合抛物线并检查结果
+    float a, b, c;
+    int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
+    if (result == 0)
+    {
+        if(R2 < 0.8) { // 检查拟合的R²值
+            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+
+        if(a < 0) { // 检查抛物线的开口方向
+            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
+        }
+
+        int countLessThan = 0;
+        int countGreaterThan = 0;
+
+        // 统计测量点相对于最小点的分布
+        for (const QPointF &point : focusMeasures)
+        {
+            if (point.x() < minPoint_X)
+            {
+                countLessThan++;
+            }
+            else if (point.x() > minPoint_X)
+            {
+                countGreaterThan++;
+            }
+        }
+
+        // 根据分布调整对焦器
+        if (countLessThan > countGreaterThan) {
+            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+            if(a > 0) {
+                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+            } 
+        }
+        else if (countGreaterThan > countLessThan) {
+            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+            if(a < 0) {
+                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+            }
+        }
+    }
+
+    // 第二阶段：继续向内移动并计算HFR
+    for(int i = 1; i < OnePassSteps; i++) {
+        if (StopAutoFocus) {
+            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+        Logger::Log("AutoFocus | Pass2: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+        currentPosition = FocuserControl_getPosition();
+        focusMeasures.append(QPointF(currentPosition, HFR));
+    }
+
+    // 再次拟合抛物线并检查结果
+    Logger::Log("AutoFocus | to fit quadratic curve again ...", LogLevel::INFO, DeviceType::MAIN);
+    float a_, b_, c_;
+    int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
+    if (result_ == 0)
+    {
+        if(R2 < 0.8) {
+            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+
+        if(a_ < 0) {
+            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
+        }
+
+        int countLessThan = 0;
+        int countGreaterThan = 0;
+
+        for (const QPointF &point : focusMeasures)
+        {
+            if (point.x() < minPoint_X)
+            {
+                countLessThan++;
+            }
+            else if (point.x() > minPoint_X)
+            {
+                countGreaterThan++;
+            }
+        }
+
+        // 根据分布调整对焦器
+        if (countLessThan > countGreaterThan) {
+            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+            Pass3Steps = countLessThan-countGreaterThan;
+            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
+
+            FocusGotoAndCalFWHM(minPoint_X);
+
+            FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
+        }
+        else if (countGreaterThan > countLessThan) {
+            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+            Pass3Steps = countGreaterThan - countLessThan;
+            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
+
+            FocusGotoAndCalFWHM(minPoint_X);
+            if(countLessThan > 0){
+                FocusMoveAndCalHFR(isInward, stepIncrement * countLessThan);
+            }
+        }
+        else {
+            Logger::Log("AutoFocus | The number of points less than and greater than minPoint_X is equal.", LogLevel::INFO, DeviceType::MAIN);
+            FocusGotoAndCalFWHM(minPoint_X);
+            Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+    }
+
+    // 第三阶段：根据Pass3Steps调整对焦器
+    for(int i = 1; i < Pass3Steps + 1; i++) {
+        if (StopAutoFocus) {
+            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+            return;
+        }
+        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+        Logger::Log("AutoFocus | Pass3: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+        currentPosition = FocuserControl_getPosition();
+        focusMeasures.append(QPointF(currentPosition, HFR));
+    }
+
+    FocusGotoAndCalFWHM(minPoint_X); // 移动到最佳位置
+    Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
+    currentPosition = FocuserControl_getPosition();
+    Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
+    emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
 }
