@@ -54,6 +54,15 @@
 
 #include "Logger.h"
 
+
+// 定义一个新的结构体来存储星点的信息和电调位置
+struct StarWithFocuserPosition {
+    double x;  // 星点的 x 坐标
+    double y;  // 星点的 y 坐标
+    double HFR;  // 星点的 HFR 值
+    int focuserPosition;  // 当前电调位置
+};
+
 class MainWindow : public QObject
 {
     Q_OBJECT
@@ -300,7 +309,7 @@ public:
     bool isFocusLoopShooting = false; //控制ROi循环拍摄
     void focusLoopShooting(bool isLoop); //控制ROi循环拍摄
     void getFocuserLoopingState(); //获取ROi循环拍摄状态
-
+    std::pair<int,double> selectStar(QList<FITSImage::Star> stars); //用于选择用于计算自动对焦的星点
     // 用于同步ROI的信息
     std::map<std::string, double> roiAndFocuserInfo; // 用于存储ROI信息
     // roiAndFocuserInfo["ROI_x"] = 0;// ROI的x坐标,是左上角坐标,参考系是原大小的图像
@@ -309,8 +318,8 @@ public:
     // roiAndFocuserInfo["VisibleX"] = 0;      // 可见区域的x坐标,是中心点坐标,参考系是原大小的图像
     // roiAndFocuserInfo["VisibleY"] = 0;      // 可见区域的y坐标,是中心点坐标,参考系是原大小的图像
     // roiAndFocuserInfo["Scale"] = 1;        // 缩放比例,1为全图以宽为基准的全部显示,0.1是全图以宽为基准的10%显示
-    // roiAndFocuserInfo["SelectStarX"] = -1; // 选择的星点的x坐标,是中心点坐标,参考系是可视区的图像
-    // roiAndFocuserInfo["SelectStarY"] = -1; // 选择的星点的y坐标,是中心点坐标,参考系是可视区的图像
+    // roiAndFocuserInfo["SelectStarX"] = -1; // 选择的星点的x坐标,是中心点坐标,参考系是全图的图像
+    // roiAndFocuserInfo["SelectStarY"] = -1; // 选择的星点的y坐标,是中心点坐标,参考系是全图的图像
     
     void sendRoiInfo();   // 用于发送ROI信息
     
@@ -327,7 +336,7 @@ public:
     double R2;
 
     void AutoFocus();
-
+    bool isAutoFocus = false;
     bool StopAutoFocus = false;
 
     void FocuserControl_Goto(int position);

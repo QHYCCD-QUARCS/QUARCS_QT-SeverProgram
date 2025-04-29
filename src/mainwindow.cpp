@@ -271,6 +271,7 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         // Logger::Log("AutoFocus", LogLevel::INFO, DeviceType::MAIN);
         // AutoFocus();
+        isAutoFocus = true;
     }
     else if (message == "StopAutoFocus")
     {
@@ -4994,238 +4995,6 @@ void MainWindow::GetPHD2ControlInstruct()
     // Logger::Log("GetPHD2ControlInstruct finish!", LogLevel::DEBUG, DeviceType::MAIN);
 }
 
-void MainWindow::FocuserControl_Goto(int Position)
-{
-    Logger::Log("FocuserControl_Goto start ...", LogLevel::INFO, DeviceType::MAIN);
-    if (dpFocuser != NULL) 
-    {
-        focusTimer.stop();
-        focusTimer.disconnect();
-
-        CurrentPosition = FocuserControl_getPosition();
-        Logger::Log("FocuserControl_Goto | CurrentPosition:" + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
-        TargetPosition = Position;
-
-        Logger::Log("FocuserControl_Goto | TargetPosition:" + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::MAIN);
-
-        indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
-        Logger::Log("FocuserControl_Goto | start Goto focuser ...", LogLevel::INFO, DeviceType::MAIN);
-
-        focusTimer.setSingleShot(true);
-
-        connect(&focusTimer, &QTimer::timeout, [this]() {
-            CurrentPosition = FocuserControl_getPosition();
-            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
-            
-            if (WaitForFocuserToComplete()) 
-            {
-                focusTimer.stop();  // 转动完成时停止定时器
-                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-                FocusingLooping();
-            } 
-            else 
-            {
-                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-                Logger::Log("FocuserControl_Goto | continue wait for focuser to complete ...", LogLevel::INFO, DeviceType::MAIN);
-                // focusTimer.start(100);  // 继续等待
-            } 
-        });
-
-        focusTimer.start(100);
-    }
-    else 
-    {
-        Logger::Log("FocuserControl_Goto | dpFocuser is NULL", LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
-    }
-    Logger::Log("FocuserControl_Goto finish!", LogLevel::INFO, DeviceType::MAIN);
-}
-
-// void MainWindow::AutoFocus() 
-// {
-//     Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
-//     StopAutoFocus = false; // 初始化停止自动对焦标志为false
-//     int stepIncrement = 100; // 每次移动的步长
-
-//     bool isInward = true; // 初始移动方向为向内
-
-//     Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
-//     FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
-
-//     int initialPosition = FocuserControl_getPosition(); // 获取初始位置
-//     int currentPosition = initialPosition; // 当前对焦器位置
-
-//     int Pass3Steps; // 第三阶段的步数
-
-//     QVector<QPointF> focusMeasures; // 存储对焦测量值
-
-//     int OnePassSteps = 8; // 每个阶段的步数
-//     int LostStarNum = 0; // 丢失星点的计数
-
-//     Logger::Log("AutoFocus | to move focuser 5 steps inward ...", LogLevel::INFO, DeviceType::MAIN);
-//     // 第一阶段：向内移动并计算HFR
-//     for(int i = 1; i < OnePassSteps; i++) {
-//         if (StopAutoFocus) { // 检查是否停止自动对焦
-//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
-//             return;
-//         }
-//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement); // 计算HFR(半光通量半径)
-//         Logger::Log("AutoFocus | Pass1: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-//         if (HFR == -1) { // 检查HFR是否有效
-//             LostStarNum++;
-//             if (LostStarNum >= 3) { // 如果丢失星点超过3次，返回初始位置
-//                 Logger::Log("AutoFocus | Too many number of lost star points.", LogLevel::INFO, DeviceType::MAIN);
-//                 FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
-//                 Logger::Log("AutoFocus | Returned to the starting point.", LogLevel::INFO, DeviceType::MAIN);
-//                 emit wsThread->sendMessageToClient("AutoFocusOver:true");
-//                 return;
-//             }
-//         }
-//         currentPosition = FocuserControl_getPosition(); // 更新当前对焦器位置
-//         focusMeasures.append(QPointF(currentPosition, HFR)); // 记录测量值
-//     }
-
-//     // 拟合抛物线并检查结果
-//     float a, b, c;
-//     int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
-//     if (result == 0)
-//     {
-//         if(R2 < 0.8) { // 检查拟合的R²值
-//             Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
-//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
-//             return;
-//         }
-
-//         if(a < 0) { // 检查抛物线的开口方向
-//             Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
-//         }
-
-//         int countLessThan = 0;
-//         int countGreaterThan = 0;
-
-//         // 统计测量点相对于最小点的分布
-//         for (const QPointF &point : focusMeasures)
-//         {
-//             if (point.x() < minPoint_X)
-//             {
-//                 countLessThan++;
-//             }
-//             else if (point.x() > minPoint_X)
-//             {
-//                 countGreaterThan++;
-//             }
-//         }
-
-//         // 根据分布调整对焦器
-//         if (countLessThan > countGreaterThan) {
-//             Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-//             if(a > 0) {
-//                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
-//             } 
-//         }
-//         else if (countGreaterThan > countLessThan) {
-//             Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-//             if(a < 0) {
-//                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
-//             }
-//         }
-//     }
-
-//     // 第二阶段：继续向内移动并计算HFR
-//     for(int i = 1; i < OnePassSteps; i++) {
-//         if (StopAutoFocus) {
-//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
-//             return;
-//         }
-//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-//         Logger::Log("AutoFocus | Pass2: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-//         currentPosition = FocuserControl_getPosition();
-//         focusMeasures.append(QPointF(currentPosition, HFR));
-//     }
-
-//     // 再次拟合抛物线并检查结果
-//     Logger::Log("AutoFocus | to fit quadratic curve again ...", LogLevel::INFO, DeviceType::MAIN);
-//     float a_, b_, c_;
-//     int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
-//     if (result_ == 0)
-//     {
-//         if(R2 < 0.8) {
-//             Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
-//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
-//             return;
-//         }
-
-//         if(a_ < 0) {
-//             Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
-//         }
-
-//         int countLessThan = 0;
-//         int countGreaterThan = 0;
-
-//         for (const QPointF &point : focusMeasures)
-//         {
-//             if (point.x() < minPoint_X)
-//             {
-//                 countLessThan++;
-//             }
-//             else if (point.x() > minPoint_X)
-//             {
-//                 countGreaterThan++;
-//             }
-//         }
-
-//         // 根据分布调整对焦器
-//         if (countLessThan > countGreaterThan) {
-//             Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-//             Pass3Steps = countLessThan-countGreaterThan;
-//             Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
-
-//             FocusGotoAndCalFWHM(minPoint_X);
-
-//             FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
-//         }
-//         else if (countGreaterThan > countLessThan) {
-//             Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-//             Pass3Steps = countGreaterThan - countLessThan;
-//             Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
-
-//             FocusGotoAndCalFWHM(minPoint_X);
-//             if(countLessThan > 0){
-//                 FocusMoveAndCalHFR(isInward, stepIncrement * countLessThan);
-//             }
-//         }
-//         else {
-//             Logger::Log("AutoFocus | The number of points less than and greater than minPoint_X is equal.", LogLevel::INFO, DeviceType::MAIN);
-//             FocusGotoAndCalFWHM(minPoint_X);
-//             Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
-//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
-//             return;
-//         }
-//     }
-
-//     // 第三阶段：根据Pass3Steps调整对焦器
-//     for(int i = 1; i < Pass3Steps + 1; i++) {
-//         if (StopAutoFocus) {
-//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
-//             return;
-//         }
-//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-//         Logger::Log("AutoFocus | Pass3: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-//         currentPosition = FocuserControl_getPosition();
-//         focusMeasures.append(QPointF(currentPosition, HFR));
-//     }
-
-//     FocusGotoAndCalFWHM(minPoint_X); // 移动到最佳位置
-//     Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
-//     currentPosition = FocuserControl_getPosition();
-//     Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
-//     emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
-// }
 
 double MainWindow::FocusGotoAndCalFWHM(int steps) {
     QEventLoop loop;
@@ -5251,7 +5020,7 @@ double MainWindow::FocusGotoAndCalFWHM(int steps) {
         } 
         else 
         {
-            // FWHMTimer.start(1000);  // 继续等待
+            FWHMTimer.start(1000);  // 继续等待
         }
     });
 
@@ -5388,47 +5157,7 @@ void MainWindow::CheckFocuserMoveOrder() {
     emit wsThread->sendMessageToClient("getFocuserMoveState");
 }
 
-double MainWindow::FocusMoveAndCalHFR(bool isInward, int steps) {
-    // 记录开始移动和计算FWHM的日志
-    Logger::Log("FocusMoveAndCalHFR start ...", LogLevel::INFO, DeviceType::FOCUSER);
-    QEventLoop loop;
-    double FWHM = 0;
 
-    // 停止并断开之前的计时器连接，准备新的操作
-    FWHMTimer.stop();
-    FWHMTimer.disconnect();
-
-    // 设置FWHM计算未完成的标志
-    FWHMCalOver = false;
-    // 调用移动焦点器的函数，传入移动方向和步数
-    FocuserControl_Move(isInward, steps);
-
-    // 设置计时器为单次触发
-    FWHMTimer.setSingleShot(true);
-
-    // 连接计时器的超时信号到处理函数，用于处理FWHM计算
-    connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
-        if (FWHMCalOver) // 如果FWHM计算完成
-        {
-            FWHM = this->FWHM;  // 获取计算结果
-            FWHMTimer.stop();  // 停止计时器
-            // 记录FWHM计算完成的日志
-            Logger::Log("FocusMoveAndCalHFR | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::FOCUSER);
-            // 发送计算完成的消息给客户端
-            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-            loop.quit();  // 退出事件循环
-        } 
-        else 
-        {
-            // FWHMTimer.start(1000);  // 如果FWHM未计算完成，重新启动计时器，继续等待
-        }
-    });
-
-    FWHMTimer.start(1000);  // 启动计时器，等待FWHM计算
-    loop.exec();  // 进入事件循环，等待计时器信号或计算完成
-
-    return FWHM;  // 返回计算得到的FWHM值
-}
 
 void MainWindow::FocuserControl_Move(bool isInward, int steps)
 {
@@ -8060,12 +7789,10 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     Tools::readFits(filename.toLocal8Bit().constData(), image);
 
     QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
+    std::pair<int,double> selectStarPosition = selectStar(stars);
+    emit wsThread->sendMessageToClient("addData_Point:" + QString::number(selectStarPosition.first) + ":" + QString::number(selectStarPosition.second));
 
-    for (const auto &star : stars)
-    {
-        // Logger::Log("Star at (" + std::to_string(star.x) + ", " + std::to_string(star.y) + ") with HFR: " + std::to_string(star.HFR), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("focuserROIStarsList:" + QString::number(star.x) + ":" + QString::number(star.y) + ":" + QString::number(star.HFR));
-    }
+    // FWHMCalOver = true;
 
     // 判断当前相机是否为彩色相机
     bool isColor = !(MainCameraCFA == "");
@@ -8139,6 +7866,44 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     {
         Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath +",image size:" + std::to_string(image.cols) + "x" + std::to_string(image.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(glROI_x) + ":" + QString::number(glROI_y));
+        //     dataPoints.append(QPointF(CurrentPosition, FWHM));
+
+        //     Logger::Log("dataPoints:" + std::to_string(CurrentPosition) + "," + std::to_string(FWHM), LogLevel::INFO, DeviceType::GUIDER);
+
+        //     float a, b, c;
+        //     Tools::fitQuadraticCurve(dataPoints, a, b, c);
+
+        //     if (dataPoints.size() >= 5) {
+        //         QVector<QPointF> LineData;
+
+        //         for (float x = CurrentPosition - 3000; x <= CurrentPosition + 3000; x += 10)
+        //         {
+        //             float y = a * x * x + b * x + c;
+        //             LineData.append(QPointF(x, y));
+        //         }
+
+        //         // 计算导数为零的 x 坐标
+        //         float x_min = -b / (2 * a);
+        //         minPoint_X = x_min;
+        //         // 计算最小值点的 y 坐标
+        //         float y_min = a * x_min * x_min + b * x_min + c;
+
+        //         QString dataString;
+        //         for (const auto &point : LineData)
+        //         {
+        //             dataString += QString::number(point.x()) + "|" + QString::number(point.y()) + ":";
+        //         }
+
+        //         R2 = Tools::calculateRSquared(dataPoints, a, b, c);
+        //         // qInfo() << "RSquared: " << R2;
+
+        //         emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
+        //         emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
+        //     }    
+        // }
+    
+    }else{
+        Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
     }
 }
 
@@ -8168,18 +7933,126 @@ void MainWindow::sendRoiInfo(){
     emit wsThread->sendMessageToClient("SetSelectStars:" + QString::number(selectStarX) + ":" + QString::number(selectStarY));
 }
 
+std::pair<int,double> MainWindow::selectStar(QList<FITSImage::Star> stars){
+    // 拍摄完成后，找到目标星点
+    if (stars.size() <= 0){
+        Logger::Log("selectStar | No star found in stars", LogLevel::INFO, DeviceType::FOCUSER);
+        return std::make_pair(FocuserControl_getPosition(), 0);
+    }
+    // 选择星点
+    double selectStarX = roiAndFocuserInfo["SelectStarX"]; 
+    double selectStarY = roiAndFocuserInfo["SelectStarY"];
+    double selectStarHFR = 0;
+    if (selectStarX == -1 || selectStarY == -1){
+        // 未手动选择，则选择最亮的那颗且居中的那颗
+        double minScore = std::numeric_limits<double>::max();
+        double centerX = BoxSideLength / 2.0;  // 假设 'image' 是捕获的图像
+        double centerY = BoxSideLength / 2.0;
+
+        // 计算中位数 HFR
+        std::vector<double> HFRs;
+        for (const auto &star : stars) {
+            HFRs.push_back(star.HFR);
+        }
+        std::sort(HFRs.begin(), HFRs.end());
+        double medianHFR = HFRs[HFRs.size() / 2];
+
+        for (const auto &star : stars)
+        {
+            double distanceToCenter = std::sqrt(std::pow(star.x - centerX, 2) + std::pow(star.y - centerY, 2));
+            double alpha = 0.1;
+            // 'alpha' 应根据您的需求进行定义
+            // 计算得分，得分是星星的 HFR 值与中位数的差的绝对值和星星到图像中心距离的加权和
+            double score = std::abs(star.HFR - medianHFR) + alpha * distanceToCenter;  
+            if (score < minScore) {
+                minScore = score;
+                selectStarX = star.x;
+                selectStarY = star.y;
+                selectStarHFR = star.HFR;
+            }
+        }
+    }
+    else{
+        selectStarX = roiAndFocuserInfo["SelectStarX"]-roiAndFocuserInfo["ROI_x"]; 
+        selectStarY = roiAndFocuserInfo["SelectStarY"]-roiAndFocuserInfo["ROI_y"]; 
+        // 手动选择，则选择手动选择的那颗
+        double minDistance = std::numeric_limits<double>::max();
+        for (const auto &star : stars)
+        {
+            double distance = std::sqrt(std::pow(star.x - selectStarX, 2) + std::pow(star.y - selectStarY, 2));
+            if (distance < minDistance) {
+                minDistance = distance;
+                selectStarX = star.x;
+                selectStarY = star.y;
+                selectStarHFR = star.HFR;
+            }
+        }
+    }
+
+    // 将星点信息和电调位置存储到列表中
+
+    // starWithFocuserPosition.focuserPosition = FocuserControl_getPosition();
+    // focusMeasures.append(QPointF(starWithFocuserPosition.focuserPosition, starWithFocuserPosition.HFR));
+
+    return std::make_pair(FocuserControl_getPosition(),selectStarHFR);
+}
+
+void MainWindow::FocuserControl_Goto(int Position)
+{
+    Logger::Log("FocuserControl_Goto start ...", LogLevel::INFO, DeviceType::MAIN);
+    if (dpFocuser != NULL) 
+    {
+        focusTimer.stop();
+        focusTimer.disconnect();
+
+        CurrentPosition = FocuserControl_getPosition();
+        Logger::Log("FocuserControl_Goto | CurrentPosition:" + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
+        TargetPosition = Position;
+
+        Logger::Log("FocuserControl_Goto | TargetPosition:" + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::MAIN);
+
+        indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
+        Logger::Log("FocuserControl_Goto | start Goto focuser ...", LogLevel::INFO, DeviceType::MAIN);
+
+        focusTimer.setSingleShot(true);
+
+        connect(&focusTimer, &QTimer::timeout, [this]() {
+            CurrentPosition = FocuserControl_getPosition();
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+            
+            if (WaitForFocuserToComplete()) 
+            {
+                focusTimer.stop();  // 转动完成时停止定时器
+                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+                FocusingLooping();
+            } 
+            else 
+            {
+                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+                Logger::Log("FocuserControl_Goto | continue wait for focuser to complete ...", LogLevel::INFO, DeviceType::MAIN);
+                // focusTimer.start(100);  // 继续等待
+            } 
+        });
+
+        focusTimer.start(100);
+    }
+    else 
+    {
+        Logger::Log("FocuserControl_Goto | dpFocuser is NULL", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
+    }
+    Logger::Log("FocuserControl_Goto finish!", LogLevel::INFO, DeviceType::MAIN);
+}
+
 void MainWindow::AutoFocus() 
 {
     Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
     StopAutoFocus = false; // 初始化停止自动对焦标志为false
     int stepIncrement = 100; // 每次移动的步长
-    currentPosition = FocuserControl_getPosition();
-    if (currentPosition > 0){
-        bool isInward = true; // 初始移动方向为向内
-    }else{
-        bool isInward = false; // 初始移动方向为向外
-    }
-    
+
+    bool isInward = true; // 初始移动方向为向内
 
     Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
     FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
@@ -8355,4 +8228,47 @@ void MainWindow::AutoFocus()
     currentPosition = FocuserControl_getPosition();
     Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
     emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
+}
+
+
+double MainWindow::FocusMoveAndCalHFR(bool isInward, int steps) {
+    // 记录开始移动和计算FWHM的日志
+    Logger::Log("FocusMoveAndCalHFR start ...", LogLevel::INFO, DeviceType::FOCUSER);
+    QEventLoop loop;
+    double FWHM = 0;
+
+    // 停止并断开之前的计时器连接，准备新的操作
+    FWHMTimer.stop();
+    FWHMTimer.disconnect();
+
+    // 设置FWHM计算未完成的标志
+    FWHMCalOver = false;
+    // 调用移动焦点器的函数，传入移动方向和步数
+    FocuserControl_Move(isInward, steps);
+
+    // 设置计时器为单次触发
+    FWHMTimer.setSingleShot(true);
+
+    // 连接计时器的超时信号到处理函数，用于处理FWHM计算
+    connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
+        if (FWHMCalOver) // 如果FWHM计算完成
+        {
+            FWHM = this->FWHM;  // 获取计算结果
+            FWHMTimer.stop();  // 停止计时器
+            // 记录FWHM计算完成的日志
+            Logger::Log("FocusMoveAndCalHFR | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::FOCUSER);
+            // 发送计算完成的消息给客户端
+            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+            loop.quit();  // 退出事件循环
+        } 
+        else 
+        {
+            FWHMTimer.start(1000);  // 如果FWHM未计算完成，重新启动计时器，继续等待
+        }
+    });
+
+    FWHMTimer.start(1000);  // 启动计时器，等待FWHM计算
+    loop.exec();  // 进入事件循环，等待计时器信号或计算完成
+
+    return FWHM;  // 返回计算得到的FWHM值
 }
