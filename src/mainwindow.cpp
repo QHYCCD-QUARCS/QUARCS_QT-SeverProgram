@@ -2296,6 +2296,8 @@ void MainWindow::continueConnectAllDeviceOnce() {
     if (indi_Client->GetDeviceCount() == 0) {
         Logger::Log("Driver start success but no device found", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
+        Tools::stopIndiDriverAll(drivers_list);
+        ConnectDriverList.clear();
         return;
     }
 
@@ -2426,6 +2428,8 @@ void MainWindow::continueConnectAllDeviceOnce() {
     if (ConnectedCCDList.size() <= 0 && ConnectedTELESCOPEList.size() <= 0 && ConnectedFOCUSERList.size() <= 0 && ConnectedFILTERList.size() <= 0) {
         Logger::Log("No Device Connected", LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No Device Connected");
+        Tools::stopIndiDriverAll(drivers_list);
+        ConnectDriverList.clear();
         return;
     }
 
@@ -2593,6 +2597,8 @@ void MainWindow::continueAutoConnectAllDevice(){
     if (indi_Client->GetDeviceCount() == 0) {
         Logger::Log("Driver start success but no device found", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
+        Tools::stopIndiDriverAll(drivers_list);
+        ConnectDriverList.clear();
         return;
     }
 
@@ -7167,6 +7173,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             Logger::Log("ConnectDriver | DriverType(" + DriverType.toStdString() + ") is not supported.", LogLevel::WARNING, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("ConnectFailed:DriverType is not supported.");
             emit wsThread->sendMessageToClient("ConnectDriverFailed:DriverType is not supported.");
+            Tools::stopIndiDriver(DriverName);
+            ConnectDriverList.removeAll(DriverName);
             return;
         }
         Tools::startIndiDriver(DriverName);
@@ -7183,6 +7191,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             Logger::Log("ConnectDriver | Connect indi server failed", LogLevel::WARNING, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("ConnectFailed:Connect indi server failed.");
             emit wsThread->sendMessageToClient("ConnectDriverFailed:Connect indi server failed." );
+            Tools::stopIndiDriver(DriverName);
+            ConnectDriverList.removeAll(DriverName);
             return;
         }
     }
@@ -7202,6 +7212,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     {
         Logger::Log("ConnectDriver | No device found", LogLevel::WARNING, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectDriverFailed:No device found.");
+        Tools::stopIndiDriver(DriverName);
+        ConnectDriverList.removeAll(DriverName);
         return;
     }
     // 记录连接的设备的id列表
