@@ -102,6 +102,8 @@ class MyClient : public INDI::BaseClient
         uint32_t setTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int value);
 
 
+        uint32_t setAutoFlip(INDI::BaseDevice *dp,bool ON);
+        uint32_t setAUXENCODERS(INDI::BaseDevice *dp);
         uint32_t getTelescopeMoveWE(INDI::BaseDevice *dp,QString &statu) ;
         uint32_t setTelescopeMoveWE(INDI::BaseDevice *dp,QString command);
         uint32_t getTelescopeMoveNS(INDI::BaseDevice *dp,QString &statu)  ;

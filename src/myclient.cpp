@@ -61,9 +61,10 @@ void MyClient::newDevice(INDI::BaseDevice baseDevice){
 
     const char *DeviceName = baseDevice.getDeviceName();
 
+
     AddDevice(baseDevice,baseDevice.getDeviceName());
 
-    Logger::Log("indi_client | newDevice | New DeviceName:" + std::string(DeviceName) + ", GetDeviceCount:" + std::to_string(GetDeviceCount()), LogLevel::INFO, DeviceType::MAIN);
+    
 
     // Logger::Log("indi_client | newDevice | +++++++++++++++++++++++++++++++++", LogLevel::INFO, DeviceType::MAIN);
 }
@@ -123,9 +124,22 @@ void MyClient::updateProperty(INDI::Property property)
 
 
 void MyClient::AddDevice(INDI::BaseDevice* device, const std::string& name) {
+    for (int i = 0; i < deviceNames.size(); i++) {
+        if (deviceNames[i] == name) {
+            if (deviceList[i]->isConnected()) {
+                // 如果设备已经连接，跳过这个设备
+                return;
+            } else {
+                // 如果设备没有连接，替换这个设备
+                deviceList[i] = device;
+                return;
+            }
+        }
+    }
+    // 如果没有找到同名的设备，添加新设备
     deviceList.push_back(device);
     deviceNames.push_back(name);
-
+    Logger::Log("indi_client | newDevice | New DeviceName:" + std::string(name) + ", GetDeviceCount:" + std::to_string(GetDeviceCount()), LogLevel::INFO, DeviceType::MAIN);
 }
 
 
@@ -805,13 +819,63 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 /**************************************************************************************
 **                                  Mount API
 ***************************************************************************************/
+
+uint32_t MyClient::setAutoFlip(INDI::BaseDevice *dp,bool ON)
+{
+    INDI::PropertySwitch flip = dp->getProperty("AutoFlip");
+
+     if (!flip.isValid())
+     {
+         Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
+         return QHYCCD_ERROR;
+     }
+
+    //  ccdabort[0].setValue(1); //?? need to be confirmed with Jasem
+    if(ON)
+    {
+        flip[0].setState(ISS_OFF);
+        flip[1].setState(ISS_ON);
+        //   Logger::Log("flip[0].name =" + std::to_string(flip[0].getName().c_str()),LogLevel::WARNING, DeviceType::CAMERA);
+        //   Logger::Log("flip[0].name =" + std::to_string(flip[0].getName().c_str()),LogLevel::WARNING, DeviceType::CAMERA);
+          qDebug()<<"flip[0].name =" <<flip[0].getName();
+          qDebug()<<"flip[1].name =" <<flip[1].getName();
+        // Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
+    }
+    else
+    {
+        flip[0].setState(ISS_ON);
+        flip[1].setState(ISS_OFF);
+        // Logger::Log("indi_client | takeExposure | Taking a " + std::to_string(seconds) + " second exposure.", LogLevel::INFO, DeviceType::CAMERA); 
+    }
+    
+     sendNewProperty(flip);
+     return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::setAUXENCODERS(INDI::BaseDevice *dp)
+{
+    INDI::PropertySwitch encoders = dp->getProperty("AUXENCODER");
+
+    if (!encoders.isValid())
+    {
+        Logger::Log("indi_client | setAUXENCODERS | Error: unable to find  AUXENCODER property...", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+
+    encoders[0].setState(ISS_OFF);
+    encoders[1].setState(ISS_ON);
+    sendNewProperty(encoders);
+    return QHYCCD_SUCCESS;
+}
+
+
 uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_aperture,double & telescope_focal,double & guider_aperature, double &guider_focal)
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_INFO");
 
     if (!property.isValid())
     {
-        Logger::Log("indi_client | getTelescopeInfo | Error: unable to find  TELESCOPE_INFO property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | getTelescopeInfo | Error: unable to find  TELESCOPE_INFO property...", LogLevel::WARNING, DeviceType::MOUNT);
         return QHYCCD_ERROR;
     }
 
@@ -819,7 +883,7 @@ uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_apert
     telescope_focal    = property->np[1].value;
     guider_aperature   = property->np[2].value;
     guider_focal       = property->np[3].value;
-    Logger::Log("indi_client | getTelescopeInfo | " + std::to_string(telescope_aperture) + ", " + std::to_string(telescope_focal) + ", " + std::to_string(guider_aperature) + ", " + std::to_string(guider_focal), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("indi_client | getTelescopeInfo | " + std::to_string(telescope_aperture) + ", " + std::to_string(telescope_focal) + ", " + std::to_string(guider_aperature) + ", " + std::to_string(guider_focal), LogLevel::INFO, DeviceType::MOUNT);
     return QHYCCD_SUCCESS;
 }
 

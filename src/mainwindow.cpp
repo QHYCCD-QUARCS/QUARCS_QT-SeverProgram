@@ -900,7 +900,7 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (message == "getOriginalImage") {
         Logger::Log("getOriginalImage ...", LogLevel::DEBUG, DeviceType::CAMERA);
-        saveFitsAsPNG(QString::fromStdString("/dev/shm/ccd_simulator.fits"), false);
+        saveFitsAsPNG(QString::fromStdString("/dev/shm/ccd_simulator_original.fits"), false);
         Logger::Log("getOriginalImage finish!", LogLevel::DEBUG, DeviceType::CAMERA);
     }
 
@@ -1228,6 +1228,8 @@ void MainWindow::initINDIClient()
             if(dpMainCamera!=NULL){
                 if(dpMainCamera->getDeviceName()==devname)
                 {
+                    glMainCameraStatu = "Displaying";
+                    ShootStatus = "Completed";
                     if(glIsFocusingLooping == false)
                     {
                         emit wsThread->sendMessageToClient("ExposureCompleted");
@@ -1244,9 +1246,8 @@ void MainWindow::initINDIClient()
                         }
                     }
                     // Logger::Log("拍摄完成，图像保存完成 finish!", LogLevel::INFO, DeviceType::MAIN);
-                    glMainCameraStatu = "Displaying";
-                    ShootStatus = "Completed";
-                    focusLoopShooting(isFocusLoopShooting);
+
+                    
                 }
             }
         }
@@ -1647,6 +1648,14 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_47_25_522.fits";
     //     a++;
     // }
+    // Add these lines to replace the original .fits file with ccd_simulator_original.fits
+    QString destinationPath = "/dev/shm/ccd_simulator_original.fits";
+    QFile destinationFile(destinationPath);
+    if (destinationFile.exists()) {
+        destinationFile.remove();
+    }
+    QFile::copy(fitsFileName, destinationPath);
+
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat OriginImage;
@@ -2056,8 +2065,15 @@ void MainWindow::SelectIndiDevice(int systemNumber, int grounpNumber)
 
     for (int i = 0; i < drivers_list.dev_groups[grounpNumber].devices.size(); i++)
     {
+        if (grounpNumber == 1 && (QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) == "QHY CCD" || QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) == "indi_qhy_ccd")){
+            continue;
+        }
+        if (grounpNumber == 20 && (QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) == "QHY CCD2" || QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) == "indi_qhy_ccd2")){
+            continue;
+        }
         // qDebug() << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].version) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].manufacturer);
         emit wsThread->sendMessageToClient("AddDriver:" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) + ":" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name));
+        // qDebug() << "AddDriver:" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) + ":" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name);
     }
 }
 
@@ -2231,8 +2247,9 @@ void MainWindow::ConnectAllDeviceOnce() {
             bool isFound = false;
             for (auto item : nameCheck)
             {
-                if (item == driverName)
+                if ((item == driverName) || (item == "indi_qhy_ccd" && driverName == "indi_qhy_ccd2") || (item == "indi_qhy_ccd2" && driverName == "indi_qhy_ccd"))
                 {
+                    
                     isFound = true;
                     Logger::Log("Found one duplite driver,do not start it again: " + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                     break;
@@ -2399,7 +2416,7 @@ void MainWindow::continueConnectAllDeviceOnce() {
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++){
         if (indi_Client->GetDeviceFromList(i)->isConnected()) {
             for (int j = 0; j < systemdevicelist.system_devices.size(); j++) {
-                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec()) {
+                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec() || (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd" && std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) == "indi_qhy_ccd2") || (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd2" && std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) == "indi_qhy_ccd")) {
                     emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[j].Description);
                 }
             }
@@ -2527,7 +2544,7 @@ void MainWindow::AutoConnectAllDevice() {
             bool isFound = false;
             for (auto item : nameCheck)
             {
-                if (item == driverName)
+                if ((item == driverName) || (item == "indi_qhy_ccd" && driverName == "indi_qhy_ccd2") || (item == "indi_qhy_ccd2" && driverName == "indi_qhy_ccd"))
                 {
                     isFound = true;
                     Logger::Log("found one duplite driver,do not start it again" + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -3258,6 +3275,12 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         systemdevicelist.system_devices[0].DeviceIndiName = QString::fromUtf8(dpMount->getDeviceName());
         systemdevicelist.system_devices[0].isBind = true;
         QString DevicePort;
+
+        getClientSettings();
+        indi_Client->setLocation(dpMount,observatorylatitude,observatorylongitude,50);
+        indi_Client->setAutoFlip(dpMount,true);
+        indi_Client->setAUXENCODERS(dpMount);
+
         indi_Client->getDevicePort(dpMount, DevicePort);
         Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
@@ -3368,6 +3391,24 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
     }
 
     Tools::saveSystemDeviceList(systemdevicelist);
+    qDebug() << "*** ***  当前系统列表 *** ***";
+    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+    {
+        if(systemdevicelist.system_devices[i].Description != ""){
+            qDebug() << "设备类型："<<systemdevicelist.system_devices[i].Description;
+            qDebug() << "设备名称："<<systemdevicelist.system_devices[i].DeviceIndiName ;
+            qDebug() << "是否绑定："<<systemdevicelist.system_devices[i].isBind;
+            qDebug() << "驱动名称："<<systemdevicelist.system_devices[i].DriverIndiName;
+            qDebug() << " *** *** *** *** *** *** ";
+        }
+    }
+    qDebug() << "*** ***  当前设备列表 *** ***";
+    for (int i = 0; i < indi_Client->GetDeviceCount(); i++){
+        qDebug() << "设备名称："<<QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
+        qDebug() << "驱动名称："<<QString::fromStdString(indi_Client->GetDeviceFromList(i)->getDriverExec());
+        qDebug() << "是否连接：" << QString::fromStdString(std::to_string(indi_Client->GetDeviceFromList(i)->isConnected()));
+        qDebug() << " *** *** *** *** *** *** ";
+    }
 }
 
 void MainWindow::disconnectIndiServer(MyClient *client)
@@ -4996,39 +5037,39 @@ void MainWindow::GetPHD2ControlInstruct()
 }
 
 
-double MainWindow::FocusGotoAndCalFWHM(int steps) {
-    QEventLoop loop;
-    double FWHM = 0;
+// double MainWindow::FocusGotoAndCalFWHM(int steps) {
+//     QEventLoop loop;
+//     double FWHM = 0;
 
-    // 停止和清理先前的计时器
-    FWHMTimer.stop();
-    FWHMTimer.disconnect();
+//     // 停止和清理先前的计时器
+//     FWHMTimer.stop();
+//     FWHMTimer.disconnect();
 
-    FWHMCalOver = false;
-    FocuserControl_Goto(steps);
+//     FWHMCalOver = false;
+//     FocuserControl_Goto(steps);
 
-    FWHMTimer.setSingleShot(true);
+//     FWHMTimer.setSingleShot(true);
 
-    connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
-        if (FWHMCalOver) 
-        {
-            FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
-            FWHMTimer.stop();
-            Logger::Log("FocusGotoAndCalFWHM | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-            loop.quit();
-        } 
-        else 
-        {
-            FWHMTimer.start(1000);  // 继续等待
-        }
-    });
+//     connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
+//         if (FWHMCalOver) 
+//         {
+//             FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
+//             FWHMTimer.stop();
+//             Logger::Log("FocusGotoAndCalFWHM | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+//             loop.quit();
+//         } 
+//         else 
+//         {
+//             FWHMTimer.start(1000);  // 继续等待
+//         }
+//     });
 
-    FWHMTimer.start(1000);
-    loop.exec();  // 等待事件循环直到调用 loop.quit()
+//     FWHMTimer.start(1000);
+//     loop.exec();  // 等待事件循环直到调用 loop.quit()
 
-    return FWHM;
-}
+//     return FWHM;
+// }
 
 void MainWindow::HandleFocuserMovementDataPeriodically() {
     if (!isFocusMoveDone) {
@@ -5483,8 +5524,6 @@ void MainWindow::startTimeWaiting()
     timewaitingTimer.disconnect();
     // 启动等待的定时器
     timewaitingTimer.setSingleShot(true);
-
-    
     connect(&timewaitingTimer, &QTimer::timeout, [this]()
             {
         if (StopSchedule)
@@ -5505,13 +5544,8 @@ void MainWindow::startTimeWaiting()
         {
             timewaitingTimer.start(1000);  // 继续等待
         } });
-
     timewaitingTimer.start(1000);
 }
-
- 
-
-
 
 void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 {
@@ -5523,7 +5557,26 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
     qDebug() << "Mount Goto:" << ra << "," << dec;
     MountGotoError = false;
 
-    TelescopeControl_Goto(ra, dec);
+    auto now = std::chrono::system_clock::now();
+    double observatory_lon = 116.14; // 东经116.14度
+    double lst = computeLST(observatorylongitude, now);
+
+     //TelescopeControl_Goto(ra, dec);
+    double RA_HOURS, DEC_DEGREE;
+    indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
+    double CurrentRA_Degree = Tools::HourToDegree(RA_HOURS);
+    double CurrentDEC_Degree = DEC_DEGREE;
+
+
+    // performObservation(
+    //     CurrentRA_Degree, CurrentDEC_Degree,
+    //     ra, dec,
+    //     observatorylongitude,observatorylatitude) ;
+    performObservation(
+        lst,CurrentDEC_Degree,
+        ra, dec,
+        observatorylongitude,observatorylatitude);
+            
     call_phd_StopLooping();
     GuidingHasStarted = false;
 
@@ -5563,8 +5616,7 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
             if(GuidingHasStarted == false)
             {
                 qDebug() << "Mount Goto Complete...";
-                startGuiding();
-                // startSetCFW(schedule_CFWpos);
+                startSetCFW(schedule_CFWpos);
             }
         } 
         else 
@@ -5577,52 +5629,63 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 
 
 
+bool MainWindow::needsMeridianFlip(double lst,double targetRA)
+{
+    double hourAngle=lst-targetRA;
+    hourAngle=fmod(hourAngle+24.0,24.0);
+    if(hourAngle>12.0)hourAngle-=24.0;
+        return(hourAngle>0);
+}
+
+void MainWindow::performObservation(
+    double lst,double currentDec,
+    double targetRA,double targetDec,
+    double observatoryLongitude,double observatoryLatitude){
+    if (needsMeridianFlip(lst,targetRA))
+    {
+        std::cout<<"Meridian flip is needed."<<std::endl;
+        TelescopeControl_Goto(lst,observatoryLatitude);
+        std::cout<<"Performing meridian flip..."<<std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(60));
+        TelescopeControl_Goto(targetRA,targetDec);
+
+    }
+    else{
+        std::cout << "No flip needed. Moving directly."<<std::endl;
+        TelescopeControl_Goto(targetRA,targetDec);
+    }
+}
 
 
+// 计算儒略日（JD）
+double MainWindow::getJulianDate(const std::chrono::system_clock::time_point& utc_time) {
+    auto duration = utc_time.time_since_epoch();
+    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
+    return 2440587.5 + seconds / 86400.0; // Unix时间转儒略日
+}
 
+// 计算格林尼治恒星时（GMST）
+double MainWindow::computeGMST(const std::chrono::system_clock::time_point& utc_time) {
+    const double JD = getJulianDate(utc_time);
+    const double T = (JD - 2451545.0) / 36525.0; // 以J2000为基准的世纪数
 
-// 检查是否需要中天翻转
-// bool needsMeridianFlip(double currentRA, double targetRA, double longitude) {
-   
-//     // 计算时角（Hour Angle）
-//     double hourAngle = currentRA - targetRA;
+    // IAU公式（精度±0.1秒）
+    double GMST = 280.46061837 + 360.98564736629 * (JD - 2451545.0)
+                  + 0.000387933 * T*T - T*T*T / 38710000.0;
+    
+    // 规范化到0-360度范围
+    GMST = fmod(GMST, 360.0);
+    if (GMST < 0) GMST += 360.0;
+    
+    return GMST / 15.0; // 转换为小时单位
+}
 
-//     // 考虑经度的影响
-//     hourAngle += longitude / 15.0; // 经度转换为时角
-
-//     // 如果时角大于12小时（即目标在子午线西侧），则需要翻转
-//     if (hourAngle > 12.0) {
-//         return true;
-//     }
-//     return false;
-// }
-
-// // 执行观测流程
-// void performObservation(
-//     double currentRA, double currentDec,
-//     double targetRA, double targetDec,
-//     double observatoryLongitude) {
-
-// // 检查是否需要中天翻转
-// if (needsMeridianFlip(currentRA, targetRA, observatoryLongitude)) {
-// std::cout << "Meridian flip is needed." << std::endl;
-
-// // 将望远镜移动到安全位置（例如，天顶）
-// startMountGoto(12.0, 90.0);
-
-// // 执行中天翻转
-// std::cout << "Performing meridian flip..." << std::endl;
-// std::this_thread::sleep_for(std::chrono::seconds(60)); // 模拟翻转时间
-
-// // 移动到目标位置
-// startMountGoto(targetRA, targetDec);
-// } else {
-// std::cout << "No meridian flip needed. Moving directly to target." << std::endl;
-// startMountGoto(targetRA, targetDec);
-// }
-// }
-
-//qiangzhijiaozhun 
+// 计算地方恒星时（LST）
+double MainWindow::computeLST(double longitude_east, const std::chrono::system_clock::time_point& utc_time) {
+    double GMST_hours = computeGMST(utc_time);
+    double LST = GMST_hours + longitude_east / 15.0; // 东经为正
+    return fmod(LST + 24.0, 24.0); // 确保结果在0-24之间
+}
 
 void MainWindow::startGuiding()
 {
@@ -5987,34 +6050,62 @@ bool MainWindow::createCaptureDirectory() {
     }
 }
 
-void MainWindow::getClientSettings() {
-    Logger::Log("getClientSettings start ...", LogLevel::INFO, DeviceType::MAIN);
+void MainWindow::getClientSettings()
+{
+   
     std::string fileName = "config/config.ini";
-    
-    std::unordered_map<std::string, std::string> config;
 
+    std::unordered_map<std::string, std::string> config;
+   
     Tools::readClientSettings(fileName, config);
 
     Logger::Log("getClientSettings | Current Config:", LogLevel::INFO, DeviceType::MAIN);
-    for (const auto& pair : config) {
+    for (const auto &pair : config)
+    {
         Logger::Log("getClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConfigureRecovery:" + QString::fromStdString(pair.first) + ":" + QString::fromStdString(pair.second));
-        if (pair.first == "Coordinates") {
-            std::string coordinate = pair.second;
-            std::stringstream ss(coordinate);
-            std::string item;
-            std::vector<std::string> elements;
-            while (std::getline(ss, item, ',')) {
-                elements.push_back(item);
-            }
-            if (elements.size() == 2) {
-                DEC = std::stod(elements[0]);
-                RA = std::stod(elements[1]);
-            }
+        
+        if(pair.first=="Coordinates")
+        {
+            QStringList coordinates =QString::fromStdString(pair.second).split(",");
+            if(coordinates.size()==2)
+            {
+                observatorylongitude=coordinates[1].toDouble();
+                observatorylatitude=coordinates[0].toDouble();
+             }
         }
     }
     Logger::Log("getClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
 }
+
+// void MainWindow::getClientSettings() {
+//     Logger::Log("getClientSettings start ...", LogLevel::INFO, DeviceType::MAIN);
+//     std::string fileName = "config/config.ini";
+    
+//     std::unordered_map<std::string, std::string> config;
+
+//     Tools::readClientSettings(fileName, config);
+
+//     Logger::Log("getClientSettings | Current Config:", LogLevel::INFO, DeviceType::MAIN);
+//     for (const auto& pair : config) {
+//         Logger::Log("getClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
+//         emit wsThread->sendMessageToClient("ConfigureRecovery:" + QString::fromStdString(pair.first) + ":" + QString::fromStdString(pair.second));
+//         if (pair.first == "Coordinates") {
+//             std::string coordinate = pair.second;
+//             std::stringstream ss(coordinate);
+//             std::string item;
+//             std::vector<std::string> elements;
+//             while (std::getline(ss, item, ',')) {
+//                 elements.push_back(item);
+//             }
+//             if (elements.size() == 2) {
+//                 DEC = std::stod(elements[0]);
+//                 RA = std::stod(elements[1]);
+//             }
+//         }
+//     }
+//     Logger::Log("getClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
+// }
 
 void MainWindow::setClientSettings(QString ConfigName, QString ConfigValue) {
     Logger::Log("setClientSettings start ...", LogLevel::INFO, DeviceType::MAIN);
@@ -6921,6 +7012,99 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         emit wsThread->sendMessageToClient("ConnectDriverFailed:DriverName or DriverType is Null.");
         return;
     }
+    // if ((DriverName == "indi_qhy_ccd" || DriverName == "indi_qhy_ccd2") && ConnectDriverList.size() != 0) {
+    //     std::vector<std::string> binddeviceNameList;
+    //     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+    //     {
+    //         if ((systemdevicelist.system_devices[i].DriverIndiName == "indi_qhy_ccd" && DriverName == "indi_qhy_ccd2") || (systemdevicelist.system_devices[i].DriverIndiName == "indi_qhy_ccd2" && DriverName == "indi_qhy_ccd") && systemdevicelist.system_devices[i].isConnect && systemdevicelist.system_devices[i].isBind && systemdevicelist.system_devices[i].DeviceIndiName != "")
+    //         {
+    //             Logger::Log("ConnectDriver | find bind device(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + ") for Driver(" + DriverName.toStdString() + ")", LogLevel::INFO, DeviceType::MAIN);
+    //             binddeviceNameList.push_back(systemdevicelist.system_devices[i].DeviceIndiName.toStdString());
+    //         }
+    //     }
+    //     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+    //     {
+    //         bool deviceIsBind = false;
+            
+    //         if ((indi_Client->GetDeviceFromList(i)->getDriverExec() == DriverName) || (indi_Client->GetDeviceFromList(i)->getDriverExec() == "indi_qhy_ccd") || (indi_Client->GetDeviceFromList(i)->getDriverExec() == "indi_qhy_ccd2"))
+    //         {
+    //             for (int j = 0; j < binddeviceNameList.size(); j++) {
+    //                 if (std::string(indi_Client->GetDeviceNameFromList(i).c_str()) == binddeviceNameList[j])
+    //                 {
+    //                     Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") has device(" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is bind!", LogLevel::INFO, DeviceType::MAIN);
+    //                     deviceIsBind = true;
+    //                     break;
+    //                 }
+    //                 qDebug() << "设备名" << indi_Client->GetDeviceNameFromList(i).c_str();
+    //             }
+    //             if (!deviceIsBind) {
+    //                 Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") is not bind, is qhy_ccd device ,will be deleted to reset driver", LogLevel::INFO, DeviceType::MAIN);
+    //                 indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+    //                 indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+    //             }
+    //         }
+    //     }
+    // }
+    //     qDebug() << "步骤1";
+    // if ((DriverName == "indi_qhy_ccd" || DriverName == "indi_qhy_ccd2") && ConnectDriverList.size() != 0) {
+    //     qDebug() << "步骤2";
+    //     std::vector<std::string> binddeviceNameList;
+    //     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+    //     {
+    //         qDebug() << "步骤3";
+    //         if ((systemdevicelist.system_devices[i].DriverIndiName == "indi_qhy_ccd" && DriverName == "indi_qhy_ccd2") || (systemdevicelist.system_devices[i].DriverIndiName == "indi_qhy_ccd2" && DriverName == "indi_qhy_ccd")) {
+    //             if (systemdevicelist.system_devices[i].isConnect) {
+    //                 if (systemdevicelist.system_devices[i].isBind) {
+    //                     if (systemdevicelist.system_devices[i].DeviceIndiName != "") {
+    //                         Logger::Log("ConnectDriver | 找到绑定设备(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + ") 对应驱动(" + DriverName.toStdString() + ")", LogLevel::INFO, DeviceType::MAIN);
+    //                         binddeviceNameList.push_back(systemdevicelist.system_devices[i].DeviceIndiName.toStdString());
+    //                     } else {
+    //                         qDebug() << "设备名为空";
+    //                     }
+    //                 } else {
+    //                     qDebug() << "设备没有绑定";
+    //                 }
+    //             } else {
+    //                 qDebug() << "设备没有连接";
+    //             }
+    //         } else {
+    //             qDebug() << "驱动名不匹配" << systemdevicelist.system_devices[i].DriverIndiName <<" != " << DriverName;
+    //         }
+    //     }
+    //     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+    //     {
+    //         qDebug() << "步骤4";
+    //         bool deviceIsBind = false;
+    //         qDebug() << "驱动名" << indi_Client->GetDeviceFromList(i)->getDriverExec();
+    //         if (std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) == DriverName.toStdString() || std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) == "indi_qhy_ccd" || std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) == "indi_qhy_ccd2")
+    //         {
+    //             qDebug() << "步骤5";
+    //             for (int j = 0; j < binddeviceNameList.size(); j++) {
+    //                 qDebug() << "步骤6";
+    //                 if (std::string(indi_Client->GetDeviceNameFromList(i).c_str()) == binddeviceNameList[j])
+    //                 {
+    //                     Logger::Log("ConnectDriver | 驱动(" + DriverName.toStdString() + ") 已有设备(" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") 是绑定的!", LogLevel::INFO, DeviceType::MAIN);
+    //                     deviceIsBind = true;
+    //                     break;
+    //                 }
+    //             }
+    //             qDebug() << "步骤7";
+    //             if (!deviceIsBind) {
+    //                 qDebug() << "步骤8";
+    //                 Logger::Log("ConnectDriver | 驱动(" + DriverName.toStdString() + ") 没有绑定，是qhy_ccd设备，将被删除以重置驱动", LogLevel::INFO, DeviceType::MAIN);
+    //                 indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+    //                 indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+    //                 qDebug() << "当前设备列表";
+    //                 for (int i = 0; i < indi_Client->GetDeviceCount(); i++) {
+    //                     qDebug() << "设备名称" << indi_Client->GetDeviceNameFromList(i).c_str();
+    //                     qDebug() << "驱动名称" << indi_Client->GetDeviceFromList(i)->getDriverExec();
+    //                 }
+    //                 sleep(1);
+    //             }
+    //         }
+    //     }
+    // }
+    
     int driverCode = -1;
     bool isDriverConnected = false;
     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
@@ -6996,9 +7180,9 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         connectIndiServer(indi_Client);
         if (indi_Client->isServerConnected() == false)
         {
-            Logger::Log("ConnectDriver | Connect Driver failed", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("ConnectFailed:Connect Driver failed.");
-            emit wsThread->sendMessageToClient("ConnectDriverFailed:Connect Driver failed." );
+            Logger::Log("ConnectDriver | Connect indi server failed", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectFailed:Connect indi server failed.");
+            emit wsThread->sendMessageToClient("ConnectDriverFailed:Connect indi server failed." );
             return;
         }
     }
@@ -7154,7 +7338,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                         connectedDeviceIdList.push_back(i);
                                     }
                                 }
-                 
+                
                             }
                             
                         }
@@ -7176,6 +7360,14 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
     if (connectedDeviceIdList.size() == 0){
         Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") No Device found.", LogLevel::WARNING, DeviceType::MAIN);
+        Tools::stopIndiDriver(DriverName);
+        int index = ConnectDriverList.indexOf(DriverName);
+        if (index != -1) { // 如果找到了
+            ConnectDriverList.removeAt(index); // 从列表中删除
+            Logger::Log("Driver removed successfully: " + DriverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        } else {
+            Logger::Log("Driver not found in list: " + DriverName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        }
         emit wsThread->sendMessageToClient("ConnectDriverFailed:Driver(" + DriverName + ") No Device found.");
         return;
     }
@@ -7507,27 +7699,27 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     num = 0;
     if (thisDriverhasDevice >= 1 && client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected() == false)
     {
-        // client->connectDevice(DeviceName.toStdString().c_str());
-        // Logger::Log("DisconnectDevice | This Driver has more than one device is using, need to reconnect device(" + DeviceName.toStdString() + ")", LogLevel::INFO, DeviceType::MAIN);
-        // while (!client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected())
-        // {
-        //     Logger::Log("DisconnectDevice | Waiting for connect finish...", LogLevel::INFO, DeviceType::MAIN);
-        //     sleep(1);
-        //     num++;
-        //     if (num > 10)
-        //     {
-        //         Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
-        //         break;
-        //     }
-        // }
-        // if (client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected())
-        // {
-        //     Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") success.", LogLevel::INFO, DeviceType::MAIN);
-        // }
-        // else
-        // {
-        //     Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
-        // }
+        client->connectDevice(DeviceName.toStdString().c_str());
+        Logger::Log("DisconnectDevice | This Driver has more than one device is using, need to reconnect device(" + DeviceName.toStdString() + ")", LogLevel::INFO, DeviceType::MAIN);
+        while (!client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected())
+        {
+            Logger::Log("DisconnectDevice | Waiting for connect finish...", LogLevel::INFO, DeviceType::MAIN);
+            sleep(1);
+            num++;
+            if (num > 10)
+            {
+                Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
+                break;
+            }
+        }
+        if (client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected())
+        {
+            Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") success.", LogLevel::INFO, DeviceType::MAIN);
+        }
+        else
+        {
+            Logger::Log("DisconnectDevice | Reconnect Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
+        }
         emit wsThread->sendMessageToClient("disconnectDevicehasortherdevice:"+disconnectdriverName);
     }else{
         Tools::stopIndiDriver(disconnectdriverName);
@@ -7690,20 +7882,23 @@ void MainWindow::disconnectDevice(const QString& deviceName, const QString& desc
             indi_Client->disconnectDevice(deviceName.toStdString().c_str());
             int num = 0;
             bool disconnectSuccess = true;
-            while (indi_Client->GetDeviceFromList(i)->isConnected()) {
-                Logger::Log("Waiting for " + deviceName.toStdString() + " to disconnect...", LogLevel::INFO, DeviceType::MAIN);
-                sleep(1);
-                if (++num > 5) {
-                    Logger::Log("Failed to disconnect " + deviceName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-                    disconnectSuccess = false;
-                    break;
-                }
-            }
-            if (disconnectSuccess) {
-                Logger::Log(deviceName.toStdString() + " disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
-                emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
-            }
+            // while (indi_Client->GetDeviceFromList(i)->isConnected()) {
+            //     Logger::Log("Waiting for " + deviceName.toStdString() + " to disconnect...", LogLevel::INFO, DeviceType::MAIN);
+            //     sleep(1);
+            //     if (++num > 5) {
+            //         Logger::Log("Failed to disconnect " + deviceName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+            //         disconnectSuccess = false;
+            //         break;
+            //     }
+            // }
+            // if (disconnectSuccess) {
+            //     Logger::Log(deviceName.toStdString() + " disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
+            //     emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
+            //     emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
+            // }
+            Logger::Log(deviceName.toStdString() + " disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
+            emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
             break;
         }
     }
@@ -7790,6 +7985,7 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 
     QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
     std::pair<int,double> selectStarPosition = selectStar(stars);
+    currentSelectStarPosition = selectStarPosition;
     emit wsThread->sendMessageToClient("addData_Point:" + QString::number(selectStarPosition.first) + ":" + QString::number(selectStarPosition.second));
 
     // FWHMCalOver = true;
@@ -7866,45 +8062,76 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     {
         Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath +",image size:" + std::to_string(image.cols) + "x" + std::to_string(image.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(glROI_x) + ":" + QString::number(glROI_y));
-        //     dataPoints.append(QPointF(CurrentPosition, FWHM));
-
-        //     Logger::Log("dataPoints:" + std::to_string(CurrentPosition) + "," + std::to_string(FWHM), LogLevel::INFO, DeviceType::GUIDER);
-
-        //     float a, b, c;
-        //     Tools::fitQuadraticCurve(dataPoints, a, b, c);
-
-        //     if (dataPoints.size() >= 5) {
-        //         QVector<QPointF> LineData;
-
-        //         for (float x = CurrentPosition - 3000; x <= CurrentPosition + 3000; x += 10)
-        //         {
-        //             float y = a * x * x + b * x + c;
-        //             LineData.append(QPointF(x, y));
-        //         }
-
-        //         // 计算导数为零的 x 坐标
-        //         float x_min = -b / (2 * a);
-        //         minPoint_X = x_min;
-        //         // 计算最小值点的 y 坐标
-        //         float y_min = a * x_min * x_min + b * x_min + c;
-
-        //         QString dataString;
-        //         for (const auto &point : LineData)
-        //         {
-        //             dataString += QString::number(point.x()) + "|" + QString::number(point.y()) + ":";
-        //         }
-
-        //         R2 = Tools::calculateRSquared(dataPoints, a, b, c);
-        //         // qInfo() << "RSquared: " << R2;
-
-        //         emit wsThread->sendMessageToClient("fitQuadraticCurve:" + dataString);
-        //         emit wsThread->sendMessageToClient("fitQuadraticCurve_minPoint:" + QString::number(x_min) + ":" + QString::number(y_min));
-        //     }    
-        // }
+        if (isAutoFocus){
+            AutoFocus(currentSelectStarPosition);
+        }
     
     }else{
         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
     }
+    focusLoopShooting(isFocusLoopShooting);
+}
+
+void MainWindow::AutoFocus(std::pair<int,double> selectStarPosition){
+    // if (dpFocuser == NULL || dpMainCamera == NULL){
+    //     Logger::Log("AutoFocus | dpFocuser or dpMainCamera is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+    //     isAutoFocus = false;
+    //     emit wsThread->sendMessageToClient("AutoFocusOver:true");
+    //     return;
+    // }
+    // if (selectStarPosition.second == 0 || selectStarPosition == NULL){
+    //     Logger::Log("AutoFocus | selectStarPosition is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+    //     overSelectStarAutoFocusStep += 1;
+    //     return;
+    // }
+
+    // int currentPosition = FocuserControl_getPosition();
+    // bool isInward = true;
+    // if (currentPosition > 0){
+    //     isInward = false;
+    // }else{
+    //     isInward = true;
+    // }
+
+    // // 初始化清空保存列表
+    // if (autoFocusStep == 0){
+    //     currentAutoFocusStarPositionList.clear();
+    //     allAutoFocusStarPositionList.clear();
+    //     autoFocusStep = 1;
+    // }
+
+    // // 进行5次拟合，确定五个点
+    // if (autoFocusStep >= 1 && autoFocusStep <= 5){
+    //     currentAutoFocusStarPositionList.append(selectStarPosition);
+    //     if (currentAutoFocusStarPositionList.size() == 3){
+    //         sum = currentAutoFocusStarPositionList[0].second + currentAutoFocusStarPositionList[1].second + currentAutoFocusStarPositionList[2].second;
+    //         if (currentAutoFocusStarPositionList[0].first == currentAutoFocusStarPositionList[1].first && currentAutoFocusStarPositionList[0].first == currentAutoFocusStarPositionList[2].first){
+    //             allAutoFocusStarPositionList.append(std::make_pair(currentAutoFocusStarPositionList[0].first, sum/3));
+    //             currentAutoFocusStarPositionList.clear();
+    //             autoFocusStep++;
+    //             indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
+    //             indi_Client->moveFocuserSteps(dpFocuser, steps);
+    //         }else{
+    //             currentAutoFocusStarPositionList.clear();
+    //         }
+    //     }
+    // }
+    
+
+    // if (autoFocusStep == 6){
+    //     // 进行拟合
+    //     // 计算拟合曲线
+    //     std::vector<std::pair<int, double>> fitPoints;
+    //     for (const auto& point : allAutoFocusStarPositionList) {
+    //         fitPoints.push_back(std::make_pair(point.first, point.second));
+    //     }
+    //     // 使用最小二乘法拟合曲线
+    //     std::vector<double> xValues, yValues;
+    //     for (const auto& point : fitPoints) {
+    //         xValues.push_back(point.first);
+        
+    // }
+
 }
 
 void MainWindow::getFocuserLoopingState(){
@@ -7997,278 +8224,278 @@ std::pair<int,double> MainWindow::selectStar(QList<FITSImage::Star> stars){
     return std::make_pair(FocuserControl_getPosition(),selectStarHFR);
 }
 
-void MainWindow::FocuserControl_Goto(int Position)
-{
-    Logger::Log("FocuserControl_Goto start ...", LogLevel::INFO, DeviceType::MAIN);
-    if (dpFocuser != NULL) 
-    {
-        focusTimer.stop();
-        focusTimer.disconnect();
+// void MainWindow::FocuserControl_Goto(int Position)
+// {
+//     Logger::Log("FocuserControl_Goto start ...", LogLevel::INFO, DeviceType::MAIN);
+//     if (dpFocuser != NULL) 
+//     {
+//         focusTimer.stop();
+//         focusTimer.disconnect();
 
-        CurrentPosition = FocuserControl_getPosition();
-        Logger::Log("FocuserControl_Goto | CurrentPosition:" + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
-        TargetPosition = Position;
+//         CurrentPosition = FocuserControl_getPosition();
+//         Logger::Log("FocuserControl_Goto | CurrentPosition:" + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
+//         TargetPosition = Position;
 
-        Logger::Log("FocuserControl_Goto | TargetPosition:" + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::MAIN);
+//         Logger::Log("FocuserControl_Goto | TargetPosition:" + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::MAIN);
 
-        indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
-        Logger::Log("FocuserControl_Goto | start Goto focuser ...", LogLevel::INFO, DeviceType::MAIN);
+//         indi_Client->moveFocuserToAbsolutePosition(dpFocuser, Position);
+//         Logger::Log("FocuserControl_Goto | start Goto focuser ...", LogLevel::INFO, DeviceType::MAIN);
 
-        focusTimer.setSingleShot(true);
+//         focusTimer.setSingleShot(true);
 
-        connect(&focusTimer, &QTimer::timeout, [this]() {
-            CurrentPosition = FocuserControl_getPosition();
-            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+//         connect(&focusTimer, &QTimer::timeout, [this]() {
+//             CurrentPosition = FocuserControl_getPosition();
+//             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
             
-            if (WaitForFocuserToComplete()) 
-            {
-                focusTimer.stop();  // 转动完成时停止定时器
-                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-                FocusingLooping();
-            } 
-            else 
-            {
-                Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-                Logger::Log("FocuserControl_Goto | continue wait for focuser to complete ...", LogLevel::INFO, DeviceType::MAIN);
-                // focusTimer.start(100);  // 继续等待
-            } 
-        });
+//             if (WaitForFocuserToComplete()) 
+//             {
+//                 focusTimer.stop();  // 转动完成时停止定时器
+//                 Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+//                 emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+//                 FocusingLooping();
+//             } 
+//             else 
+//             {
+//                 Logger::Log("FocuserControl_Goto | Focuser Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+//                 emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+//                 Logger::Log("FocuserControl_Goto | continue wait for focuser to complete ...", LogLevel::INFO, DeviceType::MAIN);
+//                 // focusTimer.start(100);  // 继续等待
+//             } 
+//         });
 
-        focusTimer.start(100);
-    }
-    else 
-    {
-        Logger::Log("FocuserControl_Goto | dpFocuser is NULL", LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
-    }
-    Logger::Log("FocuserControl_Goto finish!", LogLevel::INFO, DeviceType::MAIN);
-}
+//         focusTimer.start(100);
+//     }
+//     else 
+//     {
+//         Logger::Log("FocuserControl_Goto | dpFocuser is NULL", LogLevel::INFO, DeviceType::MAIN);
+//         emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
+//     }
+//     Logger::Log("FocuserControl_Goto finish!", LogLevel::INFO, DeviceType::MAIN);
+// }
 
-void MainWindow::AutoFocus() 
-{
-    Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
-    StopAutoFocus = false; // 初始化停止自动对焦标志为false
-    int stepIncrement = 100; // 每次移动的步长
+// void MainWindow::AutoFocus() 
+// {
+//     Logger::Log("AutoFocus start ...", LogLevel::INFO, DeviceType::MAIN);
+//     StopAutoFocus = false; // 初始化停止自动对焦标志为false
+//     int stepIncrement = 100; // 每次移动的步长
 
-    bool isInward = true; // 初始移动方向为向内
+//     bool isInward = true; // 初始移动方向为向内
 
-    Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
-    FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
+//     Logger::Log("AutoFocus | to move focuser 5 steps outward ...", LogLevel::INFO, DeviceType::MAIN);
+//     FocusMoveAndCalHFR(!isInward, stepIncrement * 5); // 向外移动5个步长并计算HFR
 
-    int initialPosition = FocuserControl_getPosition(); // 获取初始位置
-    int currentPosition = initialPosition; // 当前对焦器位置
+//     int initialPosition = FocuserControl_getPosition(); // 获取初始位置
+//     int currentPosition = initialPosition; // 当前对焦器位置
 
-    int Pass3Steps; // 第三阶段的步数
+//     int Pass3Steps; // 第三阶段的步数
 
-    QVector<QPointF> focusMeasures; // 存储对焦测量值
+//     QVector<QPointF> focusMeasures; // 存储对焦测量值
 
-    int OnePassSteps = 8; // 每个阶段的步数
-    int LostStarNum = 0; // 丢失星点的计数
+//     int OnePassSteps = 8; // 每个阶段的步数
+//     int LostStarNum = 0; // 丢失星点的计数
 
-    Logger::Log("AutoFocus | to move focuser 5 steps inward ...", LogLevel::INFO, DeviceType::MAIN);
-    // 第一阶段：向内移动并计算HFR
-    for(int i = 1; i < OnePassSteps; i++) {
-        if (StopAutoFocus) { // 检查是否停止自动对焦
-            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement); // 计算HFR(半光通量半径)
-        Logger::Log("AutoFocus | Pass1: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-        if (HFR == -1) { // 检查HFR是否有效
-            LostStarNum++;
-            if (LostStarNum >= 3) { // 如果丢失星点超过3次，返回初始位置
-                Logger::Log("AutoFocus | Too many number of lost star points.", LogLevel::INFO, DeviceType::MAIN);
-                FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
-                Logger::Log("AutoFocus | Returned to the starting point.", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("AutoFocusOver:true");
-                return;
-            }
-        }
-        currentPosition = FocuserControl_getPosition(); // 更新当前对焦器位置
-        focusMeasures.append(QPointF(currentPosition, HFR)); // 记录测量值
-    }
+//     Logger::Log("AutoFocus | to move focuser 5 steps inward ...", LogLevel::INFO, DeviceType::MAIN);
+//     // 第一阶段：向内移动并计算HFR
+//     for(int i = 1; i < OnePassSteps; i++) {
+//         if (StopAutoFocus) { // 检查是否停止自动对焦
+//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement); // 计算HFR(半光通量半径)
+//         Logger::Log("AutoFocus | Pass1: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+//         if (HFR == -1) { // 检查HFR是否有效
+//             LostStarNum++;
+//             if (LostStarNum >= 3) { // 如果丢失星点超过3次，返回初始位置
+//                 Logger::Log("AutoFocus | Too many number of lost star points.", LogLevel::INFO, DeviceType::MAIN);
+//                 FocusGotoAndCalFWHM(initialPosition-stepIncrement * 5);
+//                 Logger::Log("AutoFocus | Returned to the starting point.", LogLevel::INFO, DeviceType::MAIN);
+//                 emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//                 return;
+//             }
+//         }
+//         currentPosition = FocuserControl_getPosition(); // 更新当前对焦器位置
+//         focusMeasures.append(QPointF(currentPosition, HFR)); // 记录测量值
+//     }
 
-    // 拟合抛物线并检查结果
-    float a, b, c;
-    int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
-    if (result == 0)
-    {
-        if(R2 < 0.8) { // 检查拟合的R²值
-            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
+//     // 拟合抛物线并检查结果
+//     float a, b, c;
+//     int result = Tools::fitQuadraticCurve(focusMeasures, a, b, c);
+//     if (result == 0)
+//     {
+//         if(R2 < 0.8) { // 检查拟合的R²值
+//             Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
 
-        if(a < 0) { // 检查抛物线的开口方向
-            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
-        }
+//         if(a < 0) { // 检查抛物线的开口方向
+//             Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
+//         }
 
-        int countLessThan = 0;
-        int countGreaterThan = 0;
+//         int countLessThan = 0;
+//         int countGreaterThan = 0;
 
-        // 统计测量点相对于最小点的分布
-        for (const QPointF &point : focusMeasures)
-        {
-            if (point.x() < minPoint_X)
-            {
-                countLessThan++;
-            }
-            else if (point.x() > minPoint_X)
-            {
-                countGreaterThan++;
-            }
-        }
+//         // 统计测量点相对于最小点的分布
+//         for (const QPointF &point : focusMeasures)
+//         {
+//             if (point.x() < minPoint_X)
+//             {
+//                 countLessThan++;
+//             }
+//             else if (point.x() > minPoint_X)
+//             {
+//                 countGreaterThan++;
+//             }
+//         }
 
-        // 根据分布调整对焦器
-        if (countLessThan > countGreaterThan) {
-            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            if(a > 0) {
-                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
-            } 
-        }
-        else if (countGreaterThan > countLessThan) {
-            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            if(a < 0) {
-                FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
-            }
-        }
-    }
+//         // 根据分布调整对焦器
+//         if (countLessThan > countGreaterThan) {
+//             Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             if(a > 0) {
+//                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+//             } 
+//         }
+//         else if (countGreaterThan > countLessThan) {
+//             Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             if(a < 0) {
+//                 FocusMoveAndCalHFR(!isInward, stepIncrement * (OnePassSteps-1) * 2);
+//             }
+//         }
+//     }
 
-    // 第二阶段：继续向内移动并计算HFR
-    for(int i = 1; i < OnePassSteps; i++) {
-        if (StopAutoFocus) {
-            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        Logger::Log("AutoFocus | Pass2: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-        currentPosition = FocuserControl_getPosition();
-        focusMeasures.append(QPointF(currentPosition, HFR));
-    }
+//     // 第二阶段：继续向内移动并计算HFR
+//     for(int i = 1; i < OnePassSteps; i++) {
+//         if (StopAutoFocus) {
+//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+//         Logger::Log("AutoFocus | Pass2: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+//         currentPosition = FocuserControl_getPosition();
+//         focusMeasures.append(QPointF(currentPosition, HFR));
+//     }
 
-    // 再次拟合抛物线并检查结果
-    Logger::Log("AutoFocus | to fit quadratic curve again ...", LogLevel::INFO, DeviceType::MAIN);
-    float a_, b_, c_;
-    int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
-    if (result_ == 0)
-    {
-        if(R2 < 0.8) {
-            Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
+//     // 再次拟合抛物线并检查结果
+//     Logger::Log("AutoFocus | to fit quadratic curve again ...", LogLevel::INFO, DeviceType::MAIN);
+//     float a_, b_, c_;
+//     int result_ = Tools::fitQuadraticCurve(focusMeasures, a_, b_, c_);
+//     if (result_ == 0)
+//     {
+//         if(R2 < 0.8) {
+//             Logger::Log("AutoFocus | not good fit, R² < 0.8", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
 
-        if(a_ < 0) {
-            Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
-        }
+//         if(a_ < 0) {
+//             Logger::Log("AutoFocus | parabola is downward", LogLevel::INFO, DeviceType::MAIN);
+//         }
 
-        int countLessThan = 0;
-        int countGreaterThan = 0;
+//         int countLessThan = 0;
+//         int countGreaterThan = 0;
 
-        for (const QPointF &point : focusMeasures)
-        {
-            if (point.x() < minPoint_X)
-            {
-                countLessThan++;
-            }
-            else if (point.x() > minPoint_X)
-            {
-                countGreaterThan++;
-            }
-        }
+//         for (const QPointF &point : focusMeasures)
+//         {
+//             if (point.x() < minPoint_X)
+//             {
+//                 countLessThan++;
+//             }
+//             else if (point.x() > minPoint_X)
+//             {
+//                 countGreaterThan++;
+//             }
+//         }
 
-        // 根据分布调整对焦器
-        if (countLessThan > countGreaterThan) {
-            Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            Pass3Steps = countLessThan-countGreaterThan;
-            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
+//         // 根据分布调整对焦器
+//         if (countLessThan > countGreaterThan) {
+//             Logger::Log("AutoFocus | More points are less than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             Pass3Steps = countLessThan-countGreaterThan;
+//             Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
 
-            FocusGotoAndCalFWHM(minPoint_X);
+//             FocusGotoAndCalFWHM(minPoint_X);
 
-            FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
-        }
-        else if (countGreaterThan > countLessThan) {
-            Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
-            Pass3Steps = countGreaterThan - countLessThan;
-            Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
+//             FocusMoveAndCalHFR(!isInward, stepIncrement * countLessThan);
+//         }
+//         else if (countGreaterThan > countLessThan) {
+//             Logger::Log("AutoFocus | More points are greater than minPoint_X.", LogLevel::INFO, DeviceType::MAIN);
+//             Pass3Steps = countGreaterThan - countLessThan;
+//             Logger::Log("AutoFocus | Pass3Steps: " + std::to_string(Pass3Steps), LogLevel::INFO, DeviceType::MAIN);
 
-            FocusGotoAndCalFWHM(minPoint_X);
-            if(countLessThan > 0){
-                FocusMoveAndCalHFR(isInward, stepIncrement * countLessThan);
-            }
-        }
-        else {
-            Logger::Log("AutoFocus | The number of points less than and greater than minPoint_X is equal.", LogLevel::INFO, DeviceType::MAIN);
-            FocusGotoAndCalFWHM(minPoint_X);
-            Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-    }
+//             FocusGotoAndCalFWHM(minPoint_X);
+//             if(countLessThan > 0){
+//                 FocusMoveAndCalHFR(isInward, stepIncrement * countLessThan);
+//             }
+//         }
+//         else {
+//             Logger::Log("AutoFocus | The number of points less than and greater than minPoint_X is equal.", LogLevel::INFO, DeviceType::MAIN);
+//             FocusGotoAndCalFWHM(minPoint_X);
+//             Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//     }
 
-    // 第三阶段：根据Pass3Steps调整对焦器
-    for(int i = 1; i < Pass3Steps + 1; i++) {
-        if (StopAutoFocus) {
-            Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-            return;
-        }
-        double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
-        Logger::Log("AutoFocus | Pass3: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-        currentPosition = FocuserControl_getPosition();
-        focusMeasures.append(QPointF(currentPosition, HFR));
-    }
+//     // 第三阶段：根据Pass3Steps调整对焦器
+//     for(int i = 1; i < Pass3Steps + 1; i++) {
+//         if (StopAutoFocus) {
+//             Logger::Log("AutoFocus | Stop Auto Focus...", LogLevel::INFO, DeviceType::MAIN);
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//             return;
+//         }
+//         double HFR = FocusMoveAndCalHFR(isInward, stepIncrement);
+//         Logger::Log("AutoFocus | Pass3: HFR-" + std::to_string(i) + "(" + std::to_string(HFR) + ") Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
+//         currentPosition = FocuserControl_getPosition();
+//         focusMeasures.append(QPointF(currentPosition, HFR));
+//     }
 
-    FocusGotoAndCalFWHM(minPoint_X); // 移动到最佳位置
-    Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
-    currentPosition = FocuserControl_getPosition();
-    Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
-    emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
-}
+//     FocusGotoAndCalFWHM(minPoint_X); // 移动到最佳位置
+//     Logger::Log("AutoFocus | Auto focus complete. Best step: " + std::to_string(minPoint_X), LogLevel::INFO, DeviceType::MAIN);
+//     currentPosition = FocuserControl_getPosition();
+//     Logger::Log("AutoFocus | Current Position : " + std::to_string(currentPosition), LogLevel::INFO, DeviceType::MAIN);
+//     emit wsThread->sendMessageToClient("AutoFocusOver:true"); // 通知自动对焦完成
+// }
 
 
-double MainWindow::FocusMoveAndCalHFR(bool isInward, int steps) {
-    // 记录开始移动和计算FWHM的日志
-    Logger::Log("FocusMoveAndCalHFR start ...", LogLevel::INFO, DeviceType::FOCUSER);
-    QEventLoop loop;
-    double FWHM = 0;
+// double MainWindow::FocusMoveAndCalHFR(bool isInward, int steps) {
+//     // 记录开始移动和计算FWHM的日志
+//     Logger::Log("FocusMoveAndCalHFR start ...", LogLevel::INFO, DeviceType::FOCUSER);
+//     QEventLoop loop;
+//     double FWHM = 0;
 
-    // 停止并断开之前的计时器连接，准备新的操作
-    FWHMTimer.stop();
-    FWHMTimer.disconnect();
+//     // 停止并断开之前的计时器连接，准备新的操作
+//     FWHMTimer.stop();
+//     FWHMTimer.disconnect();
 
-    // 设置FWHM计算未完成的标志
-    FWHMCalOver = false;
-    // 调用移动焦点器的函数，传入移动方向和步数
-    FocuserControl_Move(isInward, steps);
+//     // 设置FWHM计算未完成的标志
+//     FWHMCalOver = false;
+//     // 调用移动焦点器的函数，传入移动方向和步数
+//     FocuserControl_Move(isInward, steps);
 
-    // 设置计时器为单次触发
-    FWHMTimer.setSingleShot(true);
+//     // 设置计时器为单次触发
+//     FWHMTimer.setSingleShot(true);
 
-    // 连接计时器的超时信号到处理函数，用于处理FWHM计算
-    connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
-        if (FWHMCalOver) // 如果FWHM计算完成
-        {
-            FWHM = this->FWHM;  // 获取计算结果
-            FWHMTimer.stop();  // 停止计时器
-            // 记录FWHM计算完成的日志
-            Logger::Log("FocusMoveAndCalHFR | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::FOCUSER);
-            // 发送计算完成的消息给客户端
-            emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-            loop.quit();  // 退出事件循环
-        } 
-        else 
-        {
-            FWHMTimer.start(1000);  // 如果FWHM未计算完成，重新启动计时器，继续等待
-        }
-    });
+//     // 连接计时器的超时信号到处理函数，用于处理FWHM计算
+//     connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
+//         if (FWHMCalOver) // 如果FWHM计算完成
+//         {
+//             FWHM = this->FWHM;  // 获取计算结果
+//             FWHMTimer.stop();  // 停止计时器
+//             // 记录FWHM计算完成的日志
+//             Logger::Log("FocusMoveAndCalHFR | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::FOCUSER);
+//             // 发送计算完成的消息给客户端
+//             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
+//             loop.quit();  // 退出事件循环
+//         } 
+//         else 
+//         {
+//             FWHMTimer.start(1000);  // 如果FWHM未计算完成，重新启动计时器，继续等待
+//         }
+//     });
 
-    FWHMTimer.start(1000);  // 启动计时器，等待FWHM计算
-    loop.exec();  // 进入事件循环，等待计时器信号或计算完成
+//     FWHMTimer.start(1000);  // 启动计时器，等待FWHM计算
+//     loop.exec();  // 进入事件循环，等待计时器信号或计算完成
 
-    return FWHM;  // 返回计算得到的FWHM值
-}
+//     return FWHM;  // 返回计算得到的FWHM值
+// }

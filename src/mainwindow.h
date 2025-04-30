@@ -43,6 +43,7 @@
 
 #include <thread> // 确保包含此头文件
 #include <chrono> // 包含用于时间的头文件
+#include <cmath>  // 包含数学函数
 
 #define QT_Client_Version "20250408"
 
@@ -320,7 +321,12 @@ public:
     // roiAndFocuserInfo["Scale"] = 1;        // 缩放比例,1为全图以宽为基准的全部显示,0.1是全图以宽为基准的10%显示
     // roiAndFocuserInfo["SelectStarX"] = -1; // 选择的星点的x坐标,是中心点坐标,参考系是全图的图像
     // roiAndFocuserInfo["SelectStarY"] = -1; // 选择的星点的y坐标,是中心点坐标,参考系是全图的图像
-    
+    std::pair<int,double> currentSelectStarPosition;    // 用于存储当前选择的星点位置
+    std::vector<std::pair<int,double>> currentAutoFocusStarPositionList; // 用于存储当前自动对焦的星点位置
+    std::vector<std::pair<int,double>> allAutoFocusStarPositionList;   // 用于存储所有拟合曲线的的星点位置
+    int overSelectStarAutoFocusStep = 0;  // 用于结束使用选择的星点进行自动对焦
+    void AutoFocus(std::pair<int,double> selectStarPosition); // 自动对焦处理逻辑
+    int autoFocusStep = 0;
     void sendRoiInfo();   // 用于发送ROI信息
     
 
@@ -335,7 +341,7 @@ public:
 
     double R2;
 
-    void AutoFocus();
+    // void AutoFocus();
     bool isAutoFocus = false;
     bool StopAutoFocus = false;
 
@@ -347,6 +353,21 @@ public:
     int  FocuserControl_getSpeed();
 
     int FocuserControl_getPosition();
+
+
+    double observatorylongitude=-1;  // 观测站经度,自动翻转使用
+    double observatorylatitude =-1; // 观测站纬度,自动翻转使用
+    bool needsMeridianFlip(double lst,double targetRA);
+    // 执行观测流程
+    // void performObservation(
+    //     double currentRA, double currentDec,
+    //     double targetRA, double targetDec,
+    //     double observatoryLongitude,double observatoryLatitude);
+
+    void performObservation(double lst,double currentDec,double targetRA,double targetDec,double observatoryLongitude,double observatoryLatitude);
+    double getJulianDate(const std::chrono::system_clock::time_point& utc_time);
+    double computeGMST(const std::chrono::system_clock::time_point& utc_time);
+    double computeLST(double longitude_east, const std::chrono::system_clock::time_point& utc_time);
 
     void TelescopeControl_Goto(double Ra,double Dec);
 
