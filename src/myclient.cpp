@@ -312,6 +312,60 @@ const char * MyClient::PropertyTypeToString(INDI_PROPERTY_TYPE type)
 }
 
 
+uint32_t MyClient::setBaudRate(INDI::BaseDevice *dp, int baudRate)
+{
+    INDI::PropertySwitch baudRateProperty = dp->getProperty("DEVICE_BAUD_RATE");
+    if (!baudRateProperty.isValid())
+    {
+        Logger::Log("indi_client | setBaudRate | Error: unable to find DEVICE_BAUD_RATE property...", LogLevel::WARNING, DeviceType::MAIN);
+        return QHYCCD_ERROR;
+    }
+    if (baudRate == 9600) {
+        baudRateProperty[0].setState(ISS_ON);
+        baudRateProperty[1].setState(ISS_OFF);
+        baudRateProperty[2].setState(ISS_OFF);
+        baudRateProperty[3].setState(ISS_OFF);
+        baudRateProperty[4].setState(ISS_OFF);
+        baudRateProperty[5].setState(ISS_OFF);
+    } else if (baudRate == 19200) {
+        baudRateProperty[0].setState(ISS_OFF);
+        baudRateProperty[1].setState(ISS_ON);
+        baudRateProperty[2].setState(ISS_OFF);
+        baudRateProperty[3].setState(ISS_OFF);
+        baudRateProperty[4].setState(ISS_OFF);
+        baudRateProperty[5].setState(ISS_OFF);
+    } else if (baudRate == 38400) {
+        baudRateProperty[0].setState(ISS_OFF);
+        baudRateProperty[1].setState(ISS_OFF);
+        baudRateProperty[2].setState(ISS_ON);
+        baudRateProperty[3].setState(ISS_OFF);
+        baudRateProperty[4].setState(ISS_OFF);
+        baudRateProperty[5].setState(ISS_OFF);
+    } else if (baudRate == 57600) {
+        baudRateProperty[0].setState(ISS_OFF);
+        baudRateProperty[1].setState(ISS_OFF);
+        baudRateProperty[2].setState(ISS_OFF);
+        baudRateProperty[3].setState(ISS_ON);
+        baudRateProperty[4].setState(ISS_OFF);
+        baudRateProperty[5].setState(ISS_OFF);
+    } else if (baudRate == 115200) {
+        baudRateProperty[0].setState(ISS_OFF);
+        baudRateProperty[1].setState(ISS_OFF);
+        baudRateProperty[2].setState(ISS_OFF);
+        baudRateProperty[3].setState(ISS_OFF);
+        baudRateProperty[4].setState(ISS_ON);
+    } else if (baudRate == 230400) {
+        baudRateProperty[0].setState(ISS_OFF);
+        baudRateProperty[1].setState(ISS_OFF);
+        baudRateProperty[2].setState(ISS_OFF);
+        baudRateProperty[3].setState(ISS_OFF);
+        baudRateProperty[4].setState(ISS_OFF);
+        baudRateProperty[5].setState(ISS_ON);
+    }
+    sendNewProperty(baudRateProperty);
+    Logger::Log("indi_client | setBaudRate | " + std::to_string(baudRate), LogLevel::INFO, DeviceType::MAIN);
+    return QHYCCD_SUCCESS;
+}
 /**************************************************************************************
 **                                  CCD API
 ***************************************************************************************/

@@ -50,6 +50,8 @@ class MyClient : public INDI::BaseClient
 
         uint32_t StartWatch(INDI::BaseDevice *dp);
 
+        uint32_t setBaudRate(INDI::BaseDevice *dp, int baudRate);
+
         //CCD API
         uint32_t setTemperature(INDI::BaseDevice *dp,double value);
         uint32_t getTemperature(INDI::BaseDevice *dp,double &value);

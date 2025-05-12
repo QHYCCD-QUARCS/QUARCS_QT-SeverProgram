@@ -77,7 +77,7 @@ void WebSocketClient::onTextMessageReceived(QString message)
     // qDebug() << "Message received:" << message;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
     QJsonObject messageObj = doc.object();
-    if (messageObj["type"].toString() == "Vue_Command")
+    if (messageObj["type"].toString() == "Vue_Command" || messageObj["type"].toString() == "Process_Command")
     {
         // 处理命令
         emit messageReceived(messageObj["message"].toString());
@@ -109,6 +109,16 @@ void WebSocketClient::sendAcknowledgment(QString messageID)
     messageObj["msgid"] = utf8Message;
 
     // 然后使用WebSocket发送消息
+    webSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
+}
+
+void WebSocketClient::sendProcessCommandReturn(QString message)
+{
+    QString utf8Message = message.toUtf8();
+
+    QJsonObject messageObj;
+    messageObj["type"] = "Process_Command_Return";
+    messageObj["message"] = utf8Message;
     webSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
 }
 

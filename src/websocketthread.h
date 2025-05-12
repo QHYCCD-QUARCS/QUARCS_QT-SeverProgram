@@ -15,7 +15,7 @@ public:
 signals:
     void receivedMessage(QString message);
     void sendMessageToClient(QString message);
-
+    void sendProcessCommandReturn(QString message);
 protected:
     void run() override;
 

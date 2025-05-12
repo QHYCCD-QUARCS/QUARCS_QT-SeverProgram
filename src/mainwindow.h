@@ -45,7 +45,7 @@
 #include <chrono> // 包含用于时间的头文件
 #include <cmath>  // 包含数学函数
 
-#define QT_Client_Version "20250408"
+#define QT_Client_Version getBuildDate()
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -71,6 +71,11 @@ class MainWindow : public QObject
 public:
     explicit MainWindow(QObject *parent = nullptr);
     ~MainWindow();
+
+    QTimer *system_timer = nullptr;
+    void updateCPUInfo();
+
+    std::string getBuildDate();
 
     void getHostAddress();
 
@@ -100,7 +105,7 @@ public:
     void DeviceSelect(int systemNumber,int grounpNumber);
     void SelectIndiDevice(int systemNumber,int grounpNumber);
 
-    bool indi_Driver_Confirm(QString DriverName);
+    bool indi_Driver_Confirm(QString DriverName, QString BaudRate);
     bool indi_Driver_Clear();
     void indi_Device_Confirm(QString DeviceName, QString DriverName);
 
@@ -310,7 +315,7 @@ public:
     bool isFocusLoopShooting = false; //控制ROi循环拍摄
     void focusLoopShooting(bool isLoop); //控制ROi循环拍摄
     void getFocuserLoopingState(); //获取ROi循环拍摄状态
-    std::pair<int,double> selectStar(QList<FITSImage::Star> stars); //用于选择用于计算自动对焦的星点
+    QPointF selectStar(QList<FITSImage::Star> stars); //用于选择用于计算自动对焦的星点
     // 用于同步ROI的信息
     std::map<std::string, double> roiAndFocuserInfo; // 用于存储ROI信息
     // roiAndFocuserInfo["ROI_x"] = 0;// ROI的x坐标,是左上角坐标,参考系是原大小的图像
@@ -321,13 +326,14 @@ public:
     // roiAndFocuserInfo["Scale"] = 1;        // 缩放比例,1为全图以宽为基准的全部显示,0.1是全图以宽为基准的10%显示
     // roiAndFocuserInfo["SelectStarX"] = -1; // 选择的星点的x坐标,是中心点坐标,参考系是全图的图像
     // roiAndFocuserInfo["SelectStarY"] = -1; // 选择的星点的y坐标,是中心点坐标,参考系是全图的图像
-    std::pair<int,double> currentSelectStarPosition;    // 用于存储当前选择的星点位置
-    std::vector<std::pair<int,double>> currentAutoFocusStarPositionList; // 用于存储当前自动对焦的星点位置
-    std::vector<std::pair<int,double>> allAutoFocusStarPositionList;   // 用于存储所有拟合曲线的的星点位置
+    QPointF currentSelectStarPosition;    // 用于存储当前选择的星点位置
+    QVector<QPointF> currentAutoFocusStarPositionList; // 用于存储当前自动对焦的星点位置
+    QVector<QPointF> allAutoFocusStarPositionList;   // 用于存储所有拟合曲线的的星点位置
     int overSelectStarAutoFocusStep = 0;  // 用于结束使用选择的星点进行自动对焦
-    void AutoFocus(std::pair<int,double> selectStarPosition); // 自动对焦处理逻辑
+    void AutoFocus(QPointF selectStarPosition); // 自动对焦处理逻辑
     int autoFocusStep = 0;
     void sendRoiInfo();   // 用于发送ROI信息
+    int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);
     
 
     QTimer FWHMTimer; 

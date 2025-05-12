@@ -12,6 +12,7 @@ WebSocketThread::~WebSocketThread() {
 void WebSocketThread::run() {
     client = new WebSocketClient(url);
     connect(this, &WebSocketThread::sendMessageToClient, client, &WebSocketClient::messageSend);
+    connect(this, &WebSocketThread::sendProcessCommandReturn, client, &WebSocketClient::sendProcessCommandReturn);
     bool ok = connect(client, &WebSocketClient::messageReceived, this, &WebSocketThread::receivedMessage);
     if (!ok) {
         qDebug() << "Failed to connect messageReceived signal";

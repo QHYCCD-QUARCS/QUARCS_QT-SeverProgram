@@ -15,6 +15,7 @@ public:
     explicit WebSocketClient(const QUrl &url, QObject *parent = nullptr);
     void messageSend(QString message);
     void sendAcknowledgment(QString  messageObj);
+    void sendProcessCommandReturn(QString message);
     void reconnect();
     void onNetworkStateChanged(bool isOnline);
 

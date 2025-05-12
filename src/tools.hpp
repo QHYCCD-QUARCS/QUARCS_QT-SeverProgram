@@ -91,6 +91,7 @@ struct SystemDevice {
   QString DeviceIndiName{};  //"QHY CCD QHY268M-XXXX"
   QString DriverIndiName;    //"indi_qhy_ccd"  or "libqhyccd"
   QString DriverFrom{};      // INDI,ASCOM,NATIVE.
+  int BaudRate{};  // 9600,19200,38400,57600,115200,230400
   INDI::BaseDevice *dp;
   bool isConnect = false;
   bool isBind = false;

@@ -1,5 +1,6 @@
 #include <QCoreApplication>
 #include <QDebug>
+#include <sys/prctl.h>
 #include "mainwindow.h"
 
 void handleMessage(const QString &message) {
@@ -9,6 +10,7 @@ void handleMessage(const QString &message) {
 
 int main(int argc, char *argv[])
 {
+    prctl(PR_SET_NAME, "QUARCS"); // 设置进程名
     QCoreApplication a(argc, argv);
 
     qDebug("main start...");
