@@ -222,8 +222,8 @@ public:
 
     // std::string vueDirectoryPath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
     std::string vueDirectoryPath = "/dev/shm/";
-    // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";  // /var/www/html/img/
-    std::string vueImagePath = "/var/www/html/img/";
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";  // /var/www/html/img/
+    // std::string vueImagePath = "/var/www/html/img/";
     std::string PriorGuiderImage = "NULL";
     std::string PriorROIImage = "NULL";
     std::string PriorCaptureImage = "NULL";

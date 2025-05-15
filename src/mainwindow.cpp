@@ -1275,7 +1275,7 @@ void MainWindow::initINDIClient()
                     {
                         if (isFocusLoopShooting ){
                             saveFitsAsJPG(QString::fromStdString(filename), true);
-                            Logger::Log("saveFitsAsJPG", LogLevel::INFO, DeviceType::MAIN);
+                            Logger::Log("saveFitsAsJPG", LogLevel::DEBUG, DeviceType::MAIN);
                         }
                     }
                     // Logger::Log("拍摄完成，图像保存完成 finish!", LogLevel::INFO, DeviceType::MAIN);
@@ -2560,7 +2560,13 @@ void MainWindow::AutoConnectAllDevice() {
     dpFocuser = nullptr;
     dpCFW = nullptr;
 
-    systemdevicelist = Tools::readSystemDeviceList();
+    SystemDeviceList newSystemdevicelist = Tools::readSystemDeviceList();
+    if(newSystemdevicelist.system_devices.size() != systemdevicelist.system_devices.size()) {
+        Logger::Log("No historical connection records found", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:No historical connection records found.");
+        return;
+    }
+    systemdevicelist = newSystemdevicelist;
     
     int SelectedDriverNum = Tools::getDriverNumFromSystemDeviceList(systemdevicelist);
     if (SelectedDriverNum == 0)
@@ -5179,9 +5185,7 @@ void MainWindow::HandleFocuserMovementDataPeriodically() {
     focusMoveEndTime -= 0.5;
     if (focusMoveEndTime <= 0) {
         FocuserControlStop();
-    }else if (focusMoveEndTime > 0 && focusMoveEndTime <= 1) {
-        emit wsThread->sendMessageToClient("getFocuserMoveState");
-    }
+    } 
 }
 
 void MainWindow::FocuserControlMove(bool isInward) {
@@ -8685,7 +8689,7 @@ void MainWindow::updateCPUInfo()
         cpuUsage = std::numeric_limits<float>::quiet_NaN();  // 如果获取失败，设置为 NaN
     }
 
-    Logger::Log("updateCPUInfo | CPU Temp: " + std::to_string(cpuTemp) + ", CPU Usage: " + std::to_string(cpuUsage), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("updateCPUInfo | CPU Temp: " + std::to_string(cpuTemp) + ", CPU Usage: " + std::to_string(cpuUsage), LogLevel::DEBUG, DeviceType::MAIN);
     emit wsThread->sendMessageToClient("updateCPUInfo:" + QString::number(cpuTemp) + ":" + QString::number(cpuUsage));
 }
 

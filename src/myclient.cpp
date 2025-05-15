@@ -422,10 +422,10 @@ uint32_t MyClient::takeExposure(INDI::BaseDevice *dp,double seconds)
     }
 
     CaptureTestTimer.start();
-    Logger::Log("indi_client | takeExposure | Exposure start.", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("indi_client | takeExposure | Exposure start.", LogLevel::DEBUG, DeviceType::CAMERA);
 
     // Take a 1 second exposure
-    Logger::Log("indi_client | takeExposure | Taking a " + std::to_string(seconds) + " second exposure.", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("indi_client | takeExposure | Taking a " + std::to_string(seconds) + " second exposure.", LogLevel::DEBUG, DeviceType::CAMERA);
     ccdExposure[0].setValue(seconds);
     sendNewProperty(ccdExposure);
     return QHYCCD_SUCCESS;
@@ -478,7 +478,7 @@ uint32_t MyClient::setCCDFrameInfo(INDI::BaseDevice *dp,int X,int Y,int WIDTH,in
         return QHYCCD_ERROR;
     }
 
-    Logger::Log("indi_client | setCCDFrameInfo | " + std::to_string(X) + ", " + std::to_string(Y) + ", " + std::to_string(WIDTH) + ", " + std::to_string(HEIGHT), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("indi_client | setCCDFrameInfo | " + std::to_string(X) + ", " + std::to_string(Y) + ", " + std::to_string(WIDTH) + ", " + std::to_string(HEIGHT), LogLevel::DEBUG, DeviceType::CAMERA);
 
     ccdFrameInfo[0].setValue(X);
     ccdFrameInfo[1].setValue(Y);
