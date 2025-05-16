@@ -54,6 +54,7 @@
 #define GPIO_PIN_2 "527"
 
 #include "Logger.h"
+#include "tianwen.h"
 
 
 // 定义一个新的结构体来存储星点的信息和电调位置
@@ -71,7 +72,7 @@ class MainWindow : public QObject
 public:
     explicit MainWindow(QObject *parent = nullptr);
     ~MainWindow();
-
+    TianWen *tianwen;
     QTimer *system_timer = nullptr;
     void updateCPUInfo();
 

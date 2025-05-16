@@ -94,6 +94,9 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(focusMoveTimer, &QTimer::timeout, this, &MainWindow::HandleFocuserMovementDataPeriodically);
 
     emit wsThread->sendMessageToClient("ServerInitSuccess");
+
+    tianwen = new TianWen();
+    TianWen::wsThread = wsThread;
 }
 
 MainWindow::~MainWindow()

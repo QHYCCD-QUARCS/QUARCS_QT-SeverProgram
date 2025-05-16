@@ -27,6 +27,13 @@ find_package(StellarSolver REQUIRED)
 
 find_package(Qt5 COMPONENTS Core Network WebSockets SerialPort REQUIRED)
 
+# 查找 OpenSSL
+find_package(OpenSSL REQUIRED)
+
+# 手动指定头文件和库路径
+set(RDKAFKA_INCLUDE_DIRS "/usr/include/librdkafka")
+set(RDKAFKA_LIBRARIES "/usr/lib/x86_64-linux-gnu/librdkafka.so")
+
 add_executable(client
   main.cpp
   websocketclient.h websocketclient.cpp
@@ -36,10 +43,12 @@ add_executable(client
   websocketthread.h websocketthread.cpp
   platesolveworker.h platesolveworker.cpp
   Logger.h Logger.cpp
+  tianwen.cpp tianwen.h
 )
 
 target_link_libraries(client PRIVATE
     indiclient ${ZLIB_LIBRARY} ${NOVA_LIBRARIES}
+    OpenSSL::Crypto OpenSSL::SSL ${RDKAFKA_LIBRARIES}
 )
 
 IF (UNIX AND NOT APPLE)
@@ -55,6 +64,7 @@ install(TARGETS client
 target_include_directories(client PUBLIC 
   /usr/include/libindi
   /usr/local/include/libstellarsolver  # Path to stellarsolver headers
+  ${RDKAFKA_INCLUDE_DIRS}
 )
 link_directories(${PROJECT_SOURCE_DIR}/usr/lib/x86_64-linux-gnu)
 target_link_libraries(client PUBLIC
@@ -62,6 +72,8 @@ target_link_libraries(client PUBLIC
   -lindidriver
   -lindiclient
   -lcfitsio
+
+ 
 )
 
 target_include_directories(client PUBLIC
@@ -87,4 +99,3 @@ target_link_libraries(client PRIVATE
 # 复制配置文件到构建目录
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/../qhyccd.ini
      DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-
