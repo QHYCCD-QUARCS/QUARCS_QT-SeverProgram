@@ -44,6 +44,8 @@
 #include <thread> // 确保包含此头文件
 #include <chrono> // 包含用于时间的头文件
 #include <cmath>  // 包含数学函数
+#include <set>
+#include <unordered_set>
 
 #define QT_Client_Version getBuildDate()
 
@@ -54,15 +56,26 @@
 #define GPIO_PIN_2 "527"
 
 #include "Logger.h"
-#include "tianwen.h"
 
 
 // 定义一个新的结构体来存储星点的信息和电调位置
-struct StarWithFocuserPosition {
-    double x;  // 星点的 x 坐标
-    double y;  // 星点的 y 坐标
-    double HFR;  // 星点的 HFR 值
-    int focuserPosition;  // 当前电调位置
+struct StarList {
+    int id = -1; // 星星的编号
+    double x = 0, y = 0; // 星星的坐标
+    double hfr = 0; // 星星的半高全宽
+    int vector1_id = -1, vector2_id = -1, vector3_id = -1; // 向量1，表示方向和距离
+    QPointF vector1 = QPointF(0, 0); // 向量1，表示方向和距离
+    QPointF vector2 = QPointF(0, 0); // 向量2，表示方向和距离
+    QPointF vector3 = QPointF(0, 0); // 向量3，表示方向和距离
+    QString status = "wait"; // 星星的状态
+    int focuserPosition = 0;  // 当前电调位置
+};
+
+// 定义一个用来判断星点匹配度的结构体
+struct StarMatch{
+    int id = -1; // 星星的编号
+    int vector1_id = -1, vector2_id = -1, vector3_id = -1; // 向量1，2，3的编号
+    bool isMatch1 = false, isMatch2 = false, isMatch3 = false; // 是否匹配
 };
 
 class MainWindow : public QObject
@@ -72,7 +85,6 @@ class MainWindow : public QObject
 public:
     explicit MainWindow(QObject *parent = nullptr);
     ~MainWindow();
-    TianWen *tianwen;
     QTimer *system_timer = nullptr;
     void updateCPUInfo();
 
@@ -129,7 +141,6 @@ public:
     void ClearSystemDeviceList();
     void ConnectDriver(QString DriverName,QString DriverType);
     void DisconnectDevice(MyClient *client,QString DeviceName,QString DeviceType);
-    void initDeviceList();
     void loadSelectedDriverList();
     void loadBindDeviceList(MyClient *client);
     void loadBindDeviceTypeList();
@@ -213,7 +224,7 @@ public:
     bool one_touch_connect_first = true;
     int glMainCCDSizeX = 0;
     int glMainCCDSizeY = 0;
-
+    double CameraTemperature = 16;
     int glOffsetValue = 0, glOffsetMin = 0, glOffsetMax = 0;
     int glGainValue = 0, glGainMin = 0, glGainMax = 0;
 
@@ -260,10 +271,6 @@ public:
     bool isGuiding = false;
     bool isGuiderLoopExp = false;
 
-    double glROI_x = 0;        // ROI的起始x坐标
-    double glROI_y = 0;        // ROI的起始y坐标
-    // int CaptureViewWidth = 0;
-    // int CaptureViewHeight = 0;
     int BoxSideLength = 300;
     
     double FWHM = 0;
@@ -307,6 +314,8 @@ public:
     double focusMoveEndTime = 0;     // 用来控制电调移动时，因为浏览器关闭或刷新或网络卡死导致的结束命令丢失超时
     QTimer* focusMoveTimer = nullptr;   // 用于控制焦距移动的定时器，每500ms执行一次步数的设置
     bool isFocusMoveDone = false;   // 用于标记电调是否在移动，全局标志电调是否在移动
+    int focuserMaxPosition = 60000;
+    int focuserMinPosition = -60000;
     void FocuserControlMove(bool isInward); //控制电调移动
     void HandleFocuserMovementDataPeriodically(); //重置定时器，并更新电调移动参数，
     void FocuserControlStop(); //停止电调移动
@@ -327,15 +336,25 @@ public:
     // roiAndFocuserInfo["Scale"] = 1;        // 缩放比例,1为全图以宽为基准的全部显示,0.1是全图以宽为基准的10%显示
     // roiAndFocuserInfo["SelectStarX"] = -1; // 选择的星点的x坐标,是中心点坐标,参考系是全图的图像
     // roiAndFocuserInfo["SelectStarY"] = -1; // 选择的星点的y坐标,是中心点坐标,参考系是全图的图像
+    // roiAndFocuserInfo["SelectStarHFR"] = -1; // 选择的星点的HFR值
     QPointF currentSelectStarPosition;    // 用于存储当前选择的星点位置
     QVector<QPointF> currentAutoFocusStarPositionList; // 用于存储当前自动对焦的星点位置
     QVector<QPointF> allAutoFocusStarPositionList;   // 用于存储所有拟合曲线的的星点位置
     int overSelectStarAutoFocusStep = 0;  // 用于结束使用选择的星点进行自动对焦
     void AutoFocus(QPointF selectStarPosition); // 自动对焦处理逻辑
-    int autoFocusStep = 0;
-    void sendRoiInfo();   // 用于发送ROI信息
-    int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);
-    
+    int autoFocusStep = 0; // 用于存储自动对焦的步数
+    void sendRoiInfo();   // 用于发送ROI信息  
+    int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);  // 拟合二次曲线
+    std::vector<StarList> starMap; // 用于存储图信息
+    int updateStarMapPosition(QList<FITSImage::Star> stars); // 计算星图相对位置，为星点编号
+    void compareStarVector(QList<FITSImage::Star> stars); // 匹配星点和星图
+    double calculateDistance(double x1, double y1, double x2, double y2); // 计算两点之间的距离
+
+    bool checkStarExist(QList<FITSImage::Star> stars , const QPointF& star); // 检查星点是否存在
+    void calculateStarVector(); // 计算星点之间的向量
+    int selectStarInStarMapId = -1; // 用于存储选择的星点在星图中的编号
+    bool NewSelectStar = true; // 用于标记是否选择新的星点
+    int starMapLossNum = 0; // 用于存储星图丢失的次数
 
     QTimer FWHMTimer; 
 
@@ -539,13 +558,7 @@ public:
 
     bool isFilterOnCamera = false;
 
-    bool isFirstCapture = true;
 
-    double glCurrentLocationLat = 0;
-    double glCurrentLocationLng = 0; 
-
-    double LastRA_Degree = 0;
-    double LastDEC_Degree = 0;
 
     void MountGoto(double Ra_Hour, double Dec_Degree);
 
@@ -589,14 +602,22 @@ public:
     QStringList findLinkToTtyDevice(const QString& directoryPath, const QString& ttyDevice);  // 查找指向tty设备的符号链接列表
     bool areFilesInSameDirectory(const QString& path1, const QString& path2);  // 检查两个文件是否在同一目录下
 
-    void loadParameters();
 
     void handleIndiServerOutput();
     void handleIndiServerError();
 
+    void getMainCameraParameters();
+
+    void synchronizeTime(QString time, QString date); // 同步系统时间
 
     double DEC = -1;
     double RA = -1;
+
+    QString localLon = ""; // 本地经度
+    QString localLat = "";  // 本地纬度
+    QString localLanguage = ""; // 本地语言
+    QString localTime = ""; // 本地时区
+    
 private slots:
     void onMessageReceived(const QString &message);
     // void sendMessage(QString message);
@@ -604,6 +625,8 @@ private slots:
 private:
     // WebSocketClient *websocket;
     WebSocketThread *wsThread;
+    QUrl websockethttpUrl;
+    QUrl websockethttpsUrl;
 
     MyClient *indi_Client;
     QProcess *glIndiServer;

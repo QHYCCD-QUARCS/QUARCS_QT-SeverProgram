@@ -1,7 +1,7 @@
 #include "websocketthread.h"
 
-WebSocketThread::WebSocketThread(const QUrl &url, QObject *parent) :
-    QThread(parent), url(url) {}
+WebSocketThread::WebSocketThread(const QUrl &httpUrl, const QUrl &httpsUrl, QObject *parent) :
+    QThread(parent), httpUrl(httpUrl), httpsUrl(httpsUrl) {}
 
 WebSocketThread::~WebSocketThread() {
     quit();
@@ -10,7 +10,7 @@ WebSocketThread::~WebSocketThread() {
 }
 
 void WebSocketThread::run() {
-    client = new WebSocketClient(url);
+    client = new WebSocketClient(httpUrl, httpsUrl);
     connect(this, &WebSocketThread::sendMessageToClient, client, &WebSocketClient::messageSend);
     connect(this, &WebSocketThread::sendProcessCommandReturn, client, &WebSocketClient::sendProcessCommandReturn);
     bool ok = connect(client, &WebSocketClient::messageReceived, this, &WebSocketThread::receivedMessage);

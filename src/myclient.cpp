@@ -1241,7 +1241,6 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp,QString command)
 
 
 
-
 uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_SLEW_RATE");
@@ -1252,30 +1251,57 @@ uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)        speed=1;
-    else if(property[1].getState()==ISS_ON)   speed=2;
-    else if(property[2].getState()==ISS_ON)   speed=3;
-    else if(property[3].getState()==ISS_ON)   speed=4;
-    else if(property[4].getState()==ISS_ON)   speed=5;
-    else if(property[5].getState()==ISS_ON)   speed=6;
-    else if(property[6].getState()==ISS_ON)   speed=7;
-    else if(property[7].getState()==ISS_ON)   speed=8;
-    else if(property[8].getState()==ISS_ON)   speed=9;
-    else if(property[9].getState()==ISS_ON)   speed=10;
-    else
+    for(int i = 0; i < property.count(); i++)
     {
-        Logger::Log("indi_client | getTelescopeSlewRate | Error: unable to find TELESCOPE_SLEW_RATE property...", LogLevel::ERROR, DeviceType::MOUNT);
-        speed = -1;
-        return QHYCCD_ERROR;
+        if(property[i].getState() == ISS_ON)
+        {
+            speed = i + 1;
+            Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed), LogLevel::INFO, DeviceType::MOUNT);
+            if(speed>=1 && speed<=property.count()) Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed) + " " + property[speed-1].getLabel(), LogLevel::INFO, DeviceType::MOUNT);
+            return QHYCCD_SUCCESS;
+        }
     }
 
-    Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed), LogLevel::INFO, DeviceType::MOUNT);
-    if(speed>=0 && speed<=9) Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed) + " " + property[speed].getLabel(), LogLevel::INFO, DeviceType::MOUNT);
-
-
-    return QHYCCD_SUCCESS;
-
+    Logger::Log("indi_client | getTelescopeSlewRate | Error: not found slew rate", LogLevel::ERROR, DeviceType::MOUNT);
+    speed = -1;
+    return QHYCCD_ERROR;
 }
+
+
+// uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
+// {
+//     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_SLEW_RATE");
+
+//     if (!property.isValid())
+//     {
+//         Logger::Log("indi_client | getTelescopeSlewRate | Error: unable to find TELESCOPE_SLEW_RATE property...", LogLevel::WARNING, DeviceType::MOUNT);
+//         return QHYCCD_ERROR;
+//     }
+
+//     if(property[0].getState()==ISS_ON)        speed=1;
+//     else if(property[1].getState()==ISS_ON)   speed=2;
+//     else if(property[2].getState()==ISS_ON)   speed=3;
+//     else if(property[3].getState()==ISS_ON)   speed=4;
+//     else if(property[4].getState()==ISS_ON)   speed=5;
+//     else if(property[5].getState()==ISS_ON)   speed=6;
+//     else if(property[6].getState()==ISS_ON)   speed=7;
+//     else if(property[7].getState()==ISS_ON)   speed=8;
+//     else if(property[8].getState()==ISS_ON)   speed=9;
+//     else if(property[9].getState()==ISS_ON)   speed=10;
+//     else
+//     {
+//         Logger::Log("indi_client | getTelescopeSlewRate | Error: not found slew rate", LogLevel::ERROR, DeviceType::MOUNT);
+//         speed = -1;
+//         return QHYCCD_ERROR;
+//     }
+
+//     Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed), LogLevel::INFO, DeviceType::MOUNT);
+//     if(speed>=0 && speed<=9) Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed) + " " + property[speed].getLabel(), LogLevel::INFO, DeviceType::MOUNT);
+
+
+//     return QHYCCD_SUCCESS;
+
+// }
 
 uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp,int speed)
 {
@@ -1913,13 +1939,34 @@ uint32_t MyClient::moveFocuserSteps(INDI::BaseDevice *dp,int steps)
         Logger::Log("indi_client | moveFocuserSteps | Error: unable to find  REL_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =steps;
+    if (steps > 0) {
+        property->np[0].value = steps;
+    } else {
+        Logger::Log("indi_client | moveFocuserSteps | Error: steps is negative", LogLevel::WARNING, DeviceType::FOCUSER);
+        return QHYCCD_ERROR;
+    }
 
     sendNewProperty(property);
 
-    Logger::Log("indi_client | moveFocuserSteps" + std::to_string(steps), LogLevel::INFO, DeviceType::FOCUSER);
+    Logger::Log("indi_client | moveFocuserSteps " + std::to_string(steps), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
+
+uint32_t MyClient::getFocuserRange(INDI::BaseDevice *dp,int & min, int & max, int & step, int & value)
+{
+    INDI::PropertyNumber property = dp->getProperty("ABS_FOCUS_POSITION");
+    if (!property.isValid())
+    {
+        Logger::Log("indi_client | getFocuserRange | Error: unable to find  ABS_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
+        return QHYCCD_ERROR;
+    }
+    min = property->np[0].min;
+    max = property->np[0].max;
+    step = property->np[0].step;
+    value = property->np[0].value;
+    return QHYCCD_SUCCESS;
+}
+
 
 uint32_t MyClient::moveFocuserToAbsolutePosition(INDI::BaseDevice *dp,int position)
 {

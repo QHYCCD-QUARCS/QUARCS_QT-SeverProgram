@@ -145,6 +145,7 @@ class MyClient : public INDI::BaseClient
         uint32_t getFocuserReverse(INDI::BaseDevice *dp,bool &isReversed);
         uint32_t setFocuserReverse(INDI::BaseDevice *dp,bool   isReversed);
         uint32_t moveFocuserSteps(INDI::BaseDevice *dp,int steps);
+        uint32_t getFocuserRange(INDI::BaseDevice *dp,int & min, int & max, int & step, int & value);
         uint32_t moveFocuserToAbsolutePosition(INDI::BaseDevice *dp,int position);
         uint32_t getFocuserAbsolutePosition(INDI::BaseDevice *dp,int & position);
         uint32_t moveFocuserWithTime(INDI::BaseDevice *dp,int msec);

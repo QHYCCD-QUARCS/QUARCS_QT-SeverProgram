@@ -2,7 +2,6 @@
 #include <QDebug>
 #include <sys/prctl.h>
 #include "mainwindow.h"
-#include "tianwen.h"
 
 void handleMessage(const QString &message) {
     qDebug() << "Message received in main:" << message;
