@@ -251,15 +251,24 @@ void MainWindow::onMessageReceived(const QString &message)
         // {
         //     FocusGotoAndCalFWHM(Steps);
         // }
-    }else if (parts.size() == 2 && parts[0].trimmed() == "getFocuserMoveState"){
+    }
+    
+    else if (parts.size() == 2 && parts[0].trimmed() == "getFocuserMoveState"){
         if(isFocusMoveDone && parts[1].trimmed() == "true")
         {
             focusMoveEndTime = 2;
         }
     }
-    else if (parts[0].trimmed() == "focusMoveStop")
+    else if (parts[0].trimmed() == "focusMoveStop" && parts.size() == 2)
     {
-        FocuserControlStop();
+        if (parts[1].trimmed() == "false")
+        {
+            FocuserControlStop(false);
+        }
+        else if (parts[1].trimmed() == "true")
+        {
+            FocuserControlStop(true);
+        }
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "SyncFocuserStep")
     {
@@ -300,7 +309,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "StopAutoFocus")
     {
         Logger::Log("StopAutoFocus", LogLevel::DEBUG, DeviceType::MAIN);
-        StopAutoFocus = true;
+        isAutoFocus = false;
     }
     else if (message == "abortExposure")
     {
@@ -800,8 +809,6 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         Logger::Log("SolveSYNC ...", LogLevel::DEBUG, DeviceType::MAIN);
         glFocalLength = parts[1].trimmed().toInt();
-        // glCameraSize_width  = parts[2].trimmed().toDouble();
-        // glCameraSize_height = parts[3].trimmed().toDouble();
 
         if(glFocalLength == 0) {
             emit wsThread->sendMessageToClient("FocalLengthError");
@@ -1063,6 +1070,13 @@ void MainWindow::onMessageReceived(const QString &message)
         QString ConfigValue = parts[2].trimmed();
         
         setClientSettings(ConfigName, ConfigValue);
+        if (ConfigName == "Coordinates") {
+            QStringList parts = ConfigValue.split(",");
+            if (parts.size() >= 2) {
+                setMountLocation(parts[0], parts[1]);
+            }
+        }
+        
         Logger::Log("saveToConfigFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
@@ -1176,6 +1190,7 @@ void MainWindow::onMessageReceived(const QString &message)
     }else if(parts[0].trimmed() == "sendRedBoxState" && parts.size() == 4){
         Logger::Log("sendRedBoxState ...", LogLevel::DEBUG, DeviceType::MAIN);
         roiAndFocuserInfo["BoxSideLength"] = parts[1].trimmed().toInt();
+        BoxSideLength = parts[1].trimmed().toInt();
         roiAndFocuserInfo["ROI_x"] = parts[2].trimmed().toDouble();
         roiAndFocuserInfo["ROI_y"] = parts[3].trimmed().toDouble();
         Logger::Log("sendRedBoxState finish!", LogLevel::DEBUG, DeviceType::MAIN);
@@ -1206,13 +1221,15 @@ void MainWindow::onMessageReceived(const QString &message)
             QString date = rx.cap(2);
             Logger::Log("SynchronizeTime ...", LogLevel::DEBUG, DeviceType::MAIN);
             synchronizeTime(time, date);
+            setMountUTC(time, date);
             Logger::Log("SynchronizeTime finish!", LogLevel::DEBUG, DeviceType::MAIN);
         }
     }else if(parts[0].trimmed() == "localMessage"){
-        if (parts.size() == 4){
+        if (parts.size() >= 4){
             Logger::Log("localMessage ...", LogLevel::DEBUG, DeviceType::MAIN);
             localLat= parts[1].trimmed();
             localLon= parts[2].trimmed();
+            // Logger::Log("1-----------初始参数设置: " + localLat.toStdString() + "," + localLon.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
             if (parts[3].trimmed() == "zh") {
                 setClientSettings("ClientLanguage", "cn");
                 localLanguage = "cn";
@@ -1223,9 +1240,19 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient(message);
             Logger::Log("localMessage finish!", LogLevel::DEBUG, DeviceType::MAIN);
         }else{
-            Logger::Log("恢复浏览器状态 ...", LogLevel::DEBUG, DeviceType::MAIN);
+            // Logger::Log("1------------恢复浏览器状态 ...", LogLevel::DEBUG, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("localMessage:"+localLat+":"+localLon+":"+localLanguage);
         }
+    }else if(parts[0].trimmed() == "currectLocation" && parts.size() == 3){
+        Logger::Log("currectLocation ...", LogLevel::DEBUG, DeviceType::MAIN);
+        QString CurrentLocationLat = parts[1].trimmed();
+        QString CurrentLocationLon = parts[2].trimmed();
+        setMountLocation(CurrentLocationLat, CurrentLocationLon);
+        Logger::Log("currectLocation finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if(parts[0].trimmed() == "reGetLocation"){
+        Logger::Log("reGetLocation ...", LogLevel::DEBUG, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("sendGetLocation:"+localLat+":"+localLon);
+        Logger::Log("reGetLocation finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
     else{
         Logger::Log("Unknown message: " + message.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
@@ -1689,32 +1716,13 @@ void MainWindow::onTimeout()
 //         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
 //     }
 // }
-int a = 0;
+
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
-    // if (a == 0) {
-    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_47_25_522.fits";
-    //     a++;
-    // }else if (a == 1) {
-    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_43_18_926.fits";
-    //     a++;
-    // }else if (a == 2) {
-    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_37_55_350.fits";
-    //     a++;
-    // }else if (a == 3) {
-    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_36_54_070.fits";
-    //     a=0;
-    // }else{
-    //     a = 0;
-    //     fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_47_25_522.fits";
-    //     a++;
-    // }
-    // Add these lines to replace the original .fits file with ccd_simulator_original.fits
-
-
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
-    cv::Mat OriginImage;
+    cv::Mat originalImage16;
+    cv::Mat image16;
     Logger::Log("FITS file path: " + fitsFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
 
@@ -1723,34 +1731,52 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
         Logger::Log("Failed to read FITS file: " + fitsFileName.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
         return status;
     }
-
-    bool isColor = !(MainCameraCFA == "");
-    Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Monochrome"), LogLevel::INFO, DeviceType::CAMERA);
-
-    if(ProcessBin && glMainCameraBinning != 1){
-        // 进行 2x2 的合并
-        image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, false);
-        if (image.empty()) {
-            Logger::Log("Failed to process image with binning.", LogLevel::ERROR, DeviceType::CAMERA);
-            return -1;
-        }
-        Logger::Log("Image binned: new size - " + std::to_string(image.cols) + "x" + std::to_string(image.rows), LogLevel::INFO, DeviceType::CAMERA);
+    if (image.type() == CV_8UC1 || image.type() == CV_8UC3 || image.type() == CV_16UC1){
+        originalImage16 = Tools::convert8UTo16U_BayerSafe(image,false);
+        image.release();
+    }else{
+        Logger::Log("The current image data type is not supported for processing.", LogLevel::WARNING, DeviceType::CAMERA);
+        return -1;
     }
+    
 
-    cv::Mat srcImage = image.clone();
+    bool isColor = !(MainCameraCFA == "" || MainCameraCFA == "null");
+    Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+
+    if (ProcessBin && glMainCameraBinning != 1){
+        // 使用新的Mat版本的PixelsDataSoftBin_Bayer函数
+        if (MainCameraCFA == "RGGB" || MainCameraCFA == "RG"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_RGGB);
+        }else if (MainCameraCFA == "BGGR" || MainCameraCFA == "BG"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_BGGR);
+        }else if (MainCameraCFA == "GRBG" || MainCameraCFA == "GR"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_GRBG);
+        }else if (MainCameraCFA == "GBRG" || MainCameraCFA == "GB"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_GBRG);
+        }else{
+            image16 = Tools::processMatWithBinAvg(originalImage16, glMainCameraBinning, glMainCameraBinning, isColor, true);
+        }
+    }else{
+        image16 = originalImage16.clone();
+    }
+    originalImage16.release();
+
+    cv::Mat srcImage = image16.clone();
     cv::Mat dstImage;
     Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
     cv::medianBlur(srcImage, dstImage, 3);
+    srcImage.release();
     Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
 
     cv::imwrite(SolveImageFileName.toStdString(), dstImage);
+    dstImage.release();
     Logger::Log("Blurred image saved to " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
-    Tools::SaveMatToFITS(image);
+    Tools::SaveMatToFITS(image16);
     Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
     
-    int width = image.cols;
-    int height = image.rows;
+    int width = image16.cols;
+    int height = image16.rows;
     Logger::Log("Image dimensions: " + std::to_string(width) + "x" + std::to_string(height), LogLevel::INFO, DeviceType::CAMERA);
     emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
     if(ProcessBin) {
@@ -1759,9 +1785,16 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
         emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(1));
     }
     
-
     std::vector<unsigned char> imageData;  //uint16_t
-    imageData.assign(image.data, image.data + image.total() * image.channels() * 2);
+    if (image16.type() == CV_16UC1){
+        imageData.assign(image16.data, image16.data + image16.total() * image16.channels() * 2);
+    }else if (image16.type() == CV_8UC1){
+        imageData.assign(image16.data, image16.data + image16.total() * image16.channels());
+    }else{
+        Logger::Log("The current image data type is not supported for processing.", LogLevel::WARNING, DeviceType::CAMERA);
+        return -1;
+    }
+    
     Logger::Log("Image data prepared for binary file.", LogLevel::INFO, DeviceType::CAMERA);
     
     QString uniqueId = QUuid::createUuid().toString();
@@ -1835,6 +1868,8 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
         }
         QFile::copy(fitsFileName, destinationPath);
     }
+
+    
 }
 
 cv::Mat MainWindow::colorImage(cv::Mat img16)
@@ -3077,6 +3112,7 @@ void MainWindow::AfterDeviceConnect()
 
     if (dpMainCamera != NULL)
     {
+        indi_Client->GetAllPropertyName(dpMainCamera);
         Logger::Log("MainCamera connected after Device("+QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString()+") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
@@ -3102,6 +3138,16 @@ void MainWindow::AfterDeviceConnect()
         int bitDepth;
         indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
         Logger::Log("CCD Basic Info - MaxX: " + std::to_string(maxX) + ", MaxY: " + std::to_string(maxY) + ", PixelSize: " + std::to_string(pixelsize), LogLevel::INFO, DeviceType::MAIN);
+
+        if (bitDepth != 16){
+            Logger::Log("The current camera outputs is not 16-bit data; attempting to modify it to 16-bit.", LogLevel::INFO, DeviceType::CAMERA);
+            indi_Client->setCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, 16);
+        }
+        
+        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+        if (bitDepth != 16){
+            Logger::Log("Failed to set the camera bit depth to 16-bit.",LogLevel::WARNING,DeviceType::CAMERA);
+        }
 
         // 设置初始温度
         indi_Client->setTemperature(dpMainCamera, CameraTemperature);
@@ -3134,7 +3180,7 @@ void MainWindow::AfterDeviceConnect()
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
         Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
+        emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
 
@@ -3169,12 +3215,11 @@ void MainWindow::AfterDeviceConnect()
         indi_Client->getDevicePort(dpMount, DevicePort);
         Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-        double glLongitude_radian, glLatitude_radian;
-        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");
-        glLatitude_radian = Tools::getDecAngle("40° 09' 14.93");
-        Logger::Log("Mount location set to Longitude: " + QString::number(Tools::RadToDegree(glLongitude_radian)).toStdString() + ", Latitude: " + QString::number(Tools::RadToDegree(glLatitude_radian)).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
-        indi_Client->setLocation(dpMount, Tools::RadToDegree(glLatitude_radian), Tools::RadToDegree(glLongitude_radian), 10);
+        getClientSettings();
+        indi_Client->setLocation(dpMount,observatorylatitude,observatorylongitude,50);
+        indi_Client->setAutoFlip(dpMount,true);
+        indi_Client->setAUXENCODERS(dpMount);
+        
         QDateTime datetime = QDateTime::currentDateTime();
         indi_Client->setTimeUTC(dpMount, datetime);
         Logger::Log("UTC Time set for Mount: " + datetime.toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -3291,6 +3336,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 {
     if (dpMainCamera == dp)
     {
+        indi_Client->GetAllPropertyName(dpMainCamera);
         Logger::Log("MainCamera connected after Device(" + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
@@ -3318,7 +3364,15 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         int bitDepth;
         indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
         Logger::Log("CCD Basic Info - MaxX: " + std::to_string(maxX) + ", MaxY: " + std::to_string(maxY) + ", PixelSize: " + std::to_string(pixelsize), LogLevel::INFO, DeviceType::MAIN);
+        if (bitDepth != 16){
+            Logger::Log("The current camera outputs is not 16-bit data; attempting to modify it to 16-bit.", LogLevel::INFO, DeviceType::CAMERA);
+            indi_Client->setCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, 16);
+        }
 
+        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+        if (bitDepth != 16){
+            Logger::Log("Failed to set the camera bit depth to 16-bit.",LogLevel::WARNING,DeviceType::CAMERA);
+        }
         // 设置初始温度
         indi_Client->setTemperature(dpMainCamera, CameraTemperature);
         Logger::Log("CCD Temperature set to: " + std::to_string(CameraTemperature), LogLevel::INFO, DeviceType::MAIN);
@@ -3350,9 +3404,20 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
         Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
+        emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
+
+        if (glCameraSize_width>4800){
+            glMainCameraBinning = 4;
+        }else if (glCameraSize_width < 4800 && glCameraSize_width > 3600){
+            glMainCameraBinning = 3;
+        }else if (glCameraSize_width < 3600 && glCameraSize_width > 2400){
+            glMainCameraBinning = 2;
+        }else {
+            glMainCameraBinning = 1;
+        }
+        emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(glMainCameraBinning));
 
         QString CFWname;
         indi_Client->getCFWSlotName(dpMainCamera, CFWname);
@@ -3677,6 +3742,7 @@ void MainWindow::INDI_AbortCapture()
     Logger::Log("INDI_AbortCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
 }
 
+
 void MainWindow::FocusingLooping()
 {
     Logger::Log("FocusingLooping start ...", LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -3689,7 +3755,7 @@ void MainWindow::FocusingLooping()
 
     glIsFocusingLooping = true;
     Logger::Log("FocusingLooping | glIsFocusingLooping:" + std::to_string(glIsFocusingLooping), LogLevel::DEBUG, DeviceType::FOCUSER);
-    // 如果相机状态为“显示中”，则开始处理曝光
+    // 如果相机状态为"显示中"，则开始处理曝光
     if (glMainCameraStatu != "Exposuring")
     {
         double expTime_sec;
@@ -3702,8 +3768,8 @@ void MainWindow::FocusingLooping()
         QSize ROI{BoxSideLength, BoxSideLength};
 
         Logger::Log("FocusingLooping |当前ROI值 ROI_x:" + std::to_string(roiAndFocuserInfo["ROI_x"]) + ", ROI_y:" + std::to_string(roiAndFocuserInfo["ROI_y"]), LogLevel::DEBUG, DeviceType::FOCUSER);
-        int cameraX = static_cast<int>(roiAndFocuserInfo["ROI_x"] );
-        int cameraY = static_cast<int>(roiAndFocuserInfo["ROI_y"] );
+        int cameraX = static_cast<int>(roiAndFocuserInfo["ROI_x"]);
+        int cameraY = static_cast<int>(roiAndFocuserInfo["ROI_y"]);
 
 
         // 确保 cameraX 和 cameraY 是偶数
@@ -5179,6 +5245,10 @@ void MainWindow::HandleFocuserMovementDataPeriodically() {
         focusMoveTimer->stop();
         return;
     }
+    if(dpFocuser == NULL) {
+        focusMoveTimer->stop();
+        return;
+    }
     CurrentPosition = FocuserControl_getPosition();
 
     if (CurrentPosition == INT_MIN) {
@@ -5239,6 +5309,7 @@ void MainWindow::FocuserControlMove(bool isInward) {
     isFocusMoveDone = true;
     CurrentPosition = FocuserControl_getPosition();
     TargetPosition = CurrentPosition;
+    startPosition = CurrentPosition;
     if (CurrentPosition >= focuserMaxPosition && !isInward) {
         emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
         focusMoveTimer->stop();
@@ -5252,18 +5323,39 @@ void MainWindow::FocuserControlMove(bool isInward) {
     focusMoveTimer->start(1000);
 }
 
-void MainWindow::FocuserControlStop() {
+void MainWindow::FocuserControlStop(bool isClickMove) {
+    if (dpFocuser == NULL) {
+        Logger::Log("focusMoveStop | dpFocuser is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+        return;
+    }
     Logger::Log("focusMoveStop | Stop Focuser Move", LogLevel::INFO, DeviceType::FOCUSER);
-    isFocusMoveDone = false;
+    CurrentPosition = FocuserControl_getPosition();
+    if (isClickMove) {
+        int steps = abs(CurrentPosition - startPosition);
+        int time = 1;
+        while (steps < 100 && time < 10) {
+            CurrentPosition = FocuserControl_getPosition();
+            steps = abs(CurrentPosition - startPosition); // 删除int，避免重复声明局部变量
+            time++;
+            usleep(100000); // 修改为0.1秒 (100,000微秒)
+        }
+        Logger::Log("focusMoveStop | Click Move Steps: " + std::to_string(steps), LogLevel::INFO, DeviceType::FOCUSER);
+    }
     if(dpFocuser != NULL) {
         indi_Client->abortFocuserMove(dpFocuser);
     }else{
         Logger::Log("focusMoveStop | dpFocuser is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
     }
+
     if(focusMoveTimer->isActive()) {
         focusMoveTimer->stop();
     }
-    CurrentPosition = FocuserControl_getPosition();
+    if (dpFocuser != NULL) {
+        CurrentPosition = FocuserControl_getPosition();
+    }else{
+        CurrentPosition = 0;
+    }
+    isFocusMoveDone = false;
     emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
     if (updatePositionTimer != nullptr) {
         // 添加计时器以定期更新位置
@@ -5618,6 +5710,8 @@ void MainWindow::nextSchedule()
 
 void MainWindow::startTimeWaiting()
 {
+    // m_scheduList[schedule_currentNum].progress=0;
+    // emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
     qDebug() << "startTimeWaiting...";
     // 停止和清理先前的计时器
     timewaitingTimer.stop();
@@ -5637,6 +5731,8 @@ void MainWindow::startTimeWaiting()
         {
             timewaitingTimer.stop();  // 完成时停止定时器
             qDebug() << "Time Waiting Complete...";
+            m_scheduList[schedule_currentNum].progress=1;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
 
             startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
         } 
@@ -5649,6 +5745,15 @@ void MainWindow::startTimeWaiting()
 
 void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 {
+    if (dpMount == NULL)
+    {
+        m_scheduList[schedule_currentNum].progress=10;
+        emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+        Logger::Log("startMountGoto | dpMount is NULL,goto failed!Skip to set CFW.", LogLevel::ERROR, DeviceType::MAIN);
+        startSetCFW(schedule_CFWpos);
+        return;
+    }
+
     qDebug() << "startMountGoto...";
     // 停止和清理先前的计时器
     telescopeTimer.stop();
@@ -5685,8 +5790,7 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
     // 启动等待赤道仪转动的定时器
     telescopeTimer.setSingleShot(true);
 
-    connect(&telescopeTimer, &QTimer::timeout, [this]()
-            {
+    connect(&telescopeTimer, &QTimer::timeout, [this](){
         if (StopSchedule)
         {
             StopSchedule = false;
@@ -5716,6 +5820,8 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
             if(GuidingHasStarted == false)
             {
                 qDebug() << "Mount Goto Complete...";
+                m_scheduList[schedule_currentNum].progress=10;
+                emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
                 startSetCFW(schedule_CFWpos);
             }
         } 
@@ -5837,8 +5943,18 @@ void MainWindow::startSetCFW(int pos)
         if (dpMainCamera != NULL)
         {
             qDebug() << "schedule CFW pos:" << pos;
+            m_scheduList[schedule_currentNum].progress=20;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             indi_Client->setCFWPosition(dpMainCamera, pos);
             qDebug() << "CFW Goto Complete...";
+            startCapture(schedule_ExpTime);
+            m_scheduList[schedule_currentNum].progress=30;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+        }else{
+            Logger::Log("startSetCFW | dpMainCamera is NULL,set CFW failed!", LogLevel::ERROR, DeviceType::MAIN);
+            
+            m_scheduList[schedule_currentNum].progress=30;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             startCapture(schedule_ExpTime);
         }
     }
@@ -5847,8 +5963,17 @@ void MainWindow::startSetCFW(int pos)
         if (dpCFW != NULL)
         {
             qDebug() << "schedule CFW pos:" << pos;
+            m_scheduList[schedule_currentNum].progress=20;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             indi_Client->setCFWPosition(dpCFW, pos);
             qDebug() << "CFW Goto Complete...";
+            m_scheduList[schedule_currentNum].progress=30;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            startCapture(schedule_ExpTime);
+        }else{
+            Logger::Log("startSetCFW | dpCFW is NULL,set CFW failed!", LogLevel::ERROR, DeviceType::MAIN);
+            m_scheduList[schedule_currentNum].progress=30;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             startCapture(schedule_ExpTime);
         }
     }
@@ -5868,8 +5993,9 @@ void MainWindow::startCapture(int ExpTime)
 
     captureTimer.setSingleShot(true);
 
-    connect(&captureTimer, &QTimer::timeout, [this]()
-            {
+    expTime_ms = 0 ;
+
+    connect(&captureTimer, &QTimer::timeout, [this](){
         if (StopSchedule)
         {
             StopSchedule = false;
@@ -5877,6 +6003,7 @@ void MainWindow::startCapture(int ExpTime)
             qDebug("Schedule is stop!");
             return;
         }
+        
         // 检查赤道仪状态
         if (WaitForShootToComplete()) 
         {
@@ -5884,8 +6011,7 @@ void MainWindow::startCapture(int ExpTime)
             qDebug() << "Capture" << schedule_currentShootNum << "Complete!";
             ScheduleImageSave(m_scheduList[schedule_currentNum].shootTarget, schedule_currentShootNum);
             // Process
-            m_scheduList[schedule_currentNum].progress = (static_cast<double>(schedule_currentShootNum) / m_scheduList[schedule_currentNum].repeatNumber) * 100;
-            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            
 
             if (schedule_currentShootNum < schedule_RepeatNum)
             {
@@ -5899,6 +6025,8 @@ void MainWindow::startCapture(int ExpTime)
                 // schedule_currentNum ++;
                 // qDebug() << "next schedule...";
                 // startSchedule();
+                m_scheduList[schedule_currentNum].progress=100;
+                emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));   
                 qDebug() << "Capture Goto Complete...";
                 nextSchedule();
             }
@@ -5906,6 +6034,10 @@ void MainWindow::startCapture(int ExpTime)
         } 
         else 
         {
+            expTime_ms += 1000;
+            m_scheduList[schedule_currentNum].progress = int(30 + (expTime_ms / (float)schedule_ExpTime) * 70);
+            qDebug() << "expTime_ms:" << expTime_ms << ", schedule_ExpTime:" << schedule_ExpTime << ", Capture Progress:" << m_scheduList[schedule_currentNum].progress;
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             captureTimer.start(1000);  // 继续等待
         } });
 
@@ -6168,7 +6300,7 @@ void MainWindow::getClientSettings()
         if(pair.first=="Coordinates")
         {
             QStringList coordinates =QString::fromStdString(pair.second).split(",");
-            if(coordinates.size()==2)
+            if(coordinates.size()>=2)
             {
                 observatorylongitude=coordinates[1].toDouble();
                 observatorylatitude=coordinates[0].toDouble();
@@ -6310,16 +6442,24 @@ void MainWindow::getStagingGuiderData() {
         }
     }
 }
-
+//TODO: 
 int MainWindow::MoveFileToUSB(){
     qDebug("MoveFileToUSB");
 
 }
 
-void MainWindow::TelescopeControl_SolveSYNC()
-{
+
+void MainWindow::TelescopeControl_SolveSYNC() {
+    if (dpMainCamera == NULL) {
+        emit wsThread->sendMessageToClient("MainCameraNotConnect");
+        return;
+    }
     Logger::Log("TelescopeControl_SolveSYNC start ...", LogLevel::INFO, DeviceType::MAIN);
-    int FocalLength = glFocalLength;  // 获取焦距
+    if (glMainCameraStatu == "Exposuring" || isFocusLoopShooting == true) {
+        Logger::Log("TelescopeControl_SolveSYNC | Camera is not idle.glMainCameraStatu:" + glMainCameraStatu.toStdString() + ", isFocusLoopShooting:" + std::to_string(isFocusLoopShooting), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("CameraNotIdle");
+        return;
+    }
 
     double Ra_Hour;
     double Dec_Degree;
@@ -6337,65 +6477,170 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
     Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
 
-    // SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator.fits", FocalLength, glCameraSize_width, glCameraSize_height, false);
-    SloveResults result;
+    INDI_Capture(1000);  // 拍摄1s曝光进行解析同步
 
-    solveTimer.stop();  // 停止之前的定时器
-    solveTimer.disconnect();  // 断开定时器的连接
+    captureTimer.setSingleShot(true);
 
-    // QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});  // 连接解析结果的信号
 
-    // platesolveworker->setParams(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false); // 设置解析参数
-    // platesolveworker->start();  // 开始解析
-    Tools::PlateSolve(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false);
-
-    solveTimer.setSingleShot(true);  // 设置定时器为单次触发
-
-    connect(&solveTimer, &QTimer::timeout, [this]()
-    {
-        if (Tools::isSolveImageFinish())  // 检查图像解析是否完成
+    // 连接计时器的超时信号到一个匿名函数，处理拍摄和解算后的逻辑
+    connect(&captureTimer, &QTimer::timeout, [this]() {
+        // 如果需要结束拍摄和解算，则执行中止操作并返回
+        if (EndCaptureAndSolve)
         {
-            SloveResults result = Tools::ReadSolveResult(SolveImageFileName, SolveImageWidth, SolveImageHeight);  // 读取解析结果
-            Logger::Log("TelescopeControl_SolveSYNC | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-            if (result.RA_Degree == -1 && result.DEC_Degree == -1)
-            {
-                Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
-            }
-            else
-            {
-                if (dpMount != NULL)
-                {
-                    INDI::PropertyNumber property = NULL;
-                    Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::MAIN);
-                    QString action = "SYNC";
-
-                    indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
-
-                    Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-                    indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);  // 设置望远镜的目标位置
-                    Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
-                    double a, b;
-                    indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
-                    Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
-                }
-                else
-                {
-                    Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
-                    return;  // 如果望远镜未连接，记录日志并退出
-                }
-            }
+            EndCaptureAndSolve = false;
+            INDI_AbortCapture();
+            Logger::Log("CaptureAndSolve | End Capture And Solve!!!", LogLevel::INFO, DeviceType::MAIN);
+            return;
         }
+        Logger::Log("CaptureAndSolve | WaitForShootToComplete ..." , LogLevel::INFO, DeviceType::MAIN);
+  
+        // 检查拍摄和解算是否完成
+        if (WaitForShootToComplete() && Tools::WaitForPlateSolveToComplete()) 
+        {
+            // 停止计时器，表示当前周期任务完成
+            captureTimer.stop();
+            // 根据是否循环解算，执行一次解算或继续循环解算
+
+            Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
+
+            solveTimer.setSingleShot(true);  // 设置定时器为单次触发
+
+            connect(&solveTimer, &QTimer::timeout, [this]()
+            {
+                if (Tools::isSolveImageFinish())  // 检查图像解析是否完成
+                {
+                    SloveResults result = Tools::ReadSolveResult(SolveImageFileName, glMainCCDSizeX, glMainCCDSizeY);  // 读取解析结果
+                    Logger::Log("TelescopeControl_SolveSYNC | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+                    if (result.RA_Degree == -1 && result.DEC_Degree == -1)
+                    {
+                        Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
+                        emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
+                    }
+                    else
+                    {
+                        if (dpMount != NULL)
+                        {
+                            INDI::PropertyNumber property = NULL;
+                            Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::MAIN);
+                            QString action = "SYNC";
+
+                            indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
+
+                            Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+                            indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);  // 设置望远镜的目标位置
+                            Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
+                            double a, b;
+                            indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
+                            Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
+                            return;  // 如果望远镜未连接，记录日志并退出
+                        }
+                    }
+                }
+                else 
+                {
+                    solveTimer.start(1000);  // 如果解析未完成，重新启动定时器继续等待
+                } 
+            });
+
+            solveTimer.start(1000);  // 启动定时器
+
+        } 
         else 
         {
-            solveTimer.start(1000);  // 如果解析未完成，重新启动定时器继续等待
+            // 如果拍摄或解算未完成，重新启动计时器，继续等待
+            captureTimer.start(1000);
         } 
     });
-
-    solveTimer.start(1000);  // 启动定时器
+    captureTimer.start(1000);
 }
+
+// void MainWindow::TelescopeControl_SolveSYNC()
+// {
+//     Logger::Log("TelescopeControl_SolveSYNC start ...", LogLevel::INFO, DeviceType::MAIN);
+//     int FocalLength = glFocalLength;  // 获取焦距
+
+//     double Ra_Hour;
+//     double Dec_Degree;
+
+//     if (dpMount != NULL)
+//     {
+//         indi_Client->getTelescopeRADECJNOW(dpMount, Ra_Hour, Dec_Degree);  // 获取当前望远镜的赤经和赤纬
+//     }
+//     else
+//     {
+//         Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
+//         return;  // 如果望远镜未连接，记录日志并退出
+//     }
+//     double Ra_Degree = Tools::HourToDegree(Ra_Hour);  // 将赤经从小时转换为度
+
+//     Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+//     // SloveResults result = Tools::PlateSolve("/dev/shm/ccd_simulator.fits", FocalLength, glCameraSize_width, glCameraSize_height, false);
+//     SloveResults result;
+
+//     solveTimer.stop();  // 停止之前的定时器
+//     solveTimer.disconnect();  // 断开定时器的连接
+
+
+//     // QObject::connect(platesolveworker, &PlateSolveWorker::resultReady, [this](const SloveResults &result) {});  // 连接解析结果的信号
+
+//     // platesolveworker->setParams(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false); // 设置解析参数
+//     // platesolveworker->start();  // 开始解析
+//     Tools::PlateSolve(SolveImageFileName, FocalLength, glCameraSize_width, glCameraSize_height, false);
+
+//     solveTimer.setSingleShot(true);  // 设置定时器为单次触发
+
+//     connect(&solveTimer, &QTimer::timeout, [this]()
+//     {
+//         if (Tools::isSolveImageFinish())  // 检查图像解析是否完成
+//         {
+//             SloveResults result = Tools::ReadSolveResult(SolveImageFileName, glMainCCDSizeX, glMainCCDSizeY);  // 读取解析结果
+//             Logger::Log("TelescopeControl_SolveSYNC | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+//             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
+//             {
+//                 Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
+//                 emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
+//             }
+//             else
+//             {
+//                 if (dpMount != NULL)
+//                 {
+//                     INDI::PropertyNumber property = NULL;
+//                     Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::MAIN);
+//                     QString action = "SYNC";
+
+//                     indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
+
+//                     Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+//                     indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree, property);  // 设置望远镜的目标位置
+//                     Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
+//                     double a, b;
+//                     indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
+//                     Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
+//                 }
+//                 else
+//                 {
+//                     Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
+//                     return;  // 如果望远镜未连接，记录日志并退出
+//                 }
+//             }
+//         }
+//         else 
+//         {
+//             solveTimer.start(1000);  // 如果解析未完成，重新启动定时器继续等待
+//         } 
+//     });
+
+//     solveTimer.start(1000);  // 启动定时器
+// }
 
 LocationResult MainWindow::TelescopeControl_GetLocation()
 {
@@ -6852,7 +7097,7 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
         if (Tools::isSolveImageFinish())
         {
             sleep(1);
-            SloveResults result = Tools::ReadSolveResult(Filename, SolveImageWidth, SolveImageHeight);
+            SloveResults result = Tools::ReadSolveResult(Filename, glMainCCDSizeX, glMainCCDSizeY);
             Logger::Log("SolveImage | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
@@ -6868,6 +7113,7 @@ void MainWindow::SolveImage(QString Filename, int FocalLength, double CameraWidt
                 SloveResultList.push_back(result);
                 emit wsThread->sendMessageToClient("SolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
                 emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
+                Logger::Log("SolveImage | Solve image success..., RA_0:" + std::to_string(result.RA_0) + ", DEC_0:" + std::to_string(result.DEC_0) + ", RA_1:" + std::to_string(result.RA_1) + ", DEC_1:" + std::to_string(result.DEC_1) + ", RA_2:" + std::to_string(result.RA_2) + ", DEC_2:" + std::to_string(result.DEC_2) + ", RA_3:" + std::to_string(result.RA_3) + ", DEC_3:" + std::to_string(result.DEC_3), LogLevel::INFO, DeviceType::MAIN);
             }
         }
         else 
@@ -6906,7 +7152,7 @@ void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double Camera
         // 检查赤道仪状态
         if (Tools::isSolveImageFinish())
         {
-            SloveResults result = Tools::ReadSolveResult(Filename, SolveImageWidth, SolveImageHeight);
+            SloveResults result = Tools::ReadSolveResult(Filename, glMainCCDSizeX, glMainCCDSizeY);
             Logger::Log("LoopSolveImage | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
             if (result.RA_Degree == -1 && result.DEC_Degree == -1)
@@ -8083,35 +8329,99 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 
     QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
     currentSelectStarPosition = selectStar(stars);
-    emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(FocuserControl_getPosition()));
+    if (false){
+        // 使用更真实的调焦曲线参数
+        double a = 0.00005;   // 控制曲线开口大小
+        double b = -0.02;     // 控制最低点位置 (b/2a)
+        double c = 5.0;       // 最小HFR基础值
+        
+        // 焦点位置
+        double position = currentSelectStarPosition.x();
+        
+        // 计算理想HFR值 (完美抛物线)
+        double idealHFR = a * position * position + b * position + c;
+        
+        // 添加比例噪声 (噪声与HFR成比例)
+        double noiseLevel = 0.05;  // 5%的噪声水平
+        double noise = (((double)rand() / RAND_MAX) * 2 - 1) * noiseLevel * idealHFR;
+        
+        // 确保HFR不会因噪声变为负值
+        double simulatedHFR = std::max(0.5, idealHFR + noise);
+        
+        // 添加随机的小波动，模拟大气视宁度影响
+        if (rand() % 10 == 0) {  // 10%概率有波动
+            simulatedHFR *= (1.0 + ((double)rand() / RAND_MAX) * 0.15);  // 最多15%的突发波动
+        }
+        
+        Logger::Log("AutoFocus | 模拟数据: 位置=" + std::to_string(position) + 
+                ", 理想HFR=" + std::to_string(idealHFR) + 
+                ", 实际HFR=" + std::to_string(simulatedHFR), 
+                LogLevel::DEBUG, DeviceType::FOCUSER);
+        
+        currentSelectStarPosition = QPointF(position, simulatedHFR);
+    }
+    if (dpFocuser != NULL) {
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(FocuserControl_getPosition()));
+    }
+    // emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(FocuserControl_getPosition()));
     // emit wsThread->sendMessageToClient("clearFocuserROIStarsList");
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(currentSelectStarPosition.x()) + ":" + QString::number(currentSelectStarPosition.y()));
     emit wsThread->sendMessageToClient("setSelectStarPosition:" + QString::number(roiAndFocuserInfo["SelectStarX"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarY"])+":"+QString::number(roiAndFocuserInfo["SelectStarHFR"]));
     Logger::Log("saveFitsAsJPG | 星点位置更新为 x:" + std::to_string(roiAndFocuserInfo["SelectStarX"]) + ",y:" + std::to_string(roiAndFocuserInfo["SelectStarY"]) + ",HFR:" + std::to_string(roiAndFocuserInfo["SelectStarHFR"]), LogLevel::INFO, DeviceType::FOCUSER);
-    // for (const auto &star : stars)
-    // {
-    //     emit wsThread->sendMessageToClient("focuserROIStarsList:" + QString::number(star.x) + ":" + QString::number(star.y) + ":" + QString::number(star.HFR));
-    // }
+    for (const auto &star : stars)
+    {
+        emit wsThread->sendMessageToClient("focuserROIStarsList:" + QString::number(star.x) + ":" + QString::number(star.y) + ":" + QString::number(star.HFR));
+    }
 
     // FWHMCalOver = true;
     
     // 判断当前相机是否为彩色相机
-    bool isColor = !(MainCameraCFA == "");
+    bool isColor = !(MainCameraCFA == "" || MainCameraCFA == "null");
+    cv::Mat originalImage16;
+    if (image.type() == CV_8UC1 || image.type() == CV_8UC3 || image.type() == CV_16UC1){
+        originalImage16 = Tools::convert8UTo16U_BayerSafe(image,false);
+        Logger::Log("saveFitsAsJPG | image size:" + std::to_string(image.cols) + "x" + std::to_string(image.rows), LogLevel::INFO, DeviceType::FOCUSER);
+        image.release();
+    }else{
+        Logger::Log("The current image data type is not supported for processing.", LogLevel::WARNING, DeviceType::CAMERA);
+        image.release();
+        originalImage16.release();
+        return ;
+    }
+    Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(originalImage16.cols) + "x" + std::to_string(originalImage16.rows), LogLevel::INFO, DeviceType::FOCUSER);
+    // if(ProcessBin && glMainCameraBinning != 1){
+    //     // 进行 2x2 的合并
+    //     image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, true);
+    //     if (image.empty()) {
+    //         if (isFocusLoopShooting){
+    //             FocusingLooping();
+    //         }
+    //         return;
+    //     }
+    // }
 
-    if(ProcessBin && glMainCameraBinning != 1){
-        // 进行 2x2 的合并
-        image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, false);
-        if (image.empty()) {
-            if (isFocusLoopShooting){
-                FocusingLooping();
-            }
-            return;
+    cv::Mat image16;
+    if (ProcessBin && glMainCameraBinning != 1){
+        // 使用新的Mat版本的PixelsDataSoftBin_Bayer函数
+        if (MainCameraCFA == "RGGB" || MainCameraCFA == "RG"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_RGGB);
+        }else if (MainCameraCFA == "BGGR" || MainCameraCFA == "BG"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_BGGR);
+        }else if (MainCameraCFA == "GRBG" || MainCameraCFA == "GR"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_GRBG);
+        }else if (MainCameraCFA == "GBRG" || MainCameraCFA == "GB"){
+            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, glMainCameraBinning, glMainCameraBinning, BAYER_GBRG);
+        }else{
+            image16 = Tools::processMatWithBinAvg(originalImage16, glMainCameraBinning, glMainCameraBinning, isColor, true);
         }
+    }else{
+        image16 = originalImage16.clone();
     }
+    Logger::Log("saveFitsAsJPG | ROI_x:" + std::to_string(roiAndFocuserInfo["ROI_x"]) + ", ROI_y:" + std::to_string(roiAndFocuserInfo["ROI_y"]), LogLevel::INFO, DeviceType::FOCUSER);
+    Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::INFO, DeviceType::FOCUSER);
+    originalImage16.release();
 
-    if (image.depth() == CV_8U) {
-        image.convertTo(image, CV_16UC1, 256, 0);
-    }
+
 
     // 将图像转换为16位格式
     // image.convertTo(image, (image.depth() == 8) ? CV_16UC1 : CV_16UC1, 256, 0);
@@ -8143,7 +8453,7 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     }
 
     // 将图像数据写入到文件中
-    outFile.write(reinterpret_cast<const char*>(image.data), image.total() * image.elemSize());
+    outFile.write(reinterpret_cast<const char*>(image16.data), image16.total() * image16.elemSize());
 
     // 检查是否成功写入
     if (!outFile) {
@@ -8158,6 +8468,34 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 
     bool saved = true;
 
+    try {
+        fs::path dirPath = fs::path(vueImagePath);
+        // 遍历目录中的所有条目
+        for (const auto& entry : fs::directory_iterator(dirPath)) {
+            std::string filename = entry.path().filename().string();
+            
+            // 检查文件名是否匹配模式：focuserPicture_数字.bin
+            if (fs::is_symlink(entry.path()) && 
+                filename.find("focuserPicture_") == 0 && 
+                filename.rfind(".bin") == filename.length() - 4) {
+                
+                // 查看文件名中间部分是否为数字
+                std::string numPart = filename.substr(15, filename.length() - 19); // 去掉"focuserPicture_"和".bin"
+                bool isNumeric = !numPart.empty() && 
+                                 std::find_if(numPart.begin(), numPart.end(), 
+                                    [](unsigned char c) { return !std::isdigit(c); }) == numPart.end();
+                
+                if (isNumeric) {
+                    fs::remove(entry.path());
+                    Logger::Log("删除链接文件: " + filename, LogLevel::DEBUG, DeviceType::FOCUSER);
+                }
+            }
+        }
+        Logger::Log("所有focuserPicture链接文件已删除", LogLevel::INFO, DeviceType::FOCUSER);
+    } catch (const std::exception& e) {
+        Logger::Log("删除链接文件时出错: " + std::string(e.what()), LogLevel::ERROR, DeviceType::FOCUSER);
+    }
+
     std::string Command = "ln -sf " + filePath + " " + vueImagePath + fileName;
     system(Command.c_str());
     Logger::Log("Symbolic link created for new image file.", LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -8165,126 +8503,408 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 
     if (saved)
     {
-        Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath +",image size:" + std::to_string(image.cols) + "x" + std::to_string(image.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
+        Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath +",image size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(roiAndFocuserInfo["ROI_x"]) + ":" + QString::number(roiAndFocuserInfo["ROI_y"]));
         if (isAutoFocus){
+
             AutoFocus(currentSelectStarPosition);
         }
     
     }else{
         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
     }
+    // 释放最终的图像内存
+    image16.release();
     focusLoopShooting(isFocusLoopShooting);
 }
 
-void MainWindow::AutoFocus(QPointF selectStarPosition){
-    if (dpFocuser == NULL || dpMainCamera == NULL){
-        Logger::Log("AutoFocus | dpFocuser or dpMainCamera is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
-        isAutoFocus = false;
-        emit wsThread->sendMessageToClient("AutoFocusOver:true");
-        return;
-    }
-    if (selectStarPosition.y() == 0 || selectStarPosition.isNull()){
-        Logger::Log("AutoFocus | selectStarPosition is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
-        overSelectStarAutoFocusStep += 1;
-        return;
-    }
+// void MainWindow::AutoFocus(QPointF selectStarPosition){
+//     if (dpFocuser == NULL || dpMainCamera == NULL){
+//         Logger::Log("AutoFocus | dpFocuser or dpMainCamera is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+//         isAutoFocus = false;
+//         emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//         return;
+//     }
+//     if (selectStarPosition.y() == 0 || selectStarPosition.isNull()){
+//         Logger::Log("AutoFocus | selectStarPosition is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
+//         overSelectStarAutoFocusStep += 1;
+//         return;
+//     }
 
-    int currentPosition = FocuserControl_getPosition();
+//     int currentPosition = FocuserControl_getPosition();
 
-    int steps = 100;
-    // 初始化清空保存列表
-    if (autoFocusStep == 0){
-        currentAutoFocusStarPositionList.clear();
-        allAutoFocusStarPositionList.clear();
-        autoFocusStep = 1;
+//     int steps = 100;
+//     // 初始化清空保存列表
+//     if (autoFocusStep == 0){
+//         currentAutoFocusStarPositionList.clear();
+//         allAutoFocusStarPositionList.clear();
+//         autoFocusStep = 1;
 
-        // 定义开始方向
-        int value, min, max, step;
-        indi_Client->getFocuserSpeed(dpFocuser, value, min, max, step);
+//         // 定义开始方向
+//         int value, min, max, step;
+//         indi_Client->getFocuserSpeed(dpFocuser, value, min, max, step);
                 
-        if (currentPosition > (max-min)/2){
-            currentDirection = false;
-        }else{
-            currentDirection = true;
-        }
-    }
+//         if (currentPosition > (max-min)/2){
+//             currentDirection = false;
+//         }else{
+//             currentDirection = true;
+//         }
+//     }
 
-    // 进行5次拟合，确定五个点
-    if (autoFocusStep >= 1 && autoFocusStep <= 5){
-        currentAutoFocusStarPositionList.append(selectStarPosition);
-        if (currentAutoFocusStarPositionList.size() == 3){
-            if (currentAutoFocusStarPositionList[0].x() == currentAutoFocusStarPositionList[1].x() && currentAutoFocusStarPositionList[0].x() == currentAutoFocusStarPositionList[2].x()){
-                allAutoFocusStarPositionList.append(currentAutoFocusStarPositionList[0]);
-                allAutoFocusStarPositionList.append(currentAutoFocusStarPositionList[1]);
-                allAutoFocusStarPositionList.append(currentAutoFocusStarPositionList[2]);
-                currentAutoFocusStarPositionList.clear();
-                autoFocusStep++;
-                indi_Client->setFocuserMoveDiretion(dpFocuser, currentDirection);
-                indi_Client->moveFocuserSteps(dpFocuser, steps);
-                int timeOut = 0;
-                while (FocuserControl_getPosition() == currentPosition + steps || FocuserControl_getPosition() == currentPosition - steps){
-                    QThread::msleep(100);
-                    timeOut++;
-                    if (timeOut > 30){
-                        Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的3个点,但电调位置移动失败！", LogLevel::WARNING, DeviceType::FOCUSER);
-                        break;
-                    }
-                }
-                Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的3个点!", LogLevel::INFO, DeviceType::FOCUSER);
-            }else{
-                currentAutoFocusStarPositionList.clear();
-                Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的3个点,但电调位置移动,重新开始！", LogLevel::WARNING, DeviceType::FOCUSER);
-            }
-        }else{
-            Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的第" + std::to_string(currentAutoFocusStarPositionList.size()) + "个点", LogLevel::INFO, DeviceType::FOCUSER);
-        }
+//     // 进行5次拟合，确定五个点
+//     if (autoFocusStep >= 1 && autoFocusStep <= 5){
+//         currentAutoFocusStarPositionList.append(selectStarPosition);
+//         if (currentAutoFocusStarPositionList.size() == 3){
+//             if (currentAutoFocusStarPositionList[0].x() == currentAutoFocusStarPositionList[1].x() && currentAutoFocusStarPositionList[0].x() == currentAutoFocusStarPositionList[2].x()){
+//                 allAutoFocusStarPositionList.append(currentAutoFocusStarPositionList[0]);
+//                 allAutoFocusStarPositionList.append(currentAutoFocusStarPositionList[1]);
+//                 allAutoFocusStarPositionList.append(currentAutoFocusStarPositionList[2]);
+//                 currentAutoFocusStarPositionList.clear();
+//                 autoFocusStep++;
+//                 indi_Client->setFocuserMoveDiretion(dpFocuser, currentDirection);
+//                 indi_Client->moveFocuserSteps(dpFocuser, steps);
+//                 int timeOut = 0;
+//                 while (FocuserControl_getPosition() == currentPosition + steps || FocuserControl_getPosition() == currentPosition - steps){
+//                     QThread::msleep(100);
+//                     timeOut++;
+//                     if (timeOut > 30){
+//                         Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的3个点,但电调位置移动失败！", LogLevel::WARNING, DeviceType::FOCUSER);
+//                         break;
+//                     }
+//                 }
+//                 Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的3个点!", LogLevel::INFO, DeviceType::FOCUSER);
+//             }else{
+//                 currentAutoFocusStarPositionList.clear();
+//                 Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的3个点,但电调位置移动,重新开始！", LogLevel::WARNING, DeviceType::FOCUSER);
+//             }
+//         }else{
+//             Logger::Log("AutoFocus | 获取到第" + std::to_string(autoFocusStep) + "步的第" + std::to_string(currentAutoFocusStarPositionList.size()) + "个点", LogLevel::INFO, DeviceType::FOCUSER);
+//         }
         
-    }
+//     }
     
 
-    if (autoFocusStep == 6){
-        // 计算拟合曲线
-        float a, b, c;
-        bool isSuccess = fitQuadraticCurve(allAutoFocusStarPositionList, a, b, c);
-        if (isSuccess){
-            // 计算最小点
-            if (a > 0) {
-                float x_min = -b / (2 * a);
-                float y_min = a * x_min * x_min + b * x_min + c;
-                Logger::Log("AutoFocus | 曲线的最小点为 (" + std::to_string(x_min) + ", " + std::to_string(y_min) + ")", LogLevel::INFO, DeviceType::FOCUSER);
-                emit wsThread->sendMessageToClient("addMinPointData_Point:" + QString::number(x_min) + ":" + QString::number(y_min));
-                // 移动到最小点
+//     if (autoFocusStep == 6){
+//         // 计算拟合曲线
+//         float a, b, c;
+//         bool isSuccess = fitQuadraticCurve(allAutoFocusStarPositionList, a, b, c);
+//         if (isSuccess){
+//             // 计算最小点
+//             if (a > 0) {
+//                 float x_min = -b / (2 * a);
+//                 float y_min = a * x_min * x_min + b * x_min + c;
+//                 Logger::Log("AutoFocus | 曲线的最小点为 (" + std::to_string(x_min) + ", " + std::to_string(y_min) + ")", LogLevel::INFO, DeviceType::FOCUSER);
+//                 emit wsThread->sendMessageToClient("addMinPointData_Point:" + QString::number(x_min) + ":" + QString::number(y_min));
+//                 // 移动到最小点
 
-                indi_Client->moveFocuserSteps(dpFocuser, x_min);
+//                 indi_Client->moveFocuserSteps(dpFocuser, x_min);
 
-                QString order = "addLineData_Point:";
-                // 在最小点的前后各取五个点
-                float step = 100;  // 计算步长
-                std::vector<float> x_values;
-                for (int i = -5; i <= 5; ++i) {
-                    float x = x_min + i * step;
-                    x_values.push_back(x);
-                }
-                std::vector<float> y_values;
-                for (float x : x_values) {
-                    float y = a * x * x + b * x + c;
-                    y_values.push_back(y);
-                    order += QString::number(x) + "," + QString::number(y) + ",";
-                }
-                emit wsThread->sendMessageToClient(order);
-                Logger::Log("AutoFocus | 拟合曲线成功！ y = " + std::to_string(a) + "x^2 + " + std::to_string(b) + "x + " + std::to_string(c), LogLevel::INFO, DeviceType::FOCUSER);
-            } else {
-                Logger::Log("AutoFocus | 曲线开口朝上，重新开始", LogLevel::WARNING, DeviceType::FOCUSER);
-                autoFocusStep = 1;
-            }
-        }else{
-            Logger::Log("AutoFocus | 五点拟合曲线失败！", LogLevel::WARNING, DeviceType::FOCUSER);
-            autoFocusStep = 1;
+//                 QString order = "addLineData_Point:";
+//                 // 在最小点的前后各取五个点
+//                 float step = 100;  // 计算步长
+//                 std::vector<float> x_values;
+//                 for (int i = -5; i <= 5; ++i) {
+//                     float x = x_min + i * step;
+//                     x_values.push_back(x);
+//                 }
+//                 std::vector<float> y_values;
+//                 for (float x : x_values) {
+//                     float y = a * x * x + b * x + c;
+//                     y_values.push_back(y);
+//                     order += QString::number(x) + "," + QString::number(y) + ",";
+//                 }
+//                 emit wsThread->sendMessageToClient(order);
+//                 Logger::Log("AutoFocus | 拟合曲线成功！ y = " + std::to_string(a) + "x^2 + " + std::to_string(b) + "x + " + std::to_string(c), LogLevel::INFO, DeviceType::FOCUSER);
+//             } else {
+//                 Logger::Log("AutoFocus | 曲线开口朝上，重新开始", LogLevel::WARNING, DeviceType::FOCUSER);
+//                 autoFocusStep = 1;
+//             }
+//         }else{
+//             Logger::Log("AutoFocus | 五点拟合曲线失败！", LogLevel::WARNING, DeviceType::FOCUSER);
+//             autoFocusStep = 1;
+//             return;
+//         }
+//     }
+
+// }
+
+// 自动对焦精调函数 - 自适应方向的多点拟合方法
+void MainWindow::AutoFocus(QPointF selectStarPosition) {
+    if (dpFocuser == NULL || dpMainCamera == NULL) {
+        Logger::Log("AutoFocus | 调焦器或相机未连接", LogLevel::WARNING, DeviceType::FOCUSER);
+        isAutoFocus = false;
+        emit wsThread->sendMessageToClient("AutoFocusOver:false");
+        return;
+    }
+    
+    // 静态变量用于跟踪精调状态
+    static int autoFocusStep = 0;                   // 当前精调步骤
+    static QVector<QPointF> currentSamplePointList; // 当前采样点列表(每个位置3个点)
+    static QVector<QPointF> allSamplePointList;     // 所有拟合用的采样点
+    static bool preferredDirection = true;          // 首选移动方向(true为向内)
+    static double initialHFR = 0;                   // 初始HFR值
+    static int startPosition = 0;                   // 起始位置
+    static int fineStep = 30;                       // 精调步长
+    static int consecutiveFailures = 0;             // 连续失焦次数
+    static bool directionDetermined = false;        // 是否已确定优先方向
+    static bool triedBothDirections = false;        // 是否已尝试两个方向
+    
+    int currentPosition = FocuserControl_getPosition();
+    
+    // 检查是否失焦(HFR=0)
+    if (selectStarPosition.y() == 0 || selectStarPosition.isNull()) {
+        Logger::Log("AutoFocus | 可能出现失焦，HFR=0", LogLevel::WARNING, DeviceType::FOCUSER);
+        consecutiveFailures++;
+        
+        // 需要连续3次检测到HFR=0才认为是真正失焦
+        if (consecutiveFailures < 3) {
+            Logger::Log("AutoFocus | 等待确认失焦状态 (" + std::to_string(consecutiveFailures) + "/3)", 
+                      LogLevel::INFO, DeviceType::FOCUSER);
+            return; // 等待更多样本确认
+        }
+        
+        // 连续三次确认为失焦状态
+        Logger::Log("AutoFocus | 确认失焦状态，连续" + std::to_string(consecutiveFailures) + 
+                  "次HFR=0", LogLevel::WARNING, DeviceType::FOCUSER);
+        
+        // 如果已经有足够的数据点(至少3个)，尝试拟合曲线
+        if (allSamplePointList.size() >= 3) {
+            Logger::Log("AutoFocus | 使用现有" + std::to_string(allSamplePointList.size()) + 
+                      "个数据点尝试拟合", LogLevel::INFO, DeviceType::FOCUSER);
+            autoFocusStep = 99;  // 跳到拟合阶段
+        } 
+        // 如果只在一个方向上采样并失焦，尝试反向
+        else if (!triedBothDirections) {
+            // 返回起始位置
+            bool moveToStart = (currentPosition > startPosition) ? true : false;
+            int stepsToStart = abs(currentPosition - startPosition);
+            
+            Logger::Log("AutoFocus | 当前方向出现失焦，返回起始位置尝试反向", 
+                      LogLevel::INFO, DeviceType::FOCUSER);
+                      
+            // 移动回起始位置
+            indi_Client->setFocuserMoveDiretion(dpFocuser, moveToStart);
+            indi_Client->moveFocuserSteps(dpFocuser, stepsToStart);
+            
+            // 设置反向
+            preferredDirection = !preferredDirection;
+            triedBothDirections = true;
+            autoFocusStep = 1;  // 重置采样步骤
+            consecutiveFailures = 0;  // 重置失焦计数器
             return;
         }
+        // 如果两个方向都有问题，无法完成精调
+        else {
+            Logger::Log("AutoFocus | 两个方向都出现失焦，无法完成精调", 
+                      LogLevel::WARNING, DeviceType::FOCUSER);
+            isAutoFocus = false;
+            emit wsThread->sendMessageToClient("AutoFocusOver:false");
+            
+            // 重置所有状态
+            autoFocusStep = 0;
+            currentSamplePointList.clear();
+            allSamplePointList.clear();
+            directionDetermined = false;
+            triedBothDirections = false;
+            consecutiveFailures = 0;
+            return;
+        }
+    } else {
+        // 重置连续失焦计数器
+        consecutiveFailures = 0;
     }
-
+    
+    // 初始化阶段
+    if (autoFocusStep == 0) {
+        currentSamplePointList.clear();
+        allSamplePointList.clear();
+        initialHFR = selectStarPosition.y();
+        startPosition = currentPosition;
+        autoFocusStep = 1;
+        directionDetermined = false;
+        triedBothDirections = false;
+        consecutiveFailures = 0;
+        isAutoFocus = true;
+        
+        Logger::Log("AutoFocus | 开始小范围精调，初始位置: " + std::to_string(startPosition) + 
+                  ", HFR: " + std::to_string(initialHFR), 
+                  LogLevel::INFO, DeviceType::FOCUSER);
+                  
+        // 添加第一个点到采样列表
+        currentSamplePointList.append(selectStarPosition);
+        return;
+    }
+    
+    // 采样阶段
+    if (autoFocusStep >= 1 && autoFocusStep <= 7) {
+        // 添加当前点到采样列表
+        currentSamplePointList.append(selectStarPosition);
+        
+        // 当采集到3个点时，取平均值加入全局采样点列表
+        if (currentSamplePointList.size() == 3) {
+            // 验证这三个点的一致性
+            if (std::abs(currentSamplePointList[0].x() - currentSamplePointList[1].x()) < 5 && 
+                std::abs(currentSamplePointList[0].x() - currentSamplePointList[2].x()) < 5) {
+                
+                // 计算平均值
+                QPointF avgPoint(
+                    (currentSamplePointList[0].x() + currentSamplePointList[1].x() + currentSamplePointList[2].x()) / 3.0,
+                    (currentSamplePointList[0].y() + currentSamplePointList[1].y() + currentSamplePointList[2].y()) / 3.0
+                );
+                
+                allSamplePointList.append(avgPoint);
+                
+                // 更新日志
+                Logger::Log("AutoFocus | 采集到第 " + std::to_string(allSamplePointList.size()) + 
+                          " 个点: 位置=" + std::to_string(avgPoint.x()) + 
+                          ", HFR=" + std::to_string(avgPoint.y()), 
+                          LogLevel::INFO, DeviceType::FOCUSER);
+                
+                // 发送数据点用于可视化
+                emit wsThread->sendMessageToClient("addLineData_Point:" + 
+                                                 QString::number(avgPoint.x()) + "," + 
+                                                 QString::number(avgPoint.y()));
+                
+                // 清空当前采样点列表，准备下一个位置的采样
+                currentSamplePointList.clear();
+                
+                // 如果这是第二个点，确定后续移动的首选方向
+                if (allSamplePointList.size() == 2 && !directionDetermined) {
+                    // 比较两个点的HFR决定优先方向
+                    if (allSamplePointList[1].y() < allSamplePointList[0].y()) {
+                        // 如果第二个点的HFR更小，继续当前方向
+                        preferredDirection = (allSamplePointList[1].x() > allSamplePointList[0].x()) ? false : true;
+                    } else {
+                        // 否则反向
+                        preferredDirection = (allSamplePointList[1].x() > allSamplePointList[0].x()) ? true : false;
+                    }
+                    
+                    Logger::Log("AutoFocus | 确定优先方向: " + std::string(preferredDirection ? "向内" : "向外"), 
+                              LogLevel::INFO, DeviceType::FOCUSER);
+                    
+                    directionDetermined = true;
+                }
+                
+                // 决定下一个采样点
+                if (allSamplePointList.size() < 7) {
+                    bool moveDirection;
+                    int moveSteps;
+                    
+                    if (!directionDetermined) {
+                        // 第一次移动，尝试一个方向
+                        moveDirection = preferredDirection;
+                        moveSteps = fineStep;
+                    } else {
+                        // 基于确定的优先方向，继续采样
+                        moveDirection = preferredDirection;
+                        moveSteps = fineStep;
+                    }
+                    
+                    // 执行移动
+                    indi_Client->setFocuserMoveDiretion(dpFocuser, moveDirection);
+                    indi_Client->moveFocuserSteps(dpFocuser, moveSteps);
+                    
+                    Logger::Log("AutoFocus | 移动到下一个采样点，方向: " + 
+                              std::string(moveDirection ? "向内" : "向外") + 
+                              "，步长: " + std::to_string(moveSteps), 
+                              LogLevel::INFO, DeviceType::FOCUSER);
+                } else {
+                    // 收集了足够的点，进入拟合阶段
+                    autoFocusStep = 99;
+                }
+            } else {
+                // 三个样本点不一致，重新采集
+                currentSamplePointList.clear();
+                Logger::Log("AutoFocus | 当前位置采样不稳定，重新采集", 
+                          LogLevel::WARNING, DeviceType::FOCUSER);
+            }
+        }
+    }
+    
+    // 拟合分析阶段
+    if (autoFocusStep == 99) {
+        // 确保有足够的点进行拟合
+        if (allSamplePointList.size() < 3) {
+            Logger::Log("AutoFocus | 数据点不足，无法完成拟合", 
+                      LogLevel::WARNING, DeviceType::FOCUSER);
+            isAutoFocus = false;
+            emit wsThread->sendMessageToClient("AutoFocusOver:false");
+            
+            // 重置所有状态
+            autoFocusStep = 0;
+            currentSamplePointList.clear();
+            allSamplePointList.clear();
+            directionDetermined = false;
+            triedBothDirections = false;
+            consecutiveFailures = 0;
+            return;
+        }
+        
+        // 使用鲁棒性更高的拟合方法
+        float a, b, c;
+        int isSuccess = fitQuadraticCurve(allSamplePointList, a, b, c);
+        
+        if (isSuccess == 0 && a > 0) {
+            // 计算最佳焦点位置
+            float bestPosition = -b / (2 * a);
+            float bestHFR = a * bestPosition * bestPosition + b * bestPosition + c;
+            
+            Logger::Log("AutoFocus | 找到最佳焦点位置: " + std::to_string(bestPosition) + 
+                      ", 预估HFR: " + std::to_string(bestHFR), 
+                      LogLevel::INFO, DeviceType::FOCUSER);
+            
+            // 可视化最佳点
+            emit wsThread->sendMessageToClient("addMinPointData_Point:" + 
+                                             QString::number(bestPosition) + ":" + 
+                                             QString::number(bestHFR));
+            
+            // 生成曲线点
+            QString dataPoints = "addLineData_Point:";
+            for (int i = 0; i < allSamplePointList.size(); i++) {
+                float x = allSamplePointList[i].x();
+                float y = allSamplePointList[i].y();
+                dataPoints += QString::number(x) + "," + QString::number(y);
+                emit wsThread->sendMessageToClient(dataPoints);
+                dataPoints = "addLineData_Point:";
+            }
+            
+            // 移动到最佳位置
+            bool moveDirection = false;
+            int step = 0;
+            if (currentPosition > bestPosition){
+                moveDirection = true;  // 向内移动
+                step = currentPosition - bestPosition;
+            } else {
+                moveDirection = false;  // 向外移动
+                step = bestPosition - currentPosition;
+            }
+            
+            // 执行移动到最佳位置
+            indi_Client->setFocuserMoveDiretion(dpFocuser, moveDirection);
+            indi_Client->moveFocuserSteps(dpFocuser, step);
+            
+            // 完成精调
+            isAutoFocus = false;
+            autoFocusStep = 0;  // 重置状态
+            currentSamplePointList.clear();
+            allSamplePointList.clear();
+            directionDetermined = false;
+            triedBothDirections = false;
+            consecutiveFailures = 0;
+            emit wsThread->sendMessageToClient("AutoFocusOver:true");
+        } else {
+            Logger::Log("AutoFocus | 拟合失败或曲线不是凸函数", 
+                      LogLevel::WARNING, DeviceType::FOCUSER);
+            isAutoFocus = false;
+            autoFocusStep = 0;  // 重置状态
+            currentSamplePointList.clear();
+            allSamplePointList.clear();
+            directionDetermined = false;
+            triedBothDirections = false;
+            consecutiveFailures = 0;
+            emit wsThread->sendMessageToClient("AutoFocusOver:false");
+        }
+    }
 }
 
 int MainWindow::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c) {
@@ -8725,7 +9345,11 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     // 拍摄完成后，找到目标星点
     if (stars.size() <= 0){
         Logger::Log("selectStar | No star found in stars", LogLevel::INFO, DeviceType::FOCUSER);
-        return QPointF(FocuserControl_getPosition(), 0);
+        if (dpFocuser == NULL) {
+            return QPointF(0, 0);
+        }else{
+            return QPointF(FocuserControl_getPosition(), 0);
+        }
     }
     if (starMap.size() != stars.size()){
         Logger::Log("selectStar | starMap.size() != stars.size()", LogLevel::INFO, DeviceType::FOCUSER);
@@ -8743,6 +9367,12 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     updateStarMapPosition(stars); // 计算星图相对位置
     Logger::Log("selectStar | update star map position complete ...", LogLevel::INFO, DeviceType::FOCUSER);
     
+    // 检查starMap是否为空
+    if (starMap.empty()) {
+        Logger::Log("selectStar | Star map is empty after update", LogLevel::WARNING, DeviceType::FOCUSER);
+        return QPointF(CurrentPosition, 0);
+    }
+
     if (NewSelectStar){
         // 选择星点
         double selectStarX = roiAndFocuserInfo["SelectStarX"]; 
@@ -8776,20 +9406,34 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
         }
         NewSelectStar = false;
     }
-    if (starMap[selectStarInStarMapId].status == "loss"){
-        Logger::Log("selectStar | The star(" + std::to_string(starMap[selectStarInStarMapId].id) + ") point is lost, please select again.", LogLevel::WARNING, DeviceType::FOCUSER);
-        roiAndFocuserInfo["SelectStarX"] = starMap[selectStarInStarMapId].x;
-        roiAndFocuserInfo["SelectStarY"] = starMap[selectStarInStarMapId].y;
-        roiAndFocuserInfo["SelectStarHFR"] = -1;
-        return QPointF(FocuserControl_getPosition(), 0);
-    }else{
-        Logger::Log("selectStar | 当前星(" + std::to_string(starMap[selectStarInStarMapId].id) + ")坐标为: SelectStarX:" + std::to_string(starMap[selectStarInStarMapId].x) + " SelectStarY:" + std::to_string(starMap[selectStarInStarMapId].y) + " SelectStarHFR:" + std::to_string(starMap[selectStarInStarMapId].hfr), LogLevel::INFO, DeviceType::FOCUSER);
-        roiAndFocuserInfo["SelectStarX"] = starMap[selectStarInStarMapId].x;
-        roiAndFocuserInfo["SelectStarY"] = starMap[selectStarInStarMapId].y;
-        roiAndFocuserInfo["SelectStarHFR"] = starMap[selectStarInStarMapId].hfr;
-        return QPointF(starMap[selectStarInStarMapId].focuserPosition,starMap[selectStarInStarMapId].hfr);
+
+    // 检查selectStarInStarMapId是否有效
+    if (selectStarInStarMapId < 0 || selectStarInStarMapId >= starMap.size()) {
+        Logger::Log("selectStar | Invalid star ID: " + std::to_string(selectStarInStarMapId), LogLevel::ERROR, DeviceType::FOCUSER);
+        return QPointF(CurrentPosition, 0);
     }
 
+    try {
+        if (starMap[selectStarInStarMapId].status == "loss"){
+            Logger::Log("selectStar | The star(" + std::to_string(starMap[selectStarInStarMapId].id) + ") point is lost, please select again.", LogLevel::WARNING, DeviceType::FOCUSER);
+            roiAndFocuserInfo["SelectStarX"] = starMap[selectStarInStarMapId].x;
+            roiAndFocuserInfo["SelectStarY"] = starMap[selectStarInStarMapId].y;
+            roiAndFocuserInfo["SelectStarHFR"] = -1;
+            return QPointF(CurrentPosition, 0);
+        }else{
+            Logger::Log("selectStar | 当前星(" + std::to_string(starMap[selectStarInStarMapId].id) + ")坐标为: SelectStarX:" + std::to_string(starMap[selectStarInStarMapId].x) + " SelectStarY:" + std::to_string(starMap[selectStarInStarMapId].y) + " SelectStarHFR:" + std::to_string(starMap[selectStarInStarMapId].hfr), LogLevel::INFO, DeviceType::FOCUSER);
+            roiAndFocuserInfo["SelectStarX"] = starMap[selectStarInStarMapId].x;
+            roiAndFocuserInfo["SelectStarY"] = starMap[selectStarInStarMapId].y;
+            roiAndFocuserInfo["SelectStarHFR"] = starMap[selectStarInStarMapId].hfr;
+            return QPointF(starMap[selectStarInStarMapId].focuserPosition,starMap[selectStarInStarMapId].hfr);
+        }
+    } catch (const std::exception& e) {
+        Logger::Log("selectStar | Exception occurred: " + std::string(e.what()), LogLevel::ERROR, DeviceType::FOCUSER);
+        return QPointF(CurrentPosition, 0);
+    } catch (...) {
+        Logger::Log("selectStar | Unknown exception occurred", LogLevel::ERROR, DeviceType::FOCUSER);
+        return QPointF(CurrentPosition, 0);
+    }
 }
 
 
@@ -8819,7 +9463,7 @@ void MainWindow::updateCPUInfo()
         cpuUsage = std::numeric_limits<float>::quiet_NaN();  // 如果获取失败，设置为 NaN
     }
 
-    Logger::Log("updateCPUInfo | CPU Temp: " + std::to_string(cpuTemp) + ", CPU Usage: " + std::to_string(cpuUsage), LogLevel::DEBUG, DeviceType::MAIN);
+    // Logger::Log("updateCPUInfo | CPU Temp: " + std::to_string(cpuTemp) + ", CPU Usage: " + std::to_string(cpuUsage), LogLevel::DEBUG, DeviceType::MAIN);
     emit wsThread->sendMessageToClient("updateCPUInfo:" + QString::number(cpuTemp) + ":" + QString::number(cpuUsage));
 }
 
@@ -8834,6 +9478,7 @@ void MainWindow::getMainCameraParameters(){
     }
     Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
     emit wsThread->sendMessageToClient(order);
+    emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
 }
 
 void MainWindow::synchronizeTime(QString time, QString date){
@@ -8854,4 +9499,30 @@ void MainWindow::synchronizeTime(QString time, QString date){
     } else {
         Logger::Log("synchronizeTime failed!", LogLevel::ERROR, DeviceType::MAIN);
     }
+}
+
+void MainWindow::setMountLocation(QString lat, QString lon){
+    Logger::Log("setMountLocation start ...", LogLevel::DEBUG, DeviceType::MAIN);
+    observatorylatitude = lat.toDouble();
+    observatorylongitude = lon.toDouble();
+    if (dpMount != nullptr){
+        indi_Client->setLocation(dpMount,observatorylatitude,observatorylongitude,50);
+        indi_Client->setAutoFlip(dpMount,true);
+        indi_Client->setAUXENCODERS(dpMount);
+    }
+
+}
+
+void MainWindow::setMountUTC(QString time, QString date){
+    Logger::Log("setMountUTC start ...", LogLevel::DEBUG, DeviceType::MAIN);
+    if (dpMount == nullptr){
+        Logger::Log("setMountUTC | dpMount is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+        return;
+    }
+    QDateTime datetime = QDateTime::fromString(date + "T" + time, Qt::ISODate);
+    indi_Client->setTimeUTC(dpMount, datetime);
+    Logger::Log("UTC Time set for Mount: " + datetime.toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);   
+    indi_Client->getTimeUTC(dpMount, datetime);
+    Logger::Log("UTC Time: " + datetime.currentDateTimeUtc().toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+   
 }

@@ -641,7 +641,7 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QS
     offsetX= std::stoi(a);
     offsetY= std::stoi(b);
     CFATYPE= QString::fromStdString(c);
-   // qDebug() << "getCCDCFA" << offsetX << offsetY << CFATYPE;
+    Logger::Log("indi_client | getCCDCFA | " + std::to_string(offsetX) + ", " + std::to_string(offsetY) + ", " + CFATYPE.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
