@@ -1254,6 +1254,12 @@ void MainWindow::onMessageReceived(const QString &message)
         emit wsThread->sendMessageToClient("sendGetLocation:"+localLat+":"+localLon);
         Logger::Log("reGetLocation finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
+    else if(parts[0].trimmed() == "showRoiImageSuccess" && parts.size() == 2){
+        Logger::Log("showRoiImageSuccess ...", LogLevel::DEBUG, DeviceType::MAIN);
+        // if (parts[1].trimmed() == "true") focusLoopShooting(true);
+        // else focusLoopShooting(false);
+        Logger::Log("showRoiImageSuccess finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }
     else{
         Logger::Log("Unknown message: " + message.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
     }
@@ -1716,9 +1722,20 @@ void MainWindow::onTimeout()
 //         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
 //     }
 // }
-
+int a = 0;
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
+    // if (a == 0){
+    //     fitsFileName = "/home/quarcs/workspace/image/1.fits";
+    //     a = 1;
+    // }else if (a == 1){
+    //     fitsFileName = "/home/quarcs/workspace/image/2.fits";
+    //     a = 2;
+    // }else if (a == 2){
+    //     fitsFileName = "/home/quarcs/workspace/image/3.fits";
+    //     a = 0;
+    // }
+
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat originalImage16;
@@ -3408,11 +3425,11 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
 
-        if (glCameraSize_width>4800){
+        if (glMainCCDSizeX>4800){
             glMainCameraBinning = 4;
-        }else if (glCameraSize_width < 4800 && glCameraSize_width > 3600){
+        }else if (glMainCCDSizeX < 4800 && glMainCCDSizeX > 3600){
             glMainCameraBinning = 3;
-        }else if (glCameraSize_width < 3600 && glCameraSize_width > 2400){
+        }else if (glMainCCDSizeX < 3600 && glMainCCDSizeX > 2400){
             glMainCameraBinning = 2;
         }else {
             glMainCameraBinning = 1;
@@ -3800,7 +3817,7 @@ void MainWindow::FocusingLooping()
             indi_Client->takeExposure(dpMainCamera, expTime_sec);
         }
     }else{
-        emit wsThread->sendMessageToClient("startFocusLoopSjootingfile:Wait Take Picture Finish!");
+        emit wsThread->sendMessageToClient("startFocusLoopFailed:Wait Take Picture Finish!");
     }
     Logger::Log("FocusingLooping finished.", LogLevel::DEBUG, DeviceType::FOCUSER);
 }
@@ -8301,12 +8318,12 @@ void MainWindow::focusLoopShooting(bool isLoop){
     if (isLoop){
         isFocusLoopShooting = true;
         if (glMainCameraStatu == "Exposuring"){
-            emit wsThread->sendMessageToClient("startFocusLoopSjootingfile:Wait Take Picture Finish!");
+            emit wsThread->sendMessageToClient("startFocusLoopFailed:Wait Take Picture Finish!");
             isFocusLoopShooting = false;
             return;
         }
         if (dpMainCamera == NULL){
-            emit wsThread->sendMessageToClient("startFocusLoopSjootingfile:MainCamera is not connected!");
+            emit wsThread->sendMessageToClient("startFocusLoopFailed:MainCamera is not connected!");
             isFocusLoopShooting = false;
             return;
         }
@@ -8317,7 +8334,6 @@ void MainWindow::focusLoopShooting(bool isLoop){
         if (glMainCameraStatu == "Exposuring" && dpMainCamera != NULL){
             INDI_AbortCapture();
         }
-        
     }
 }
 
@@ -8515,7 +8531,9 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     }
     // 释放最终的图像内存
     image16.release();
-    focusLoopShooting(isFocusLoopShooting);
+    QTimer::singleShot(200, this, [this]() {
+        focusLoopShooting(isFocusLoopShooting);
+    });
 }
 
 // void MainWindow::AutoFocus(QPointF selectStarPosition){
