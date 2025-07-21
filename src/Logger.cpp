@@ -9,6 +9,8 @@
 #include <thread>
 
 
+
+
 std::map<DeviceType, std::unique_ptr<std::ofstream>> Logger::logFiles;
 const unsigned int Logger::maxLogSize = 104857600; // 设定最大日志文件大小为100MB
 std::mutex Logger::logMutex;  // 添加一个静态互斥锁
