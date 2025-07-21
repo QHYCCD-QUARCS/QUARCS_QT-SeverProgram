@@ -4,6 +4,7 @@ INDI::BaseDevice *dpMount = nullptr, *dpGuider = nullptr, *dpPoleScope = nullptr
 INDI::BaseDevice *dpMainCamera = nullptr, *dpFocuser = nullptr, *dpCFW = nullptr;
 
 
+
 DriversList drivers_list;
 std::vector<DevGroup> dev_groups;
 std::vector<Device> devices;
