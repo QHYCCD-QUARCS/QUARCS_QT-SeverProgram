@@ -37,8 +37,6 @@
 
 #include <stellarsolver.h>
 
-#include "platesolveworker.h"
-
 #include <regex>
 
 #include <thread> // 确保包含此头文件
@@ -59,6 +57,7 @@ namespace fs = std::filesystem;
 #define GPIO_PIN_2 "527"
 
 #include "Logger.h"
+#include "autopolaralignment.h"
 
 
 // 定义一个新的结构体来存储星点的信息和电调位置
@@ -311,8 +310,6 @@ public:
 
     float minPoint_X;
 
-    double FocusMoveAndCalHFR(bool isInward, int steps);
-    double FocusGotoAndCalFWHM(int steps);
 
     bool currentDirection = true;   // 标志电调旋转方向 true: inward, false: outward
     double focusMoveEndTime = 0;     // 用来控制电调移动时，因为浏览器关闭或刷新或网络卡死导致的结束命令丢失超时
@@ -352,10 +349,13 @@ public:
     int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);  // 拟合二次曲线
     std::vector<StarList> starMap; // 用于存储图信息
     int updateStarMapPosition(QList<FITSImage::Star> stars); // 计算星图相对位置，为星点编号
+    double calculateDistance(double x1, double y1, double x2, double y2); // 
     void compareStarVector(QList<FITSImage::Star> stars); // 匹配星点和星图
-    double calculateDistance(double x1, double y1, double x2, double y2); // 计算两点之间的距离
-
-    bool checkStarExist(QList<FITSImage::Star> stars , const QPointF& star); // 检查星点是否存在
+    double calculateMatchScore(const FITSImage::Star& currentStar, const StarList& referenceStar, const QList<FITSImage::Star>& allStars);
+    double findNearestStar(const QList<FITSImage::Star>& stars, const QPointF& position);
+    double getAdaptiveThreshold();
+    double getMinMatchScore();
+    int findBestStar();
     void calculateStarVector(); // 计算星点之间的向量
     int selectStarInStarMapId = -1; // 用于存储选择的星点在星图中的编号
     bool NewSelectStar = true; // 用于标记是否选择新的星点
@@ -424,11 +424,11 @@ public:
 
     void LoopCapture(int ExpTime);
 
-    void CaptureAndSolve(int ExpTime, bool isLoop);
-
     bool EndCaptureAndSolve = false;
 
     bool TakeNewCapture = true;
+
+    bool isSavePngSuccess = false;
 
     void ScheduleTabelData(QString message);
 
@@ -581,8 +581,6 @@ public:
 
     void USBCheck();
 
-    PlateSolveWorker *platesolveworker = new PlateSolveWorker;
-
     
     QVector<QString> INDI_Driver_List;
 
@@ -624,6 +622,13 @@ public:
     QString localLat = "";  // 本地纬度
     QString localLanguage = ""; // 本地语言
     QString localTime = ""; // 本地时区
+
+    void getLastSelectDevice();
+
+    // 自动极轴校准
+    bool initPolarAlignment();
+    PolarAlignment *polarAlignment;
+    
 
     
 private slots:

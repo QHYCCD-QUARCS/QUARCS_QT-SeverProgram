@@ -34,8 +34,8 @@ add_executable(client
   tools.hpp tools.cpp
   myclient.h myclient.cpp
   websocketthread.h websocketthread.cpp
-  platesolveworker.h platesolveworker.cpp
   Logger.h Logger.cpp
+  autopolaralignment.h autopolaralignment.cpp
 )
 
 target_link_libraries(client PRIVATE
