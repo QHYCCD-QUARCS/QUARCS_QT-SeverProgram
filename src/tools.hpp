@@ -289,8 +289,8 @@ class Tools : public QObject {
   static void printDevGroups2(const DriversList driver_list);
   static void startIndiDriver(QString driver_name);
   static void stopIndiDriver(QString driver_name);
-  static void printSystemDeviceList(SystemDeviceList s);
-  static QStringList getCameraNumFromSystemDeviceList(SystemDeviceList s);
+  static void printSystemDeviceList(const SystemDeviceList& s);
+  static QStringList getCameraNumFromSystemDeviceList(const SystemDeviceList& s);
 
   static void makeConfigFile();
   static void makeImageFolder();
@@ -313,11 +313,10 @@ class Tools : public QObject {
 
   static void clearSystemDeviceListItem(SystemDeviceList &s,int index);                          //
   static void initSystemDeviceList(SystemDeviceList &s);                                         //
-  static int getTotalDeviceFromSystemDeviceList(SystemDeviceList s); 
-  static int getDriverNumFromSystemDeviceList(SystemDeviceList s);                            //
+  static int getTotalDeviceFromSystemDeviceList(const SystemDeviceList& s); 
+  static int getDriverNumFromSystemDeviceList(const SystemDeviceList& s);                            //
   static void cleanSystemDeviceListConnect(SystemDeviceList &s);                                 //
-  static uint32_t getIndexFromSystemDeviceListByName(SystemDeviceList s,QString devname,int &index);   //
-
+  static uint32_t getIndexFromSystemDeviceListByName(const SystemDeviceList& s,QString devname,int &index);   //
   static int readFits(const char* fileName, cv::Mat& image);
 
   static QString getFitsCaptureTime(const char* fileName);
@@ -450,7 +449,7 @@ class Tools : public QObject {
   static MinMaxFOV calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height);
   static bool WaitForPlateSolveToComplete();
   static bool isSolveImageFinish();
-  static SloveResults PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK);
+  static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK);
   static SloveResults ReadSolveResult(QString filename, int imageWidth, int imageHeight);
   static WCSParams extractWCSParams(const QString& wcsInfo);
   static FieldOfView extractFieldOfViewFromWcsInfo(const QString& wcsInfo);

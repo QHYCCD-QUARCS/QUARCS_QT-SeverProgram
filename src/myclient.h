@@ -28,8 +28,8 @@ class MyClient : public INDI::BaseClient
         QElapsedTimer CaptureTestTimer;
         qint64 CaptureTestTime;
 
-        uint32_t QHYCCD_SUCCESS = 1;
-        uint32_t QHYCCD_ERROR = 0;
+        // uint32_t QHYCCD_SUCCESS = 1;
+        // uint32_t QHYCCD_ERROR = 0;
         // 添加设备
         void AddDevice(INDI::BaseDevice* device, const std::string& name);
         // 删除设备
@@ -116,7 +116,7 @@ class MyClient : public INDI::BaseClient
         uint32_t getTelescopeRADECJ2000(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)  ;
         uint32_t setTelescopeRADECJ2000(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree);
         uint32_t getTelescopeRADECJNOW(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)  ;
-        uint32_t setTelescopeRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property);
+        uint32_t setTelescopeRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree);
         uint32_t getTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)  ;
         uint32_t setTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree)  ;
         uint32_t getTelescopetAZALT(INDI::BaseDevice *dp,double &AZ_DEGREE,double &ALT_DEGREE);

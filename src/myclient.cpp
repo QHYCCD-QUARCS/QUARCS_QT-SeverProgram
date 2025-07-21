@@ -641,7 +641,7 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QS
     offsetX= std::stoi(a);
     offsetY= std::stoi(b);
     CFATYPE= QString::fromStdString(c);
-   // qDebug() << "getCCDCFA" << offsetX << offsetY << CFATYPE;
+    Logger::Log("indi_client | getCCDCFA | " + std::to_string(offsetX) + ", " + std::to_string(offsetY) + ", " + CFATYPE.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1631,9 +1631,9 @@ uint32_t MyClient::getTelescopeRADECJNOW(INDI::BaseDevice *dp,double & RA_Hours,
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property)
+uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree)
 {
-    property = dp->getProperty("EQUATORIAL_EOD_COORD");
+    INDI::PropertyNumber property = dp->getProperty("EQUATORIAL_EOD_COORD");
 
     if (!property.isValid())
     {
@@ -1710,7 +1710,7 @@ uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hour
     else                     action="STOP";
 
     setTelescopeActionAfterPositionSet(dp,action);
-    setTelescopeRADECJNOW(dp,RA_Hours,DEC_Degree,property);
+    setTelescopeRADECJNOW(dp,RA_Hours,DEC_Degree);
 }
 
 
@@ -1722,7 +1722,7 @@ uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double
 
     setTelescopeActionAfterPositionSet(dp,action);
 
-    setTelescopeRADECJNOW(dp,RA_Hours,DEC_Degree,property);
+    setTelescopeRADECJNOW(dp,RA_Hours,DEC_Degree);
     Logger::Log("indi_client | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::CAMERA);
 }
 

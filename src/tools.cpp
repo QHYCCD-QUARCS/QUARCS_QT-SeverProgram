@@ -382,50 +382,180 @@ void Tools::printDevGroups2(const DriversList driver_list)
     }
 }
 
-void Tools::printSystemDeviceList(SystemDeviceList s){
-    //starndard sequence
-    // s[0]: Mount
-    // s[1]: Guider
-    // s[2]: Pole Camera (polemaster)
-    // s[3]:
-    // s[4]:
-    // s[5]:
-    // s[6]:
-    // s[7]:
-    // s[8]:
-    // s[9]:
-    // s[10]:
-    // s[11]:
-    // s[12]:
-    // s[13]:
-    // s[14]:
-    // s[15]:
-    // s[16]:
-    // s[17]:
-    // s[18]:
-    // s[19]:
-    // s[20]: Camera #1
-    // s[21]: CFW #1
-    // s[22]: Focuser #1
-    // s[23]: LensCover #1
-
-
-
-
-    Logger::Log("===============System Device Selected================", LogLevel::INFO, DeviceType::MAIN);
-    QString dpName;
-    for (int i=0;i<s.system_devices.size();i++){
-          if(s.system_devices[i].dp==NULL) dpName="NULL";
-          else                             dpName=s.system_devices[i].dp->getDeviceName();
-
-          if(s.system_devices[i].DriverIndiName != "") {
-            Logger::Log("printSystemDeviceList | " + std::to_string(i) + " " + std::to_string(s.system_devices[i].DeviceIndiGroup) + " " + s.system_devices[i].DriverFrom.toStdString() + " " + s.system_devices[i].DriverIndiName.toStdString() + " " + s.system_devices[i].DeviceIndiName.toStdString() + " " + s.system_devices[i].Description.toStdString() + " " + std::to_string(s.system_devices[i].isConnect) + " " + dpName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-          }
+void Tools::printSystemDeviceList(const SystemDeviceList& s){
+    try {
+        // 在最开始就打印基本信息
+        Logger::Log("===============System Device Selected================", LogLevel::INFO, DeviceType::MAIN);
+        // Logger::Log("printSystemDeviceList | Function started", LogLevel::INFO, DeviceType::MAIN);
+        
+        // 检查引用本身是否有效（虽然引用理论上不能为空，但让我们检查一下）
+        try {
+            // Logger::Log("printSystemDeviceList | Checking parameter validity...", LogLevel::INFO, DeviceType::MAIN);
+            
+            // 尝试访问 currentDeviceCode 来测试对象是否有效
+            int deviceCode = s.currentDeviceCode;
+            // Logger::Log("printSystemDeviceList | currentDeviceCode: " + std::to_string(deviceCode), LogLevel::INFO, DeviceType::MAIN);
+            
+            // 检查 system_devices 容器本身
+            // Logger::Log("printSystemDeviceList | Checking system_devices container...", LogLevel::INFO, DeviceType::MAIN);
+            
+            // 先检查容器是否可以安全访问
+            const QVector<SystemDevice>& devices = s.system_devices;
+            // Logger::Log("printSystemDeviceList | Got reference to system_devices", LogLevel::INFO, DeviceType::MAIN);
+            
+            // 检查容器大小
+            int deviceCount = devices.size();
+            // Logger::Log("printSystemDeviceList | system_devices.size(): " + std::to_string(deviceCount), LogLevel::INFO, DeviceType::MAIN);
+            
+            // 检查容器是否为空
+            bool isEmpty = devices.isEmpty();
+            // Logger::Log("printSystemDeviceList | system_devices.isEmpty(): " + std::string(isEmpty ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
+            
+            // 检查容器容量
+            int capacity = devices.capacity();
+            // Logger::Log("printSystemDeviceList | system_devices.capacity(): " + std::to_string(capacity), LogLevel::INFO, DeviceType::MAIN);
+            
+            if (isEmpty) {
+                // Logger::Log("printSystemDeviceList | system_devices is empty", LogLevel::WARNING, DeviceType::MAIN);
+                // Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
+                return;
+            }
+            
+            if (deviceCount <= 0) {
+                // Logger::Log("printSystemDeviceList | Invalid device count: " + std::to_string(deviceCount), LogLevel::ERROR, DeviceType::MAIN);
+                // Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
+                return;
+            }
+            
+            if (deviceCount > 100) {
+                // Logger::Log("printSystemDeviceList | Suspiciously large device count: " + std::to_string(deviceCount), LogLevel::WARNING, DeviceType::MAIN);
+                // Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
+                return;
+            }
+            
+            // Logger::Log("printSystemDeviceList | Starting to iterate through devices...", LogLevel::INFO, DeviceType::MAIN);
+            
+            // 尝试访问第一个设备来测试
+            if (deviceCount > 0) {
+                try {
+                    // Logger::Log("printSystemDeviceList | Checking first device...", LogLevel::INFO, DeviceType::MAIN);
+                    const SystemDevice& firstDevice = devices[0];
+                    // Logger::Log("printSystemDeviceList | First device accessed successfully", LogLevel::INFO, DeviceType::MAIN);
+                    
+                    // 检查第一个设备的基本信息
+                    QString desc = firstDevice.Description;
+                    // Logger::Log("printSystemDeviceList | First device Description: " + (desc.isEmpty() ? "EMPTY" : desc.toStdString()), LogLevel::INFO, DeviceType::MAIN);
+                    
+                    int group = firstDevice.DeviceIndiGroup;
+                    // Logger::Log("printSystemDeviceList | First device DeviceIndiGroup: " + std::to_string(group), LogLevel::INFO, DeviceType::MAIN);
+                    
+                    bool isConnect = firstDevice.isConnect;
+                    // Logger::Log("printSystemDeviceList | First device isConnect: " + std::string(isConnect ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
+                    
+                    // 检查设备指针
+                    INDI::BaseDevice* dp = firstDevice.dp;
+                    // Logger::Log("printSystemDeviceList | First device dp: " + std::string(dp ? "NOT_NULL" : "NULL"), LogLevel::INFO, DeviceType::MAIN);
+                    
+                } catch (const std::exception& e) {
+                    // Logger::Log("printSystemDeviceList | Error accessing first device: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+                    // Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
+                    return;
+                } catch (...) {
+                    // Logger::Log("printSystemDeviceList | Unknown error accessing first device", LogLevel::ERROR, DeviceType::MAIN);
+                    // Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
+                    return;
+                }
+            }
+            
+            // 现在开始正常的循环
+            // Logger::Log("printSystemDeviceList | Starting main loop...", LogLevel::INFO, DeviceType::MAIN);
+            
+            for (int i = 0; i < deviceCount; i++) {
+                try {
+                    // Logger::Log("printSystemDeviceList | Processing device " + std::to_string(i) + "...", LogLevel::INFO, DeviceType::MAIN);
+                    
+                    // 检查索引是否有效
+                    if (i >= devices.size()) {
+                        // Logger::Log("printSystemDeviceList | Index out of bounds: " + std::to_string(i), LogLevel::ERROR, DeviceType::MAIN);
+                        break;
+                    }
+                    
+                    const SystemDevice& device = devices[i];
+                    // Logger::Log("printSystemDeviceList | Got device reference for index " + std::to_string(i), LogLevel::INFO, DeviceType::MAIN);
+                    
+                    // 获取设备名称
+                    QString dpName = "NULL";
+                    if (device.dp != nullptr && device.dp != NULL) {
+                        // Logger::Log("printSystemDeviceList | 获取到当前设备存在 ",LogLevel::INFO,DeviceType::MAIN);
+                        try {
+                            const char* deviceName = device.dp->getDeviceName();
+                            // Logger::Log("printSystemDeviceList | 获取到当前设备存在 1",LogLevel::INFO,DeviceType::MAIN);
+                            if (deviceName != nullptr) {
+                                dpName = QString::fromUtf8(deviceName);
+                                if (dpName.isEmpty()) {
+                                    dpName = "EMPTY_NAME";
+                                }
+                            } else {
+                                dpName = "NULL_NAME";
+                            }
+                        } catch (const std::exception& e) {
+                            dpName = "ERROR_GETTING_NAME";
+                            // Logger::Log("printSystemDeviceList | Error getting device name for device " + std::to_string(i) + ": " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+                        } catch (...) {
+                            dpName = "UNKNOWN_ERROR";
+                            // Logger::Log("printSystemDeviceList | Unknown error getting device name for device " + std::to_string(i), LogLevel::ERROR, DeviceType::MAIN);
+                        }
+                    }
+                    
+                    // 检查 DriverIndiName 是否为空
+                    if (!device.DriverIndiName.isEmpty()) {
+                        try {
+                            // 使用更安全的字符串操作
+                            QString logMessage = QString("printSystemDeviceList | %1 %2 %3 %4 %5 %6 %7 %8")
+                                .arg(i)
+                                .arg(device.DeviceIndiGroup)
+                                .arg(device.DriverFrom.isEmpty() ? "NULL" : device.DriverFrom)
+                                .arg(device.DriverIndiName.isEmpty() ? "NULL" : device.DriverIndiName)
+                                .arg(device.DeviceIndiName.isEmpty() ? "NULL" : device.DeviceIndiName)
+                                .arg(device.Description.isEmpty() ? "NULL" : device.Description)
+                                .arg(device.isConnect ? "true" : "false")
+                                .arg(dpName.isEmpty() ? "NULL" : dpName);
+                            
+                            Logger::Log(logMessage.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        } catch (const std::exception& e) {
+                            // Logger::Log("printSystemDeviceList | Error converting strings for device " + std::to_string(i) + ": " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+                        } catch (...) {
+                            // Logger::Log("printSystemDeviceList | Unknown error converting strings for device " + std::to_string(i), LogLevel::ERROR, DeviceType::MAIN);
+                        }
+                    }
+                    
+                    // Logger::Log("printSystemDeviceList | Completed processing device " + std::to_string(i), LogLevel::INFO, DeviceType::MAIN);
+                    
+                } catch (const std::exception& e) {
+                    // Logger::Log("printSystemDeviceList | Error processing device " + std::to_string(i) + ": " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+                } catch (...) {
+                    // Logger::Log("printSystemDeviceList | Unknown error processing device " + std::to_string(i), LogLevel::ERROR, DeviceType::MAIN);
+                }
+            }
+            
+            // Logger::Log("printSystemDeviceList | Completed main loop", LogLevel::INFO, DeviceType::MAIN);
+            
+        } catch (const std::exception& e) {
+            // Logger::Log("printSystemDeviceList | Error in parameter validation: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+        } catch (...) {
+            // Logger::Log("printSystemDeviceList | Unknown error in parameter validation", LogLevel::ERROR, DeviceType::MAIN);
+        }
+        
+    } catch (const std::exception& e) {
+        // Logger::Log("printSystemDeviceList | Critical error: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+    } catch (...) {
+        // Logger::Log("printSystemDeviceList | Unknown critical error", LogLevel::ERROR, DeviceType::MAIN);
     }
-      Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
+    
+    Logger::Log("******************************************************", LogLevel::INFO, DeviceType::MAIN);
 }
 
-QStringList Tools::getCameraNumFromSystemDeviceList(SystemDeviceList s) {
+QStringList Tools::getCameraNumFromSystemDeviceList(const SystemDeviceList& s) {
   QStringList cameras;
 
   if (s.system_devices[1].Description != "") {
@@ -623,11 +753,13 @@ SystemDeviceList Tools::readSystemDeviceList() {
                 if (!sectionData.empty()) {
                     // 用 sectionData 填充当前设备
                     currentDevice.Description = QString::fromStdString(sectionData["Description"]);
-                    currentDevice.DeviceIndiGroup = std::stoi(sectionData["DeviceIndiGroup"]);
-                    currentDevice.DeviceIndiName = QString::fromStdString(sectionData["DeviceIndiName"]);
+                    currentDevice.DeviceIndiGroup = -1;
+                    currentDevice.DeviceIndiName = "";
                     currentDevice.DriverIndiName = QString::fromStdString(sectionData["DriverIndiName"]);
                     currentDevice.DriverFrom = QString::fromStdString(sectionData["DriverFrom"]);
-                    currentDevice.isConnect = sectionData["isConnect"] == "true";
+                    currentDevice.dp = NULL;
+                    currentDevice.isConnect = false;
+                    currentDevice.isBind = false;
 
                     // 将当前设备添加到设备列表
                     deviceList.system_devices.push_back(currentDevice);
@@ -1275,19 +1407,19 @@ void Tools::initSystemDeviceList(SystemDeviceList &s){
     }
 }
 
-int Tools::getTotalDeviceFromSystemDeviceList(SystemDeviceList s){
+int Tools::getTotalDeviceFromSystemDeviceList(const SystemDeviceList& s){
     //according the deviceIndiName to get how many devices in systemDeviceList
     //This
     int i=0;
-    for(auto dev:s.system_devices){
+    for(const auto& dev : s.system_devices){
         if(dev.DeviceIndiName !="") i++;
     }
     return i;
 }
 
-int Tools::getDriverNumFromSystemDeviceList(SystemDeviceList s){
+int Tools::getDriverNumFromSystemDeviceList(const SystemDeviceList& s){
     int i=0;
-    for(auto dev:s.system_devices){
+    for(const auto& dev : s.system_devices){
         if(dev.DriverIndiName !="") i++;
     }
     return i;
@@ -1300,9 +1432,9 @@ void Tools::cleanSystemDeviceListConnect(SystemDeviceList &s){
     }
 }
 
-uint32_t Tools::getIndexFromSystemDeviceListByName(SystemDeviceList s,QString devname,int &index){
+uint32_t Tools::getIndexFromSystemDeviceListByName(const SystemDeviceList& s,QString devname,int &index){
     int i=0;
-    for(auto dev:s.system_devices){
+    for(const auto& dev : s.system_devices){
         if (dev.DeviceIndiName == devname ){
             index = i;
             break;
@@ -1319,7 +1451,6 @@ uint32_t Tools::getIndexFromSystemDeviceListByName(SystemDeviceList s,QString de
         Logger::Log("getIndexFromSystemDeviceListByName | not found device in system list, devname" + devname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         return QHYCCD_ERROR;
     }
-
 }
 
 void Tools::startIndiDriver(QString driver_name)
@@ -5454,12 +5585,11 @@ bool Tools::isSolveImageFinish() {
   return isSolveImageFinished;
 }
 
-SloveResults Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK)
+bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK)
 {
     PlateSolveInProgress = true;
     isSolveImageFinished = false;
 
-    SloveResults result;
     MinMaxFOV FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
 
     QString MinFOV = QString::number(FOV.minFOV);
@@ -5501,14 +5631,21 @@ SloveResults Tools::PlateSolve(QString filename, int FocalLength, double CameraS
     QString command_qstr;
     if (!USEQHYCCDSDK)
     {
+<<<<<<< HEAD
       command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
       // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+=======
+      // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+      // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+      command_qstr = "solve-field " + filename + " --overwrite --scale-units degwidth --scale-low 0.8 --scale-high 5.0 --no-plots --uniformize 0 --timestamp --downsample 12 --objs 20 --quad-size-min 0.2 --quad-size-max 0.6 --code-tolerance 0.02 --pixel-error 1.5 --cpulimit 20  --depth 1-50 --no-background-subtraction";
+>>>>>>> 6cf5ec43fa625fb670a5e190455d459d77b9233a
     }
     else
     {
         filename = "/dev/shm/SDK_Capture";
         // Adjust command if needed
     }
+    
     Logger::Log("当前解析命令:" + command_qstr.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     cmd_test->start(command_qstr);
     cmd_test->waitForStarted();
@@ -5516,7 +5653,7 @@ SloveResults Tools::PlateSolve(QString filename, int FocalLength, double CameraS
 
     QApplication::processEvents();
 
-    return result;
+    return true;
 }
 
 SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageHeight) {
