@@ -46,6 +46,9 @@
 #include <cmath>  // 包含数学函数
 #include <set>
 #include <unordered_set>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 #define QT_Client_Version getBuildDate()
 
@@ -298,8 +301,9 @@ public:
 
     int currentSpeed = 3;
     int currentSteps = 5000;
-    int CurrentPosition = 0;
-    int TargetPosition = 0;
+    int startPosition = 0;  // 电调开始位置，用于计算电调移动的步数
+    int CurrentPosition = 0;   // 电调当前位置
+    int TargetPosition = 0;   // 电调要移动到的位置
     bool MoveInward = true;
     int AutoMovePosition;
 
@@ -318,7 +322,7 @@ public:
     int focuserMinPosition = -60000;
     void FocuserControlMove(bool isInward); //控制电调移动
     void HandleFocuserMovementDataPeriodically(); //重置定时器，并更新电调移动参数，
-    void FocuserControlStop(); //停止电调移动
+    void FocuserControlStop(bool isClickMove = false); //停止电调移动
     QTimer* updatePositionTimer = nullptr; //用于更新电调位置的定时器，仅在电调移动停止时使用，当电调移动时停止
     int updateCount = 0; //用于更新电调位置的计数器，仅在电调移动停止时使用，当电调移动时停止
     void CheckFocuserMoveOrder(); //检查电调移动命令是否正常
@@ -341,6 +345,7 @@ public:
     QVector<QPointF> currentAutoFocusStarPositionList; // 用于存储当前自动对焦的星点位置
     QVector<QPointF> allAutoFocusStarPositionList;   // 用于存储所有拟合曲线的的星点位置
     int overSelectStarAutoFocusStep = 0;  // 用于结束使用选择的星点进行自动对焦
+    QVector<bool> isAutoFocusStarPositionList; // 用于存储没有星点的方向，用于自动对焦
     void AutoFocus(QPointF selectStarPosition); // 自动对焦处理逻辑
     int autoFocusStep = 0; // 用于存储自动对焦的步数
     void sendRoiInfo();   // 用于发送ROI信息  
@@ -371,9 +376,7 @@ public:
     bool isAutoFocus = false;
     bool StopAutoFocus = false;
 
-    void FocuserControl_Goto(int position);
 
-    void FocuserControl_Move(bool isInward, int steps);
 
     int  FocuserControl_setSpeed(int speed);
     int  FocuserControl_getSpeed();
@@ -464,7 +467,8 @@ public:
     int schedule_ExpTime;
     int schedule_CFWpos;
     int schedule_RepeatNum;
-    int schedule_currentShootNum = 0;
+    int schedule_currentShootNum = 0;  // 用于存储当前拍摄的次数
+    int expTime_ms = 0;  // 用于存储当前拍摄的时间
 
     bool InSlewing;
     bool GuidingHasStarted = false;
@@ -613,10 +617,14 @@ public:
     double DEC = -1;
     double RA = -1;
 
+    void setMountLocation(QString lat, QString lon);
+    void setMountUTC(QString time, QString date);
+
     QString localLon = ""; // 本地经度
     QString localLat = "";  // 本地纬度
     QString localLanguage = ""; // 本地语言
     QString localTime = ""; // 本地时区
+
     
 private slots:
     void onMessageReceived(const QString &message);

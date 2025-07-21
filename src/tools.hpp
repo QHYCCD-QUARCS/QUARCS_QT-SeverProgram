@@ -131,14 +131,24 @@ struct AltAz {
 };
 
 struct WCSParams {
-    double crpix0;
-    double crpix1;
-    double crval0;
-    double crval1;
-    double cd11;
-    double cd12;
-    double cd21;
-    double cd22;
+  double crpix0, crpix1;  // 参考像素
+  double crval0, crval1;  // 参考天球坐标
+  double cd11, cd12, cd21, cd22;  // 变换矩阵
+};
+
+struct FieldOfView {
+    double width;          // 视场宽度(度)
+    double height;         // 视场高度(度)
+    double calculatedWidth;  // 计算的宽度
+    double calculatedHeight; // 计算的高度
+    double ra_min;         // 最小赤经
+    double ra_max;         // 最大赤经
+    double dec_min;        // 最小赤纬
+    double dec_max;        // 最大赤纬
+    double ra_center;      // 中心赤经
+    double dec_center;     // 中心赤纬
+    double orientation;    // 方向角
+    double area;           // 视场面积
 };
 
 struct SloveResults
@@ -237,6 +247,15 @@ struct CamBin
   int camxbin;
   int camybin;
 };
+
+// 定义 Bayer 模式的枚举类型
+enum BayerPattern {
+  BAYER_RGGB = 0,  // 红-绿 绿-蓝
+  BAYER_BGGR = 1,  // 蓝-绿 绿-红
+  BAYER_GRBG = 2,  // 绿-红 蓝-绿
+  BAYER_GBRG = 3   // 绿-蓝 红-绿
+};
+
 
 class Tools : public QObject {
   Q_OBJECT
@@ -337,6 +356,7 @@ class Tools : public QObject {
   static void Bit16To8_MakeLUT(uint16_t B, uint16_t W, uint8_t* lut);
   static void Bit16To8_Stretch(cv::Mat img16, cv::Mat img8, uint16_t B,
                                uint16_t W);
+  static cv::Mat convert8UTo16U_BayerSafe(const cv::Mat& mat8u, bool scaleRange = true);
   static void CvDebugShow(cv::Mat img, const std::string& name = "test");
   static void CvDebugSave(cv::Mat img, const std::string& name = "test.png");
 
@@ -362,6 +382,8 @@ class Tools : public QObject {
   static cv::Mat processMatWithBinAvg(cv::Mat& image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG);
 
   static uint32_t PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin);
+
+  static cv::Mat PixelsDataSoftBin_Bayer(cv::Mat srcMat, uint32_t camxbin, uint32_t camybin, BayerPattern bayerPattern);
 
   static uint32_t PixelsDataSoftBin(uint8_t* srcdata, uint8_t* bindata, uint32_t width, uint32_t height, uint32_t camchannels, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor);
 
@@ -431,6 +453,7 @@ class Tools : public QObject {
   static SloveResults PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK);
   static SloveResults ReadSolveResult(QString filename, int imageWidth, int imageHeight);
   static WCSParams extractWCSParams(const QString& wcsInfo);
+  static FieldOfView extractFieldOfViewFromWcsInfo(const QString& wcsInfo);
   static SphericalCoordinates pixelToRaDec(double x, double y, const WCSParams& wcs);
   static std::vector<SphericalCoordinates> getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight);
 

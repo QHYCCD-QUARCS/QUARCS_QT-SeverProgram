@@ -1418,47 +1418,58 @@ uint32_t Tools::readFitsHeadForDevName(std::string filename, QString &devname)
 }
 
 int Tools::readFits(const char* fileName, cv::Mat& image) {
-//currently it can only handle the 8bit and 16bit RAW image
-//does not support 32bit RAW image, 8bit and 16bit RGB image
-  fitsfile* fptr;
-  int status = 0;
-  int bitpix, naxis;
-  long naxes[2];
-  long nelements;
-  unsigned short* array;
+    fitsfile* fptr;
+    int status = 0;
+    int bitpix, naxis;
+    long naxes[2];
+    long nelements;
+    void* array = nullptr;
 
-  // 打开 FITS 文件
-  if (fits_open_file(&fptr, fileName, READONLY, &status)) {
+    // 打开 FITS 文件
+    if (fits_open_file(&fptr, fileName, READONLY, &status)) {
+        return status;
+    }
+
+    // 读取图像信息
+    if (fits_get_img_param(fptr, 2, &bitpix, &naxis, naxes, &status)) {
+        fits_close_file(fptr, &status);
+        return status;
+    }
+
+    // 确保图像是二维的且尺寸有效
+    if (naxis != 2 || naxes[0] <= 0 || naxes[1] <= 0) {
+        fits_close_file(fptr, &status);
+        return -1; // 无效图像维度或尺寸
+    }
+
+    // 动态分配内存并读取数据
+    nelements = naxes[0] * naxes[1];
+    if (bitpix == 8) {
+        array = new uint8_t[nelements];
+        if (fits_read_img(fptr, TBYTE, 1, nelements, NULL, array, NULL, &status)) {
+            delete[] static_cast<uint8_t*>(array);
+            fits_close_file(fptr, &status);
+            return status;
+        }
+        image = cv::Mat(naxes[1], naxes[0], CV_8U, array).clone(); // 深拷贝
+        delete[] static_cast<uint8_t*>(array); // 释放原数组
+    } else if (bitpix == 16) {
+        array = new uint16_t[nelements];
+        if (fits_read_img(fptr, TUSHORT, 1, nelements, NULL, array, NULL, &status)) {
+            delete[] static_cast<uint16_t*>(array);
+            fits_close_file(fptr, &status);
+            return status;
+        }
+        image = cv::Mat(naxes[1], naxes[0], CV_16U, array).clone(); // 深拷贝
+        delete[] static_cast<uint16_t*>(array); // 释放原数组
+    } else {
+        fits_close_file(fptr, &status);
+        return -2; // 不支持的位深度
+    }
+
+    // 关闭文件
+    fits_close_file(fptr, &status);
     return status;
-  }
-
-  // 读取图像信息
-  if (fits_get_img_param(fptr, 2, &bitpix, &naxis, naxes, &status)) {
-    return status;
-  }
-
-  // 确保图像是二维的
-  if (naxis != 2) {
-    return -1;
-  }
-
-  // 读取图像数据
-  nelements = naxes[0] * naxes[1];
-  array = new unsigned short[nelements];
-  if (fits_read_img(fptr, TUSHORT, 1, nelements, NULL, array, NULL, &status)) {
-    delete[] array;
-    return status;
-  }
-
-  // 将数据转换为 cv::Mat
-  if(bitpix==16)      image = cv::Mat(naxes[1], naxes[0], CV_16U, array).clone();
-  else if(bitpix==8)  image = cv::Mat(naxes[1], naxes[0], CV_8U, array).clone();
-
-  // 释放内存并关闭文件
-  delete[] array;
-  fits_close_file(fptr, &status);
-
-  return status;
 }
 
 QString Tools::getFitsCaptureTime(const char* fileName) {
@@ -2754,6 +2765,47 @@ void Tools::Bit16To8_Stretch(cv::Mat img16, cv::Mat img8, uint16_t B,
   // cvDebugShow(img8);
 }
 
+cv::Mat Tools::convert8UTo16U_BayerSafe(const cv::Mat& mat8u, bool scaleRange) {
+    if (mat8u.empty()) {
+        Logger::Log("convert8UTo16U_BayerSafe | input image is empty", LogLevel::ERROR, DeviceType::MAIN);
+        return cv::Mat();
+    }
+
+    if (mat8u.type() == CV_16UC1) {
+        Logger::Log("convert8UTo16U_BayerSafe | input image is already 16U", LogLevel::INFO, DeviceType::MAIN);
+        return mat8u.clone();
+    }
+    // 1. 输入验证 + 深拷贝（避免外部修改）
+    cv::Mat input = mat8u.clone(); // 深拷贝输入
+
+
+
+    // 3. 确保矩阵连续
+    if (!input.isContinuous()) {
+        input = input.clone();
+    }
+
+    // 4. 创建并初始化输出矩阵
+    cv::Mat mat16u(input.rows, input.cols, CV_16UC1, cv::Scalar(0));
+
+    // 5. 处理数据
+    if (scaleRange) {
+        input.convertTo(mat16u, CV_16UC1, 256.0, 0);
+    } else {
+        // 手动补位（优化版）
+        for (int y = 0; y < input.rows; y++) {
+            const uint8_t* src = input.ptr<uint8_t>(y);
+            uint16_t* dst = mat16u.ptr<uint16_t>(y);
+            for (int x = 0; x < input.cols; x++) {
+                dst[x] = static_cast<uint16_t>(src[x]);
+            }
+        }
+    }
+
+    return mat16u;
+}
+
+
 void Tools::CvDebugShow(cv::Mat img, const std::string& name) {
   cv::namedWindow(name, 0);
   cv::resizeWindow(name, 640, 480);
@@ -3466,64 +3518,563 @@ CamBin Tools::mergeImageBasedOnSize(cv::Mat image) {
     return CamBin;
 }
 
+// cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG)
+// {
+//     uint32_t width = image.cols;
+//     uint32_t height = image.rows;
+//     uint32_t depth = image.elemSize() * 8;
+//     uint32_t camchannels = image.channels();
+
+//     uint8_t *srcdata = image.data;
+//     image.release();
+
+//     uint32_t outputSize;
+//     if (depth == 8) {
+//         outputSize = (width / camxbin) * (height / camybin);
+//     }
+//     else if (depth == 16) {
+//         outputSize = 2 * (width / camxbin) * (height / camybin);
+//     }
+//     else if (depth == 32) {
+//         outputSize = 4 * (width / camxbin) * (height / camybin);
+//     }
+//     else {
+//         Logger::Log("Unsupported depth!", LogLevel::ERROR, DeviceType::MAIN);
+//         return cv::Mat(); // 返回空Mat
+//     }
+
+//     // 分配输出数据的内存
+//     std::vector<uint8_t> bindata(outputSize, 0);
+
+//     uint32_t result;
+//     if(isAVG) {
+//         result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
+//     } else {
+//         result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, camchannels, depth, camxbin, camybin, isColor);
+//     }
+
+//     if (result == QHYCCD_SUCCESS) {
+//         int newWidth = width / camxbin;
+//         int newHeight = height / camybin;
+        
+//         // 创建新的Mat并复制数据
+//         cv::Mat outputImage;
+//         if (depth == 8) {
+//             outputImage = cv::Mat(newHeight, newWidth, CV_8U);
+//             memcpy(outputImage.data, bindata.data(), outputSize);
+//         }
+//         else if (depth == 16) {
+//             outputImage = cv::Mat(newHeight, newWidth, CV_16U);
+//             memcpy(outputImage.data, bindata.data(), outputSize);
+//         }
+//         else if (depth == 32) {
+//             outputImage = cv::Mat(newHeight, newWidth, CV_32S);
+//             memcpy(outputImage.data, bindata.data(), outputSize);
+//         }
+        
+//         // 再次检查处理后的图像尺寸，确保为偶数
+//         int finalWidth = outputImage.cols;
+//         int finalHeight = outputImage.rows;
+        
+//         // 如果图像宽高不是偶数，裁剪一行或一列
+//         if (finalWidth % 2 != 0 || finalHeight % 2 != 0) {
+//             int cropWidth = finalWidth - (finalWidth % 2);
+//             int cropHeight = finalHeight - (finalHeight % 2);
+            
+//             if (cropWidth > 0 && cropHeight > 0) {
+//                 // 使用ROI裁剪图像
+//                 cv::Rect roi(0, 0, cropWidth, cropHeight);
+//                 cv::Mat croppedImage = outputImage(roi).clone();
+//                 outputImage.release(); // 释放原始的输出图像内存
+                
+//                 return croppedImage;
+//             }
+//         }
+        
+//         return outputImage;
+//     }
+    
+//     return cv::Mat(); // 错误时返回空Mat
+// }
+
 cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG)
 {
-    uint32_t width = image.cols;
-    uint32_t height = image.rows;
-    uint32_t depth = image.elemSize() * 8;
-    uint32_t camchannels = image.channels();
-
-    uint8_t *srcdata = image.data;
-
-    uint32_t outputSize;
-    if (depth == 8) {
-        outputSize = (width / camxbin) * (height / camybin);
-    }
-    else if (depth == 16) {
-        outputSize = 2 * (width / camxbin) * (height / camybin);
-    }
-    else if (depth == 32) {
-        outputSize = 4 * (width / camxbin) * (height / camybin);
-    }
-    else {
-        Logger::Log("Unsupported depth!", LogLevel::ERROR, DeviceType::MAIN);
-        return cv::Mat(); // 返回空Mat
-    }
-
-    // 分配输出数据的内存
-    std::vector<uint8_t> bindata(outputSize, 0);
-
-    uint32_t result;
-    if(isAVG) {
-        result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
-    } else {
-        result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, camchannels, depth, camxbin, camybin, isColor);
-    }
-
-    if (result == QHYCCD_SUCCESS) {
-        int newWidth = width / camxbin;
-        int newHeight = height / camybin;
-        
-        // 创建新的Mat并复制数据
-        cv::Mat outputImage;
-        if (depth == 8) {
-            outputImage = cv::Mat(newHeight, newWidth, CV_8U);
-            memcpy(outputImage.data, bindata.data(), outputSize);
-        }
-        else if (depth == 16) {
-            outputImage = cv::Mat(newHeight, newWidth, CV_16U);
-            memcpy(outputImage.data, bindata.data(), outputSize);
-        }
-        else if (depth == 32) {
-            outputImage = cv::Mat(newHeight, newWidth, CV_32S);
-            memcpy(outputImage.data, bindata.data(), outputSize);
-        }
-        
-        return outputImage;
+    // 输入参数验证
+    if (image.empty()) {
+        Logger::Log("输入图像为空", LogLevel::ERROR, DeviceType::MAIN);
+        return cv::Mat();
     }
     
-    return cv::Mat(); // 错误时返回空Mat
+    if (camxbin == 0 || camybin == 0) {
+        Logger::Log("binning参数无效: x=" + std::to_string(camxbin) + " y=" + std::to_string(camybin), 
+                   LogLevel::ERROR, DeviceType::MAIN);
+        return cv::Mat();
+    }
+    
+    uint32_t width = image.cols;
+    uint32_t height = image.rows;
+    
+    // 检查图像尺寸是否足够binning
+    if (width < camxbin || height < camybin) {
+        Logger::Log("图像尺寸小于binning大小", LogLevel::ERROR, DeviceType::MAIN);
+        return cv::Mat();
+    }
+    
+    // 计算新尺寸
+    int newWidth = width / camxbin;
+    int newHeight = height / camybin;
+    
+    // 确保有效尺寸
+    if (newWidth <= 0 || newHeight <= 0) {
+        Logger::Log("binning后图像尺寸无效", LogLevel::ERROR, DeviceType::MAIN);
+        return cv::Mat();
+    }
+    
+    cv::Mat outputImage;
+    
+    try {
+        if (isAVG) {
+            // 使用OpenCV resize实现平均值binning
+            cv::resize(image, outputImage, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
+        } else {
+            // 根据图像类型选择处理方法
+            int depth = image.depth();
+            int type = image.type();
+            
+            if (isColor && image.channels() == 3) {
+                // 彩色图像处理
+                cv::resize(image, outputImage, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
+            } else {
+                // 单色图像处理
+                // 创建目标图像
+                outputImage = cv::Mat(newHeight, newWidth, type);
+                outputImage.setTo(0); // 初始化为0
+                
+                // 选择适当的处理方法
+                if (depth == CV_8U) {
+                    // 8位图像binning
+                    for (int y = 0; y < newHeight; y++) {
+                        for (int x = 0; x < newWidth; x++) {
+                            int sum = 0;
+                            for (int by = 0; by < camybin; by++) {
+                                for (int bx = 0; bx < camxbin; bx++) {
+                                    int srcY = y * camybin + by;
+                                    int srcX = x * camxbin + bx;
+                                    if (srcY < height && srcX < width) {
+                                        sum += image.at<uint8_t>(srcY, srcX);
+                                    }
+                                }
+                            }
+                            outputImage.at<uint8_t>(y, x) = (uint8_t)std::min(255, sum);
+                        }
+                    }
+                } else if (depth == CV_16U) {
+                    // 16位图像binning
+                    for (int y = 0; y < newHeight; y++) {
+                        for (int x = 0; x < newWidth; x++) {
+                            int sum = 0;
+                            for (int by = 0; by < camybin; by++) {
+                                for (int bx = 0; bx < camxbin; bx++) {
+                                    int srcY = y * camybin + by;
+                                    int srcX = x * camxbin + bx;
+                                    if (srcY < height && srcX < width) {
+                                        sum += image.at<uint16_t>(srcY, srcX);
+                                    }
+                                }
+                            }
+                            outputImage.at<uint16_t>(y, x) = (uint16_t)std::min(65535, sum);
+                        }
+                    }
+                } else if (depth == CV_32S) {
+                    // 32位图像binning
+                    for (int y = 0; y < newHeight; y++) {
+                        for (int x = 0; x < newWidth; x++) {
+                            int64_t sum = 0;
+                            for (int by = 0; by < camybin; by++) {
+                                for (int bx = 0; bx < camxbin; bx++) {
+                                    int srcY = y * camybin + by;
+                                    int srcX = x * camxbin + bx;
+                                    if (srcY < height && srcX < width) {
+                                        sum += image.at<int32_t>(srcY, srcX);
+                                    }
+                                }
+                            }
+                            outputImage.at<int32_t>(y, x) = (int32_t)sum;
+                        }
+                    }
+                }
+            }
+        }
+    } catch (const cv::Exception& e) {
+        Logger::Log("OpenCV错误: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+        return cv::Mat();
+    } catch (const std::exception& e) {
+        Logger::Log("处理错误: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+        return cv::Mat();
+    }
+    
+    // 确保宽高都是偶数
+    int finalWidth = outputImage.cols;
+    int finalHeight = outputImage.rows;
+    
+    if (finalWidth % 2 != 0 || finalHeight % 2 != 0) {
+        int cropWidth = finalWidth - (finalWidth % 2);
+        int cropHeight = finalHeight - (finalHeight % 2);
+        
+        if (cropWidth > 0 && cropHeight > 0) {
+            cv::Rect roi(0, 0, cropWidth, cropHeight);
+            return outputImage(roi).clone();
+        }
+    }
+    
+    return outputImage;
 }
+
+// 修改后的 Bayer 阵列处理函数，支持不同的 Bayer 模式
+cv::Mat Tools::PixelsDataSoftBin_Bayer(cv::Mat srcMat, uint32_t camxbin, uint32_t camybin, BayerPattern bayerPattern)
+{
+  // 打印输入参数
+  Logger::Log("PixelsDataSoftBin_Bayer | 输入图像: " + std::to_string(srcMat.cols) + "x" + std::to_string(srcMat.rows) + 
+              " 类型:" + std::to_string(srcMat.type()) + " bin:" + std::to_string(camxbin) + "x" + std::to_string(camybin),
+              LogLevel::INFO, DeviceType::MAIN);
+
+  if (srcMat.empty()) {
+    Logger::Log("输入图像为空", LogLevel::ERROR, DeviceType::MAIN);
+    return cv::Mat();
+  }
+  
+  uint32_t width = srcMat.cols;
+  uint32_t height = srcMat.rows;
+  uint32_t depth = 0;
+  
+  // 根据Mat的类型确定位深度
+  if (srcMat.type() == CV_8U) {
+    depth = 8;
+    Logger::Log("PixelsDataSoftBin_Bayer | 处理8位图像", LogLevel::INFO, DeviceType::MAIN);
+  } else if (srcMat.type() == CV_16U) {
+    depth = 16;
+    Logger::Log("PixelsDataSoftBin_Bayer | 处理16位图像", LogLevel::INFO, DeviceType::MAIN);
+  } else if (srcMat.type() == CV_32S) {
+    depth = 32;
+    Logger::Log("PixelsDataSoftBin_Bayer | 处理32位图像", LogLevel::INFO, DeviceType::MAIN);
+  } else {
+    Logger::Log("不支持的图像类型: " + std::to_string(srcMat.type()), LogLevel::ERROR, DeviceType::MAIN);
+    return cv::Mat();
+  }
+  
+  uint32_t newWidth = width / camxbin;
+  uint32_t newHeight = height / camybin;
+  
+  // 检查新图像尺寸是否为0
+  if (newWidth == 0 || newHeight == 0) {
+    Logger::Log("PixelsDataSoftBin_Bayer | 错误: 缩放后尺寸为0! " + std::to_string(newWidth) + "x" + std::to_string(newHeight), 
+                LogLevel::ERROR, DeviceType::MAIN);
+    return cv::Mat();
+  }
+  
+  Logger::Log("PixelsDataSoftBin_Bayer | 新图像尺寸: " + std::to_string(newWidth) + "x" + std::to_string(newHeight), 
+              LogLevel::INFO, DeviceType::MAIN);
+  
+  // 创建输出图像
+  cv::Mat binMat;
+  try {
+    if (depth == 8) {
+      binMat = cv::Mat::zeros(newHeight, newWidth, CV_8U);
+    } else if (depth == 16) {
+      binMat = cv::Mat::zeros(newHeight, newWidth, CV_16U);
+    } else if (depth == 32) {
+      binMat = cv::Mat::zeros(newHeight, newWidth, CV_32S);
+    }
+    Logger::Log("PixelsDataSoftBin_Bayer | 输出图像创建成功", LogLevel::INFO, DeviceType::MAIN);
+  } catch (cv::Exception &e) {
+    Logger::Log("PixelsDataSoftBin_Bayer | 创建输出图像异常: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+    return cv::Mat();
+  }
+  
+  // 根据 Bayer 模式确定各通道在 2x2 块中的位置
+  int rOffsetY, rOffsetX, g1OffsetY, g1OffsetX, g2OffsetY, g2OffsetX, bOffsetY, bOffsetX;
+  
+  switch (bayerPattern) {
+    case BAYER_RGGB:  // RGGB: R(0,0), G1(0,1), G2(1,0), B(1,1)
+      rOffsetY = 0; rOffsetX = 0;
+      g1OffsetY = 0; g1OffsetX = 1;
+      g2OffsetY = 1; g2OffsetX = 0;
+      bOffsetY = 1; bOffsetX = 1;
+      Logger::Log("PixelsDataSoftBin_Bayer | 使用RGGB模式", LogLevel::INFO, DeviceType::MAIN);
+      break;
+    case BAYER_BGGR:  // BGGR: B(0,0), G1(0,1), G2(1,0), R(1,1)
+      bOffsetY = 0; bOffsetX = 0;
+      g1OffsetY = 0; g1OffsetX = 1;
+      g2OffsetY = 1; g2OffsetX = 0;
+      rOffsetY = 1; rOffsetX = 1;
+      Logger::Log("PixelsDataSoftBin_Bayer | 使用BGGR模式", LogLevel::INFO, DeviceType::MAIN);
+      break;
+    case BAYER_GRBG:  // GRBG: G1(0,0), R(0,1), B(1,0), G2(1,1)
+      g1OffsetY = 0; g1OffsetX = 0;
+      rOffsetY = 0; rOffsetX = 1;
+      bOffsetY = 1; bOffsetX = 0;
+      g2OffsetY = 1; g2OffsetX = 1;
+      Logger::Log("PixelsDataSoftBin_Bayer | 使用GRBG模式", LogLevel::INFO, DeviceType::MAIN);
+      break;
+    case BAYER_GBRG:  // GBRG: G1(0,0), B(0,1), R(1,0), G2(1,1)
+      g1OffsetY = 0; g1OffsetX = 0;
+      bOffsetY = 0; bOffsetX = 1;
+      rOffsetY = 1; rOffsetX = 0;
+      g2OffsetY = 1; g2OffsetX = 1;
+      Logger::Log("PixelsDataSoftBin_Bayer | 使用GBRG模式", LogLevel::INFO, DeviceType::MAIN);
+      break;
+    default:
+      Logger::Log("不支持的 Bayer 模式", LogLevel::ERROR, DeviceType::MAIN);
+      binMat.release();  // 释放已分配的内存
+      return cv::Mat();
+  }
+  try {
+    // 根据位深度选择不同的处理逻辑
+    if (depth == 8)
+    {
+      Logger::Log("PixelsDataSoftBin_Bayer | 处理8位图像数据", LogLevel::INFO, DeviceType::MAIN);
+      // 处理 8 位 Bayer 阵列
+      for (uint32_t by = 0; by < height; by += camybin * 2)
+      {
+        for (uint32_t bx = 0; bx < width; bx += camxbin * 2)
+        {
+          // 分别处理四个通道
+          uint32_t sumR = 0, sumG1 = 0, sumG2 = 0, sumB = 0;
+          uint32_t countR = 0, countG1 = 0, countG2 = 0, countB = 0;
+          
+          // 累加每个 Bayer 块中的像素值
+          for (uint32_t y = 0; y < camybin * 2 && by + y < height; y += 2)
+          {
+            for (uint32_t x = 0; x < camxbin * 2 && bx + x < width; x += 2)
+            {
+              // R 位置
+              if (by + y + rOffsetY < height && bx + x + rOffsetX < width) {
+                sumR += srcMat.at<uint8_t>(by + y + rOffsetY, bx + x + rOffsetX);
+                countR++;
+              }
+              
+              // G1 位置
+              if (by + y + g1OffsetY < height && bx + x + g1OffsetX < width) {
+                sumG1 += srcMat.at<uint8_t>(by + y + g1OffsetY, bx + x + g1OffsetX);
+                countG1++;
+              }
+              
+              // G2 位置
+              if (by + y + g2OffsetY < height && bx + x + g2OffsetX < width) {
+                sumG2 += srcMat.at<uint8_t>(by + y + g2OffsetY, bx + x + g2OffsetX);
+                countG2++;
+              }
+              
+              // B 位置
+              if (by + y + bOffsetY < height && bx + x + bOffsetX < width) {
+                sumB += srcMat.at<uint8_t>(by + y + bOffsetY, bx + x + bOffsetX);
+                countB++;
+              }
+            }
+          }
+          
+          // 计算平均值并写入输出缓冲区，保持相同的 Bayer 模式
+          uint32_t newY = by / camybin / 2;
+          uint32_t newX = bx / camxbin / 2;
+          
+          // 添加边界检查，确保不会越界访问
+          if (newY * 2 + rOffsetY < newHeight && newX * 2 + rOffsetX < newWidth && countR > 0)
+            binMat.at<uint8_t>(newY * 2 + rOffsetY, newX * 2 + rOffsetX) = sumR / countR;
+          
+          if (newY * 2 + g1OffsetY < newHeight && newX * 2 + g1OffsetX < newWidth && countG1 > 0)
+            binMat.at<uint8_t>(newY * 2 + g1OffsetY, newX * 2 + g1OffsetX) = sumG1 / countG1;
+          
+          if (newY * 2 + g2OffsetY < newHeight && newX * 2 + g2OffsetX < newWidth && countG2 > 0)
+            binMat.at<uint8_t>(newY * 2 + g2OffsetY, newX * 2 + g2OffsetX) = sumG2 / countG2;
+          
+          if (newY * 2 + bOffsetY < newHeight && newX * 2 + bOffsetX < newWidth && countB > 0)
+            binMat.at<uint8_t>(newY * 2 + bOffsetY, newX * 2 + bOffsetX) = sumB / countB;
+        }
+      }
+    }
+    else if (depth == 16)
+    {
+      Logger::Log("PixelsDataSoftBin_Bayer | 处理16位图像数据", LogLevel::INFO, DeviceType::MAIN);
+      // 处理 16 位 Bayer 阵列
+      for (uint32_t by = 0; by < height; by += camybin * 2)
+      {
+        for (uint32_t bx = 0; bx < width; bx += camxbin * 2)
+        {
+          uint32_t sumR = 0, sumG1 = 0, sumG2 = 0, sumB = 0;
+          uint32_t countR = 0, countG1 = 0, countG2 = 0, countB = 0;
+          
+          for (uint32_t y = 0; y < camybin * 2 && by + y < height; y += 2)
+          {
+            for (uint32_t x = 0; x < camxbin * 2 && bx + x < width; x += 2)
+            {
+              if (by + y + rOffsetY < height && bx + x + rOffsetX < width) {
+                sumR += srcMat.at<uint16_t>(by + y + rOffsetY, bx + x + rOffsetX);
+                countR++;
+              }
+              
+              if (by + y + g1OffsetY < height && bx + x + g1OffsetX < width) {
+                sumG1 += srcMat.at<uint16_t>(by + y + g1OffsetY, bx + x + g1OffsetX);
+                countG1++;
+              }
+              
+              if (by + y + g2OffsetY < height && bx + x + g2OffsetX < width) {
+                sumG2 += srcMat.at<uint16_t>(by + y + g2OffsetY, bx + x + g2OffsetX);
+                countG2++;
+              }
+              
+              if (by + y + bOffsetY < height && bx + x + bOffsetX < width) {
+                sumB += srcMat.at<uint16_t>(by + y + bOffsetY, bx + x + bOffsetX);
+                countB++;
+              }
+            }
+          }
+          
+          uint32_t newY = by / camybin / 2;
+          uint32_t newX = bx / camxbin / 2;
+          
+          // 添加边界检查，确保不会越界访问
+          if (newY * 2 + rOffsetY < newHeight && newX * 2 + rOffsetX < newWidth && countR > 0)
+            binMat.at<uint16_t>(newY * 2 + rOffsetY, newX * 2 + rOffsetX) = sumR / countR;
+          
+          if (newY * 2 + g1OffsetY < newHeight && newX * 2 + g1OffsetX < newWidth && countG1 > 0)
+            binMat.at<uint16_t>(newY * 2 + g1OffsetY, newX * 2 + g1OffsetX) = sumG1 / countG1;
+          
+          if (newY * 2 + g2OffsetY < newHeight && newX * 2 + g2OffsetX < newWidth && countG2 > 0)
+            binMat.at<uint16_t>(newY * 2 + g2OffsetY, newX * 2 + g2OffsetX) = sumG2 / countG2;
+          
+          if (newY * 2 + bOffsetY < newHeight && newX * 2 + bOffsetX < newWidth && countB > 0)
+            binMat.at<uint16_t>(newY * 2 + bOffsetY, newX * 2 + bOffsetX) = sumB / countB;
+        }
+      }
+    }
+    else if (depth == 32)
+    {
+      Logger::Log("PixelsDataSoftBin_Bayer | 处理32位图像数据", LogLevel::INFO, DeviceType::MAIN);
+      // 处理 32 位 Bayer 阵列
+      for (uint32_t by = 0; by < height; by += camybin * 2)
+      {
+        for (uint32_t bx = 0; bx < width; bx += camxbin * 2)
+        {
+          uint64_t sumR = 0, sumG1 = 0, sumG2 = 0, sumB = 0;
+          uint32_t countR = 0, countG1 = 0, countG2 = 0, countB = 0;
+          
+          for (uint32_t y = 0; y < camybin * 2 && by + y < height; y += 2)
+          {
+            for (uint32_t x = 0; x < camxbin * 2 && bx + x < width; x += 2)
+            {
+              if (by + y + rOffsetY < height && bx + x + rOffsetX < width) {
+                sumR += srcMat.at<int32_t>(by + y + rOffsetY, bx + x + rOffsetX);
+                countR++;
+              }
+              
+              if (by + y + g1OffsetY < height && bx + x + g1OffsetX < width) {
+                sumG1 += srcMat.at<int32_t>(by + y + g1OffsetY, bx + x + g1OffsetX);
+                countG1++;
+              }
+              
+              if (by + y + g2OffsetY < height && bx + x + g2OffsetX < width) {
+                sumG2 += srcMat.at<int32_t>(by + y + g2OffsetY, bx + x + g2OffsetX);
+                countG2++;
+              }
+              
+              if (by + y + bOffsetY < height && bx + x + bOffsetX < width) {
+                sumB += srcMat.at<int32_t>(by + y + bOffsetY, bx + x + bOffsetX);
+                countB++;
+              }
+            }
+          }
+          
+          uint32_t newY = by / camybin / 2;
+          uint32_t newX = bx / camxbin / 2;
+          
+          // 添加边界检查，确保不会越界访问
+          if (newY * 2 + rOffsetY < newHeight && newX * 2 + rOffsetX < newWidth && countR > 0)
+            binMat.at<int32_t>(newY * 2 + rOffsetY, newX * 2 + rOffsetX) = sumR / countR;
+          
+          if (newY * 2 + g1OffsetY < newHeight && newX * 2 + g1OffsetX < newWidth && countG1 > 0)
+            binMat.at<int32_t>(newY * 2 + g1OffsetY, newX * 2 + g1OffsetX) = sumG1 / countG1;
+          
+          if (newY * 2 + g2OffsetY < newHeight && newX * 2 + g2OffsetX < newWidth && countG2 > 0)
+            binMat.at<int32_t>(newY * 2 + g2OffsetY, newX * 2 + g2OffsetX) = sumG2 / countG2;
+          
+          if (newY * 2 + bOffsetY < newHeight && newX * 2 + bOffsetX < newWidth && countB > 0)
+            binMat.at<int32_t>(newY * 2 + bOffsetY, newX * 2 + bOffsetX) = sumB / countB;
+        }
+      }
+    }
+  } catch (cv::Exception &e) {
+    Logger::Log("PixelsDataSoftBin_Bayer | 处理图像异常: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+    binMat.release();  // 释放已分配的内存
+    return cv::Mat();
+  } catch (std::exception &e) {
+    Logger::Log("PixelsDataSoftBin_Bayer | 处理图像标准异常: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+    binMat.release();  // 释放已分配的内存
+    return cv::Mat();
+  } catch (...) {
+    Logger::Log("PixelsDataSoftBin_Bayer | 处理图像未知异常", LogLevel::ERROR, DeviceType::MAIN);
+    binMat.release();  // 释放已分配的内存
+    return cv::Mat();
+  }
+  newWidth = binMat.cols;
+  newHeight = binMat.rows;
+  if (binMat.cols % 2 != 0) {
+    newWidth = binMat.cols - 1;
+  }
+  if (binMat.rows % 2 != 0) {
+    newHeight = binMat.rows - 1;
+  }
+  // 检查新图像尺寸是否为0
+  if (newWidth == 0 || newHeight == 0) {
+    Logger::Log("PixelsDataSoftBin_Bayer | 错误: 缩放后尺寸为0! " + std::to_string(newWidth) + "x" + std::to_string(newHeight), 
+                LogLevel::ERROR, DeviceType::MAIN);
+    binMat.release();  // 释放已分配的内存
+    return cv::Mat();
+  }
+  
+  // 创建输出图像
+  cv::Mat newbinMat;
+  try {
+    if (binMat.type() == CV_8U) {
+      newbinMat = cv::Mat::zeros(newHeight, newWidth, CV_8U);
+    } else if (binMat.type() == CV_16U) {
+      newbinMat = cv::Mat::zeros(newHeight, newWidth, CV_16U);
+    } else if (binMat.type() == CV_32S) {
+      newbinMat = cv::Mat::zeros(newHeight, newWidth, CV_32S);
+    }
+    Logger::Log("PixelsDataSoftBin_Bayer | 输出图像创建成功", LogLevel::INFO, DeviceType::MAIN);
+
+    // 复制数据
+    if (binMat.cols != newbinMat.cols || binMat.rows != newbinMat.rows) {
+      // 需要调整大小，复制有效区域
+      try {
+        cv::Rect roi(0, 0, newWidth, newHeight);
+        binMat(roi).copyTo(newbinMat);
+        Logger::Log("PixelsDataSoftBin_Bayer | 图像数据裁剪并复制成功", LogLevel::INFO, DeviceType::MAIN);
+      } catch (cv::Exception &e) {
+        Logger::Log("PixelsDataSoftBin_Bayer | 复制图像数据异常: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+        binMat.release();  // 释放中间图像
+        newbinMat.release();  // 释放输出图像
+        return cv::Mat();
+      }
+    } else {
+      // 尺寸相同，直接返回binMat
+      newbinMat = binMat.clone();
+      Logger::Log("PixelsDataSoftBin_Bayer | 图像数据直接复制成功", LogLevel::INFO, DeviceType::MAIN);
+    }
+    // 释放中间结果图像内存
+    binMat.release();
+  } catch (cv::Exception &e) {
+    Logger::Log("PixelsDataSoftBin_Bayer | 创建输出图像异常: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+    binMat.release();  // 释放中间图像
+    return cv::Mat();
+  }
+  Logger::Log("PixelsDataSoftBin_Bayer | 完成处理，返回结果图像 " + std::to_string(newbinMat.cols) + "x" + std::to_string(newbinMat.rows), 
+              LogLevel::DEBUG, DeviceType::MAIN);
+  
+  // 因为返回值是一个拷贝，所以不需要担心返回后的内存泄漏
+  return newbinMat;
+}
+
 
 uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin)
 {
@@ -4176,9 +4727,22 @@ void Tools::SaveMatToFITS(const cv::Mat& image) {
         gray = image;
     }
 
+    // 根据图像类型动态设置 bitpix 和数据类型
+    int bitpix;
+    int datatype;
+    if (gray.depth() == CV_8U) {
+        bitpix = BYTE_IMG;   // 8 位无符号整型
+        datatype = TBYTE;
+    } else if (gray.depth() == CV_16U) {
+        bitpix = SHORT_IMG;  // 16 位无符号整型
+        datatype = TSHORT;
+    } else {
+        Logger::Log("不支持的图像位深度！", LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
+
     // FITS文件要求图像数据是二维的
     long naxes[2] = {gray.cols, gray.rows};
-    int bitpix = SHORT_IMG;  // 使用16位整型保存
 
     // 创建FITS文件，使用 '!' 来覆盖已存在的文件
     fitsfile* fptr;
@@ -4188,7 +4752,11 @@ void Tools::SaveMatToFITS(const cv::Mat& image) {
     fits_create_img(fptr, bitpix, 2, naxes, &status);
 
     // 将图像数据写入FITS文件
-    fits_write_img(fptr, TSHORT, 1, gray.total(), gray.ptr<short>(), &status);
+    if (gray.depth() == CV_8U) {
+        fits_write_img(fptr, datatype, 1, gray.total(), gray.ptr<uchar>(), &status);
+    } else if (gray.depth() == CV_16U) {
+        fits_write_img(fptr, datatype, 1, gray.total(), gray.ptr<ushort>(), &status);
+    }
 
     // 关闭FITS文件
     fits_close_file(fptr, &status);
@@ -4199,6 +4767,44 @@ void Tools::SaveMatToFITS(const cv::Mat& image) {
         Logger::Log("成功保存图像到 " + filename, LogLevel::INFO, DeviceType::MAIN);
     }
 }
+
+// void Tools::SaveMatToFITS(const cv::Mat& image) {
+//     if (image.empty()) {
+//         Logger::Log("输入图像为空！", LogLevel::ERROR, DeviceType::MAIN);
+//         return;
+//     }
+
+//     // 确保图像是灰度图
+//     cv::Mat gray;
+//     if (image.channels() == 3) {
+//         cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+//     } else {
+//         gray = image;
+//     }
+
+//     // FITS文件要求图像数据是二维的
+//     long naxes[2] = {gray.cols, gray.rows};
+//     int bitpix = SHORT_IMG;  // 使用16位整型保存
+
+//     // 创建FITS文件，使用 '!' 来覆盖已存在的文件
+//     fitsfile* fptr;
+//     int status = 0;  // 状态变量必须初始化为0
+//     std::string filename = "!/dev/shm/MatToFITS.fits";  // 加 ! 来覆盖文件
+//     fits_create_file(&fptr, filename.c_str(), &status);
+//     fits_create_img(fptr, bitpix, 2, naxes, &status);
+
+//     // 将图像数据写入FITS文件
+//     fits_write_img(fptr, TSHORT, 1, gray.total(), gray.ptr<short>(), &status);
+
+//     // 关闭FITS文件
+//     fits_close_file(fptr, &status);
+
+//     if (status) {
+//         fits_report_error(stderr, status);  // 输出错误信息
+//     } else {
+//         Logger::Log("成功保存图像到 " + filename, LogLevel::INFO, DeviceType::MAIN);
+//     }
+// }
 
 /*************************************************************************
 ********************************Coordinate Convert*************************
@@ -4840,7 +5446,7 @@ double Tools::DMSToDegree(int degrees, int minutes, double seconds) {
 
 bool Tools::WaitForPlateSolveToComplete() {
   // qDebug() << "Wait For Plate Solve To Complete.";
-  Logger::Log("Wait For Plate Solve(" + std::to_string(!PlateSolveInProgress) + ") To Complete.", LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("Wait For Plate Solve(" + std::to_string(!PlateSolveInProgress) + ") To Complete...", LogLevel::INFO, DeviceType::MAIN);
   return !PlateSolveInProgress;
 }
 
@@ -4895,8 +5501,8 @@ SloveResults Tools::PlateSolve(QString filename, int FocalLength, double CameraS
     QString command_qstr;
     if (!USEQHYCCDSDK)
     {
-      // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-      command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+      command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
+      // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
     }
     else
     {
@@ -4960,22 +5566,23 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   double Rotation_Degree = str_Rotation.toDouble();
 
   // 提取WCS参数并计算视场角的四个角的坐标
-  WCSParams wcs = extractWCSParams(str);
-  std::vector<SphericalCoordinates> corners = getFOVCorners(wcs, imageWidth, imageHeight);
-  Logger::Log("FOV Corners (Ra, Dec):", LogLevel::INFO, DeviceType::MAIN);
-  for (const auto &corner : corners) {
-    Logger::Log("Ra: " + std::to_string(corner.ra) + ", Dec: " + std::to_string(corner.dec), LogLevel::INFO, DeviceType::MAIN);
-  }
+  // WCSParams wcs = extractWCSParams(str);
+  // std::vector<SphericalCoordinates> corners = getFOVCorners(wcs, imageWidth, imageHeight);
+  // Logger::Log("FOV Corners (Ra, Dec):", LogLevel::INFO, DeviceType::MAIN);
+  // for (const auto &corner : corners) {
+  //   Logger::Log("Ra: " + std::to_string(corner.ra) + ", Dec: " + std::to_string(corner.dec), LogLevel::INFO, DeviceType::MAIN);
+  // }
+  FieldOfView fov = extractFieldOfViewFromWcsInfo(str);
 
   // 存储结果
-  result.RA_0 = corners[0].ra;
-  result.DEC_0 = corners[0].dec;
-  result.RA_1 = corners[1].ra;
-  result.DEC_1 = corners[1].dec;
-  result.RA_2 = corners[2].ra;
-  result.DEC_2 = corners[2].dec;
-  result.RA_3 = corners[3].ra;
-  result.DEC_3 = corners[3].dec;
+  result.RA_0 = fov.ra_min;
+  result.DEC_0 = fov.dec_min;
+  result.RA_1 = fov.ra_max;
+  result.DEC_1 = fov.dec_min;
+  result.RA_2 = fov.ra_max;
+  result.DEC_2 = fov.dec_max;
+  result.RA_3 = fov.ra_min;
+  result.DEC_3 = fov.dec_max;
 
   Logger::Log("RA DEC Rotation(degree) " + std::to_string(RA_Degree) + " " + std::to_string(DEC_Degree) + " " + std::to_string(Rotation_Degree), LogLevel::INFO, DeviceType::MAIN);
   Logger::Log("RA DEC " + QString::number(RA_Degree, 'g', 9).toStdString() + " " + QString::number(DEC_Degree, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -5023,6 +5630,72 @@ WCSParams Tools::extractWCSParams(const QString& wcsInfo) {
     return wcs;
 }
 
+// 从wcsinfo输出中提取视场信息到FieldOfView结构体
+FieldOfView Tools::extractFieldOfViewFromWcsInfo(const QString& wcsInfo) {
+    FieldOfView fov;
+    
+    // 辅助函数：提取一个参数的值
+    auto extractValue = [&wcsInfo](const QString& key) -> double {
+        int pos = wcsInfo.indexOf(key);
+        if (pos != -1) {
+            int endOfLine = wcsInfo.indexOf("\n", pos);
+            if (endOfLine == -1) endOfLine = wcsInfo.length();
+            
+            // 提取从key后到行尾的内容
+            QString valueStr = wcsInfo.mid(pos + key.length(), endOfLine - pos - key.length()).trimmed();
+            // 取第一个非空白部分作为数值
+            QStringList parts = valueStr.split(" ", Qt::SkipEmptyParts);
+            if (!parts.isEmpty()) {
+                return parts[0].toDouble();
+            }
+        }
+        return 0.0;
+    };
+    
+    // 提取直接给出的视场参数
+    fov.width = extractValue("fieldw");
+    fov.height = extractValue("fieldh");
+    fov.ra_min = extractValue("ramin");
+    fov.ra_max = extractValue("ramax");
+    fov.dec_min = extractValue("decmin");
+    fov.dec_max = extractValue("decmax");
+    fov.area = extractValue("fieldarea");
+    fov.ra_center = extractValue("ra_center");
+    fov.dec_center = extractValue("dec_center");
+    fov.orientation = extractValue("orientation_center");
+    
+    // 计算视场大小（用于验证）
+    double pixelScale = extractValue("pixscale"); // 角秒/像素
+    int imageWidth = extractValue("imagew");
+    int imageHeight = extractValue("imageh");
+    
+    fov.calculatedWidth = (imageWidth * pixelScale) / 3600.0; // 转换为度
+    fov.calculatedHeight = (imageHeight * pixelScale) / 3600.0;
+    
+    // 记录提取的视场信息
+    Logger::Log("提取的视场信息:", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("中心位置: RA=" + QString::number(fov.ra_center, 'g', 9).toStdString() + 
+              ", Dec=" + QString::number(fov.dec_center, 'g', 9).toStdString(), 
+              LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("视场大小: " + QString::number(fov.width, 'g', 6).toStdString() + 
+              "° × " + QString::number(fov.height, 'g', 6).toStdString() + "°", 
+              LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("计算大小: " + QString::number(fov.calculatedWidth, 'g', 6).toStdString() + 
+              "° × " + QString::number(fov.calculatedHeight, 'g', 6).toStdString() + "°", 
+              LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("视场范围: RA " + QString::number(fov.ra_min, 'g', 6).toStdString() + 
+              "° 到 " + QString::number(fov.ra_max, 'g', 6).toStdString() + 
+              "°, Dec " + QString::number(fov.dec_min, 'g', 6).toStdString() + 
+              "° 到 " + QString::number(fov.dec_max, 'g', 6).toStdString() + "°", 
+              LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("视场面积: " + QString::number(fov.area, 'g', 6).toStdString() + 
+              " 平方度", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("方向角: " + QString::number(fov.orientation, 'g', 6).toStdString() + 
+              "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    return fov;
+}
+
 // 函数：从像素坐标转换为RaDec
 SphericalCoordinates Tools::pixelToRaDec(double x, double y, const WCSParams& wcs) {
     double dx = x - wcs.crpix0;
@@ -5034,14 +5707,38 @@ SphericalCoordinates Tools::pixelToRaDec(double x, double y, const WCSParams& wc
     return {ra, dec};
 }
 
+
+
 // 函数：从WCS参数和图像尺寸计算四个角的RaDec值
 std::vector<SphericalCoordinates> Tools::getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight) {
     std::vector<SphericalCoordinates> corners(4);
+    
+    // 增加调试输出
+    Logger::Log("WCS参数: crpix0=" + std::to_string(wcs.crpix0) + 
+                " crpix1=" + std::to_string(wcs.crpix1) +
+                " 变换矩阵: " + std::to_string(wcs.cd11) + "," + 
+                std::to_string(wcs.cd12) + "," + std::to_string(wcs.cd21) + 
+                "," + std::to_string(wcs.cd22), LogLevel::INFO, DeviceType::MAIN);
+    
     corners[0] = pixelToRaDec(0, 0, wcs);                  // Bottom-left
     corners[1] = pixelToRaDec(imageWidth, 0, wcs);         // Bottom-right
     corners[2] = pixelToRaDec(imageWidth, imageHeight, wcs); // Top-right
     corners[3] = pixelToRaDec(0, imageHeight, wcs);        // Top-left
-
+    
+    // 检查计算出的坐标是否相似
+    bool tooSimilar = true;
+    for (int i = 1; i < 4; i++) {
+        if (std::abs(corners[i].ra - corners[0].ra) > 0.0001 ||
+            std::abs(corners[i].dec - corners[0].dec) > 0.0001) {
+            tooSimilar = false;
+            break;
+        }
+    }
+    
+    if (tooSimilar) {
+        Logger::Log("警告：计算的四个角点坐标几乎相同，WCS参数可能有问题", LogLevel::WARNING, DeviceType::MAIN);
+    }
+    
     return corners;
 }
 
@@ -5097,3 +5794,4 @@ double Tools::calculateRSquared(QVector<QPointF> data, float a, float b, float c
 }
 
 
+        
