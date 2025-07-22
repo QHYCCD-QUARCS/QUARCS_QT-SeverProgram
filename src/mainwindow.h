@@ -45,7 +45,7 @@
 #include <set>
 #include <unordered_set>
 #include <filesystem>
-
+#include <math.h>
 namespace fs = std::filesystem;
 
 #define QT_Client_Version getBuildDate()
@@ -55,7 +55,7 @@ namespace fs = std::filesystem;
 #define GPIO_UNEXPORT "/sys/class/gpio/unexport"
 #define GPIO_PIN_1 "516"
 #define GPIO_PIN_2 "527"
-
+#define BIN_SIZE 20 // 
 #include "Logger.h"
 #include "autopolaralignment.h"
 
@@ -88,6 +88,10 @@ public:
     explicit MainWindow(QObject *parent = nullptr);
     ~MainWindow();
     QTimer *system_timer = nullptr;
+    void bin_image(double* input, long width, long height, double* output, long* out_w, long* out_h);
+    void process_hdu(fitsfile* infptr, fitsfile* outfptr, int hdunum, int* status);
+    int process_fixed() ;//20*20xbinning
+    
     void updateCPUInfo();
 
     std::string getBuildDate();

@@ -5633,7 +5633,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     {
       // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
       // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-      command_qstr = "solve-field " + filename + " --overwrite --scale-units degwidth --scale-low 0.8 --scale-high 5.0 --no-plots --uniformize 0 --timestamp --downsample 12 --objs 20 --quad-size-min 0.2 --quad-size-max 0.6 --code-tolerance 0.02 --pixel-error 1.5 --cpulimit 20  --depth 1-50 --no-background-subtraction";
+      command_qstr = "solve-field --fits-image "+ filename + " --overwrite  --no-plots --uniformize 0 --timestamp  --objs 10 --pixel-error 1.5 --cpulimit 20 ";
     }
     else
     {
