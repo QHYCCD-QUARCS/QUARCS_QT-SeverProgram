@@ -8397,8 +8397,9 @@ void MainWindow::process_hdu(fitsfile* infptr, fitsfile* outfptr, int hdunum, in
 }
 
 int MainWindow::process_fixed() {
-    const char *infile  = "fixed_input.fits";
-    const char *outfile = "!merged_output.fits";  // 带 '!' 前缀，自动覆盖
+    const char *infile  = "/dev/shm/ccd_simulator_original.fits";  // 输入文件路径
+     const char *outfile = "!/dev/shm/ccd_simulator_binned.fits";  // 输出文件路径
+    //const char *outfile = "!merged_output.fits";  // 带 '!' 前缀，自动覆盖
 
     fitsfile *infptr = NULL, *outfptr = NULL;
     int status = 0, hdunum = 0, hdutype = 0;
@@ -8427,7 +8428,7 @@ int MainWindow::process_fixed() {
         return status;
     }
 
-    printf("合并覆盖完成：merged_output.fits\n");
+    printf("合并覆盖完成：ccd_simulator_binned.fits\n");
     return 0;
 }
 
