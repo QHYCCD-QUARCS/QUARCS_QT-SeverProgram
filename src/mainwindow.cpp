@@ -6626,7 +6626,7 @@ void MainWindow::TelescopeControl_SolveSYNC() {
             // 停止计时器，表示当前周期任务完成
             captureTimer.stop();
             // 根据是否循环解算，执行一次解算或继续循环解算
-
+            MainWindow::process_fixed();
             Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
 
             solveTimer.setSingleShot(true);  //设置定时器为单次触发
