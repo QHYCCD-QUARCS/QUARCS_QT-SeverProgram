@@ -1423,7 +1423,10 @@ void MainWindow::initINDIClient()
                         autoFocus->setCaptureComplete(QString::fromStdString(filename));
                         return;
                     }else if (!autoFocuserIsROI && isAutoFocus){
+
+
                         saveFitsAsPNG(QString::fromStdString(filename), true);
+
                         Logger::Log("saveFitsAsPNG", LogLevel::DEBUG, DeviceType::MAIN);
                         autoFocus->setCaptureComplete(QString::fromStdString(filename));
                         return;
@@ -1440,13 +1443,15 @@ void MainWindow::initINDIClient()
                                 return;
                             }
                         }
-                        saveFitsAsPNG(QString::fromStdString(filename), true);    // "/dev/shm/ccd_simulator.fits"
-
+                        // saveFitsAsPNG(QString::fromStdString(filename), true);    // "/dev/shm/ccd_simulator.fits"
+                          saveFitsAsPNG("/home/quarcs/2025_06_26T08_24_13_544.fits", true);
                         // saveFitsAsPNG("/dev/shm/SOLVETEST.fits", true);
                     }
                     else
                     {
-                        saveFitsAsJPG(QString::fromStdString(filename), true);
+
+                         saveFitsAsJPG(QString::fromStdString(filename), true);
+                       
                         Logger::Log("saveFitsAsJPG", LogLevel::DEBUG, DeviceType::MAIN);
                     }
                     // Logger::Log("拍摄完成，图像保存完成 finish!", LogLevel::INFO, DeviceType::MAIN);
@@ -1888,16 +1893,16 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     }
     originalImage16.release();
 
-    cv::Mat srcImage = image16.clone();
-    cv::Mat dstImage;
-    Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
-    cv::medianBlur(srcImage, dstImage, 3);
-    srcImage.release();
-    Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
+    // cv::Mat srcImage = image16.clone();
+    // cv::Mat dstImage;
+    // Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
+    // cv::medianBlur(srcImage, dstImage, 3);
+    // srcImage.release();
+    // Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
 
-    cv::imwrite(SolveImageFileName.toStdString(), dstImage);
-    dstImage.release();
-    Logger::Log("Blurred image saved to " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    // cv::imwrite(SolveImageFileName.toStdString(), dstImage);
+    // dstImage.release();
+    // Logger::Log("Blurred image saved to " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     Tools::SaveMatToFITS(image16);
     Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
@@ -9910,4 +9915,3 @@ void MainWindow::focusSetTravelRange(){
     Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
     Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
 }
-
