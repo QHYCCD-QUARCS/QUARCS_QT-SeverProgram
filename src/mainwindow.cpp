@@ -6677,10 +6677,10 @@ void MainWindow::TelescopeControl_SolveSYNC() {
             // 停止计时器，表示当前周期任务完成
             captureTimer.stop();
             // 根据是否循环解算，执行一次解算或继续循环解算
-
+            MainWindow::process_fixed();
             Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
 
-            solveTimer.setSingleShot(true);  // 设置定时器为单次触发
+            solveTimer.setSingleShot(true);  //设置定时器为单次触发
 
             connect(&solveTimer, &QTimer::timeout, [this]()
             {
@@ -7230,10 +7230,8 @@ void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double Camera
  
     solveTimer.stop();
     solveTimer.disconnect();
-    
 
     Tools::PlateSolve(Filename, FocalLength, CameraWidth, CameraHeight, false);
-    
 
     // 启动等待赤道仪转动的定时器
     solveTimer.setSingleShot(true);
@@ -7263,7 +7261,7 @@ void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double Camera
         else 
         {
             solveTimer.start(1000);  // 继续等待
-        } 
+        }
     });
 
     solveTimer.start(1000);
@@ -8393,6 +8391,133 @@ void MainWindow::focusLoopShooting(bool isLoop){
         }
     }
 }
+void MainWindow::bin_image(double* input, long width, long height, double* output, long* out_w, long* out_h) {
+    *out_w = width / BIN_SIZE;
+    *out_h = height / BIN_SIZE;
+
+    for (long y = 0; y < *out_h; y++) {
+        for (long x = 0; x < *out_w; x++) {
+            double sum = 0.0;
+            for (int dy = 0; dy < BIN_SIZE; dy++) {
+                for (int dx = 0; dx < BIN_SIZE; dx++) {
+                    long ix = x * BIN_SIZE + dx;
+                    long iy = y * BIN_SIZE + dy;
+                    sum += input[iy * width + ix];
+                }
+            }
+            output[y * (*out_w) + x] = sum / (BIN_SIZE * BIN_SIZE);
+        }
+    }
+}
+
+void MainWindow::process_hdu(fitsfile* infptr, fitsfile* outfptr, int hdunum, int* status) {
+    fits_movabs_hdu(infptr, hdunum, NULL, status);
+
+    int bitpix, naxis;
+    long naxes[2] = {1, 1};
+    fits_get_img_param(infptr, 2, &bitpix, &naxis, naxes, status);
+
+    if (naxis != 2) {
+        printf("HDU %d skipped (not 2D image).\n", hdunum);
+        return;
+    }
+
+    long width = naxes[0], height = naxes[1];
+    long npixels = width * height;
+    double* img = (double*) malloc(npixels * sizeof(double));
+    if (!img) {
+        printf("Memory error.\n");
+        exit(1);
+    }
+
+    long fpixel[2] = {1, 1};
+    fits_read_pix(infptr, TDOUBLE, fpixel, npixels, NULL, img, NULL, status);
+
+     long out_w, out_h;
+    long dims[2] = {out_w,out_h};
+    long out_pixels = (width / BIN_SIZE) * (height / BIN_SIZE);
+    double* binned = (double*) malloc(out_pixels * sizeof(double));
+    bin_image(img, width, height, binned, &out_w, &out_h);
+
+    // 创建输出图像
+    fits_create_img(outfptr, DOUBLE_IMG, 2, dims, status);
+    fits_write_img(outfptr, TDOUBLE, 1, out_w * out_h, binned, status);
+
+    free(img);
+    free(binned);
+}
+
+int MainWindow::process_fixed() {
+    const char *infile  = "/dev/shm/ccd_simulator_original.fits";  // 输入文件路径
+     const char *outfile = "!/dev/shm/ccd_simulator_binned.fits";  // 输出文件路径
+    //const char *outfile = "!merged_output.fits";  // 带 '!' 前缀，自动覆盖
+
+    fitsfile *infptr = NULL, *outfptr = NULL;
+    int status = 0, hdunum = 0, hdutype = 0;
+
+    fits_open_file(&infptr, infile, READONLY, &status);
+    if (status) { fits_report_error(stderr, status); return status; }
+
+    fits_create_file(&outfptr, outfile, &status);
+    if (status) { fits_report_error(stderr, status); fits_close_file(infptr, &status); return status; }
+
+    fits_get_num_hdus(infptr, &hdunum, &status);
+    for (int i = 1; i <= hdunum && status == 0; i++) {
+        fits_movabs_hdu(infptr, i, &hdutype, &status);
+        if (hdutype == IMAGE_HDU) {
+            process_hdu(infptr, outfptr, i, &status);
+        } else {
+            fits_copy_hdu(infptr, outfptr, 0, &status);
+        }
+    }
+
+    fits_close_file(infptr, &status);
+    fits_close_file(outfptr, &status);
+
+    if (status) {
+        fits_report_error(stderr, status);
+        return status;
+    }
+
+    printf("合并覆盖完成：ccd_simulator_binned.fits\n");
+    return 0;
+}
+
+// int main(int argc, char* argv[]) {
+//     if (argc != 3) {
+//         printf("用法: %s 输入文件.fits 输出文件.fits\n", argv[0]);
+//         return 1;
+//     }
+
+//     fitsfile *infptr, *outfptr;
+//     int status = 0;
+//     int hdunum = 0, hdutype = 0;
+
+//     fits_open_file(&infptr, argv[1], READONLY, &status);
+//     fits_create_file(&outfptr, argv[2], &status);
+
+//     fits_get_num_hdus(infptr, &hdunum, &status);
+
+//     for (int i = 1; i <= hdunum; i++) {
+//         fits_movabs_hdu(infptr, i, &hdutype, &status);
+//         if (hdutype == IMAGE_HDU) {
+//             process_hdu(infptr, outfptr, i, &status);
+//         } else {
+//             fits_copy_hdu(infptr, outfptr, 0, &status); // 非图像HDU直接复制
+//         }
+//     }
+
+//     fits_close_file(infptr, &status);
+//     fits_close_file(outfptr, &status);
+
+//     if (status) {
+//         fits_report_error(stderr, status);
+//         return status;
+//     }
+
+//     printf("处理完成，输出文件：%s\n", argv[2]);
+//     return 0;
+// }
 
 void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 {
