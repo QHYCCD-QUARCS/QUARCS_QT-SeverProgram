@@ -8,7 +8,7 @@
 // #include "websocketclient.h"
 #include "myclient.h"
 #include <QFile>
-#include "tools.hpp"
+#include "tools.h"
 #include <QXmlStreamReader>
 #include "websocketthread.h"
 
@@ -58,6 +58,7 @@ namespace fs = std::filesystem;
 
 #include "Logger.h"
 #include "autopolaralignment.h"
+#include "autofocus.h"
 
 
 // 定义一个新的结构体来存储星点的信息和电调位置
@@ -315,8 +316,8 @@ public:
     double focusMoveEndTime = 0;     // 用来控制电调移动时，因为浏览器关闭或刷新或网络卡死导致的结束命令丢失超时
     QTimer* focusMoveTimer = nullptr;   // 用于控制焦距移动的定时器，每500ms执行一次步数的设置
     bool isFocusMoveDone = false;   // 用于标记电调是否在移动，全局标志电调是否在移动
-    int focuserMaxPosition = 60000;
-    int focuserMinPosition = -60000;
+    int focuserMaxPosition = -1;
+    int focuserMinPosition = -1;
     void FocuserControlMove(bool isInward); //控制电调移动
     void HandleFocuserMovementDataPeriodically(); //重置定时器，并更新电调移动参数，
     void FocuserControlStop(bool isClickMove = false); //停止电调移动
@@ -343,23 +344,31 @@ public:
     QVector<QPointF> allAutoFocusStarPositionList;   // 用于存储所有拟合曲线的的星点位置
     int overSelectStarAutoFocusStep = 0;  // 用于结束使用选择的星点进行自动对焦
     QVector<bool> isAutoFocusStarPositionList; // 用于存储没有星点的方向，用于自动对焦
-    void AutoFocus(QPointF selectStarPosition); // 自动对焦处理逻辑
+    // void AutoFocus(QPointF selectStarPosition); // 自动对焦处理逻辑
+    void startAutoFocus();
+    AutoFocus *autoFocus = nullptr;
     int autoFocusStep = 0; // 用于存储自动对焦的步数
+    bool autoFocuserIsROI = false; // 用于存储自动对焦是否使用ROI
     void sendRoiInfo();   // 用于发送ROI信息  
-    int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);  // 拟合二次曲线
-    std::vector<StarList> starMap; // 用于存储图信息
-    int updateStarMapPosition(QList<FITSImage::Star> stars); // 计算星图相对位置，为星点编号
-    double calculateDistance(double x1, double y1, double x2, double y2); // 
-    void compareStarVector(QList<FITSImage::Star> stars); // 匹配星点和星图
-    double calculateMatchScore(const FITSImage::Star& currentStar, const StarList& referenceStar, const QList<FITSImage::Star>& allStars);
-    double findNearestStar(const QList<FITSImage::Star>& stars, const QPointF& position);
-    double getAdaptiveThreshold();
-    double getMinMatchScore();
-    int findBestStar();
-    void calculateStarVector(); // 计算星点之间的向量
-    int selectStarInStarMapId = -1; // 用于存储选择的星点在星图中的编号
-    bool NewSelectStar = true; // 用于标记是否选择新的星点
-    int starMapLossNum = 0; // 用于存储星图丢失的次数
+    // int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);  // 拟合二次曲线
+    // std::vector<StarList> starMap; // 用于存储图信息
+    // int updateStarMapPosition(QList<FITSImage::Star> stars); // 计算星图相对位置，为星点编号
+    // double calculateDistance(double x1, double y1, double x2, double y2); // 
+    // void compareStarVector(QList<FITSImage::Star> stars); // 匹配星点和星图
+    // double calculateMatchScore(const FITSImage::Star& currentStar, const StarList& referenceStar, const QList<FITSImage::Star>& allStars);
+    // double findNearestStar(const QList<FITSImage::Star>& stars, const QPointF& position);
+    // double getAdaptiveThreshold();
+    // double getMinMatchScore();
+    // int findBestStar();
+    // void calculateStarVector(); // 计算星点之间的向量
+    // int selectStarInStarMapId = -1; // 用于存储选择的星点在星图中的编号
+    // bool NewSelectStar = true; // 用于标记是否选择新的星点
+    // int starMapLossNum = 0; // 用于存储星图丢失的次数
+    void focusMoveToMin(); // 移动到最小位置
+    void focusMoveToMax(); // 移动到最大位置
+    void focusSetTravelRange(); // 设置电调行程范围
+    int lastPosition = 0; // 用于存储上一次的电调位置
+    QTimer* focusMoveToMaxorMinTimer = nullptr; // 用于控制焦距移动的定时器，每500ms执行一次步数的设置
 
     QTimer FWHMTimer; 
 

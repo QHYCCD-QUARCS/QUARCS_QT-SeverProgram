@@ -1,4 +1,4 @@
-#include "tools.hpp"
+#include "tools.h"
 #include <vector>
 #include <QFile>
 #include <QString>
@@ -3229,41 +3229,41 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FIT
   // parameters.removeDimmest = 20;                    // 移除最暗星点比例
   // parameters.saturationLimit = 90;                  // 饱和度限制
   
-  parameters.apertureShape = SSolver::SHAPE_CIRCLE;
-  parameters.autoDownsample = true;
-  parameters.clean = 1;
-  parameters.clean_param = 1;
-  parameters.convFilterType = SSolver::CONV_GAUSSIAN;
-  parameters.deblend_contrast = 0.004999999888241291;
-  parameters.deblend_thresh = 32;
-  parameters.description = "Default focus star-extraction.";
-  parameters.downsample = 1;
-  parameters.fwhm = 1;
-  parameters.inParallel = true;
-  parameters.initialKeep = 250;
-  parameters.keepNum = 100;
-  parameters.kron_fact = 2.5;
-  parameters.listName = "1-Focus-Default";
-  parameters.logratio_tokeep = 20.72326583694641;
-  parameters.logratio_tosolve = 20.72326583694641;
-  parameters.logratio_totune = 13.815510557964274;
-  parameters.magzero = 20;
-  parameters.maxEllipse = 1.5;
-  parameters.maxSize = 10;
-  parameters.maxwidth = 180;
-  parameters.minSize = 0;
-  parameters.minarea = 20;
-  parameters.minwidth = 0.1;
-  parameters.multiAlgorithm = SSolver::MULTI_AUTO;
-  parameters.partition = true;
-  parameters.r_min = 5;
-  parameters.removeBrightest = 10;
-  parameters.removeDimmest = 20;
-  parameters.resort = true;
-  parameters.saturationLimit = 90;
-  parameters.search_parity = 15;
-  parameters.solverTimeLimit = 600;
-  parameters.subpix = 5;
+  parameters.apertureShape = SSolver::SHAPE_CIRCLE;        // 孔径形状：圆形
+  parameters.autoDownsample = true;                        // 自动降采样：启用
+  parameters.clean = 1;                                    // 清理参数：启用图像清理
+  parameters.clean_param = 1;                              // 清理参数值：1
+  parameters.convFilterType = SSolver::CONV_GAUSSIAN;     // 卷积滤波器类型：高斯滤波
+  parameters.deblend_contrast = 0.004999999888241291;     // 去混叠对比度阈值
+  parameters.deblend_thresh = 32;                          // 去混叠阈值
+  parameters.description = "Default focus star-extraction."; // 参数描述：默认焦点星点提取
+  parameters.downsample = 1;                               // 降采样因子：1（不降采样）
+  parameters.fwhm = 1;                                     // 全宽半高：1像素
+  parameters.inParallel = true;                            // 并行处理：启用
+  parameters.initialKeep = 250;                            // 初始保留星点数量：250个
+  parameters.keepNum = 100;                                // 最终保留星点数量：100个
+  parameters.kron_fact = 2.5;                              // Kron因子：2.5
+  parameters.listName = "1-Focus-Default";                 // 列表名称：1-焦点-默认
+  parameters.logratio_tokeep = 20.72326583694641;         // 保留星点的对数比率阈值
+  parameters.logratio_tosolve = 20.72326583694641;        // 求解星点的对数比率阈值
+  parameters.logratio_totune = 13.815510557964274;        // 调优星点的对数比率阈值
+  parameters.magzero = 20;                                 // 零点星等：20
+  parameters.maxEllipse = 1.5;                             // 最大椭圆比：1.5
+  parameters.maxSize = 10;                                 // 最大星点尺寸：10像素
+  parameters.maxwidth = 180;                               // 最大宽度：180像素
+  parameters.minSize = 0;                                  // 最小星点尺寸：0像素
+  parameters.minarea = 20;                                 // 最小星点面积：20像素
+  parameters.minwidth = 0.1;                               // 最小宽度：0.1像素
+  parameters.multiAlgorithm = SSolver::MULTI_AUTO;        // 多算法模式：自动选择
+  parameters.partition = true;                             // 分区处理：启用
+  parameters.r_min = 5;                                    // 最小星点半径：5像素
+  parameters.removeBrightest = 10;                         // 移除最亮星点比例：10%
+  parameters.removeDimmest = 20;                           // 移除最暗星点比例：20%
+  parameters.resort = true;                                // 重新排序：启用
+  parameters.saturationLimit = 90;                         // 饱和度限制：90%
+  parameters.search_parity = 15;                           // 搜索奇偶性：15
+  parameters.solverTimeLimit = 600;                        // 求解器时间限制：600秒
+  parameters.subpix = 5;                                   // 子像素精度：5
 
 
   solver.setLogLevel(SSolver::LOG_ALL);
@@ -3293,13 +3293,42 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FIT
 
   QList<FITSImage::Star> stars;
 
-  stars = solver.getStarList();
+  try {
+    stars = solver.getStarList();
+    Logger::Log("Successfully got star list with " + std::to_string(stars.size()) + " stars.", LogLevel::INFO, DeviceType::MAIN);
+  } catch (const std::exception &e) {
+    Logger::Log("Exception getting star list: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+    return QList<FITSImage::Star>();
+  } catch (...) {
+    Logger::Log("Unknown exception getting star list", LogLevel::ERROR, DeviceType::MAIN);
+    return QList<FITSImage::Star>();
+  }
 
-  // 输出检测到的星点信息
+  // 输出检测到的星点信息，但避免访问可能损坏的内存
   Logger::Log("Detected " + std::to_string(stars.size()) + " stars.", LogLevel::INFO, DeviceType::MAIN);
-  for (const auto &star : stars)
-  {
-    // std::cout << "Star at (" << star.x << ", " << star.y << ") with HFR: " << star.HFR << std::endl;
+  
+  // 安全地遍历前几个星点进行调试
+  int debugCount = 0;
+  if (stars.size() > 0) {
+    for (const auto &star : stars)
+    {
+      if (debugCount >= 3) break; // 只调试前3个星点
+      
+      try {
+        Logger::Log("Star " + std::to_string(debugCount) + " at (" + 
+                    std::to_string(star.x) + ", " + std::to_string(star.y) + 
+                    ") with HFR: " + std::to_string(star.HFR), LogLevel::INFO, DeviceType::MAIN);
+      } catch (const std::exception &e) {
+        Logger::Log("Exception accessing star " + std::to_string(debugCount) + ": " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+        break;
+      } catch (...) {
+        Logger::Log("Unknown exception accessing star " + std::to_string(debugCount), LogLevel::ERROR, DeviceType::MAIN);
+        break;
+      }
+      debugCount++;
+    }
+  } else {
+    Logger::Log("No stars detected, skipping star info output", LogLevel::INFO, DeviceType::MAIN);
   }
 
   return stars;
@@ -5633,7 +5662,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     {
       // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
       // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-      command_qstr = "solve-field " + filename + " --overwrite --scale-units degwidth --scale-low 0.8 --scale-high 5.0 --no-plots --uniformize 0 --timestamp --downsample 12 --objs 20 --quad-size-min 0.2 --quad-size-max 0.6 --code-tolerance 0.02 --pixel-error 1.5 --cpulimit 20  --depth 1-50 --no-background-subtraction";
+      command_qstr = "solve-field " + filename + " --overwrite  --no-plots --uniformize 0 --timestamp  --objs 10 --pixel-error 1.5 --cpulimit 20";
     }
     else
     {
@@ -5643,8 +5672,31 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     
     Logger::Log("当前解析命令:" + command_qstr.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     cmd_test->start(command_qstr);
-    cmd_test->waitForStarted();
-    cmd_test->waitForFinished();
+    
+    if (!cmd_test->waitForStarted()) {
+        Logger::Log("解析命令启动失败", LogLevel::ERROR, DeviceType::MAIN);
+        PlateSolveInProgress = false;
+        isSolveImageFinished = false;
+        return false;
+    }
+    
+    // 设置更长的超时时间，适应树莓派的性能
+    if (!cmd_test->waitForFinished(300000)) { // 5分钟超时
+        Logger::Log("解析命令执行超时，强制终止", LogLevel::WARNING, DeviceType::MAIN);
+        cmd_test->kill(); // 强制终止进程
+        PlateSolveInProgress = false;
+        isSolveImageFinished = false;
+        return false;
+    }
+    
+    // 检查进程退出状态
+    int exitCode = cmd_test->exitCode();
+    if (exitCode != 0) {
+        Logger::Log("解析命令执行失败，退出码: " + std::to_string(exitCode), LogLevel::ERROR, DeviceType::MAIN);
+        PlateSolveInProgress = false;
+        isSolveImageFinished = false;
+        return false;
+    }
 
     QApplication::processEvents();
 
@@ -5653,6 +5705,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
 
 SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageHeight) {
   isSolveImageFinished = false;
+  sleep(1);
 
   SloveResults result;
   filename = filename.chopped(5);  // 移除文件名的最后五个字符
@@ -5724,9 +5777,17 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   return result;
 }
 SloveResults Tools::onSolveFinished(int exitCode) {
-  Logger::Log("Solve Finished!!!", LogLevel::INFO, DeviceType::MAIN);
-  isSolveImageFinished = true;
-  PlateSolveInProgress = false;
+  Logger::Log("Solve Finished!!! 退出码: " + std::to_string(exitCode), LogLevel::INFO, DeviceType::MAIN);
+  
+  if (exitCode == 0) {
+    isSolveImageFinished = true;
+    PlateSolveInProgress = false;
+    Logger::Log("解析成功完成", LogLevel::INFO, DeviceType::MAIN);
+  } else {
+    Logger::Log("解析失败，退出码: " + std::to_string(exitCode), LogLevel::ERROR, DeviceType::MAIN);
+    isSolveImageFinished = false;
+    PlateSolveInProgress = false;
+  }
 }
 
 WCSParams Tools::extractWCSParams(const QString& wcsInfo) {

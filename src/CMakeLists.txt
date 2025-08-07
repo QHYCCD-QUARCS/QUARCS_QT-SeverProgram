@@ -31,11 +31,13 @@ add_executable(client
   main.cpp
   websocketclient.h websocketclient.cpp
   mainwindow.h mainwindow.cpp
-  tools.hpp tools.cpp
+  tools.h tools.cpp
   myclient.h myclient.cpp
   websocketthread.h websocketthread.cpp
   Logger.h Logger.cpp
   autopolaralignment.h autopolaralignment.cpp
+  autofocus.h autofocus.cpp
+  starsimulator.h starsimulator.cpp
 )
 
 target_link_libraries(client PRIVATE

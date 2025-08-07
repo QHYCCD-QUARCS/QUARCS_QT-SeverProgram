@@ -15,6 +15,7 @@
 #include <QThread>
 #include <QEventLoop>
 #include <QCoreApplication>
+#include <QDateTime>
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -22,7 +23,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "Logger.h"
-#include "tools.hpp"
+#include "tools.h"
 #include "myclient.h"
 
 // 极轴校准状态枚举 - 定义校准过程中的各个状态
@@ -59,6 +60,27 @@ struct PolarAlignmentResult {
     bool isSuccessful;      // 是否成功 - 校准是否成功完成
     QString errorMessage;    // 错误信息 - 如果失败，记录错误原因
     QVector<SloveResults> measurements; // 测量结果 - 存储三次测量的详细数据
+};
+
+// 调整指导数据结构 - 存储adjustmentGuideData发送的信息
+struct AdjustmentGuideData {
+    double ra;              // 当前RA位置
+    double dec;             // 当前DEC位置
+    double maxRa;           // 最大RA
+    double minRa;           // 最小RA
+    double maxDec;          // 最大DEC
+    double minDec;          // 最小DEC
+    double targetRa;        // 目标RA
+    double targetDec;       // 目标DEC
+    double offsetRa;        // RA偏移
+    double offsetDec;       // DEC偏移
+    QString adjustmentRa;   // 调整指导RA
+    QString adjustmentDec;  // 调整指导DEC
+    QDateTime timestamp;    // 时间戳
+    
+    AdjustmentGuideData() : ra(0.0), dec(0.0), maxRa(0.0), minRa(0.0), 
+                           maxDec(0.0), minDec(0.0), targetRa(0.0), targetDec(0.0),
+                           offsetRa(0.0), offsetDec(0.0) {}
 };
 
 // 极轴校准配置结构 - 定义校准过程中的各种参数
@@ -202,6 +224,25 @@ public:
      */
     void setConfig(const PolarAlignmentConfig& config);
     
+    // ==================== 调整指导数据管理函数 ====================
+    
+    /**
+     * @brief 发送满足条件的调整指导数据
+     * 发送所有offsetRa和offsetDec都为0的数据，以及最后一个星点的数据
+     */
+    void sendValidAdjustmentGuideData();
+    
+    /**
+     * @brief 清空调整指导数据容器
+     */
+    void clearAdjustmentGuideData();
+    
+    /**
+     * @brief 获取调整指导数据容器的大小
+     * @return 数据条数
+     */
+    int getAdjustmentGuideDataCount() const;
+    
     /**
      * @brief 获取当前校准配置
      * @return 配置结构体
@@ -242,7 +283,7 @@ signals:
      * @param adjustmentRa 调整指导RA
      * @param adjustmentDec 调整指导DEC
      */
-    void adjustmentGuideData(double ra, double dec, double maxRa, double minRa, double maxDec, double minDec,double targetRa, double targetDec,double offsetRa, double offsetDec,QString &adjustmentRa,QString &adjustmentDec);
+    void adjustmentGuideData(double ra, double dec, double maxRa, double minRa, double maxDec, double minDec,double targetRa, double targetDec,double offsetRa, double offsetDec,QString adjustmentRa,QString adjustmentDec);
 
     /**
      * @brief 结果就绪信号
@@ -615,6 +656,9 @@ private:
     // 失败计数
     int captureFailureCount;     // 拍摄失败计数
     int solveFailureCount;       // 解析失败计数
+
+    // 调整指导数据容器
+    QVector<AdjustmentGuideData> adjustmentGuideDataHistory; // 调整指导数据历史记录
 
     // 测试图片
     int testimage;

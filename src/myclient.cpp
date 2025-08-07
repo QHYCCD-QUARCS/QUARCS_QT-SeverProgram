@@ -10,7 +10,7 @@
 //#include <qhyccd.h>
 
 #include <fitsio.h>
-#include "tools.hpp"
+#include "tools.h"
 
 // #include "/usr/include/libindi/indiccd.h"
 #include "QThread"

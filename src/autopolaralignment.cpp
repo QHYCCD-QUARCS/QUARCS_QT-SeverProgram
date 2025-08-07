@@ -321,12 +321,16 @@ void PolarAlignment::setState(PolarAlignmentState newState)
         case PolarAlignmentState::FIRST_CAPTURE:
         case PolarAlignmentState::FIRST_ANALYSIS:
         case PolarAlignmentState::FIRST_RECOVERY:
+            newProgress = 20;
+            break;
         case PolarAlignmentState::MOVING_RA_FIRST:
             newProgress = 25;
             break;
         case PolarAlignmentState::SECOND_CAPTURE:
         case PolarAlignmentState::SECOND_ANALYSIS:
         case PolarAlignmentState::SECOND_RECOVERY:
+            newProgress = 45;
+            break;
         case PolarAlignmentState::MOVING_RA_SECOND:
             newProgress = 50;
             break;
@@ -657,6 +661,35 @@ PolarAlignment::PolarPointCheckResult PolarAlignment::checkPolarPoint()
         measurements.append(firstMeasurement);
         currentMeasurementIndex = 1;
         Logger::Log("PolarAlignment: 已将当前位置记录为第一个测量点", LogLevel::INFO, DeviceType::MAIN);
+        
+        // 发送第一个校准点的视场数据
+        QString adjustmentRa = "";
+        QString adjustmentDec = "";
+        
+        // 保存调整指导数据到容器
+        AdjustmentGuideData guideData;
+        guideData.ra = solveResult.RA_Degree;
+        guideData.dec = solveResult.DEC_Degree;
+        guideData.maxRa = solveResult.RA_1;
+        guideData.minRa = solveResult.RA_0;
+        guideData.maxDec = solveResult.DEC_2;
+        guideData.minDec = solveResult.DEC_1;
+        guideData.targetRa = 0.0;
+        guideData.targetDec = 0.0;
+        guideData.offsetRa = 0.0;
+        guideData.offsetDec = 0.0;
+        guideData.adjustmentRa = adjustmentRa;
+        guideData.adjustmentDec = adjustmentDec;
+        guideData.timestamp = QDateTime::currentDateTime();
+        
+        adjustmentGuideDataHistory.append(guideData);
+        
+        emit adjustmentGuideData(solveResult.RA_Degree, solveResult.DEC_Degree,
+                    solveResult.RA_1, solveResult.RA_0, 
+                    solveResult.DEC_2, solveResult.DEC_1, 
+                    -1, -1, 0.0, 0.0, 
+                    adjustmentRa, adjustmentDec);
+        
         return {true, false, ""};
     }
 }
@@ -827,6 +860,34 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
             currentMeasurementIndex++;
             currentRetryAttempt = 0;
             Logger::Log("PolarAlignment: 拍摄和分析成功，测量次数 " + std::to_string(currentMeasurementIndex), LogLevel::INFO, DeviceType::MAIN);
+            
+            QString adjustmentRa = "";
+            QString adjustmentDec = "";
+            
+            // 保存调整指导数据到容器
+            AdjustmentGuideData guideData;
+            guideData.ra = analysisResult.RA_Degree;
+            guideData.dec = analysisResult.DEC_Degree;
+            guideData.maxRa = analysisResult.RA_1;
+            guideData.minRa = analysisResult.RA_0;
+            guideData.maxDec = analysisResult.DEC_2;
+            guideData.minDec = analysisResult.DEC_1;
+            guideData.targetRa = 0.0;
+            guideData.targetDec = 0.0;
+            guideData.offsetRa = 0.0;
+            guideData.offsetDec = 0.0;
+            guideData.adjustmentRa = adjustmentRa;
+            guideData.adjustmentDec = adjustmentDec;
+            guideData.timestamp = QDateTime::currentDateTime();
+            
+            adjustmentGuideDataHistory.append(guideData);
+            
+            emit adjustmentGuideData(analysisResult.RA_Degree, analysisResult.DEC_Degree,
+                        analysisResult.RA_1, analysisResult.RA_0, 
+                        analysisResult.DEC_2, analysisResult.DEC_1, 
+                        -1, -1, 0.0, 0.0, 
+                        adjustmentRa, adjustmentDec);
+            
             return true;
         } else {
             Logger::Log("PolarAlignment: 已达到最大测量次数，跳过添加", LogLevel::WARNING, DeviceType::MAIN);
@@ -900,6 +961,25 @@ bool PolarAlignment::calculateDeviation()
         
         // 使用最后一个测量点的数据发出调整指导信号
         SloveResults lastMeasurement = measurements.last();
+        
+        // 保存调整指导数据到容器
+        AdjustmentGuideData guideData;
+        guideData.ra = lastMeasurement.RA_Degree;
+        guideData.dec = lastMeasurement.DEC_Degree;
+        guideData.maxRa = lastMeasurement.RA_1;
+        guideData.minRa = lastMeasurement.RA_0;
+        guideData.maxDec = lastMeasurement.DEC_2;
+        guideData.minDec = lastMeasurement.DEC_1;
+        guideData.targetRa = expectedRA;
+        guideData.targetDec = expectedDEC;
+        guideData.offsetRa = result.raDeviation;
+        guideData.offsetDec = result.decDeviation;
+        guideData.adjustmentRa = adjustmentRa;
+        guideData.adjustmentDec = adjustmentDec;
+        guideData.timestamp = QDateTime::currentDateTime();
+        
+        adjustmentGuideDataHistory.append(guideData);
+        
         emit adjustmentGuideData(lastMeasurement.RA_Degree, lastMeasurement.DEC_Degree,
                                lastMeasurement.RA_1, lastMeasurement.RA_0, 
                                lastMeasurement.DEC_2, lastMeasurement.DEC_1, 
@@ -1003,6 +1083,24 @@ bool PolarAlignment::guideUserAdjustment()
                 // 根据地理位置计算期望的极点位置用于显示
                 double expectedRA, expectedDEC;
                 calculateExpectedPolarPosition(expectedRA, expectedDEC);
+                
+                // 保存调整指导数据到容器
+                AdjustmentGuideData guideData;
+                guideData.ra = verificationResult.RA_Degree;
+                guideData.dec = verificationResult.DEC_Degree;
+                guideData.maxRa = verificationResult.RA_1;
+                guideData.minRa = verificationResult.RA_0;
+                guideData.maxDec = verificationResult.DEC_2;
+                guideData.minDec = verificationResult.DEC_1;
+                guideData.targetRa = expectedRA;
+                guideData.targetDec = expectedDEC;
+                guideData.offsetRa = result.raDeviation;
+                guideData.offsetDec = result.decDeviation;
+                guideData.adjustmentRa = adjustmentRa;
+                guideData.adjustmentDec = adjustmentDec;
+                guideData.timestamp = QDateTime::currentDateTime();
+                
+                adjustmentGuideDataHistory.append(guideData);
                 
                 emit adjustmentGuideData(verificationResult.RA_Degree, verificationResult.DEC_Degree,
                                        verificationResult.RA_1, verificationResult.RA_0, 
@@ -1382,11 +1480,12 @@ bool PolarAlignment::waitForCaptureComplete()
     
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
-            lastCapturedImage = QString("/home/quarcs/workspace/testimage/%1.fits").arg(testimage);
-            testimage++;
-            if (testimage > 9) {
-                testimage = 0;
-            }
+            // lastCapturedImage = QString("/home/quarcs/workspace/testimage/%1.fits").arg(testimage);
+            // testimage++;
+            // if (testimage > 9) {
+            //     testimage = 0;
+            // }
+            lastCapturedImage = QString("/dev/shm/MatToFITS.fits");
             loop.quit();
         }
     });
@@ -1897,4 +1996,48 @@ bool PolarAlignment::calculatePolarDeviationCorrect(const SloveResults& pos1, co
     Logger::Log("PolarAlignment: 方位角偏差: " + std::to_string(azimuthDeviation) + "°, 高度角偏差: " + std::to_string(altitudeDeviation) + "°", LogLevel::INFO, DeviceType::MAIN);
     
     return true;
+}
+
+// ==================== 调整指导数据管理函数实现 ====================
+
+void PolarAlignment::sendValidAdjustmentGuideData()
+{
+    Logger::Log("PolarAlignment: 发送满足条件的调整指导数据", LogLevel::INFO, DeviceType::MAIN);
+    
+    if (adjustmentGuideDataHistory.isEmpty()) {
+        Logger::Log("PolarAlignment: 调整指导数据容器为空", LogLevel::WARNING, DeviceType::MAIN);
+        return;
+    }
+    
+    // 发送所有offsetRa和offsetDec都为0的数据
+    for (const AdjustmentGuideData& data : adjustmentGuideDataHistory) {
+        if (data.offsetRa == 0.0 && data.offsetDec == 0.0) {
+            Logger::Log("PolarAlignment: 发送零偏移数据 - RA: " + std::to_string(data.ra) + 
+                       "°, DEC: " + std::to_string(data.dec) + "°", LogLevel::INFO, DeviceType::MAIN);
+            
+            emit adjustmentGuideData(data.ra, data.dec, data.maxRa, data.minRa, 
+                                   data.maxDec, data.minDec, data.targetRa, data.targetDec,
+                                   data.offsetRa, data.offsetDec, data.adjustmentRa, data.adjustmentDec);
+        }
+    }
+    
+    // 发送最后一个星点的数据
+    const AdjustmentGuideData& lastData = adjustmentGuideDataHistory.last();
+    Logger::Log("PolarAlignment: 发送最后一个星点数据 - RA: " + std::to_string(lastData.ra) + 
+               "°, DEC: " + std::to_string(lastData.dec) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    emit adjustmentGuideData(lastData.ra, lastData.dec, lastData.maxRa, lastData.minRa, 
+                           lastData.maxDec, lastData.minDec, lastData.targetRa, lastData.targetDec,
+                           lastData.offsetRa, lastData.offsetDec, lastData.adjustmentRa, lastData.adjustmentDec);
+}
+
+void PolarAlignment::clearAdjustmentGuideData()
+{
+    Logger::Log("PolarAlignment: 清空调整指导数据容器", LogLevel::INFO, DeviceType::MAIN);
+    adjustmentGuideDataHistory.clear();
+}
+
+int PolarAlignment::getAdjustmentGuideDataCount() const
+{
+    return adjustmentGuideDataHistory.size();
 }

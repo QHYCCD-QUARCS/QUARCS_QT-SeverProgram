@@ -104,7 +104,15 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(focusMoveTimer, &QTimer::timeout, this, &MainWindow::HandleFocuserMovementDataPeriodically);
 
     emit wsThread->sendMessageToClient("ServerInitSuccess");
-    
+
+    QMap<QString, QString> parameters = Tools::readParameters("Focuser");
+    if (parameters.contains("focuserMaxPosition") && parameters.contains("focuserMinPosition")){
+        focuserMaxPosition = parameters["focuserMaxPosition"].toInt();
+        focuserMinPosition = parameters["focuserMinPosition"].toInt();
+    }else{
+        focuserMaxPosition = -1;
+        focuserMinPosition = -1;
+    }
 }
 
 MainWindow::~MainWindow()
@@ -318,7 +326,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "AutoFocus")
     {
         // Logger::Log("AutoFocus", LogLevel::INFO, DeviceType::MAIN);
-        // AutoFocus();
+        startAutoFocus();
         isAutoFocus = true;
         autoFocusStep = 0;
 
@@ -327,6 +335,9 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         Logger::Log("StopAutoFocus", LogLevel::DEBUG, DeviceType::MAIN);
         isAutoFocus = false;
+        autoFocus->stopAutoFocus();
+        autoFocus->deleteLater();
+        autoFocus = nullptr;
     }
     else if (message == "abortExposure")
     {
@@ -823,10 +834,9 @@ void MainWindow::onMessageReceived(const QString &message)
     //     }
     // }
 
-    else if (parts.size() == 2 && parts[0].trimmed() == "SolveSYNC")
+    else if (parts[0].trimmed() == "SolveSYNC")
     {
         Logger::Log("SolveSYNC ...", LogLevel::DEBUG, DeviceType::MAIN);
-        glFocalLength = parts[1].trimmed().toInt();
 
         if(glFocalLength == 0) {
             emit wsThread->sendMessageToClient("FocalLengthError");
@@ -1222,7 +1232,7 @@ void MainWindow::onMessageReceived(const QString &message)
         roiAndFocuserInfo["SelectStarX"] = parts[1].trimmed().toDouble();
         roiAndFocuserInfo["SelectStarY"] = parts[2].trimmed().toDouble();
         roiAndFocuserInfo["SelectStarHFR"] = -1;
-        NewSelectStar = true;
+        // NewSelectStar = true;
         Logger::Log("sendSelectStars finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }else if(parts[0].trimmed() == "testQtServerProcess"){
         Logger::Log("testQtServerProcess ... .....................", LogLevel::DEBUG, DeviceType::MAIN);
@@ -1326,6 +1336,22 @@ void MainWindow::onMessageReceived(const QString &message)
             polarAlignment->resumePolarAlignment();
             Logger::Log("RestoreAutoPolarAlignment: Restore successfully", LogLevel::INFO, DeviceType::MAIN);
         }
+    }else if(parts[0].trimmed() == "focusMoveToMin"){
+        Logger::Log("focusMoveToMin ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        focusMoveToMin();
+        Logger::Log("focusMoveToMin finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }else if(parts[0].trimmed() == "focusMoveToMax"){
+        Logger::Log("focusMoveToMax ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        focusMoveToMax();
+        Logger::Log("focusMoveToMax finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }else if(parts[0].trimmed() == "focusSetTravelRange"){
+        Logger::Log("focusSetTravelRange ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        focusSetTravelRange();
+        Logger::Log("focusSetTravelRange finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }else if(parts[0].trimmed() == "getFocuserParameters"){
+        Logger::Log("getFocuserParameters ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition)+":"+QString::number(focuserMaxPosition));
+        Logger::Log("getFocuserParameters finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
     }
     else{
         Logger::Log("Unknown message: " + message.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
@@ -1391,37 +1417,24 @@ void MainWindow::initINDIClient()
                 {
                     glMainCameraStatu = "Displaying";
                     ShootStatus = "Completed";
+                    if (autoFocuserIsROI && isAutoFocus){
+                        saveFitsAsJPG(QString::fromStdString(filename), true);
+                        Logger::Log("saveFitsAsJPG", LogLevel::DEBUG, DeviceType::MAIN);
+                        autoFocus->setCaptureComplete(QString::fromStdString(filename));
+                        return;
+                    }else if (!autoFocuserIsROI && isAutoFocus){
+                        saveFitsAsPNG(QString::fromStdString(filename), true);
+                        Logger::Log("saveFitsAsPNG", LogLevel::DEBUG, DeviceType::MAIN);
+                        autoFocus->setCaptureComplete(QString::fromStdString(filename));
+                        return;
+                    }
+
                     if(glIsFocusingLooping == false)
                     {
                         emit wsThread->sendMessageToClient("ExposureCompleted");
                         Logger::Log("ExposureCompleted", LogLevel::INFO, DeviceType::CAMERA);
                         if (polarAlignment != nullptr) {
-                            if (polarAlignment->getStatusMessage() != "空闲") {
-                                QString sourcePath = "";
-                                if (i == 1) {
-                                    sourcePath = "/home/quarcs/workspace/1.fits" ;
-                                    i = 2;
-                                } else if (i == 2) {
-                                    sourcePath = "/home/quarcs/workspace/2.fits" ;
-                                    i = 3;
-                                } else if (i == 3) {
-                                    sourcePath = "/home/quarcs/workspace/3.fits" ;
-                                    i = 4;
-                                } else if (i == 4) {
-                                    sourcePath = "/home/quarcs/workspace/4.fits" ;
-                                    i = 5;
-                                } else if (i == 5) {
-                                    sourcePath = "/home/quarcs/workspace/5.fits" ;
-                                    i = 6;
-                                } else if (i == 6) {
-                                    sourcePath = "/home/quarcs/workspace/6.fits" ;
-                                    i = 1;
-                                }
-                                QString destPath = "/dev/shm/ccd_simulator.fits";
-                                if (QFile::exists(destPath)) {
-                                    QFile::remove(destPath);
-                                }
-                                QFile::copy(sourcePath, destPath);
+                            if (polarAlignment->isRunning()) {
                                 polarAlignment->setCaptureEnd(true);
                                 Logger::Log("ExposureCompleted, but polarAlignment is not idle", LogLevel::INFO, DeviceType::MAIN);
                                 return;
@@ -1433,10 +1446,8 @@ void MainWindow::initINDIClient()
                     }
                     else
                     {
-                        if (isFocusLoopShooting ){
-                            saveFitsAsJPG(QString::fromStdString(filename), true);
-                            Logger::Log("saveFitsAsJPG", LogLevel::DEBUG, DeviceType::MAIN);
-                        }
+                        saveFitsAsJPG(QString::fromStdString(filename), true);
+                        Logger::Log("saveFitsAsJPG", LogLevel::DEBUG, DeviceType::MAIN);
                     }
                     // Logger::Log("拍摄完成，图像保存完成 finish!", LogLevel::INFO, DeviceType::MAIN);
 
@@ -1825,13 +1836,13 @@ int a = 0;
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
     // if (a == 0){
-    //     fitsFileName = "/home/quarcs/workspace/image/1.fits";
+    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_26_33_299.fits";
     //     a = 1;
     // }else if (a == 1){
-    //     fitsFileName = "/home/quarcs/workspace/image/2.fits";
+    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_26_47_548.fits";
     //     a = 2;
     // }else if (a == 2){
-    //     fitsFileName = "/home/quarcs/workspace/image/3.fits";
+    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_32_09_232.fits";
     //     a = 0;
     // }
 
@@ -1855,7 +1866,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
         return -1;
     }
     
-
+ 
     bool isColor = !(MainCameraCFA == "" || MainCameraCFA == "null");
     Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
@@ -1985,6 +1996,9 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
             destinationFile.remove();
         }
         QFile::copy(fitsFileName, destinationPath);
+    }
+    if (isAutoFocus){
+        autoFocus->setCaptureComplete(fitsFileName);
     }
 }
 
@@ -3407,8 +3421,15 @@ void MainWindow::AfterDeviceConnect()
         int min, max, value, step;
         indi_Client->getFocuserRange(dpFocuser, min, max, step, value);
         // Logger::Log("Focuser Range - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Value: " + std::to_string(value) + ", Step: " + std::to_string(step), LogLevel::INFO, DeviceType::MAIN);
-        focuserMaxPosition = std::min(max, focuserMaxPosition);
-        focuserMinPosition = std::max(min, focuserMinPosition);
+        // focuserMaxPosition = std::min(max, focuserMaxPosition);
+        // focuserMinPosition = std::max(min, focuserMinPosition);
+        if (focuserMaxPosition == -1 && focuserMinPosition == -1){
+            focuserMaxPosition = max;
+            focuserMinPosition = min;
+            Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
+            Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
+            emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition)+":"+QString::number(focuserMaxPosition));
+        }
         Logger::Log("Focuser Max Position: " + std::to_string(focuserMaxPosition) + ", Min Position: " + std::to_string(focuserMinPosition), LogLevel::INFO, DeviceType::MAIN);
         Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
@@ -3525,15 +3546,27 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
 
-        if (glMainCCDSizeX>4800){
-            glMainCameraBinning = 4;
-        }else if (glMainCCDSizeX < 4800 && glMainCCDSizeX > 3600){
-            glMainCameraBinning = 3;
-        }else if (glMainCCDSizeX < 3600 && glMainCCDSizeX > 2400){
-            glMainCameraBinning = 2;
-        }else {
-            glMainCameraBinning = 1;
+        // 计算需要的binning以达到548像素以下
+        int requiredBinning = 1;
+        int currentSize = glMainCCDSizeX;
+        
+        // 逐步增加binning直到像素大小小于等于548
+        while (currentSize > 548 && requiredBinning <= 16) {
+            requiredBinning *= 2;
+            currentSize = glMainCCDSizeX / requiredBinning;
         }
+        
+        // 限制最大binning为16
+        if (requiredBinning > 16) {
+            requiredBinning = 16;
+        }
+        
+        glMainCameraBinning = requiredBinning;
+        
+        // 记录选择的binning和最终像素大小
+        int finalSize = glMainCCDSizeX / requiredBinning;
+        qDebug() << "Camera binning selection: Original size =" << glMainCCDSizeX 
+                 << "Binning =" << requiredBinning << "Final size =" << finalSize;
         emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(glMainCameraBinning));
 
         QString CFWname;
@@ -3641,6 +3674,15 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         systemdevicelist.system_devices[22].isBind = true;
         indi_Client->GetAllPropertyName(dpFocuser);
         // indi_Client->syncFocuserPosition(dpFocuser, 0);
+        int min, max, step, value;
+        indi_Client->getFocuserRange(dpFocuser, min, max, step, value);
+        if (focuserMaxPosition == -1 && focuserMinPosition == -1){
+            focuserMaxPosition = max;
+            focuserMinPosition = min;
+            Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
+            Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
+            emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition)+":"+QString::number(focuserMaxPosition));
+        }
         CurrentPosition = FocuserControl_getPosition();
         Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
@@ -5379,15 +5421,20 @@ void MainWindow::HandleFocuserMovementDataPeriodically() {
     bool isInward = this->currentDirection; // 假设您有一个成员变量来存储当前的移动方向
     if (isInward) {
         if (CurrentPosition == TargetPosition){
-            int steps = focuserMaxPosition+CurrentPosition;
+            int steps = CurrentPosition - focuserMinPosition;
             if (steps > focuserMaxPosition) {
                 steps = focuserMaxPosition;
                 TargetPosition = CurrentPosition - steps;
             }else{
                 TargetPosition = focuserMinPosition;
             }
-            steps = std::min(steps, focuserMaxPosition);
-            steps = std::max(steps, focuserMinPosition);
+            if  (steps <= 0){
+                emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+                return;
+            }
+
+            // steps = std::min(steps, focuserMaxPosition);
+            // steps = std::max(steps, focuserMinPosition);
             indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
             indi_Client->moveFocuserSteps(dpFocuser, steps);
             
@@ -5404,8 +5451,12 @@ void MainWindow::HandleFocuserMovementDataPeriodically() {
             }else{
                 TargetPosition = focuserMinPosition;
             }
-            steps = std::min(steps, focuserMaxPosition);
-            steps = std::max(steps, focuserMinPosition);
+            if (steps <= 0){
+                emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+                return;
+            }
+            // steps = std::min(steps, focuserMaxPosition);
+            // steps = std::max(steps, focuserMinPosition);
             indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
             indi_Client->moveFocuserSteps(dpFocuser, steps);
             Logger::Log("HandleFocuserMovementDataPeriodically | CurrentPosition: " + std::to_string(CurrentPosition) + " ,set move steps "+ std::to_string(steps) + " ,backward outward", LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -8349,54 +8400,21 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     // 读取FITS文件
     Tools::readFits(filename.toLocal8Bit().constData(), image);
 
-    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
-    currentSelectStarPosition = selectStar(stars);
-    if (false){
-        // 使用更真实的调焦曲线参数
-        double a = 0.00005;   // 控制曲线开口大小
-        double b = -0.02;     // 控制最低点位置 (b/2a)
-        double c = 5.0;       // 最小HFR基础值
-        
-        // 焦点位置
-        double position = currentSelectStarPosition.x();
-        
-        // 计算理想HFR值 (完美抛物线)
-        double idealHFR = a * position * position + b * position + c;
-        
-        // 添加比例噪声 (噪声与HFR成比例)
-        double noiseLevel = 0.05;  // 5%的噪声水平
-        double noise = (((double)rand() / RAND_MAX) * 2 - 1) * noiseLevel * idealHFR;
-        
-        // 确保HFR不会因噪声变为负值
-        double simulatedHFR = std::max(0.5, idealHFR + noise);
-        
-        // 添加随机的小波动，模拟大气视宁度影响
-        if (rand() % 10 == 0) {  // 10%概率有波动
-            simulatedHFR *= (1.0 + ((double)rand() / RAND_MAX) * 0.15);  // 最多15%的突发波动
-        }
-        
-        Logger::Log("AutoFocus | 模拟数据: 位置=" + std::to_string(position) + 
-                ", 理想HFR=" + std::to_string(idealHFR) + 
-                ", 实际HFR=" + std::to_string(simulatedHFR), 
-                LogLevel::DEBUG, DeviceType::FOCUSER);
-        
-        currentSelectStarPosition = QPointF(position, simulatedHFR);
-    }
+    // QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
+    // currentSelectStarPosition = selectStar(stars);
+
     if (dpFocuser != NULL) {
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(FocuserControl_getPosition()));
     }
-    // emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(FocuserControl_getPosition()));
-    // emit wsThread->sendMessageToClient("clearFocuserROIStarsList");
+
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(currentSelectStarPosition.x()) + ":" + QString::number(currentSelectStarPosition.y()));
     emit wsThread->sendMessageToClient("setSelectStarPosition:" + QString::number(roiAndFocuserInfo["SelectStarX"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarY"])+":"+QString::number(roiAndFocuserInfo["SelectStarHFR"]));
     Logger::Log("saveFitsAsJPG | 星点位置更新为 x:" + std::to_string(roiAndFocuserInfo["SelectStarX"]) + ",y:" + std::to_string(roiAndFocuserInfo["SelectStarY"]) + ",HFR:" + std::to_string(roiAndFocuserInfo["SelectStarHFR"]), LogLevel::INFO, DeviceType::FOCUSER);
-    for (const auto &star : stars)
-    {
-        emit wsThread->sendMessageToClient("focuserROIStarsList:" + QString::number(star.x) + ":" + QString::number(star.y) + ":" + QString::number(star.HFR));
-    }
+    // for (const auto &star : stars)
+    // {
+    //     emit wsThread->sendMessageToClient("focuserROIStarsList:" + QString::number(star.x) + ":" + QString::number(star.y) + ":" + QString::number(star.HFR));
+    // }
 
-    // FWHMCalOver = true;
-    
     // 判断当前相机是否为彩色相机
     bool isColor = !(MainCameraCFA == "" || MainCameraCFA == "null");
     cv::Mat originalImage16;
@@ -8411,16 +8429,6 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         return ;
     }
     Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(originalImage16.cols) + "x" + std::to_string(originalImage16.rows), LogLevel::INFO, DeviceType::FOCUSER);
-    // if(ProcessBin && glMainCameraBinning != 1){
-    //     // 进行 2x2 的合并
-    //     image = Tools::processMatWithBinAvg(image, glMainCameraBinning, glMainCameraBinning, isColor, true);
-    //     if (image.empty()) {
-    //         if (isFocusLoopShooting){
-    //             FocusingLooping();
-    //         }
-    //         return;
-    //     }
-    // }
 
     cv::Mat image16;
     if (ProcessBin && glMainCameraBinning != 1){
@@ -8443,13 +8451,6 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::INFO, DeviceType::FOCUSER);
     originalImage16.release();
 
-
-
-    // 将图像转换为16位格式
-    // image.convertTo(image, (image.depth() == 8) ? CV_16UC1 : CV_16UC1, 256, 0);
-
-    // 归一化图像
-    // cv::normalize(image, image, 0, 255, cv::NORM_MINMAX, CV_8U);
 
     // 删除所有以 "focuserPicture_" 开头的文件
     for (const auto & entry : std::filesystem::directory_iterator(vueDirectoryPath)) {
@@ -8527,19 +8528,20 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     {
         Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath +",image size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(roiAndFocuserInfo["ROI_x"]) + ":" + QString::number(roiAndFocuserInfo["ROI_y"]));
-        if (isAutoFocus){
-
-            AutoFocus(currentSelectStarPosition);
-        }
     
     }else{
         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
     }
     // 释放最终的图像内存
+    if (isAutoFocus){
+        autoFocus->setCaptureComplete(filename);
+    }
     image16.release();
     QTimer::singleShot(200, this, [this]() {
         focusLoopShooting(isFocusLoopShooting);
     });
+
+
 }
 
 // void MainWindow::AutoFocus(QPointF selectStarPosition){
@@ -8652,363 +8654,402 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 
 // }
 
-// 自动对焦精调函数 - 自适应方向的多点拟合方法
-void MainWindow::AutoFocus(QPointF selectStarPosition) {
-    if (dpFocuser == NULL || dpMainCamera == NULL) {
+void MainWindow::startAutoFocus(){
+    if (dpFocuser == NULL || dpMainCamera == NULL){
         Logger::Log("AutoFocus | 调焦器或相机未连接", LogLevel::WARNING, DeviceType::FOCUSER);
         isAutoFocus = false;
         emit wsThread->sendMessageToClient("AutoFocusOver:false");
         return;
     }
-    
-    // 静态变量用于跟踪精调状态
-    static int autoFocusStep = 0;                   // 当前精调步骤
-    static QVector<QPointF> currentSamplePointList; // 当前采样点列表(每个位置3个点)
-    static QVector<QPointF> allSamplePointList;     // 所有拟合用的采样点
-    static bool preferredDirection = true;          // 首选移动方向(true为向内)
-    static double initialHFR = 0;                   // 初始HFR值
-    static int startPosition = 0;                   // 起始位置
-    static int fineStep = 30;                       // 精调步长
-    static int consecutiveFailures = 0;             // 连续失焦次数
-    static bool directionDetermined = false;        // 是否已确定优先方向
-    static bool triedBothDirections = false;        // 是否已尝试两个方向
-    
-    int currentPosition = FocuserControl_getPosition();
-    
-    // 检查是否失焦(HFR=0)
-    if (selectStarPosition.y() == 0 || selectStarPosition.isNull()) {
-        Logger::Log("AutoFocus | 可能出现失焦，HFR=0", LogLevel::WARNING, DeviceType::FOCUSER);
-        consecutiveFailures++;
-        
-        // 需要连续3次检测到HFR=0才认为是真正失焦
-        if (consecutiveFailures < 3) {
-            Logger::Log("AutoFocus | 等待确认失焦状态 (" + std::to_string(consecutiveFailures) + "/3)", 
-                      LogLevel::INFO, DeviceType::FOCUSER);
-            return; // 等待更多样本确认
+    if (autoFocus == nullptr){
+        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, this);
+    }else{
+        autoFocus->stopAutoFocus();
+        autoFocus->deleteLater();
+        autoFocus = nullptr;
+        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, this);
+    }
+    autoFocus->setFocuserMinPosition(focuserMinPosition);
+    autoFocus->setFocuserMaxPosition(focuserMaxPosition);
+    autoFocus->setDefaultExposureTime(1000); // 1s曝光
+    autoFocus->setUseVirtualData(true); // 使用虚拟数据
+
+    connect(autoFocus, &AutoFocus::roiInfoChanged, this, [this](const QRect &roi){
+        if (roi.width() == 0 && roi.height() == 0){
+            roiAndFocuserInfo["ROI_x"] = 0;
+            roiAndFocuserInfo["ROI_y"] = 0;
+            roiAndFocuserInfo["BoxSideLength"] = 300;
+            autoFocuserIsROI = false;
+        }else{
+            roiAndFocuserInfo["ROI_x"] = roi.x();
+            roiAndFocuserInfo["ROI_y"] = roi.y();
+            roiAndFocuserInfo["BoxSideLength"] = roi.width();
+            autoFocuserIsROI = true;
         }
+    });
+
+    autoFocus->startAutoFocus();
+    isAutoFocus = true;
+    autoFocusStep = 0;
+}   
+
+// // 自动对焦精调函数 - 自适应方向的多点拟合方法
+// void MainWindow::AutoFocus(QPointF selectStarPosition) {
+//     if (dpFocuser == NULL || dpMainCamera == NULL) {
+//         Logger::Log("AutoFocus | 调焦器或相机未连接", LogLevel::WARNING, DeviceType::FOCUSER);
+//         isAutoFocus = false;
+//         emit wsThread->sendMessageToClient("AutoFocusOver:false");
+//         return;
+//     }
+    
+//     // 静态变量用于跟踪精调状态
+//     static int autoFocusStep = 0;                   // 当前精调步骤
+//     static QVector<QPointF> currentSamplePointList; // 当前采样点列表(每个位置3个点)
+//     static QVector<QPointF> allSamplePointList;     // 所有拟合用的采样点
+//     static bool preferredDirection = true;          // 首选移动方向(true为向内)
+//     static double initialHFR = 0;                   // 初始HFR值
+//     static int startPosition = 0;                   // 起始位置
+//     static int fineStep = 30;                       // 精调步长
+//     static int consecutiveFailures = 0;             // 连续失焦次数
+//     static bool directionDetermined = false;        // 是否已确定优先方向
+//     static bool triedBothDirections = false;        // 是否已尝试两个方向
+    
+//     int currentPosition = FocuserControl_getPosition();
+    
+//     // 检查是否失焦(HFR=0)
+//     if (selectStarPosition.y() == 0 || selectStarPosition.isNull()) {
+//         Logger::Log("AutoFocus | 可能出现失焦，HFR=0", LogLevel::WARNING, DeviceType::FOCUSER);
+//         consecutiveFailures++;
         
-        // 连续三次确认为失焦状态
-        Logger::Log("AutoFocus | 确认失焦状态，连续" + std::to_string(consecutiveFailures) + 
-                  "次HFR=0", LogLevel::WARNING, DeviceType::FOCUSER);
+//         // 需要连续3次检测到HFR=0才认为是真正失焦
+//         if (consecutiveFailures < 3) {
+//             Logger::Log("AutoFocus | 等待确认失焦状态 (" + std::to_string(consecutiveFailures) + "/3)", 
+//                       LogLevel::INFO, DeviceType::FOCUSER);
+//             return; // 等待更多样本确认
+//         }
         
-        // 如果已经有足够的数据点(至少3个)，尝试拟合曲线
-        if (allSamplePointList.size() >= 3) {
-            Logger::Log("AutoFocus | 使用现有" + std::to_string(allSamplePointList.size()) + 
-                      "个数据点尝试拟合", LogLevel::INFO, DeviceType::FOCUSER);
-            autoFocusStep = 99;  // 跳到拟合阶段
-        } 
-        // 如果只在一个方向上采样并失焦，尝试反向
-        else if (!triedBothDirections) {
-            // 返回起始位置
-            bool moveToStart = (currentPosition > startPosition) ? true : false;
-            int stepsToStart = abs(currentPosition - startPosition);
+//         // 连续三次确认为失焦状态
+//         Logger::Log("AutoFocus | 确认失焦状态，连续" + std::to_string(consecutiveFailures) + 
+//                   "次HFR=0", LogLevel::WARNING, DeviceType::FOCUSER);
+        
+//         // 如果已经有足够的数据点(至少3个)，尝试拟合曲线
+//         if (allSamplePointList.size() >= 3) {
+//             Logger::Log("AutoFocus | 使用现有" + std::to_string(allSamplePointList.size()) + 
+//                       "个数据点尝试拟合", LogLevel::INFO, DeviceType::FOCUSER);
+//             autoFocusStep = 99;  // 跳到拟合阶段
+//         } 
+//         // 如果只在一个方向上采样并失焦，尝试反向
+//         else if (!triedBothDirections) {
+//             // 返回起始位置
+//             bool moveToStart = (currentPosition > startPosition) ? true : false;
+//             int stepsToStart = abs(currentPosition - startPosition);
             
-            Logger::Log("AutoFocus | 当前方向出现失焦，返回起始位置尝试反向", 
-                      LogLevel::INFO, DeviceType::FOCUSER);
+//             Logger::Log("AutoFocus | 当前方向出现失焦，返回起始位置尝试反向", 
+//                       LogLevel::INFO, DeviceType::FOCUSER);
                       
-            // 移动回起始位置
-            indi_Client->setFocuserMoveDiretion(dpFocuser, moveToStart);
-            indi_Client->moveFocuserSteps(dpFocuser, stepsToStart);
+//             // 移动回起始位置
+//             indi_Client->setFocuserMoveDiretion(dpFocuser, moveToStart);
+//             indi_Client->moveFocuserSteps(dpFocuser, stepsToStart);
             
-            // 设置反向
-            preferredDirection = !preferredDirection;
-            triedBothDirections = true;
-            autoFocusStep = 1;  // 重置采样步骤
-            consecutiveFailures = 0;  // 重置失焦计数器
-            return;
-        }
-        // 如果两个方向都有问题，无法完成精调
-        else {
-            Logger::Log("AutoFocus | 两个方向都出现失焦，无法完成精调", 
-                      LogLevel::WARNING, DeviceType::FOCUSER);
-            isAutoFocus = false;
-            emit wsThread->sendMessageToClient("AutoFocusOver:false");
+//             // 设置反向
+//             preferredDirection = !preferredDirection;
+//             triedBothDirections = true;
+//             autoFocusStep = 1;  // 重置采样步骤
+//             consecutiveFailures = 0;  // 重置失焦计数器
+//             return;
+//         }
+//         // 如果两个方向都有问题，无法完成精调
+//         else {
+//             Logger::Log("AutoFocus | 两个方向都出现失焦，无法完成精调", 
+//                       LogLevel::WARNING, DeviceType::FOCUSER);
+//             isAutoFocus = false;
+//             emit wsThread->sendMessageToClient("AutoFocusOver:false");
             
-            // 重置所有状态
-            autoFocusStep = 0;
-            currentSamplePointList.clear();
-            allSamplePointList.clear();
-            directionDetermined = false;
-            triedBothDirections = false;
-            consecutiveFailures = 0;
-            return;
-        }
-    } else {
-        // 重置连续失焦计数器
-        consecutiveFailures = 0;
-    }
+//             // 重置所有状态
+//             autoFocusStep = 0;
+//             currentSamplePointList.clear();
+//             allSamplePointList.clear();
+//             directionDetermined = false;
+//             triedBothDirections = false;
+//             consecutiveFailures = 0;
+//             return;
+//         }
+//     } else {
+//         // 重置连续失焦计数器
+//         consecutiveFailures = 0;
+//     }
     
-    // 初始化阶段
-    if (autoFocusStep == 0) {
-        currentSamplePointList.clear();
-        allSamplePointList.clear();
-        initialHFR = selectStarPosition.y();
-        startPosition = currentPosition;
-        autoFocusStep = 1;
-        directionDetermined = false;
-        triedBothDirections = false;
-        consecutiveFailures = 0;
-        isAutoFocus = true;
+//     // 初始化阶段
+//     if (autoFocusStep == 0) {
+//         currentSamplePointList.clear();
+//         allSamplePointList.clear();
+//         initialHFR = selectStarPosition.y();
+//         startPosition = currentPosition;
+//         autoFocusStep = 1;
+//         directionDetermined = false;
+//         triedBothDirections = false;
+//         consecutiveFailures = 0;
+//         isAutoFocus = true;
         
-        Logger::Log("AutoFocus | 开始小范围精调，初始位置: " + std::to_string(startPosition) + 
-                  ", HFR: " + std::to_string(initialHFR), 
-                  LogLevel::INFO, DeviceType::FOCUSER);
+//         Logger::Log("AutoFocus | 开始小范围精调，初始位置: " + std::to_string(startPosition) + 
+//                   ", HFR: " + std::to_string(initialHFR), 
+//                   LogLevel::INFO, DeviceType::FOCUSER);
                   
-        // 添加第一个点到采样列表
-        currentSamplePointList.append(selectStarPosition);
-        return;
-    }
+//         // 添加第一个点到采样列表
+//         currentSamplePointList.append(selectStarPosition);
+//         return;
+//     }
     
-    // 采样阶段
-    if (autoFocusStep >= 1 && autoFocusStep <= 7) {
-        // 添加当前点到采样列表
-        currentSamplePointList.append(selectStarPosition);
+//     // 采样阶段
+//     if (autoFocusStep >= 1 && autoFocusStep <= 7) {
+//         // 添加当前点到采样列表
+//         currentSamplePointList.append(selectStarPosition);
         
-        // 当采集到3个点时，取平均值加入全局采样点列表
-        if (currentSamplePointList.size() == 3) {
-            // 验证这三个点的一致性
-            if (std::abs(currentSamplePointList[0].x() - currentSamplePointList[1].x()) < 5 && 
-                std::abs(currentSamplePointList[0].x() - currentSamplePointList[2].x()) < 5) {
+//         // 当采集到3个点时，取平均值加入全局采样点列表
+//         if (currentSamplePointList.size() == 3) {
+//             // 验证这三个点的一致性
+//             if (std::abs(currentSamplePointList[0].x() - currentSamplePointList[1].x()) < 5 && 
+//                 std::abs(currentSamplePointList[0].x() - currentSamplePointList[2].x()) < 5) {
                 
-                // 计算平均值
-                QPointF avgPoint(
-                    (currentSamplePointList[0].x() + currentSamplePointList[1].x() + currentSamplePointList[2].x()) / 3.0,
-                    (currentSamplePointList[0].y() + currentSamplePointList[1].y() + currentSamplePointList[2].y()) / 3.0
-                );
+//                 // 计算平均值
+//                 QPointF avgPoint(
+//                     (currentSamplePointList[0].x() + currentSamplePointList[1].x() + currentSamplePointList[2].x()) / 3.0,
+//                     (currentSamplePointList[0].y() + currentSamplePointList[1].y() + currentSamplePointList[2].y()) / 3.0
+//                 );
                 
-                allSamplePointList.append(avgPoint);
+//                 allSamplePointList.append(avgPoint);
                 
-                // 更新日志
-                Logger::Log("AutoFocus | 采集到第 " + std::to_string(allSamplePointList.size()) + 
-                          " 个点: 位置=" + std::to_string(avgPoint.x()) + 
-                          ", HFR=" + std::to_string(avgPoint.y()), 
-                          LogLevel::INFO, DeviceType::FOCUSER);
+//                 // 更新日志
+//                 Logger::Log("AutoFocus | 采集到第 " + std::to_string(allSamplePointList.size()) + 
+//                           " 个点: 位置=" + std::to_string(avgPoint.x()) + 
+//                           ", HFR=" + std::to_string(avgPoint.y()), 
+//                           LogLevel::INFO, DeviceType::FOCUSER);
                 
-                // 发送数据点用于可视化
-                emit wsThread->sendMessageToClient("addLineData_Point:" + 
-                                                 QString::number(avgPoint.x()) + "," + 
-                                                 QString::number(avgPoint.y()));
+//                 // 发送数据点用于可视化
+//                 emit wsThread->sendMessageToClient("addLineData_Point:" + 
+//                                                  QString::number(avgPoint.x()) + "," + 
+//                                                  QString::number(avgPoint.y()));
                 
-                // 清空当前采样点列表，准备下一个位置的采样
-                currentSamplePointList.clear();
+//                 // 清空当前采样点列表，准备下一个位置的采样
+//                 currentSamplePointList.clear();
                 
-                // 如果这是第二个点，确定后续移动的首选方向
-                if (allSamplePointList.size() == 2 && !directionDetermined) {
-                    // 比较两个点的HFR决定优先方向
-                    if (allSamplePointList[1].y() < allSamplePointList[0].y()) {
-                        // 如果第二个点的HFR更小，继续当前方向
-                        preferredDirection = (allSamplePointList[1].x() > allSamplePointList[0].x()) ? false : true;
-                    } else {
-                        // 否则反向
-                        preferredDirection = (allSamplePointList[1].x() > allSamplePointList[0].x()) ? true : false;
-                    }
+//                 // 如果这是第二个点，确定后续移动的首选方向
+//                 if (allSamplePointList.size() == 2 && !directionDetermined) {
+//                     // 比较两个点的HFR决定优先方向
+//                     if (allSamplePointList[1].y() < allSamplePointList[0].y()) {
+//                         // 如果第二个点的HFR更小，继续当前方向
+//                         preferredDirection = (allSamplePointList[1].x() > allSamplePointList[0].x()) ? false : true;
+//                     } else {
+//                         // 否则反向
+//                         preferredDirection = (allSamplePointList[1].x() > allSamplePointList[0].x()) ? true : false;
+//                     }
                     
-                    Logger::Log("AutoFocus | 确定优先方向: " + std::string(preferredDirection ? "向内" : "向外"), 
-                              LogLevel::INFO, DeviceType::FOCUSER);
+//                     Logger::Log("AutoFocus | 确定优先方向: " + std::string(preferredDirection ? "向内" : "向外"), 
+//                               LogLevel::INFO, DeviceType::FOCUSER);
                     
-                    directionDetermined = true;
-                }
+//                     directionDetermined = true;
+//                 }
                 
-                // 决定下一个采样点
-                if (allSamplePointList.size() < 7) {
-                    bool moveDirection;
-                    int moveSteps;
+//                 // 决定下一个采样点
+//                 if (allSamplePointList.size() < 7) {
+//                     bool moveDirection;
+//                     int moveSteps;
                     
-                    if (!directionDetermined) {
-                        // 第一次移动，尝试一个方向
-                        moveDirection = preferredDirection;
-                        moveSteps = fineStep;
-                    } else {
-                        // 基于确定的优先方向，继续采样
-                        moveDirection = preferredDirection;
-                        moveSteps = fineStep;
-                    }
+//                     if (!directionDetermined) {
+//                         // 第一次移动，尝试一个方向
+//                         moveDirection = preferredDirection;
+//                         moveSteps = fineStep;
+//                     } else {
+//                         // 基于确定的优先方向，继续采样
+//                         moveDirection = preferredDirection;
+//                         moveSteps = fineStep;
+//                     }
                     
-                    // 执行移动
-                    indi_Client->setFocuserMoveDiretion(dpFocuser, moveDirection);
-                    indi_Client->moveFocuserSteps(dpFocuser, moveSteps);
+//                     // 执行移动
+//                     indi_Client->setFocuserMoveDiretion(dpFocuser, moveDirection);
+//                     indi_Client->moveFocuserSteps(dpFocuser, moveSteps);
                     
-                    Logger::Log("AutoFocus | 移动到下一个采样点，方向: " + 
-                              std::string(moveDirection ? "向内" : "向外") + 
-                              "，步长: " + std::to_string(moveSteps), 
-                              LogLevel::INFO, DeviceType::FOCUSER);
-                } else {
-                    // 收集了足够的点，进入拟合阶段
-                    autoFocusStep = 99;
-                }
-            } else {
-                // 三个样本点不一致，重新采集
-                currentSamplePointList.clear();
-                Logger::Log("AutoFocus | 当前位置采样不稳定，重新采集", 
-                          LogLevel::WARNING, DeviceType::FOCUSER);
-            }
-        }
-    }
+//                     Logger::Log("AutoFocus | 移动到下一个采样点，方向: " + 
+//                               std::string(moveDirection ? "向内" : "向外") + 
+//                               "，步长: " + std::to_string(moveSteps), 
+//                               LogLevel::INFO, DeviceType::FOCUSER);
+//                 } else {
+//                     // 收集了足够的点，进入拟合阶段
+//                     autoFocusStep = 99;
+//                 }
+//             } else {
+//                 // 三个样本点不一致，重新采集
+//                 currentSamplePointList.clear();
+//                 Logger::Log("AutoFocus | 当前位置采样不稳定，重新采集", 
+//                           LogLevel::WARNING, DeviceType::FOCUSER);
+//             }
+//         }
+//     }
     
-    // 拟合分析阶段
-    if (autoFocusStep == 99) {
-        // 确保有足够的点进行拟合
-        if (allSamplePointList.size() < 3) {
-            Logger::Log("AutoFocus | 数据点不足，无法完成拟合", 
-                      LogLevel::WARNING, DeviceType::FOCUSER);
-            isAutoFocus = false;
-            emit wsThread->sendMessageToClient("AutoFocusOver:false");
+//     // 拟合分析阶段
+//     if (autoFocusStep == 99) {
+//         // 确保有足够的点进行拟合
+//         if (allSamplePointList.size() < 3) {
+//             Logger::Log("AutoFocus | 数据点不足，无法完成拟合", 
+//                       LogLevel::WARNING, DeviceType::FOCUSER);
+//             isAutoFocus = false;
+//             emit wsThread->sendMessageToClient("AutoFocusOver:false");
             
-            // 重置所有状态
-            autoFocusStep = 0;
-            currentSamplePointList.clear();
-            allSamplePointList.clear();
-            directionDetermined = false;
-            triedBothDirections = false;
-            consecutiveFailures = 0;
-            return;
-        }
+//             // 重置所有状态
+//             autoFocusStep = 0;
+//             currentSamplePointList.clear();
+//             allSamplePointList.clear();
+//             directionDetermined = false;
+//             triedBothDirections = false;
+//             consecutiveFailures = 0;
+//             return;
+//         }
         
-        // 使用鲁棒性更高的拟合方法
-        float a, b, c;
-        int isSuccess = fitQuadraticCurve(allSamplePointList, a, b, c);
+//         // 使用鲁棒性更高的拟合方法
+//         float a, b, c;
+//         int isSuccess = fitQuadraticCurve(allSamplePointList, a, b, c);
         
-        if (isSuccess == 0 && a > 0) {
-            // 计算最佳焦点位置
-            float bestPosition = -b / (2 * a);
-            float bestHFR = a * bestPosition * bestPosition + b * bestPosition + c;
+//         if (isSuccess == 0 && a > 0) {
+//             // 计算最佳焦点位置
+//             float bestPosition = -b / (2 * a);
+//             float bestHFR = a * bestPosition * bestPosition + b * bestPosition + c;
             
-            Logger::Log("AutoFocus | 找到最佳焦点位置: " + std::to_string(bestPosition) + 
-                      ", 预估HFR: " + std::to_string(bestHFR), 
-                      LogLevel::INFO, DeviceType::FOCUSER);
+//             Logger::Log("AutoFocus | 找到最佳焦点位置: " + std::to_string(bestPosition) + 
+//                       ", 预估HFR: " + std::to_string(bestHFR), 
+//                       LogLevel::INFO, DeviceType::FOCUSER);
             
-            // 可视化最佳点
-            emit wsThread->sendMessageToClient("addMinPointData_Point:" + 
-                                             QString::number(bestPosition) + ":" + 
-                                             QString::number(bestHFR));
+//             // 可视化最佳点
+//             emit wsThread->sendMessageToClient("addMinPointData_Point:" + 
+//                                              QString::number(bestPosition) + ":" + 
+//                                              QString::number(bestHFR));
             
-            // 生成曲线点
-            QString dataPoints = "addLineData_Point:";
-            for (int i = 0; i < allSamplePointList.size(); i++) {
-                float x = allSamplePointList[i].x();
-                float y = allSamplePointList[i].y();
-                dataPoints += QString::number(x) + "," + QString::number(y);
-                emit wsThread->sendMessageToClient(dataPoints);
-                dataPoints = "addLineData_Point:";
-            }
+//             // 生成曲线点
+//             QString dataPoints = "addLineData_Point:";
+//             for (int i = 0; i < allSamplePointList.size(); i++) {
+//                 float x = allSamplePointList[i].x();
+//                 float y = allSamplePointList[i].y();
+//                 dataPoints += QString::number(x) + "," + QString::number(y);
+//                 emit wsThread->sendMessageToClient(dataPoints);
+//                 dataPoints = "addLineData_Point:";
+//             }
             
-            // 移动到最佳位置
-            bool moveDirection = false;
-            int step = 0;
-            if (currentPosition > bestPosition){
-                moveDirection = true;  // 向内移动
-                step = currentPosition - bestPosition;
-            } else {
-                moveDirection = false;  // 向外移动
-                step = bestPosition - currentPosition;
-            }
+//             // 移动到最佳位置
+//             bool moveDirection = false;
+//             int step = 0;
+//             if (currentPosition > bestPosition){
+//                 moveDirection = true;  // 向内移动
+//                 step = currentPosition - bestPosition;
+//             } else {
+//                 moveDirection = false;  // 向外移动
+//                 step = bestPosition - currentPosition;
+//             }
             
-            // 执行移动到最佳位置
-            indi_Client->setFocuserMoveDiretion(dpFocuser, moveDirection);
-            indi_Client->moveFocuserSteps(dpFocuser, step);
+//             // 执行移动到最佳位置
+//             indi_Client->setFocuserMoveDiretion(dpFocuser, moveDirection);
+//             indi_Client->moveFocuserSteps(dpFocuser, step);
             
-            // 完成精调
-            isAutoFocus = false;
-            autoFocusStep = 0;  // 重置状态
-            currentSamplePointList.clear();
-            allSamplePointList.clear();
-            directionDetermined = false;
-            triedBothDirections = false;
-            consecutiveFailures = 0;
-            emit wsThread->sendMessageToClient("AutoFocusOver:true");
-        } else {
-            Logger::Log("AutoFocus | 拟合失败或曲线不是凸函数", 
-                      LogLevel::WARNING, DeviceType::FOCUSER);
-            isAutoFocus = false;
-            autoFocusStep = 0;  // 重置状态
-            currentSamplePointList.clear();
-            allSamplePointList.clear();
-            directionDetermined = false;
-            triedBothDirections = false;
-            consecutiveFailures = 0;
-            emit wsThread->sendMessageToClient("AutoFocusOver:false");
-        }
-    }
-}
+//             // 完成精调
+//             isAutoFocus = false;
+//             autoFocusStep = 0;  // 重置状态
+//             currentSamplePointList.clear();
+//             allSamplePointList.clear();
+//             directionDetermined = false;
+//             triedBothDirections = false;
+//             consecutiveFailures = 0;
+//             emit wsThread->sendMessageToClient("AutoFocusOver:true");
+//         } else {
+//             Logger::Log("AutoFocus | 拟合失败或曲线不是凸函数", 
+//                       LogLevel::WARNING, DeviceType::FOCUSER);
+//             isAutoFocus = false;
+//             autoFocusStep = 0;  // 重置状态
+//             currentSamplePointList.clear();
+//             allSamplePointList.clear();
+//             directionDetermined = false;
+//             triedBothDirections = false;
+//             consecutiveFailures = 0;
+//             emit wsThread->sendMessageToClient("AutoFocusOver:false");
+//         }
+//     }
+// }
 
-int MainWindow::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c) {
-    int n = data.size();
-    if (n < 3) {
-        qDebug() << "Not enough data points for fitting.";
-        return -1; // 数据点数量不足
-    }
+// int MainWindow::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c) {
+//     int n = data.size();
+//     if (n < 3) {
+//         qDebug() << "Not enough data points for fitting.";
+//         return -1; // 数据点数量不足
+//     }
 
-    cv::Mat A(n, 3, CV_32F);
-    cv::Mat B(n, 1, CV_32F);
-    cv::Mat W = cv::Mat::eye(n, n, CV_32F); // 权重矩阵
+//     cv::Mat A(n, 3, CV_32F);
+//     cv::Mat B(n, 1, CV_32F);
+//     cv::Mat W = cv::Mat::eye(n, n, CV_32F); // 权重矩阵
 
-    // 初始化矩阵 A 和 B
-    for (int i = 0; i < n; ++i) {
-        float x = data[i].x();
-        float y = data[i].y();
-        A.at<float>(i, 0) = x * x;
-        A.at<float>(i, 1) = x;
-        A.at<float>(i, 2) = 1;
-        B.at<float>(i, 0) = y;
-    }
+//     // 初始化矩阵 A 和 B
+//     for (int i = 0; i < n; ++i) {
+//         float x = data[i].x();
+//         float y = data[i].y();
+//         A.at<float>(i, 0) = x * x;
+//         A.at<float>(i, 1) = x;
+//         A.at<float>(i, 2) = 1;
+//         B.at<float>(i, 0) = y;
+//     }
 
-    cv::Mat X;
-    const float delta = 1.0; // Huber 损失的阈值
-    const int maxIterations = 10;
+//     cv::Mat X;
+//     const float delta = 1.0; // Huber 损失的阈值
+//     const int maxIterations = 10;
 
-    for (int iter = 0; iter < maxIterations; ++iter) {
-        cv::solve(W * A, W * B, X, cv::DECOMP_QR);
+//     for (int iter = 0; iter < maxIterations; ++iter) {
+//         cv::solve(W * A, W * B, X, cv::DECOMP_QR);
 
-        // 更新权重
-        for (int i = 0; i < n; ++i) {
-            float x = data[i].x();
-            float y = data[i].y();
-            float yFit = X.at<float>(0, 0) * x * x + X.at<float>(1, 0) * x + X.at<float>(2, 0);
-            float error = std::abs(y - yFit);
+//         // 更新权重
+//         for (int i = 0; i < n; ++i) {
+//             float x = data[i].x();
+//             float y = data[i].y();
+//             float yFit = X.at<float>(0, 0) * x * x + X.at<float>(1, 0) * x + X.at<float>(2, 0);
+//             float error = std::abs(y - yFit);
 
-            // 使用 Huber 损失函数更新权重
-            if (error <= delta) {
-                W.at<float>(i, i) = 1.0;
-            } else {
-                W.at<float>(i, i) = delta / error;
-            }
-        }
-    }
+//             // 使用 Huber 损失函数更新权重
+//             if (error <= delta) {
+//                 W.at<float>(i, i) = 1.0;
+//             } else {
+//                 W.at<float>(i, i) = delta / error;
+//             }
+//         }
+//     }
 
-    a = X.at<float>(0, 0);
-    b = X.at<float>(1, 0);
-    c = X.at<float>(2, 0);
+//     a = X.at<float>(0, 0);
+//     b = X.at<float>(1, 0);
+//     c = X.at<float>(2, 0);
 
-    Logger::Log("AutoFocus | 拟合曲线成功！ y = " + std::to_string(a) + "x^2 + " + std::to_string(b) + "x + " + std::to_string(c), LogLevel::INFO, DeviceType::FOCUSER);
+//     Logger::Log("AutoFocus | 拟合曲线成功！ y = " + std::to_string(a) + "x^2 + " + std::to_string(b) + "x + " + std::to_string(c), LogLevel::INFO, DeviceType::FOCUSER);
 
-    // 识别并去掉异常点
-    QVector<QPointF> filteredData;
-    for (int i = 0; i < n; ++i) {
-        if (W.at<float>(i, i) >= 0.5) { // 仅保留高权重点
-            filteredData.append(data[i]);
-        }
-    }
+//     // 识别并去掉异常点
+//     QVector<QPointF> filteredData;
+//     for (int i = 0; i < n; ++i) {
+//         if (W.at<float>(i, i) >= 0.5) { // 仅保留高权重点
+//             filteredData.append(data[i]);
+//         }
+//     }
 
-    // 如果去掉异常点后数据点不足，返回失败
-    if (filteredData.size() < 3) {
-        Logger::Log("AutoFocus | 拟合曲线过滤后数据点不足！", LogLevel::WARNING, DeviceType::FOCUSER);
-        return -1;
-    }
+//     // 如果去掉异常点后数据点不足，返回失败
+//     if (filteredData.size() < 3) {
+//         Logger::Log("AutoFocus | 拟合曲线过滤后数据点不足！", LogLevel::WARNING, DeviceType::FOCUSER);
+//         return -1;
+//     }
 
-    // 打印过滤后的数据点
-    // qDebug() << "Filtered data points:";
-    for (const QPointF &p : filteredData) {
-        // Logger::Log("AutoFocus | 拟合曲线过滤后的数据点: " + std::to_string(p.x()) + "," + std::to_string(p.y()), LogLevel::INFO, DeviceType::FOCUSER);
-    }
+//     // 打印过滤后的数据点
+//     // qDebug() << "Filtered data points:";
+//     for (const QPointF &p : filteredData) {
+//         // Logger::Log("AutoFocus | 拟合曲线过滤后的数据点: " + std::to_string(p.x()) + "," + std::to_string(p.y()), LogLevel::INFO, DeviceType::FOCUSER);
+//     }
 
-    // 重新拟合去掉异常点后的数据
-    // 避免递归调用
-    if (filteredData.size() != data.size()) {
-        return fitQuadraticCurve(filteredData, a, b, c);
-    }
+//     // 重新拟合去掉异常点后的数据
+//     // 避免递归调用
+//     if (filteredData.size() != data.size()) {
+//         return fitQuadraticCurve(filteredData, a, b, c);
+//     }
 
-    return 0;
-}
+//     return 0;
+// }
 
 void MainWindow::getFocuserLoopingState(){
     if (isFocusLoopShooting){
@@ -9042,378 +9083,378 @@ void MainWindow::sendRoiInfo(){
     emit wsThread->sendMessageToClient("SetVisibleArea:" + QString::number(visibleX) + ":" + QString::number(visibleY) + ":" + QString::number(scale));
     emit wsThread->sendMessageToClient("SetSelectStars:" + QString::number(selectStarX) + ":" + QString::number(selectStarY));
 }
-// 优化后的星点追踪算法
+// // 优化后的星点追踪算法
 
-// 计算两点之间的距离
-double MainWindow::calculateDistance(double x1, double y1, double x2, double y2) {
-    return std::sqrt(std::pow(x1 - x2, 2) + std::pow(y1 - y2, 2));
-}
+// // 计算两点之间的距离
+// double MainWindow::calculateDistance(double x1, double y1, double x2, double y2) {
+//     return std::sqrt(std::pow(x1 - x2, 2) + std::pow(y1 - y2, 2));
+// }
 
-// 计算星点之间的向量 - 使用更稳定的方法
-void MainWindow::calculateStarVector(){
-    int size = starMap.size();
-    if (size <= 1){
-        Logger::Log("calculateStarVector | starMap size <= 1, no need to calculate vectors", LogLevel::INFO, DeviceType::FOCUSER);
-        return;
-    }
+// // 计算星点之间的向量 - 使用更稳定的方法
+// void MainWindow::calculateStarVector(){
+//     int size = starMap.size();
+//     if (size <= 1){
+//         Logger::Log("calculateStarVector | starMap size <= 1, no need to calculate vectors", LogLevel::INFO, DeviceType::FOCUSER);
+//         return;
+//     }
 
-    for (auto &star : starMap){
-        if (star.status == "wait" && star.vector1_id == -1){
-            // 找到最近的3个星点，按距离排序（更稳定的方法）
-            std::vector<std::pair<double, int>> starDistances;
+//     for (auto &star : starMap){
+//         if (star.status == "wait" && star.vector1_id == -1){
+//             // 找到最近的3个星点，按距离排序（更稳定的方法）
+//             std::vector<std::pair<double, int>> starDistances;
             
-            for (int i = 0; i < size; i++){
-                if (i == star.id) continue;
-                double distance = calculateDistance(star.x, starMap[i].x, star.y, starMap[i].y);
-                starDistances.push_back({distance, i});
-            }
+//             for (int i = 0; i < size; i++){
+//                 if (i == star.id) continue;
+//                 double distance = calculateDistance(star.x, starMap[i].x, star.y, starMap[i].y);
+//                 starDistances.push_back({distance, i});
+//             }
             
-            // 按距离排序，选择最近的3个星点
-            std::sort(starDistances.begin(), starDistances.end());
+//             // 按距离排序，选择最近的3个星点
+//             std::sort(starDistances.begin(), starDistances.end());
             
-            int count = 0;
-            for (const auto& distancePair : starDistances){
-                if (count >= 3) break;
+//             int count = 0;
+//             for (const auto& distancePair : starDistances){
+//                 if (count >= 3) break;
                 
-                int nearbyId = distancePair.second;
-                QPointF vector = QPointF(star.x - starMap[nearbyId].x, star.y - starMap[nearbyId].y);
+//                 int nearbyId = distancePair.second;
+//                 QPointF vector = QPointF(star.x - starMap[nearbyId].x, star.y - starMap[nearbyId].y);
                 
-                switch (count) {
-                    case 0:
-                        star.vector1_id = nearbyId;
-                        star.vector1 = vector;
-                        break;
-                    case 1:
-                        star.vector2_id = nearbyId;
-                        star.vector2 = vector;
-                        break;
-                    case 2:
-                        star.vector3_id = nearbyId;
-                        star.vector3 = vector;
-                        break;
-                }
-                count++;
-            }
-            star.status = "find";
-        }
-    }
-}
+//                 switch (count) {
+//                     case 0:
+//                         star.vector1_id = nearbyId;
+//                         star.vector1 = vector;
+//                         break;
+//                     case 1:
+//                         star.vector2_id = nearbyId;
+//                         star.vector2 = vector;
+//                         break;
+//                     case 2:
+//                         star.vector3_id = nearbyId;
+//                         star.vector3 = vector;
+//                         break;
+//                 }
+//                 count++;
+//             }
+//             star.status = "find";
+//         }
+//     }
+// }
 
-// 改进的星点匹配算法 - 更灵活的匹配策略
-void MainWindow::compareStarVector(QList<FITSImage::Star> stars){
-    if (starMap.empty()){
-        Logger::Log("compareStarVector | starMap is empty", LogLevel::INFO, DeviceType::FOCUSER);
-        return;
-    }
+// // 改进的星点匹配算法 - 更灵活的匹配策略
+// void MainWindow::compareStarVector(QList<FITSImage::Star> stars){
+//     if (starMap.empty()){
+//         Logger::Log("compareStarVector | starMap is empty", LogLevel::INFO, DeviceType::FOCUSER);
+//         return;
+//     }
 
-    // 单星点情况的简化处理
-    if (starMap.size() == 1 && stars.size() == 1){
-        double distance = calculateDistance(stars[0].x, starMap[0].x, stars[0].y, starMap[0].y);
-        if (distance <= getAdaptiveThreshold()){
-            starMap[0].status = "find";
-            starMap[0].x = stars[0].x;
-            starMap[0].y = stars[0].y;
-            starMap[0].hfr = stars[0].HFR;
-        }
-        return;
-    }
+//     // 单星点情况的简化处理
+//     if (starMap.size() == 1 && stars.size() == 1){
+//         double distance = calculateDistance(stars[0].x, starMap[0].x, stars[0].y, starMap[0].y);
+//         if (distance <= getAdaptiveThreshold()){
+//             starMap[0].status = "find";
+//             starMap[0].x = stars[0].x;
+//             starMap[0].y = stars[0].y;
+//             starMap[0].hfr = stars[0].HFR;
+//         }
+//         return;
+//     }
 
-    Logger::Log("compareStarVector | 开始匹配多星点 ...", LogLevel::INFO, DeviceType::FOCUSER);
+//     Logger::Log("compareStarVector | 开始匹配多星点 ...", LogLevel::INFO, DeviceType::FOCUSER);
 
-    // 为每个检测到的星点计算匹配分数
-    for (const auto &star : stars){
-        double bestScore = -1;
-        int bestMatch = -1;
+//     // 为每个检测到的星点计算匹配分数
+//     for (const auto &star : stars){
+//         double bestScore = -1;
+//         int bestMatch = -1;
         
-        for (int i = 0; i < starMap.size(); i++){
-            if (starMap[i].status == "find") continue; // 已匹配的跳过
+//         for (int i = 0; i < starMap.size(); i++){
+//             if (starMap[i].status == "find") continue; // 已匹配的跳过
             
-            double score = calculateMatchScore(star, starMap[i], stars);
-            if (score > bestScore){
-                bestScore = score;
-                bestMatch = i;
-            }
-        }
+//             double score = calculateMatchScore(star, starMap[i], stars);
+//             if (score > bestScore){
+//                 bestScore = score;
+//                 bestMatch = i;
+//             }
+//         }
         
-        // 如果匹配分数足够高，则认为匹配成功
-        if (bestScore > getMinMatchScore() && bestMatch != -1){
-            starMap[bestMatch].status = "find";
-            starMap[bestMatch].x = star.x;
-            starMap[bestMatch].y = star.y;
-            starMap[bestMatch].hfr = star.HFR;
-            Logger::Log("匹配成功 - 星点ID: " + std::to_string(bestMatch) + ", 得分: " + std::to_string(bestScore), LogLevel::DEBUG, DeviceType::FOCUSER);
-        }
-    }
-}
+//         // 如果匹配分数足够高，则认为匹配成功
+//         if (bestScore > getMinMatchScore() && bestMatch != -1){
+//             starMap[bestMatch].status = "find";
+//             starMap[bestMatch].x = star.x;
+//             starMap[bestMatch].y = star.y;
+//             starMap[bestMatch].hfr = star.HFR;
+//             Logger::Log("匹配成功 - 星点ID: " + std::to_string(bestMatch) + ", 得分: " + std::to_string(bestScore), LogLevel::DEBUG, DeviceType::FOCUSER);
+//         }
+//     }
+// }
 
-// 计算匹配分数的新方法
-double MainWindow::calculateMatchScore(const FITSImage::Star& currentStar, const StarList& referenceStar, const QList<FITSImage::Star>& allStars){
-    double score = 0;
-    int validVectors = 0;
+// // 计算匹配分数的新方法
+// double MainWindow::calculateMatchScore(const FITSImage::Star& currentStar, const StarList& referenceStar, const QList<FITSImage::Star>& allStars){
+//     double score = 0;
+//     int validVectors = 0;
     
-    // 检查向量1
-    if (referenceStar.vector1_id != -1 && referenceStar.vector1_id < starMap.size()){
-        QPointF predictedPos = QPointF(currentStar.x - referenceStar.vector1.x(), currentStar.y - referenceStar.vector1.y());
-        if (findNearestStar(allStars, predictedPos) <= getAdaptiveThreshold()){
-            score += 1.0;
-        }
-        validVectors++;
-    }
+//     // 检查向量1
+//     if (referenceStar.vector1_id != -1 && referenceStar.vector1_id < starMap.size()){
+//         QPointF predictedPos = QPointF(currentStar.x - referenceStar.vector1.x(), currentStar.y - referenceStar.vector1.y());
+//         if (findNearestStar(allStars, predictedPos) <= getAdaptiveThreshold()){
+//             score += 1.0;
+//         }
+//         validVectors++;
+//     }
     
-    // 检查向量2
-    if (referenceStar.vector2_id != -1 && referenceStar.vector2_id < starMap.size()){
-        QPointF predictedPos = QPointF(currentStar.x - referenceStar.vector2.x(), currentStar.y - referenceStar.vector2.y());
-        if (findNearestStar(allStars, predictedPos) <= getAdaptiveThreshold()){
-            score += 1.0;
-        }
-        validVectors++;
-    }
+//     // 检查向量2
+//     if (referenceStar.vector2_id != -1 && referenceStar.vector2_id < starMap.size()){
+//         QPointF predictedPos = QPointF(currentStar.x - referenceStar.vector2.x(), currentStar.y - referenceStar.vector2.y());
+//         if (findNearestStar(allStars, predictedPos) <= getAdaptiveThreshold()){
+//             score += 1.0;
+//         }
+//         validVectors++;
+//     }
     
-    // 检查向量3
-    if (referenceStar.vector3_id != -1 && referenceStar.vector3_id < starMap.size()){
-        QPointF predictedPos = QPointF(currentStar.x - referenceStar.vector3.x(), currentStar.y - referenceStar.vector3.y());
-        if (findNearestStar(allStars, predictedPos) <= getAdaptiveThreshold()){
-            score += 1.0;
-        }
-        validVectors++;
-    }
+//     // 检查向量3
+//     if (referenceStar.vector3_id != -1 && referenceStar.vector3_id < starMap.size()){
+//         QPointF predictedPos = QPointF(currentStar.x - referenceStar.vector3.x(), currentStar.y - referenceStar.vector3.y());
+//         if (findNearestStar(allStars, predictedPos) <= getAdaptiveThreshold()){
+//             score += 1.0;
+//         }
+//         validVectors++;
+//     }
     
-    // 计算相对得分
-    if (validVectors > 0){
-        score = score / validVectors;
-    }
+//     // 计算相对得分
+//     if (validVectors > 0){
+//         score = score / validVectors;
+//     }
     
-    // 加入位置相似度权重
-    double positionSimilarity = 1.0 / (1.0 + calculateDistance(currentStar.x, referenceStar.x, currentStar.y, referenceStar.y) / 10.0);
-    score = score * 0.7 + positionSimilarity * 0.3;
+//     // 加入位置相似度权重
+//     double positionSimilarity = 1.0 / (1.0 + calculateDistance(currentStar.x, referenceStar.x, currentStar.y, referenceStar.y) / 10.0);
+//     score = score * 0.7 + positionSimilarity * 0.3;
     
-    return score;
-}
+//     return score;
+// }
 
-// 找到最近的星点距离
-double MainWindow::findNearestStar(const QList<FITSImage::Star>& stars, const QPointF& position){
-    double minDistance = std::numeric_limits<double>::max();
-    for (const auto& star : stars){
-        double distance = calculateDistance(star.x, position.x(), star.y, position.y());
-        if (distance < minDistance){
-            minDistance = distance;
-        }
-    }
-    return minDistance;
-}
+// // 找到最近的星点距离
+// double MainWindow::findNearestStar(const QList<FITSImage::Star>& stars, const QPointF& position){
+//     double minDistance = std::numeric_limits<double>::max();
+//     for (const auto& star : stars){
+//         double distance = calculateDistance(star.x, position.x(), star.y, position.y());
+//         if (distance < minDistance){
+//             minDistance = distance;
+//         }
+//     }
+//     return minDistance;
+// }
 
-// 自适应阈值计算
-double MainWindow::getAdaptiveThreshold(){
-    // 根据当前星点数量和图像条件调整阈值
-    double baseThreshold = 5.0;
-    double scaleFactor = 1.0;
+// // 自适应阈值计算
+// double MainWindow::getAdaptiveThreshold(){
+//     // 根据当前星点数量和图像条件调整阈值
+//     double baseThreshold = 5.0;
+//     double scaleFactor = 1.0;
     
-    if (starMap.size() <= 2){
-        scaleFactor = 1.5; // 星点少时放宽阈值
-    } else if (starMap.size() >= 10){
-        scaleFactor = 0.8; // 星点多时收紧阈值
-    }
+//     if (starMap.size() <= 2){
+//         scaleFactor = 1.5; // 星点少时放宽阈值
+//     } else if (starMap.size() >= 10){
+//         scaleFactor = 0.8; // 星点多时收紧阈值
+//     }
     
-    return baseThreshold * scaleFactor;
-}
+//     return baseThreshold * scaleFactor;
+// }
 
-// 获取最小匹配分数
-double MainWindow::getMinMatchScore(){
-    if (starMap.size() <= 2){
-        return 0.3; // 星点少时降低要求
-    } else if (starMap.size() >= 4){
-        return 0.6; // 星点多时提高要求
-    }
-    return 0.5; // 默认值
-}
+// // 获取最小匹配分数
+// double MainWindow::getMinMatchScore(){
+//     if (starMap.size() <= 2){
+//         return 0.3; // 星点少时降低要求
+//     } else if (starMap.size() >= 4){
+//         return 0.6; // 星点多时提高要求
+//     }
+//     return 0.5; // 默认值
+// }
 
-// 改进的星图更新方法
-int MainWindow::updateStarMapPosition(QList<FITSImage::Star> stars){
-    if (stars.size() <= 0){
-        Logger::Log("updateStarMapPosition | No star found in stars", LogLevel::INFO, DeviceType::FOCUSER);
-        return 0;
-    }
+// // 改进的星图更新方法
+// int MainWindow::updateStarMapPosition(QList<FITSImage::Star> stars){
+//     if (stars.size() <= 0){
+//         Logger::Log("updateStarMapPosition | No star found in stars", LogLevel::INFO, DeviceType::FOCUSER);
+//         return 0;
+//     }
     
-    if (starMap.size() <= 0){
-        // 初始化星图
-        int starId = 0;
-        for (const auto &star : stars){
-            StarList starList;
-            starList.id = starId++;
-            starList.x = star.x;
-            starList.y = star.y;
-            starList.hfr = star.HFR;
-            starList.focuserPosition = CurrentPosition;
-            starList.status = "wait";
-            starMap.push_back(starList);
-        }
-        calculateStarVector();
-        Logger::Log("初始化星图完成，星点数量: " + std::to_string(starMap.size()), LogLevel::INFO, DeviceType::FOCUSER);
-    }
-    else{
-        // 重置所有星点状态
-        for (auto &star : starMap){
-            star.status = "wait";
-            star.focuserPosition = CurrentPosition;
-        }
+//     if (starMap.size() <= 0){
+//         // 初始化星图
+//         int starId = 0;
+//         for (const auto &star : stars){
+//             StarList starList;
+//             starList.id = starId++;
+//             starList.x = star.x;
+//             starList.y = star.y;
+//             starList.hfr = star.HFR;
+//             starList.focuserPosition = CurrentPosition;
+//             starList.status = "wait";
+//             starMap.push_back(starList);
+//         }
+//         calculateStarVector();
+//         Logger::Log("初始化星图完成，星点数量: " + std::to_string(starMap.size()), LogLevel::INFO, DeviceType::FOCUSER);
+//     }
+//     else{
+//         // 重置所有星点状态
+//         for (auto &star : starMap){
+//             star.status = "wait";
+//             star.focuserPosition = CurrentPosition;
+//         }
         
-        // 优先更新选中的星点
-        if (selectStarInStarMapId >= 0 && selectStarInStarMapId < starMap.size()){
-            double minDistance = std::numeric_limits<double>::max();
-            int bestMatch = -1;
+//         // 优先更新选中的星点
+//         if (selectStarInStarMapId >= 0 && selectStarInStarMapId < starMap.size()){
+//             double minDistance = std::numeric_limits<double>::max();
+//             int bestMatch = -1;
             
-            for (int i = 0; i < stars.size(); i++){
-                double distance = calculateDistance(stars[i].x, starMap[selectStarInStarMapId].x, 
-                                                  stars[i].y, starMap[selectStarInStarMapId].y);
-                if (distance < minDistance){
-                    minDistance = distance;
-                    bestMatch = i;
-                }
-            }
+//             for (int i = 0; i < stars.size(); i++){
+//                 double distance = calculateDistance(stars[i].x, starMap[selectStarInStarMapId].x, 
+//                                                   stars[i].y, starMap[selectStarInStarMapId].y);
+//                 if (distance < minDistance){
+//                     minDistance = distance;
+//                     bestMatch = i;
+//                 }
+//             }
             
-            if (bestMatch != -1 && minDistance <= getAdaptiveThreshold()){
-                starMap[selectStarInStarMapId].x = stars[bestMatch].x;
-                starMap[selectStarInStarMapId].y = stars[bestMatch].y;
-                starMap[selectStarInStarMapId].hfr = stars[bestMatch].HFR;
-                starMap[selectStarInStarMapId].status = "find";
-                Logger::Log("优先匹配选中星点成功", LogLevel::DEBUG, DeviceType::FOCUSER);
-            }
-        }
+//             if (bestMatch != -1 && minDistance <= getAdaptiveThreshold()){
+//                 starMap[selectStarInStarMapId].x = stars[bestMatch].x;
+//                 starMap[selectStarInStarMapId].y = stars[bestMatch].y;
+//                 starMap[selectStarInStarMapId].hfr = stars[bestMatch].HFR;
+//                 starMap[selectStarInStarMapId].status = "find";
+//                 Logger::Log("优先匹配选中星点成功", LogLevel::DEBUG, DeviceType::FOCUSER);
+//             }
+//         }
         
-        // 匹配其他星点
-        compareStarVector(stars);
+//         // 匹配其他星点
+//         compareStarVector(stars);
         
-        // 统计匹配结果
-        int matchedCount = 0;
-        for (const auto& star : starMap){
-            if (star.status == "find"){
-                matchedCount++;
-            }
-        }
+//         // 统计匹配结果
+//         int matchedCount = 0;
+//         for (const auto& star : starMap){
+//             if (star.status == "find"){
+//                 matchedCount++;
+//             }
+//         }
         
-        Logger::Log("星点匹配完成 - 匹配数量: " + std::to_string(matchedCount) + "/" + std::to_string(starMap.size()), LogLevel::INFO, DeviceType::FOCUSER);
-    }
+//         Logger::Log("星点匹配完成 - 匹配数量: " + std::to_string(matchedCount) + "/" + std::to_string(starMap.size()), LogLevel::INFO, DeviceType::FOCUSER);
+//     }
     
-    return starMap.size();
-}
+//     return starMap.size();
+// }
 
-// 改进的星点选择方法
-QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
-    if (stars.size() <= 0){
-        Logger::Log("selectStar | No star found in stars", LogLevel::INFO, DeviceType::FOCUSER);
-        return QPointF(CurrentPosition, 0);
-    }
+// // 改进的星点选择方法
+// QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
+//     if (stars.size() <= 0){
+//         Logger::Log("selectStar | No star found in stars", LogLevel::INFO, DeviceType::FOCUSER);
+//         return QPointF(CurrentPosition, 0);
+//     }
     
-    // 更灵活的星点数量变化处理
-    if (std::abs(static_cast<int>(starMap.size()) - static_cast<int>(stars.size())) > 2){
-        starMapLossNum++;
-        if (starMapLossNum >= 3){ // 减少重建频率
-            Logger::Log("星点数量变化过大，重建星图", LogLevel::WARNING, DeviceType::FOCUSER);
-            starMap.clear();
-            starMapLossNum = 0;
-            selectStarInStarMapId = -1;
-            NewSelectStar = true;
-        }
-    } else {
-        starMapLossNum = 0;
-    }
+//     // 更灵活的星点数量变化处理
+//     if (std::abs(static_cast<int>(starMap.size()) - static_cast<int>(stars.size())) > 2){
+//         starMapLossNum++;
+//         if (starMapLossNum >= 3){ // 减少重建频率
+//             Logger::Log("星点数量变化过大，重建星图", LogLevel::WARNING, DeviceType::FOCUSER);
+//             starMap.clear();
+//             starMapLossNum = 0;
+//             selectStarInStarMapId = -1;
+//             NewSelectStar = true;
+//         }
+//     } else {
+//         starMapLossNum = 0;
+//     }
     
-    // 更新星图
-    updateStarMapPosition(stars);
+//     // 更新星图
+//     updateStarMapPosition(stars);
     
-    // 检查星图是否为空
-    if (starMap.empty()) {
-        Logger::Log("selectStar | Star map is empty after update", LogLevel::WARNING, DeviceType::FOCUSER);
-        return QPointF(CurrentPosition, 0);
-    }
+//     // 检查星图是否为空
+//     if (starMap.empty()) {
+//         Logger::Log("selectStar | Star map is empty after update", LogLevel::WARNING, DeviceType::FOCUSER);
+//         return QPointF(CurrentPosition, 0);
+//     }
     
-    // 选择星点逻辑
-    if (NewSelectStar){
-        selectStarInStarMapId = findBestStar();
-        NewSelectStar = false;
-        Logger::Log("选择新星点 ID: " + std::to_string(selectStarInStarMapId), LogLevel::INFO, DeviceType::FOCUSER);
-    }
+//     // 选择星点逻辑
+//     if (NewSelectStar){
+//         selectStarInStarMapId = findBestStar();
+//         NewSelectStar = false;
+//         Logger::Log("选择新星点 ID: " + std::to_string(selectStarInStarMapId), LogLevel::INFO, DeviceType::FOCUSER);
+//     }
     
-    // 验证选择的星点
-    if (selectStarInStarMapId < 0 || selectStarInStarMapId >= starMap.size()) {
-        Logger::Log("selectStar | Invalid star ID: " + std::to_string(selectStarInStarMapId), LogLevel::ERROR, DeviceType::FOCUSER);
-        selectStarInStarMapId = findBestStar();
-        if (selectStarInStarMapId < 0) {
-            return QPointF(CurrentPosition, 0);
-        }
-    }
+//     // 验证选择的星点
+//     if (selectStarInStarMapId < 0 || selectStarInStarMapId >= starMap.size()) {
+//         Logger::Log("selectStar | Invalid star ID: " + std::to_string(selectStarInStarMapId), LogLevel::ERROR, DeviceType::FOCUSER);
+//         selectStarInStarMapId = findBestStar();
+//         if (selectStarInStarMapId < 0) {
+//             return QPointF(CurrentPosition, 0);
+//         }
+//     }
     
-    // 返回结果
-    const auto& selectedStar = starMap[selectStarInStarMapId];
-    if (selectedStar.status == "find"){
-        roiAndFocuserInfo["SelectStarX"] = selectedStar.x;
-        roiAndFocuserInfo["SelectStarY"] = selectedStar.y;
-        roiAndFocuserInfo["SelectStarHFR"] = selectedStar.hfr;
-        Logger::Log("成功追踪星点 ID: " + std::to_string(selectedStar.id) + 
-                   ", 坐标: (" + std::to_string(selectedStar.x) + ", " + std::to_string(selectedStar.y) + ")" +
-                   ", HFR: " + std::to_string(selectedStar.hfr), LogLevel::INFO, DeviceType::FOCUSER);
-        return QPointF(selectedStar.focuserPosition, selectedStar.hfr);
-    } else {
-        Logger::Log("选中的星点丢失，尝试重新选择", LogLevel::WARNING, DeviceType::FOCUSER);
-        selectStarInStarMapId = findBestStar();
-        if (selectStarInStarMapId >= 0 && starMap[selectStarInStarMapId].status == "find"){
-            const auto& newStar = starMap[selectStarInStarMapId];
-            roiAndFocuserInfo["SelectStarX"] = newStar.x;
-            roiAndFocuserInfo["SelectStarY"] = newStar.y;
-            roiAndFocuserInfo["SelectStarHFR"] = newStar.hfr;
-            return QPointF(newStar.focuserPosition, newStar.hfr);
-        }
-        return QPointF(CurrentPosition, 0);
-    }
-}
+//     // 返回结果
+//     const auto& selectedStar = starMap[selectStarInStarMapId];
+//     if (selectedStar.status == "find"){
+//         roiAndFocuserInfo["SelectStarX"] = selectedStar.x;
+//         roiAndFocuserInfo["SelectStarY"] = selectedStar.y;
+//         roiAndFocuserInfo["SelectStarHFR"] = selectedStar.hfr;
+//         Logger::Log("成功追踪星点 ID: " + std::to_string(selectedStar.id) + 
+//                    ", 坐标: (" + std::to_string(selectedStar.x) + ", " + std::to_string(selectedStar.y) + ")" +
+//                    ", HFR: " + std::to_string(selectedStar.hfr), LogLevel::INFO, DeviceType::FOCUSER);
+//         return QPointF(selectedStar.focuserPosition, selectedStar.hfr);
+//     } else {
+//         Logger::Log("选中的星点丢失，尝试重新选择", LogLevel::WARNING, DeviceType::FOCUSER);
+//         selectStarInStarMapId = findBestStar();
+//         if (selectStarInStarMapId >= 0 && starMap[selectStarInStarMapId].status == "find"){
+//             const auto& newStar = starMap[selectStarInStarMapId];
+//             roiAndFocuserInfo["SelectStarX"] = newStar.x;
+//             roiAndFocuserInfo["SelectStarY"] = newStar.y;
+//             roiAndFocuserInfo["SelectStarHFR"] = newStar.hfr;
+//             return QPointF(newStar.focuserPosition, newStar.hfr);
+//         }
+//         return QPointF(CurrentPosition, 0);
+//     }
+// }
 
-// 寻找最佳星点的方法
-int MainWindow::findBestStar(){
-    double selectStarX = roiAndFocuserInfo["SelectStarX"];
-    double selectStarY = roiAndFocuserInfo["SelectStarY"];
+// // 寻找最佳星点的方法
+// int MainWindow::findBestStar(){
+//     double selectStarX = roiAndFocuserInfo["SelectStarX"];
+//     double selectStarY = roiAndFocuserInfo["SelectStarY"];
     
-    int bestStarId = -1;
-    double bestScore = -1;
+//     int bestStarId = -1;
+//     double bestScore = -1;
     
-    for (int i = 0; i < starMap.size(); i++){
-        if (starMap[i].status != "find") continue;
+//     for (int i = 0; i < starMap.size(); i++){
+//         if (starMap[i].status != "find") continue;
         
-        double score = 0;
+//         double score = 0;
         
-        // 如果有手动选择的坐标，优先考虑距离
-        if (selectStarX != -1 && selectStarY != -1){
-            double distance = calculateDistance(starMap[i].x, selectStarX, starMap[i].y, selectStarY);
-            score = 1.0 / (1.0 + distance / 10.0); // 距离越近得分越高
-        } else {
-            // 否则选择居中且HFR适中的星点
-            double centerX = BoxSideLength / 2.0;
-            double centerY = BoxSideLength / 2.0;
-            double centerDistance = calculateDistance(starMap[i].x, centerX, starMap[i].y, centerY);
-            double centerScore = 1.0 / (1.0 + centerDistance / 50.0);
+//         // 如果有手动选择的坐标，优先考虑距离
+//         if (selectStarX != -1 && selectStarY != -1){
+//             double distance = calculateDistance(starMap[i].x, selectStarX, starMap[i].y, selectStarY);
+//             score = 1.0 / (1.0 + distance / 10.0); // 距离越近得分越高
+//         } else {
+//             // 否则选择居中且HFR适中的星点
+//             double centerX = BoxSideLength / 2.0;
+//             double centerY = BoxSideLength / 2.0;
+//             double centerDistance = calculateDistance(starMap[i].x, centerX, starMap[i].y, centerY);
+//             double centerScore = 1.0 / (1.0 + centerDistance / 50.0);
             
-            // HFR分数（不要太大也不要太小）
-            double hfrScore = 1.0;
-            if (starMap[i].hfr > 0){
-                if (starMap[i].hfr < 1.0 || starMap[i].hfr > 10.0){
-                    hfrScore = 0.5;
-                } else if (starMap[i].hfr >= 2.0 && starMap[i].hfr <= 5.0){
-                    hfrScore = 1.0;
-                } else {
-                    hfrScore = 0.8;
-                }
-            }
+//             // HFR分数（不要太大也不要太小）
+//             double hfrScore = 1.0;
+//             if (starMap[i].hfr > 0){
+//                 if (starMap[i].hfr < 1.0 || starMap[i].hfr > 10.0){
+//                     hfrScore = 0.5;
+//                 } else if (starMap[i].hfr >= 2.0 && starMap[i].hfr <= 5.0){
+//                     hfrScore = 1.0;
+//                 } else {
+//                     hfrScore = 0.8;
+//                 }
+//             }
             
-            score = centerScore * 0.7 + hfrScore * 0.3;
-        }
+//             score = centerScore * 0.7 + hfrScore * 0.3;
+//         }
         
-        if (score > bestScore){
-            bestScore = score;
-            bestStarId = i;
-        }
-    }
+//         if (score > bestScore){
+//             bestScore = score;
+//             bestStarId = i;
+//         }
+//     }
     
-    return bestStarId;
-}
+//     return bestStarId;
+// }
 
 void MainWindow::updateCPUInfo()
 {
@@ -9578,8 +9619,8 @@ bool MainWindow::initPolarAlignment() {
     config.defaultExposureTime = 1000;    // 默认曝光时间1秒
     config.recoveryExposureTime = 5000;   // 恢复曝光时间5秒
     config.shortExposureTime = 500;       // 短曝光时间0.5秒
-    config.raRotationAngle = 5.0;       // RA轴每次移动10度
-    config.decRotationAngle = 5.0;       // DEC轴移动10度
+    config.raRotationAngle = 1.0;       // RA轴每次移动1度
+    config.decRotationAngle = 1.0;       // DEC轴移动1度
     config.maxRetryAttempts = 3;          // 最大重试3次
     config.captureAndAnalysisTimeout = 30000; // 拍摄和分析超时30秒
     config.movementTimeout = 15000;        // 移动超时15秒
@@ -9617,6 +9658,131 @@ bool MainWindow::initPolarAlignment() {
 }
 
 
+void MainWindow::focusMoveToMin(){
+    if (dpFocuser == nullptr){
+        Logger::Log("focusMoveToMin | dpFocuser is nullptr", LogLevel::ERROR, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:focuser is not connected");
+        return;
+    }
 
+    int min, max, step, value;
+    indi_Client->getFocuserRange(dpFocuser, min, max, step, value); // 获取焦点器范围
+    indi_Client->syncFocuserPosition(dpFocuser,(max+min)/2); // 同步焦点器位置到中间位置
+    emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+    // indi_Client->moveFocuserToAbsolutePosition(dpFocuser, min); // 移动到最小位置
+    indi_Client->setFocuserMoveDiretion(dpFocuser, true);
+    int steps = std::min(CurrentPosition-min,60000);  
+    indi_Client->moveFocuserSteps(dpFocuser, steps);
+    TargetPosition = CurrentPosition-steps;
+    focusMoveToMaxorMinTimer = new QTimer(this);
+    CurrentPosition = FocuserControl_getPosition();
+    lastPosition = CurrentPosition;
+    connect(focusMoveToMaxorMinTimer, &QTimer::timeout, this, [this,min]() {
+        CurrentPosition = FocuserControl_getPosition();
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        if (CurrentPosition == TargetPosition){
+            int min, max, step, value;
+            indi_Client->getFocuserRange(dpFocuser, min, max, step, value); // 获取焦点器范围
+            int steps = std::min(CurrentPosition - min,60000);
+            indi_Client->moveFocuserSteps(dpFocuser, steps);
+            TargetPosition = CurrentPosition-steps;
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+            return;
+        }
+        if (CurrentPosition == lastPosition){
+            indi_Client->abortFocuserMove(dpFocuser);
+            focusMoveToMaxorMinTimer->stop();
+            emit wsThread->sendMessageToClient("focusMoveFailed:check if the focuser is stuck or at the physical limit");
+            return;
+        }
 
+        lastPosition = CurrentPosition;
+    });
+    focusMoveToMaxorMinTimer->start(1000);
+    Logger::Log("focusMoveToMin | Started moving to minimum position: " + std::to_string(min), LogLevel::INFO, DeviceType::FOCUSER);
+}
+
+void MainWindow::focusMoveToMax(){
+    if (dpFocuser == nullptr){
+        Logger::Log("focusMoveToMax | dpFocuser is nullptr", LogLevel::ERROR, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:focuser is not connected");
+        return;
+    }
+    indi_Client->abortFocuserMove(dpFocuser);
+    int timeout = 0;
+    while (timeout <= 2){
+        CurrentPosition = FocuserControl_getPosition();
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        sleep(1);
+        timeout++;
+    }
+    CurrentPosition = FocuserControl_getPosition();
+    emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+    // 更新最小范围为当前位置
+    focuserMinPosition = CurrentPosition;
+    int min, max, step, value;
+    indi_Client->getFocuserRange(dpFocuser, min, max, step, value); // 获取焦点器范围
+    // indi_Client->moveFocuserToAbsolutePosition(dpFocuser, max); // 移动到最大位置
+    indi_Client->setFocuserMoveDiretion(dpFocuser, false);
+    int steps = std::min(max+CurrentPosition,60000);
+    indi_Client->moveFocuserSteps(dpFocuser, steps);
+    TargetPosition = CurrentPosition+steps;
+    if (focusMoveToMaxorMinTimer != nullptr){
+        focusMoveToMaxorMinTimer->stop();
+        focusMoveToMaxorMinTimer->deleteLater();
+        focusMoveToMaxorMinTimer = nullptr;
+    }
+    focusMoveToMaxorMinTimer = new QTimer(this);
+    CurrentPosition = FocuserControl_getPosition();
+    lastPosition = CurrentPosition;
+    connect(focusMoveToMaxorMinTimer, &QTimer::timeout, this, [this,max]() {
+        CurrentPosition = FocuserControl_getPosition();
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        if (CurrentPosition == TargetPosition){
+            int min, max, step, value;
+            indi_Client->getFocuserRange(dpFocuser, min, max, step, value); // 获取焦点器范围
+            int steps = std::min(max-CurrentPosition,60000);
+            indi_Client->moveFocuserSteps(dpFocuser, steps);
+            TargetPosition = CurrentPosition+steps;
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+            return;
+        }
+        if (CurrentPosition == lastPosition){
+            indi_Client->abortFocuserMove(dpFocuser);
+            focusMoveToMaxorMinTimer->stop();
+            emit wsThread->sendMessageToClient("focusMoveFailed:check if the focuser is stuck or at the physical limit");
+            return;
+        }
+        lastPosition = CurrentPosition;
+    });
+    focusMoveToMaxorMinTimer->start(1000);
+    Logger::Log("focusMoveToMax | Started moving to maximum position: " + std::to_string(max), LogLevel::INFO, DeviceType::FOCUSER);
+}
+
+void MainWindow::focusSetTravelRange(){
+    if (dpFocuser == nullptr){
+        Logger::Log("focusSetTravelRange | dpFocuser is nullptr", LogLevel::ERROR, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:focuser is not connected");
+        return;
+    }
+    if (focusMoveToMaxorMinTimer != nullptr){
+        focusMoveToMaxorMinTimer->stop();
+        focusMoveToMaxorMinTimer->deleteLater();
+        focusMoveToMaxorMinTimer = nullptr;
+    }
+    indi_Client->abortFocuserMove(dpFocuser);
+    int timeout = 0;
+    while (timeout <= 2){
+        CurrentPosition = FocuserControl_getPosition();
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        sleep(1);
+        timeout++;
+    }
+    CurrentPosition = FocuserControl_getPosition();
+    focuserMaxPosition = CurrentPosition;
+    emit wsThread->sendMessageToClient("focusSetTravelRangeSuccess");
+    emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition)+":"+QString::number(focuserMaxPosition));
+    Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
+    Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
+}
 
