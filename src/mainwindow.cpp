@@ -6775,6 +6775,68 @@ int MainWindow::ScheduleImageSave(QString name, int num)
     return 0;
 }
 
+int MainWindow::solveFailedImageSave()
+{
+    qDebug() << "CaptureImageSave...";
+
+    // createCaptureDirectory();
+    createsolveFailedImageDirectory();
+    const char *sourcePath = "/dev/shm/ccd_simulator.fits";
+
+    if (!QFile::exists("/dev/shm/ccd_simulator.fits"))
+    {
+        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
+    }
+
+    QString CaptureTime = Tools::getFitsCaptureTime("/dev/shm/ccd_simulator.fits");
+    CaptureTime.replace(QRegExp("[^a-zA-Z0-9]"), "_");
+    QString resultFileName = CaptureTime + ".fits";
+
+    std::time_t currentTime = std::time(nullptr);
+    std::tm *timeInfo = std::localtime(&currentTime);
+    char buffer[80];
+    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
+
+    // 指定目标目录
+    QString destinationDirectory = ImageSaveBaseDirectory + "/solveFailedImage";
+
+    QString destinationPath = destinationDirectory + "/" + buffer + "/" + resultFileName;
+
+    // 检查文件是否已存在
+    if (QFile::exists(destinationPath))
+    {
+        qWarning() << "The file already exists, there is no need to save it again:" << destinationPath;
+        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
+        return 0; // 或返回其他状态码
+    }
+
+    // 将QString转换为const char*
+    const char *destinationPathChar = destinationPath.toUtf8().constData();
+
+    std::ifstream sourceFile(sourcePath, std::ios::binary);
+    if (!sourceFile.is_open())
+    {
+        qWarning() << "Unable to open source file:" << sourcePath;
+        return 1;
+    }
+
+    std::ofstream destinationFile(destinationPathChar, std::ios::binary);
+    if (!destinationFile.is_open())
+    {
+        qWarning() << "Unable to create or open target file:" << destinationPathChar;
+        return 1;
+    }
+
+    destinationFile << sourceFile.rdbuf();
+
+    sourceFile.close();
+    destinationFile.close();
+
+    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
+    qDebug() << "CaptureImageSaveStatus Goto Complete...";
+    return 0;
+}
+
 bool MainWindow::directoryExists(const std::string &path)
 {
     struct stat info;
@@ -6871,6 +6933,50 @@ bool MainWindow::createCaptureDirectory()
     }
 }
 
+bool MainWindow::createsolveFailedImageDirectory()
+{
+    Logger::Log("createCaptureDirectory start ...", LogLevel::INFO, DeviceType::MAIN);
+    std::string basePath = ImageSaveBasePath + "/solveFailedImage/";
+
+    std::time_t currentTime = std::time(nullptr);
+    std::tm *timeInfo = std::localtime(&currentTime);
+    char buffer[80];
+    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
+    std::string folderName = basePath + buffer;
+
+    // // Check if directory already exists
+    // if (directoryExists(folderName)) {
+    //     std::cout << "Directory already exists: " << folderName << std::endl;
+    //     return true;
+    // }
+
+    // // Create directory
+    // int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    // if (status == 0) {
+    //     std::cout << "Directory created successfully: " << folderName << std::endl;
+    //     return true;
+    // } else {
+    //     std::cerr << "Failed to create directory: " << folderName << std::endl;
+    //     return false;
+    // }
+
+    // 如果目录不存在，则创建
+    if (!std::filesystem::exists(folderName))
+    {
+        if (std::filesystem::create_directory(folderName))
+        {
+            Logger::Log("createCaptureDirectory | Folder created successfully: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
+        }
+        else
+        {
+            Logger::Log("createCaptureDirectory | An error occurred while creating the folder.", LogLevel::INFO, DeviceType::MAIN);
+        }
+    }
+    else
+    {
+        Logger::Log("createCaptureDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
+    }
+}
 void MainWindow::getClientSettings()
 {
 
@@ -7129,6 +7235,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
                     if (result.RA_Degree == -1 && result.DEC_Degree == -1)
                     {
                         Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
+                        solveFailedImageSave();
                         emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
                     }
                     else
@@ -7284,9 +7391,11 @@ std::string MainWindow::GetAllFile()
     Logger::Log("GetAllFile start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string capturePath = ImageSaveBasePath + "/CaptureImage/";
     std::string planPath = ImageSaveBasePath + "/ScheduleImage/";
+    std::string solveFailedImagePath = ImageSaveBasePath + "/solveFailedImage/";
     std::string resultString;
     std::string captureString = "CaptureImage{";
     std::string planString = "ScheduleImage{";
+    std::string solveFailedImageString = "SolveFailedImage{";
 
     try
     {
@@ -7317,6 +7426,20 @@ std::string MainWindow::GetAllFile()
         {
             Logger::Log("GetAllFile | ScheduleImage directory does not exist or is not a directory: " + planPath, LogLevel::WARNING, DeviceType::MAIN);
         }
+        // 检查并处理 solveFailedImage 目录
+        if (std::filesystem::exists(solveFailedImagePath) && std::filesystem::is_directory(solveFailedImagePath))
+        {
+            for (const auto &entry : std::filesystem ::directory_iterator(solveFailedImagePath))
+            {
+                std::string fileName = entry.path().filename().string(); // 获取文件名（包含扩展名）
+                solveFailedImageString += fileName + ";";                // 拼接为字符串
+            }
+        }
+        else
+        {
+            Logger::Log("GetAllFile | SolveFailedImage directory does not exist or is not a directory: " + solveFailedImagePath, LogLevel::WARNING, DeviceType::MAIN);
+            // solveFailedImageString = "SolveFailedImage{}"; // 如果目录不存在，返回空字符串
+        }
     }
     catch (const std::filesystem::filesystem_error &e)
     {
@@ -7327,7 +7450,7 @@ std::string MainWindow::GetAllFile()
         Logger::Log("GetAllFile | General error: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
     }
 
-    resultString = captureString + "}:" + planString + '}';
+    resultString = captureString + "}:" + planString + '}' + solveFailedImageString + '}';
     Logger::Log("GetAllFile finish!", LogLevel::INFO, DeviceType::MAIN);
     return resultString;
 }

@@ -633,6 +633,16 @@ void Tools::makeImageFolder() {
             {
                 Logger::Log("makeImageFolder | Error occurred while creating ScheduleImage subfolders.", LogLevel::ERROR, DeviceType::MAIN);
             }
+             // 创建子文件夹 solveFailedImage
+            std::string solveFailedDirectory = directory + "/solveFailedImage";
+            if (std::filesystem::create_directory(solveFailedDirectory))
+            {
+                Logger::Log("makeImageFolder | Subfolder created successfully: " + solveFailedDirectory, LogLevel::INFO, DeviceType::MAIN);
+            }
+            else
+            {
+                Logger::Log("makeImageFolder | Error occurred while creating solveFailedImage subfolders.", LogLevel::ERROR, DeviceType::MAIN);
+            }
         }
         else
         {
