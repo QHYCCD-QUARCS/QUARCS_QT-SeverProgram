@@ -7114,7 +7114,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
             // 停止计时器，表示当前周期任务完成
             captureTimer.stop();
             // 根据是否循环解算，执行一次解算或继续循环解算
-            MainWindow::process_fixed();
+            // MainWindow::process_fixed();
             Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
 
             solveTimer.setSingleShot(true);  //设置定时器为单次触发
@@ -7148,10 +7148,12 @@ void MainWindow::TelescopeControl_SolveSYNC()
                             double a, b;
                             indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
                             Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
+                            emit wsThread->sendMessageToClient("SolveImageSucceeded");
                         }
                         else
                         {
                             Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
+                            emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
                             return;  // 如果望远镜未连接，记录日志并退出
                         }
                     }
