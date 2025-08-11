@@ -452,8 +452,8 @@ public:
     int SolveImageHeight = 0;
     int SolveImageWidth = 0;
 
-    //QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
-    QString SolveImageFileName ="/dev/shm/ccd_simulator_binned.fits";
+    QString SolveImageFileName = "/dev/shm/SolveImage.tiff";
+    // QString SolveImageFileName ="/dev/shm/ccd_simulator.fits";
     std::vector<SloveResults> SloveResultList;
 
     void ClearSloveResultList();
