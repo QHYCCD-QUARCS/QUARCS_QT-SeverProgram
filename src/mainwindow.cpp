@@ -891,7 +891,11 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts[0].trimmed() == "SolveSYNC")
     {
         Logger::Log("SolveSYNC ...", LogLevel::DEBUG, DeviceType::MAIN);
-
+        if (isSolveSYNC)
+        {
+            Logger::Log("SolveSYNC is already running", LogLevel::DEBUG, DeviceType::MAIN);
+            return;
+        }
         if (glFocalLength == 0)
         {
             emit wsThread->sendMessageToClient("FocalLengthError");
@@ -1525,6 +1529,26 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("getFocuserParameters ...", LogLevel::DEBUG, DeviceType::FOCUSER);
         emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
         Logger::Log("getFocuserParameters finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }
+    else if (parts[0].trimmed() == "getPolarAlignmentState")
+    {
+        Logger::Log("getPolarAlignmentState ...", LogLevel::DEBUG, DeviceType::MAIN);
+        if (polarAlignment != nullptr)
+        {
+            if (polarAlignment->isRunning())
+            {
+                // 1.获取当前状态
+                PolarAlignmentState currentState = polarAlignment->getCurrentState();
+                // 2.获取当前信息
+                QString currentStatusMessage = polarAlignment->getCurrentStatusMessage();
+                // 3.获取当前进度
+                int progressPercentage = polarAlignment->getProgressPercentage();
+                emit wsThread->sendMessageToClient("PolarAlignmentState:" + QString::number(static_cast<int>(currentState)) + ":" + currentStatusMessage + ":" + QString::number(progressPercentage));
+
+                // 4.获取当前所有可控数据
+                polarAlignment->sendValidAdjustmentGuideData();
+            }
+        }
     }
     else
     {
@@ -2824,6 +2848,80 @@ void MainWindow::continueConnectAllDeviceOnce()
                     else
                     {
                         Logger::Log("Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
+                        continue;
+                    }
+                    QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                    QString link = "";
+                    if (links.isEmpty())
+                    {
+                        Logger::Log("No link found for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    }
+                    else
+                    {
+                        for (int k = 0; k < links.size(); k++)
+                        {
+                            if (areFilesInSameDirectory(links[k], DevicePort))
+                            {
+                                if (link == "")
+                                {
+                                    link = links[k];
+                                }
+                                else
+                                {
+                                    Logger::Log("No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                    link = "";
+                                    break;
+                                }
+                            }
+                        }
+                        if (link == "")
+                        {
+                            Logger::Log("No Found link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            continue;
+                        }
+                        Logger::Log("Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        DevicePort = link;
+                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                        indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                        indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        waitTime = 0;
+                        while (waitTime < 5)
+                        {
+                            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+
+                            QThread::msleep(1000); // 等待1秒
+                            waitTime++;
+                            if (indi_Client->GetDeviceFromList(i)->isConnected())
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else if (!indi_Client->GetDeviceFromList(i)->isConnected() && indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE)
+        {
+            QString DevicePort;
+            indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+            // 检查指定的端口是否在/dev/serial/by-id目录下存在
+            QFile portFile(DevicePort);
+            if (!portFile.exists())
+            {
+                Logger::Log("Port " + DevicePort.toStdString() + " does not exist.", LogLevel::ERROR, DeviceType::MAIN);
+                // 获取所有连接的串口
+                QStringList connectedPorts = getConnectedSerialPorts();
+                for (int j = 0; j < connectedPorts.size(); j++)
+                {
+
+                    Logger::Log("Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    if (connectedPorts[j].contains("ttyUSB"))
+                    {
+                        Logger::Log("Found ttyUSB device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    }
+                    else
+                    {
+                        Logger::Log("Not found ttyUSB device", LogLevel::INFO, DeviceType::MAIN);
                         continue;
                     }
                     QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
@@ -7036,6 +7134,7 @@ void MainWindow::getClientSettings()
 
 void MainWindow::setClientSettings(QString ConfigName, QString ConfigValue)
 {
+
     Logger::Log("setClientSettings start ...", LogLevel::INFO, DeviceType::MAIN);
     std::string fileName = "config/config.ini";
 
@@ -7168,6 +7267,14 @@ int MainWindow::MoveFileToUSB()
 
 void MainWindow::TelescopeControl_SolveSYNC()
 {
+    // 在函数开始时断开之前的连接
+    disconnect(&captureTimer, &QTimer::timeout, nullptr, nullptr);
+    disconnect(&solveTimer, &QTimer::timeout, nullptr, nullptr);
+
+    // 停止之前的定时器
+    captureTimer.stop();
+    solveTimer.stop();
+
     if (dpMainCamera == NULL)
     {
         emit wsThread->sendMessageToClient("MainCameraNotConnect");
@@ -7193,6 +7300,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
         Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
         return; // 如果望远镜未连接，记录日志并退出
     }
+    isSolveSYNC = true;
     double Ra_Degree = Tools::HourToDegree(Ra_Hour); // 将赤经从小时转换为度
 
     Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
@@ -7210,6 +7318,8 @@ void MainWindow::TelescopeControl_SolveSYNC()
             EndCaptureAndSolve = false;
             INDI_AbortCapture();
             Logger::Log("TelescopeControl_SolveSYNC | End Capture And Solve!!!", LogLevel::INFO, DeviceType::MAIN);
+            isSolveSYNC = false;
+            emit wsThread->sendMessageToClient("SolveImagefailed"); 
             return;
         }
         Logger::Log("TelescopeControl_SolveSYNC | WaitForShootToComplete ..." , LogLevel::INFO, DeviceType::MAIN);
@@ -7237,6 +7347,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
                         Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
                         solveFailedImageSave();
                         emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
+                        isSolveSYNC = false;
                     }
                     else
                     {
@@ -7256,11 +7367,13 @@ void MainWindow::TelescopeControl_SolveSYNC()
                             indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
                             Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
                             emit wsThread->sendMessageToClient("SolveImageSucceeded");
+                            isSolveSYNC = false;
                         }
                         else
                         {
                             Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
                             emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
+                            isSolveSYNC = false;
                             return;  // 如果望远镜未连接，记录日志并退出
                         }
                     }
@@ -8348,6 +8461,84 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 else
                                 {
                                     Logger::Log("ConnectDriver | Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
+                                    continue;
+                                }
+                                QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                                QString link = "";
+                                if (links.isEmpty())
+                                {
+                                    Logger::Log("ConnectDriver | No link found for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                }
+                                else
+                                {
+                                    for (int k = 0; k < links.size(); k++)
+                                    {
+                                        if (areFilesInSameDirectory(links[k], DevicePort))
+                                        {
+                                            if (link == "")
+                                            {
+                                                link = links[k];
+                                            }
+                                            else
+                                            {
+                                                Logger::Log("ConnectDriver | No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                                link = "";
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (link == "")
+                                    {
+                                        Logger::Log("ConnectDriver | No Found link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                        continue;
+                                    }
+                                    Logger::Log("ConnectDriver | Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                    DevicePort = link;
+                                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                                    waitTime = 0;
+                                    connectState = false;
+                                    while (waitTime < 30)
+                                    {
+                                        Logger::Log("ConnectDriver | Wait for Connect" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
+                                        QThread::msleep(1000); // 等待1秒
+                                        waitTime++;
+                                        if (indi_Client->GetDeviceFromList(i)->isConnected())
+                                        {
+                                            connectState = true;
+                                            break;
+                                        }
+                                    }
+                                    if (connectState)
+                                    {
+                                        connectedDeviceIdList.push_back(i);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else if (DriverType == "Mount")
+                    {
+                        QString DevicePort;
+                        indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                        // 检查指定的端口是否在/dev/serial/by-id目录下存在
+                        QFile portFile(DevicePort);
+                        if (!portFile.exists())
+                        {
+                            Logger::Log("ConnectDriver | Port " + DevicePort.toStdString() + " does not exist.", LogLevel::WARNING, DeviceType::MAIN);
+                            // 获取所有连接的串口
+                            QStringList connectedPorts = getConnectedSerialPorts();
+                            for (int j = 0; j < connectedPorts.size(); j++)
+                            {
+                                Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                if (connectedPorts[j].contains("ttyUSB"))
+                                {
+                                    Logger::Log("ConnectDriver | Found ttyUSB device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                }
+                                else
+                                {
+                                    Logger::Log("ConnectDriver | Not found ttyUSB device", LogLevel::INFO, DeviceType::MAIN);
                                     continue;
                                 }
                                 QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
@@ -10625,6 +10816,7 @@ bool MainWindow::initPolarAlignment()
                                      .arg(offsetDec)
                                      .arg(adjustmentRa)
                                      .arg(adjustmentDec);
+                Logger::Log("目标点: " + std::to_string(targetRa) + ", " + std::to_string(targetDec), LogLevel::INFO, DeviceType::MAIN);
                 Logger::Log(logMsg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                 emit this->wsThread->sendMessageToClient(logMsg);
             });

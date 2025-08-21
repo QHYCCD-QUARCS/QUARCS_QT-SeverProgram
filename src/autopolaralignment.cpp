@@ -24,11 +24,15 @@ PolarAlignment::PolarAlignment(MyClient* indiServer, INDI::BaseDevice* dpMount, 
     , currentStatusMessage("空闲")
     , currentImageFile("")
     , currentAnalysisResult()
+    , currentSolveResult()
     , isCaptureEnd(false)
     , isSolveEnd(false)
     , lastCapturedImage("")
     , captureFailureCount(0)
     , solveFailureCount(0)
+    , cachedTargetRA(0.0)
+    , cachedTargetDEC(0.0)
+    , isTargetPositionCached(false)
 {
     // 初始化定时器为单次触发模式
     stateTimer.setSingleShot(true);
@@ -39,6 +43,13 @@ PolarAlignment::PolarAlignment(MyClient* indiServer, INDI::BaseDevice* dpMount, 
     connect(&stateTimer, &QTimer::timeout, this, &PolarAlignment::onStateTimerTimeout);
     connect(&captureAndAnalysisTimer, &QTimer::timeout, this, &PolarAlignment::onCaptureAndAnalysisTimerTimeout);
     // connect(&movementTimer, &QTimer::timeout, this, &PolarAlignment::onMovementTimerTimeout);
+    
+    // 初始化result结构体，避免NaN问题
+    result.isSuccessful = false;
+    result.raDeviation = 0.0;
+    result.decDeviation = 0.0;
+    result.totalDeviation = 0.0;
+    result.errorMessage = "";
     
     Logger::Log("PolarAlignment: 极轴校准系统初始化完成", LogLevel::INFO, DeviceType::MAIN);
     testimage = 0;
@@ -62,6 +73,18 @@ bool PolarAlignment::startPolarAlignment()
         return false;
     }
     
+    // 验证地理位置配置
+    if (std::abs(config.latitude) > 90.0 || std::abs(config.longitude) > 180.0) {
+        Logger::Log("PolarAlignment: 地理位置配置无效 - 纬度: " + std::to_string(config.latitude) + 
+                    "°, 经度: " + std::to_string(config.longitude) + "°", LogLevel::ERROR, DeviceType::MAIN);
+        result.isSuccessful = false;
+        result.errorMessage = "地理位置配置无效，请检查纬度和经度设置";
+        return false;
+    }
+    
+    Logger::Log("PolarAlignment: 地理位置配置验证通过 - 纬度: " + std::to_string(config.latitude) + 
+                "°, 经度: " + std::to_string(config.longitude) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
     // 初始化校准状态和参数
     currentState = PolarAlignmentState::INITIALIZING;
     currentMeasurementIndex = 0;
@@ -81,6 +104,12 @@ bool PolarAlignment::startPolarAlignment()
     captureFailureCount = 0;
     solveFailureCount = 0;
     
+    // 重置目标位置缓存，每次校准都重新计算
+    isTargetPositionCached = false;
+    cachedTargetRA = 0.0;
+    cachedTargetDEC = 0.0;
+    
+    Logger::Log("PolarAlignment: 校准开始，目标点已归零", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("PolarAlignment: 开始自动极轴校准流程", LogLevel::INFO, DeviceType::MAIN);
     emit stateChanged(currentState, "开始自动极轴校准...",0);
     // emit statusUpdated("开始自动极轴校准...");
@@ -168,6 +197,18 @@ PolarAlignmentState PolarAlignment::getCurrentState() const
     return currentState;
 }
 
+QString PolarAlignment::getCurrentStatusMessage() const
+{
+    QMutexLocker locker(&stateMutex);
+    return currentStatusMessage;
+}
+
+int PolarAlignment::getProgressPercentage() const
+{
+    QMutexLocker locker(&stateMutex);
+    return progressPercentage;
+}
+
 bool PolarAlignment::isRunning() const
 {
     QMutexLocker locker(&stateMutex);
@@ -225,6 +266,8 @@ void PolarAlignment::onMovementTimerTimeout()
     Logger::Log("PolarAlignment: 望远镜移动超时", LogLevel::WARNING, DeviceType::MAIN);
     setState(PolarAlignmentState::FAILED);
 }
+
+
 
 void PolarAlignment::setState(PolarAlignmentState newState)
 {
@@ -412,6 +455,13 @@ void PolarAlignment::processCurrentState()
         case PolarAlignmentState::FIRST_CAPTURE:
             if (captureAndAnalyze(1)) {
                 setState(PolarAlignmentState::MOVING_RA_FIRST);
+                if (measurements.size() >= 1) {
+                    emit adjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
+                            measurements[0].RA_1, measurements[0].RA_0, 
+                            measurements[0].DEC_2, measurements[0].DEC_1, 
+                            -1, -1, 0.0, 0.0, 
+                            "", "");
+                }
             } else {
                 // 检查是否是拍摄失败导致的退出
                 if (captureFailureCount >= 2) {
@@ -426,17 +476,30 @@ void PolarAlignment::processCurrentState()
         case PolarAlignmentState::FIRST_RECOVERY:
             if (captureAndAnalyze(2)) {
                 setState(PolarAlignmentState::MOVING_RA_FIRST);
+                if (measurements.size() >= 1) {
+                    emit adjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
+                            measurements[0].RA_1, measurements[0].RA_0, 
+                            measurements[0].DEC_2, measurements[0].DEC_1, 
+                            -1, -1, 0.0, 0.0, 
+                            "", "");
+                }
             } else {
                 // 检查是否是拍摄失败导致的退出
                 if (captureFailureCount >= 2) {
                     // 拍摄失败，直接退出
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，继续重试
+                    // 解析失败，继续重试，增加重试次数
                     currentRetryAttempt++;
-                    if (currentRetryAttempt >= config.maxRetryAttempts) {
-                        setState(PolarAlignmentState::FAILED);
+                    if (currentRetryAttempt >= config.maxRetryAttempts * 2) { // 增加重试次数
+                        Logger::Log("PolarAlignment: 第一次恢复重试次数过多，尝试调整角度", LogLevel::WARNING, DeviceType::MAIN);
+                        // 调整角度后重新开始
+                        currentRAAngle *= 0.8;
+                        currentRetryAttempt = 0;
+                        setState(PolarAlignmentState::FIRST_CAPTURE);
                     } else {
+                        Logger::Log("PolarAlignment: 第一次恢复重试，当前次数: " + std::to_string(currentRetryAttempt) + 
+                                    "/" + std::to_string(config.maxRetryAttempts * 2), LogLevel::INFO, DeviceType::MAIN);
                         setState(PolarAlignmentState::FIRST_RECOVERY);
                     }
                 }
@@ -454,6 +517,13 @@ void PolarAlignment::processCurrentState()
         case PolarAlignmentState::SECOND_CAPTURE:
             if (captureAndAnalyze(1)) {
                 setState(PolarAlignmentState::MOVING_RA_SECOND);
+                if (measurements.size() >= 2) {
+                    emit adjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
+                            measurements[1].RA_1, measurements[1].RA_0, 
+                            measurements[1].DEC_2, measurements[1].DEC_1, 
+                            -1, -1, 0.0, 0.0, 
+                            "", "");
+                }
             } else {
                 // 检查是否是拍摄失败导致的退出
                 if (captureFailureCount >= 2) {
@@ -468,17 +538,30 @@ void PolarAlignment::processCurrentState()
         case PolarAlignmentState::SECOND_RECOVERY:
             if (captureAndAnalyze(2)) {
                 setState(PolarAlignmentState::MOVING_RA_SECOND);
+                if (measurements.size() >= 2) {
+                    emit adjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
+                            measurements[1].RA_1, measurements[1].RA_0, 
+                            measurements[1].DEC_2, measurements[1].DEC_1, 
+                            -1, -1, 0.0, 0.0, 
+                            "", "");
+                }
             } else {
                 // 检查是否是拍摄失败导致的退出
                 if (captureFailureCount >= 2) {
                     // 拍摄失败，直接退出
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，继续重试
+                    // 解析失败，继续重试，增加重试次数
                     currentRetryAttempt++;
-                    if (currentRetryAttempt >= config.maxRetryAttempts) {
-                        setState(PolarAlignmentState::FAILED);
+                    if (currentRetryAttempt >= config.maxRetryAttempts * 2) { // 增加重试次数
+                        Logger::Log("PolarAlignment: 第二次恢复重试次数过多，尝试调整角度", LogLevel::WARNING, DeviceType::MAIN);
+                        // 调整角度后重新开始
+                        currentRAAngle *= 0.8;
+                        currentRetryAttempt = 0;
+                        setState(PolarAlignmentState::SECOND_CAPTURE);
                     } else {
+                        Logger::Log("PolarAlignment: 第二次恢复重试，当前次数: " + std::to_string(currentRetryAttempt) + 
+                                    "/" + std::to_string(config.maxRetryAttempts * 2), LogLevel::INFO, DeviceType::MAIN);
                         setState(PolarAlignmentState::SECOND_RECOVERY);
                     }
                 }
@@ -496,6 +579,13 @@ void PolarAlignment::processCurrentState()
         case PolarAlignmentState::THIRD_CAPTURE:
             if (captureAndAnalyze(1)) {
                 setState(PolarAlignmentState::CALCULATING_DEVIATION);
+                if (measurements.size() >= 3) {
+                    emit adjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
+                            measurements[2].RA_1, measurements[2].RA_0, 
+                            measurements[2].DEC_2, measurements[2].DEC_1, 
+                            -1, -1, 0.0, 0.0, 
+                            "", "");
+                }
             } else {
                 // 检查是否是拍摄失败导致的退出
                 if (captureFailureCount >= 2) {
@@ -510,17 +600,30 @@ void PolarAlignment::processCurrentState()
         case PolarAlignmentState::THIRD_RECOVERY:
             if (captureAndAnalyze(2)) {
                 setState(PolarAlignmentState::CALCULATING_DEVIATION);
+                if (measurements.size() >= 3) {
+                    emit adjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
+                            measurements[2].RA_1, measurements[2].RA_0, 
+                            measurements[2].DEC_2, measurements[2].DEC_1, 
+                            -1, -1, 0.0, 0.0, 
+                            "", "");
+                }
             } else {
                 // 检查是否是拍摄失败导致的退出
                 if (captureFailureCount >= 2) {
                     // 拍摄失败，直接退出
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，继续重试
+                    // 解析失败，继续重试，增加重试次数
                     currentRetryAttempt++;
-                    if (currentRetryAttempt >= config.maxRetryAttempts) {
-                        setState(PolarAlignmentState::FAILED);
+                    if (currentRetryAttempt >= config.maxRetryAttempts * 2) { // 增加重试次数
+                        Logger::Log("PolarAlignment: 第三次恢复重试次数过多，尝试调整角度", LogLevel::WARNING, DeviceType::MAIN);
+                        // 调整角度后重新开始
+                        currentRAAngle *= 0.8;
+                        currentRetryAttempt = 0;
+                        setState(PolarAlignmentState::THIRD_CAPTURE);
                     } else {
+                        Logger::Log("PolarAlignment: 第三次恢复重试，当前次数: " + std::to_string(currentRetryAttempt) + 
+                                    "/" + std::to_string(config.maxRetryAttempts * 2), LogLevel::INFO, DeviceType::MAIN);
                         setState(PolarAlignmentState::THIRD_RECOVERY);
                     }
                 }
@@ -534,10 +637,123 @@ void PolarAlignment::processCurrentState()
             }
             break;
         case PolarAlignmentState::GUIDING_ADJUSTMENT:
-            if (guideUserAdjustment()) {
-                setState(PolarAlignmentState::FINAL_VERIFICATION);
-            } else {
-                setState(PolarAlignmentState::GUIDING_ADJUSTMENT);
+            {
+                static int adjustmentAttempts = 0;
+                
+                adjustmentAttempts++;
+                Logger::Log("PolarAlignment: 开始第 " + std::to_string(adjustmentAttempts) + " 次调整尝试", LogLevel::INFO, DeviceType::MAIN);
+                
+                // 进行验证拍摄和分析
+                if (captureAndAnalyze(1)) {
+                    SloveResults verificationResult = measurements.last();
+                    Logger::Log("PolarAlignment: 验证拍摄成功 - RA: " + std::to_string(verificationResult.RA_Degree) + 
+                                "°, DEC: " + std::to_string(verificationResult.DEC_Degree) + "°", LogLevel::INFO, DeviceType::MAIN);
+                    
+                    // 重新计算偏差，检查调整效果
+                    if (measurements.size() >= 3) {
+                        // 使用跟踪的当前位置参数
+                        double currentRA = currentRAPosition;
+                        double currentDEC = currentDECPosition;
+                        
+                        Logger::Log("PolarAlignment: 使用跟踪的当前位置 - RA: " + std::to_string(currentRA) + 
+                                    "°, DEC: " + std::to_string(currentDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+                        
+                        double targetRA, targetDEC;
+                        
+                        // 检查是否已有目标点（目标点为0表示尚未计算）
+                        if (cachedTargetRA == 0.0 && cachedTargetDEC == 0.0) {
+                            // 第一次调整：需要先计算目标点
+                            Logger::Log("PolarAlignment: 调整阶段目标点为0，使用当前位置+偏差计算目标点", LogLevel::INFO, DeviceType::MAIN);
+                            
+                            // 使用当前位置 + 原始偏差计算固定目标点
+                            targetRA = currentRA + result.raDeviation;
+                            targetDEC = currentDEC + result.decDeviation;
+                            
+                            // 确保RA在0-360度范围内
+                            while (targetRA < 0) targetRA += 360.0;
+                            while (targetRA >= 360.0) targetRA -= 360.0;
+                            
+                            // 确保DEC在-90到90度范围内
+                            if (targetDEC > 90.0) targetDEC = 90.0;
+                            if (targetDEC < -90.0) targetDEC = -90.0;
+                            
+                            // 缓存目标位置
+                            cachedTargetRA = targetRA;
+                            cachedTargetDEC = targetDEC;
+                            
+                            Logger::Log("PolarAlignment: 调整阶段首次计算目标位置 - RA: " + std::to_string(targetRA) + 
+                                        "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+                        } else {
+                            // 使用缓存的固定目标位置
+                            targetRA = cachedTargetRA;
+                            targetDEC = cachedTargetDEC;
+                        }
+                        
+                        Logger::Log("PolarAlignment: 目标点（固定）- RA: " + std::to_string(targetRA) + 
+                                    "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+                        
+                        // 计算新偏差：目标位置 - 当前位置
+                        // 这个偏差指示需要移动的方向和距离
+                        double raDifference = targetRA - currentRA;
+                        double decDifference = targetDEC - currentDEC;
+                        
+                        // 处理RA的周期性（0-360度）
+                        while (raDifference > 180.0) raDifference -= 360.0;
+                        while (raDifference < -180.0) raDifference += 360.0;
+                        
+                        // 新的偏差就是当前位置与目标点的差值
+                        double newAzimuthDeviation = raDifference;
+                        double newAltitudeDeviation = decDifference;
+                        double newTotalDeviation = calculateTotalDeviation(newAzimuthDeviation, newAltitudeDeviation);
+                        
+                        Logger::Log("PolarAlignment: 调整后新偏差 - 方位角: " + std::to_string(newAzimuthDeviation) + 
+                                    "°, 高度角: " + std::to_string(newAltitudeDeviation) + 
+                                    "°, 总偏差: " + std::to_string(newTotalDeviation) + "°", LogLevel::INFO, DeviceType::MAIN);
+                        
+                        // 生成新的调整建议
+                        QString adjustmentRa, adjustmentDec;
+                        QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
+                        Logger::Log("PolarAlignment: 新的调整指导: " + adjustmentGuide.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            
+                        // 使用当前解析的完整结果数据
+                        emit adjustmentGuideData(currentRA, currentDEC,
+                                                currentSolveResult.RA_1, currentSolveResult.RA_0, 
+                                                currentSolveResult.DEC_2, currentSolveResult.DEC_1, 
+                                                targetRA, targetDEC, newAzimuthDeviation, newAltitudeDeviation, 
+                                                adjustmentRa, adjustmentDec);
+
+                        // 检查是否达到精度要求
+                        double precisionThreshold = config.finalVerificationThreshold;
+                        if (newTotalDeviation < precisionThreshold) {
+                            Logger::Log("PolarAlignment: 调整验证成功，精度达标: " + std::to_string(newTotalDeviation) + 
+                                        "° < " + std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
+                            
+                            // 更新结果
+                            result.raDeviation = newAzimuthDeviation;
+                            result.decDeviation = newAltitudeDeviation;
+                            result.totalDeviation = newTotalDeviation;
+                            
+                            // 重置调整计数
+                            adjustmentAttempts = 0;
+                            setState(PolarAlignmentState::FINAL_VERIFICATION);
+                        } else {
+                            Logger::Log("PolarAlignment: 调整验证失败，精度不足: " + std::to_string(newTotalDeviation) + 
+                                        "° >= " + std::to_string(precisionThreshold) + "°，继续调整", LogLevel::WARNING, DeviceType::MAIN);
+                            
+                            // 继续调整，设置定时器
+                            if (isRunningFlag && !isPausedFlag) {
+                                stateTimer.start(3000); // 3秒后继续下一次调整
+                            }
+                        }
+                    } else {
+                        Logger::Log("PolarAlignment: 测量数据不足，无法验证", LogLevel::WARNING, DeviceType::MAIN);
+                    }
+                } else {
+                    Logger::Log("PolarAlignment: 验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
+                    if (isRunningFlag && !isPausedFlag) {
+                        stateTimer.start(2000); // 2秒后重试
+                    }
+                }
             }
             break;
         case PolarAlignmentState::FINAL_VERIFICATION:
@@ -817,15 +1033,18 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
         solveFailureCount++;
         currentRetryAttempt = attempt;
         
-        // 解析失败时，修正RA角度并重新尝试
-        if (solveFailureCount >= 1) {
-            Logger::Log("PolarAlignment: 解析失败，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
+        // 解析失败时，增加重试次数限制，允许更多重试
+        if (solveFailureCount >= config.maxRetryAttempts) {
+            Logger::Log("PolarAlignment: 解析失败次数过多，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
             currentRAAngle *= 0.8; // 减小RA角度
             solveFailureCount = 0; // 重置解析失败计数
             return false; // 返回false让状态机重新尝试
         }
         
-        return false;
+        // 解析失败但未达到最大重试次数，继续重试
+        Logger::Log("PolarAlignment: 解析失败，当前失败次数: " + std::to_string(solveFailureCount) + 
+                    "/" + std::to_string(config.maxRetryAttempts) + "，继续重试", LogLevel::WARNING, DeviceType::MAIN);
+        return false; // 返回false让状态机重新尝试
     }
     
     // 等待解析完成
@@ -834,15 +1053,18 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
         solveFailureCount++;
         currentRetryAttempt = attempt;
         
-        // 解析失败时，修正RA角度并重新尝试
-        if (solveFailureCount >= 1) {
-            Logger::Log("PolarAlignment: 解析超时，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
+        // 解析超时时，增加重试次数限制，允许更多重试
+        if (solveFailureCount >= config.maxRetryAttempts) {
+            Logger::Log("PolarAlignment: 解析超时次数过多，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
             currentRAAngle *= 0.8; // 减小RA角度
             solveFailureCount = 0; // 重置解析失败计数
             return false; // 返回false让状态机重新尝试
         }
         
-        return false;
+        // 解析超时但未达到最大重试次数，继续重试
+        Logger::Log("PolarAlignment: 解析超时，当前失败次数: " + std::to_string(solveFailureCount) + 
+                    "/" + std::to_string(config.maxRetryAttempts) + "，继续重试", LogLevel::WARNING, DeviceType::MAIN);
+        return false; // 返回false让状态机重新尝试
     }
     
     // 解析成功，重置解析失败计数
@@ -851,6 +1073,9 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
     // 获取解析结果
     SloveResults analysisResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
     if (isAnalysisSuccessful(analysisResult)) {
+        // 保存当前解析结果到成员变量
+        currentSolveResult = analysisResult;
+        
         // 检查是否需要添加测量结果
         // 如果当前测量索引为0，说明这是第一次拍摄，需要添加
         // 如果当前测量索引为1，说明第一个点已经在checkPolarPoint中添加，这里添加第二个点
@@ -882,32 +1107,35 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
             
             adjustmentGuideDataHistory.append(guideData);
             
-            emit adjustmentGuideData(analysisResult.RA_Degree, analysisResult.DEC_Degree,
-                        analysisResult.RA_1, analysisResult.RA_0, 
-                        analysisResult.DEC_2, analysisResult.DEC_1, 
-                        -1, -1, 0.0, 0.0, 
-                        adjustmentRa, adjustmentDec);
-            
-            return true;
+            // emit adjustmentGuideData(analysisResult.RA_Degree, analysisResult.DEC_Degree,
+            //             analysisResult.RA_1, analysisResult.RA_0, 
+            //             analysisResult.DEC_2, analysisResult.DEC_1, 
+            //             -1, -1, 0.0, 0.0, 
+            //             adjustmentRa, adjustmentDec);
         } else {
             Logger::Log("PolarAlignment: 已达到最大测量次数，跳过添加", LogLevel::WARNING, DeviceType::MAIN);
             currentRetryAttempt = 0;
-            return true;
         }
+        currentRAPosition = analysisResult.RA_Degree;
+        currentDECPosition = analysisResult.DEC_Degree;
+        return true;
     } else {
         Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
         solveFailureCount++;
         currentRetryAttempt = attempt;
         
-        // 解析结果无效时，修正RA角度并重新尝试
-        if (solveFailureCount >= 1) {
-            Logger::Log("PolarAlignment: 解析结果无效，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
+        // 解析结果无效时，增加重试次数限制，允许更多重试
+        if (solveFailureCount >= config.maxRetryAttempts) {
+            Logger::Log("PolarAlignment: 解析结果无效次数过多，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
             currentRAAngle *= 0.8; // 减小RA角度
             solveFailureCount = 0; // 重置解析失败计数
             return false; // 返回false让状态机重新尝试
         }
         
-        return false;
+        // 解析结果无效但未达到最大重试次数，继续重试
+        Logger::Log("PolarAlignment: 解析结果无效，当前失败次数: " + std::to_string(solveFailureCount) + 
+                    "/" + std::to_string(config.maxRetryAttempts) + "，继续重试", LogLevel::WARNING, DeviceType::MAIN);
+        return false; // 返回false让状态机重新尝试
     }
 }
 
@@ -929,11 +1157,11 @@ bool PolarAlignment::calculateDeviation()
 {
     Logger::Log("PolarAlignment: 计算极轴偏差", LogLevel::INFO, DeviceType::MAIN);
     if (measurements.size() < 3) {
-        Logger::Log("PolarAlignment: 测量数据不足", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("PolarAlignment: 测量数据不足，需要3个点", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
     
-    // 使用正确的三点极轴校准算法
+    // 使用正确的三点极轴校准算法计算假极轴位置
     double azimuthDeviation, altitudeDeviation;
     bool success = calculatePolarDeviationCorrect(measurements[0], measurements[1], measurements[2],
                                                 azimuthDeviation, altitudeDeviation);
@@ -950,28 +1178,87 @@ bool PolarAlignment::calculateDeviation()
                     "°, 高度角偏差: " + std::to_string(result.decDeviation) + 
                     "°, 总偏差: " + std::to_string(result.totalDeviation) + "°", LogLevel::INFO, DeviceType::MAIN);
         
+        // 获取当前位置（第三次测量点的位置）
+        SloveResults currentPosition = measurements.last();
+        Logger::Log("PolarAlignment: 当前位置 - RA: " + std::to_string(currentPosition.RA_Degree) + 
+                    "°, DEC: " + std::to_string(currentPosition.DEC_Degree) + "°", LogLevel::INFO, DeviceType::MAIN);
+        
+        double targetRA, targetDEC;
+        
+        // 检查是否已有目标点（目标点为0表示尚未计算）
+        if (cachedTargetRA == 0.0 && cachedTargetDEC == 0.0) {
+            // 第一次计算：计算假极轴位置，然后计算偏差和目标点
+            Logger::Log("PolarAlignment: 目标点为0，开始计算假极轴位置和目标点", LogLevel::INFO, DeviceType::MAIN);
+            
+            // 计算目标位置：当前位置 + 偏差 = 应该移动到的位置
+            // 偏差 = 假极轴位置 - 真极轴位置
+            targetRA = currentPosition.RA_Degree + result.raDeviation;
+            targetDEC = currentPosition.DEC_Degree + result.decDeviation;
+            
+            // 确保RA在0-360度范围内
+            while (targetRA < 0) targetRA += 360.0;
+            while (targetRA >= 360.0) targetRA -= 360.0;
+            
+            // 确保DEC在-90到90度范围内
+            if (targetDEC > 90.0) targetDEC = 90.0;
+            if (targetDEC < -90.0) targetDEC = -90.0;
+            
+            // 缓存目标位置，确保在后续调整过程中目标位置保持固定
+            cachedTargetRA = targetRA;
+            cachedTargetDEC = targetDEC;
+            isTargetPositionCached = true;
+            
+            Logger::Log("PolarAlignment: 首次计算目标位置（当前位置+偏差）- RA: " + std::to_string(targetRA) + 
+                        "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log("PolarAlignment: 目标位置已缓存 - RA: " + std::to_string(cachedTargetRA) + 
+                        "°, DEC: " + std::to_string(cachedTargetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+        } else {
+            // 已有目标点：使用缓存的固定目标位置
+            targetRA = cachedTargetRA;
+            targetDEC = cachedTargetDEC;
+            Logger::Log("PolarAlignment: 使用已缓存的目标位置 - RA: " + std::to_string(targetRA) + 
+                        "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+        }
+        
+        Logger::Log("PolarAlignment: 计算目标位置（当前位置+偏差）- RA: " + std::to_string(targetRA) + 
+                    "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+        
         // 立即生成调整指导信息并发出信号
         QString adjustmentRa, adjustmentDec;
         QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
         Logger::Log("PolarAlignment: 调整指导: " + adjustmentGuide.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         
-        // 根据地理位置计算期望的极点位置用于显示
+        // 根据地理位置计算期望的极点位置用于显示（这是真极轴位置）
         double expectedRA, expectedDEC;
-        calculateExpectedPolarPosition(expectedRA, expectedDEC);
         
-        // 使用最后一个测量点的数据发出调整指导信号
-        SloveResults lastMeasurement = measurements.last();
+        // 只在目标位置未缓存时才计算并缓存
+        if (!isTargetPositionCached) {
+            calculateExpectedPolarPosition(expectedRA, expectedDEC);
+            
+            // 缓存期望的极点位置，避免后续频繁变化
+            cachedTargetRA = expectedRA;
+            cachedTargetDEC = expectedDEC;
+            isTargetPositionCached = true;
+            Logger::Log("PolarAlignment: 期望极点位置已缓存 - RA: " + std::to_string(cachedTargetRA) + 
+                        "°, DEC: " + std::to_string(cachedTargetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+        } else {
+            // 使用已缓存的目标位置
+            expectedRA = cachedTargetRA;
+            expectedDEC = cachedTargetDEC;
+            Logger::Log("PolarAlignment: 使用已缓存的目标位置 - RA: " + std::to_string(expectedRA) + 
+                        "°, DEC: " + std::to_string(expectedDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+        }
         
         // 保存调整指导数据到容器
         AdjustmentGuideData guideData;
-        guideData.ra = lastMeasurement.RA_Degree;
-        guideData.dec = lastMeasurement.DEC_Degree;
-        guideData.maxRa = lastMeasurement.RA_1;
-        guideData.minRa = lastMeasurement.RA_0;
-        guideData.maxDec = lastMeasurement.DEC_2;
-        guideData.minDec = lastMeasurement.DEC_1;
-        guideData.targetRa = expectedRA;
-        guideData.targetDec = expectedDEC;
+        guideData.ra = currentPosition.RA_Degree;
+        guideData.dec = currentPosition.DEC_Degree;
+        guideData.maxRa = currentPosition.RA_1;
+        guideData.minRa = currentPosition.RA_0;
+        guideData.maxDec = currentPosition.DEC_2;
+        guideData.minDec = currentPosition.DEC_1;
+        guideData.targetRa = targetRA;        // 这是应该移动到的目标位置
+        guideData.targetDec = targetDEC;      // 这是应该移动到的目标位置
         guideData.offsetRa = result.raDeviation;
         guideData.offsetDec = result.decDeviation;
         guideData.adjustmentRa = adjustmentRa;
@@ -980,10 +1267,11 @@ bool PolarAlignment::calculateDeviation()
         
         adjustmentGuideDataHistory.append(guideData);
         
-        emit adjustmentGuideData(lastMeasurement.RA_Degree, lastMeasurement.DEC_Degree,
-                               lastMeasurement.RA_1, lastMeasurement.RA_0, 
-                               lastMeasurement.DEC_2, lastMeasurement.DEC_1, 
-                               expectedRA, expectedDEC, result.raDeviation, result.decDeviation, 
+        // 发送调整指导数据：当前位置、目标位置、偏差值
+        emit adjustmentGuideData(currentPosition.RA_Degree, currentPosition.DEC_Degree,
+                               currentPosition.RA_1, currentPosition.RA_0, 
+                               currentPosition.DEC_2, currentPosition.DEC_1, 
+                               targetRA, targetDEC, result.raDeviation, result.decDeviation, 
                                adjustmentRa, adjustmentDec);
         
         return true;
@@ -995,187 +1283,99 @@ bool PolarAlignment::calculateDeviation()
 
 bool PolarAlignment::guideUserAdjustment()
 {
-    Logger::Log("PolarAlignment: 指导用户调整", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("PolarAlignment: 指导用户调整（此函数已不再使用）", LogLevel::INFO, DeviceType::MAIN);
     
-    // 检查用户是否取消校准
-    if (!isRunningFlag || isPausedFlag) {
-        Logger::Log("PolarAlignment: 校准已停止或暂停", LogLevel::INFO, DeviceType::MAIN);
-        return false;
-    }
-    
-    // 进行新的拍摄和分析来验证调整效果
-    Logger::Log("PolarAlignment: 开始验证调整效果", LogLevel::INFO, DeviceType::MAIN);
-    
-    // 拍摄新图像进行验证
-    if (!captureImage(config.defaultExposureTime)) {
-        Logger::Log("PolarAlignment: 验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
-    
-    // 等待拍摄完成
-    if (!waitForCaptureComplete()) {
-        Logger::Log("PolarAlignment: 验证拍摄超时", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
-    
-    // 解析图像
-    if (!solveImage(lastCapturedImage)) {
-        Logger::Log("PolarAlignment: 验证解析开始失败", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
-    
-    // 等待解析完成
-    if (!waitForSolveComplete()) {
-        Logger::Log("PolarAlignment: 验证解析超时", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
-    
-    // 获取解析结果
-    SloveResults verificationResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
-    if (!isAnalysisSuccessful(verificationResult)) {
-        Logger::Log("PolarAlignment: 验证解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
-    
-    Logger::Log("PolarAlignment: 验证拍摄成功 - RA: " + std::to_string(verificationResult.RA_Degree) + 
-                "°, DEC: " + std::to_string(verificationResult.DEC_Degree) + "°", LogLevel::INFO, DeviceType::MAIN);
-    
-    // 将新的验证结果添加到测量列表中，用于重新计算偏差
-    measurements.append(verificationResult);
-    
-    // 使用三点极轴校准算法重新计算偏差
-    if (measurements.size() >= 3) {
-        // 使用最新的三个测量点计算偏差
-        QList<SloveResults> recentMeasurements;
-        for (int i = measurements.size() - 3; i < measurements.size(); ++i) {
-            recentMeasurements.append(measurements[i]);
-        }
-        
-        double azimuthDeviation, altitudeDeviation;
-        bool success = calculatePolarDeviationCorrect(recentMeasurements[0], recentMeasurements[1], recentMeasurements[2],
-                                                    azimuthDeviation, altitudeDeviation);
-        
-        if (success) {
-            // 更新结果
-            result.raDeviation = azimuthDeviation;
-            result.decDeviation = altitudeDeviation;
-            result.totalDeviation = calculateTotalDeviation(result.raDeviation, result.decDeviation);
-            
-            Logger::Log("PolarAlignment: 重新计算偏差 - 方位角偏差: " + std::to_string(result.raDeviation) + 
-                        "°, 高度角偏差: " + std::to_string(result.decDeviation) + 
-                        "°, 总偏差: " + std::to_string(result.totalDeviation) + "°", LogLevel::INFO, DeviceType::MAIN);
-            
-            // 检查是否达到精度要求
-            double precisionThreshold = config.finalVerificationThreshold;
-            if (result.totalDeviation < precisionThreshold) {
-                Logger::Log("PolarAlignment: 调整验证成功，精度达标: " + std::to_string(result.totalDeviation) + 
-                            "° < " + std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
-                return true; // 精度达标，进入最终验证
-            } else {
-                Logger::Log("PolarAlignment: 调整验证失败，精度不足: " + std::to_string(result.totalDeviation) + 
-                            "° >= " + std::to_string(precisionThreshold) + "°，继续调整", LogLevel::WARNING, DeviceType::MAIN);
-                
-                // 更新调整指导信息并发出信号
-                QString adjustmentRa, adjustmentDec;
-                QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
-                Logger::Log("PolarAlignment: 新的调整指导: " + adjustmentGuide.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                
-                // 根据地理位置计算期望的极点位置用于显示
-                double expectedRA, expectedDEC;
-                calculateExpectedPolarPosition(expectedRA, expectedDEC);
-                
-                // 保存调整指导数据到容器
-                AdjustmentGuideData guideData;
-                guideData.ra = verificationResult.RA_Degree;
-                guideData.dec = verificationResult.DEC_Degree;
-                guideData.maxRa = verificationResult.RA_1;
-                guideData.minRa = verificationResult.RA_0;
-                guideData.maxDec = verificationResult.DEC_2;
-                guideData.minDec = verificationResult.DEC_1;
-                guideData.targetRa = expectedRA;
-                guideData.targetDec = expectedDEC;
-                guideData.offsetRa = result.raDeviation;
-                guideData.offsetDec = result.decDeviation;
-                guideData.adjustmentRa = adjustmentRa;
-                guideData.adjustmentDec = adjustmentDec;
-                guideData.timestamp = QDateTime::currentDateTime();
-                
-                adjustmentGuideDataHistory.append(guideData);
-                
-                emit adjustmentGuideData(verificationResult.RA_Degree, verificationResult.DEC_Degree,
-                                       verificationResult.RA_1, verificationResult.RA_0, 
-                                       verificationResult.DEC_2, verificationResult.DEC_1, 
-                                       expectedRA, expectedDEC, result.raDeviation, result.decDeviation, adjustmentRa, adjustmentDec);
-
-                // 继续循环，启动定时器进行下一次验证
-                if (isRunningFlag && !isPausedFlag) {
-                    stateTimer.start(100);
-                }
-                
-                // 返回false让状态机保持在GUIDING_ADJUSTMENT状态
-                return false;
-            }
-        } else {
-            Logger::Log("PolarAlignment: 重新计算偏差失败", LogLevel::ERROR, DeviceType::MAIN);
-            return false;
-        }
-    } else {
-        Logger::Log("PolarAlignment: 测量点不足，无法重新计算偏差", LogLevel::ERROR, DeviceType::MAIN);
-        return false;
-    }
+    // 这个函数现在不再被使用，因为极轴校准已经改为自动化流程
+    // 保留函数是为了向后兼容，但总是返回false
+    return false;
 }
 
 bool PolarAlignment::performFinalVerification()
 {
     Logger::Log("PolarAlignment: 执行最终验证", LogLevel::INFO, DeviceType::MAIN);
     
-    // 进行最终确认验证拍摄
-    if (captureAndAnalyze(1)) {
-        SloveResults verificationResult = measurements.last();
-        double verificationRA = verificationResult.RA_Degree;
-        double verificationDEC = verificationResult.DEC_Degree;
-        
-        // 根据地理位置计算期望的极点位置
-        double expectedRA, expectedDEC;
-        if (!calculateExpectedPolarPosition(expectedRA, expectedDEC)) {
-            Logger::Log("PolarAlignment: 计算期望极点位置失败", LogLevel::ERROR, DeviceType::MAIN);
-            return false;
-        }
-        
-        // 计算误差
-        double raError = std::abs(verificationRA - expectedRA);
-        double decError = std::abs(verificationDEC - expectedDEC);
-        double totalError = std::sqrt(raError * raError + decError * decError);
-        
-        Logger::Log("PolarAlignment: 最终确认验证 - 当前RA: " + std::to_string(verificationRA) + 
-                    "°, 期望RA: " + std::to_string(expectedRA) + "°, RA误差: " + std::to_string(raError) + 
-                    "°, 当前DEC: " + std::to_string(verificationDEC) + 
-                    "°, 期望DEC: " + std::to_string(expectedDEC) + "°, DEC误差: " + std::to_string(decError) + 
-                    "°, 总误差: " + std::to_string(totalError), LogLevel::INFO, DeviceType::MAIN);
-        
-        // 根据配置的精度要求进行判断
-        double precisionThreshold = config.finalVerificationThreshold;
-        if (totalError < precisionThreshold) {
-            Logger::Log("PolarAlignment: 最终确认验证成功，校准精度: " + std::to_string(totalError) + 
-                        "°, 要求精度: " + std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
-            
-            // 设置最终结果
-            result.isSuccessful = true;
-            result.raDeviation = raError;
-            result.decDeviation = decError;
-            result.totalDeviation = totalError;
-            result.measurements = measurements;
-            
-            return true;
-        } else {
-            Logger::Log("PolarAlignment: 最终确认验证失败，当前精度: " + std::to_string(totalError) + 
-                        "°, 要求精度: " + std::to_string(precisionThreshold) + "°, 继续调整", LogLevel::WARNING, DeviceType::MAIN);
-            return false;
-        }
-    } else {
-        Logger::Log("PolarAlignment: 最终确认验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
+    // 检查是否有有效的偏差计算结果
+    if (!result.isSuccessful || measurements.size() < 3) {
+        Logger::Log("PolarAlignment: 没有有效的偏差计算结果，无法进行最终验证", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
+    
+    // 获取当前位置（最后一次测量点的位置）
+    SloveResults currentPosition = measurements.last();
+    Logger::Log("PolarAlignment: 当前位置 - RA: " + std::to_string(currentPosition.RA_Degree) + 
+                "°, DEC: " + std::to_string(currentPosition.DEC_Degree) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 计算目标位置：当前位置 + 偏差 = 应该移动到的位置
+    double targetRA = currentPosition.RA_Degree + result.raDeviation;
+    double targetDEC = currentPosition.DEC_Degree + result.decDeviation;
+    
+    // 确保RA在0-360度范围内
+    while (targetRA < 0) targetRA += 360.0;
+    while (targetRA >= 360.0) targetRA -= 360.0;
+    
+    // 确保DEC在-90到90度范围内
+    if (targetDEC > 90.0) targetDEC = 90.0;
+    if (targetDEC < -90.0) targetDEC = -90.0;
+    
+    Logger::Log("PolarAlignment: 目标位置 - RA: " + std::to_string(targetRA) + 
+                "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 进行最终确认验证拍摄，增加重试机制
+    int finalVerificationAttempts = 0;
+    const int maxFinalVerificationAttempts = 3;
+    
+    while (finalVerificationAttempts < maxFinalVerificationAttempts) {
+        finalVerificationAttempts++;
+        Logger::Log("PolarAlignment: 最终验证尝试 " + std::to_string(finalVerificationAttempts) + "/" + std::to_string(maxFinalVerificationAttempts), LogLevel::INFO, DeviceType::MAIN);
+        
+        if (captureAndAnalyze(1)) {
+            SloveResults verificationResult = measurements.last();
+            double verificationRA = verificationResult.RA_Degree;
+            double verificationDEC = verificationResult.DEC_Degree;
+            
+            Logger::Log("PolarAlignment: 最终验证拍摄成功 - RA: " + std::to_string(verificationRA) + 
+                        "°, DEC: " + std::to_string(verificationDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+            
+            // 计算当前位置与目标位置的误差
+            double raError = std::abs(verificationRA - targetRA);
+            double decError = std::abs(verificationDEC - targetDEC);
+            double totalError = std::sqrt(raError * raError + decError * decError);
+            
+            Logger::Log("PolarAlignment: 最终验证误差 - RA误差: " + std::to_string(raError) + 
+                        "°, DEC误差: " + std::to_string(decError) + 
+                        "°, 总误差: " + std::to_string(totalError) + "°", LogLevel::INFO, DeviceType::MAIN);
+            
+            // 根据配置的精度要求进行判断
+            double precisionThreshold = config.finalVerificationThreshold;
+            if (totalError < precisionThreshold) {
+                Logger::Log("PolarAlignment: 最终确认验证成功，校准精度: " + std::to_string(totalError) + 
+                            "°, 要求精度: " + std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
+                
+                // 设置最终结果
+                result.isSuccessful = true;
+                result.raDeviation = raError;
+                result.decDeviation = decError;
+                result.totalDeviation = totalError;
+                result.measurements = measurements;
+                
+                return true;
+            } else {
+                Logger::Log("PolarAlignment: 最终确认验证失败，当前精度: " + std::to_string(totalError) + 
+                            "°, 要求精度: " + std::to_string(precisionThreshold) + "°, 继续调整", LogLevel::WARNING, DeviceType::MAIN);
+                return false;
+            }
+        } else {
+            Logger::Log("PolarAlignment: 最终确认验证拍摄失败，尝试次数 " + std::to_string(finalVerificationAttempts), LogLevel::WARNING, DeviceType::MAIN);
+            if (finalVerificationAttempts >= maxFinalVerificationAttempts) {
+                Logger::Log("PolarAlignment: 最终确认验证拍摄失败次数过多", LogLevel::ERROR, DeviceType::MAIN);
+                return false;
+            }
+            continue; // 继续下一次尝试
+        }
+    }
+    
+    Logger::Log("PolarAlignment: 所有最终验证尝试都失败", LogLevel::ERROR, DeviceType::MAIN);
+    return false;
 }
 
 bool PolarAlignment::captureImage(int exposureTime)
@@ -1348,6 +1548,12 @@ bool PolarAlignment::moveTelescope(double ra, double dec)
         if(raError > 0.1 || decError > 0.1) {
             Logger::Log("PolarAlignment: 移动精度不足 - RA误差: " + std::to_string(raError) + 
                         "°, DEC误差: " + std::to_string(decError) + "°", LogLevel::WARNING, DeviceType::MAIN);
+            
+            // 如果移动误差过大，返回失败
+            if(raError > 5.0 || decError > 5.0) {
+                Logger::Log("PolarAlignment: 移动误差过大，移动失败", LogLevel::ERROR, DeviceType::MAIN);
+                return false;
+            }
         }
     }
 
@@ -1438,7 +1644,6 @@ bool PolarAlignment::moveTelescopeToAbsolutePosition(double ra, double dec)
         
         if(!movementComplete) {
             Logger::Log("PolarAlignment: 绝对位置移动超时 (60秒)", LogLevel::ERROR, DeviceType::MAIN);
-            return false;
         }
         
         // 验证移动结果
@@ -1455,6 +1660,12 @@ bool PolarAlignment::moveTelescopeToAbsolutePosition(double ra, double dec)
         if(raError > 0.1 || decError > 0.1) {
             Logger::Log("PolarAlignment: 绝对位置移动精度不足 - RA误差: " + std::to_string(raError) + 
                         "°, DEC误差: " + std::to_string(decError) + "°", LogLevel::WARNING, DeviceType::MAIN);
+            
+            // 如果移动误差过大，返回失败
+            if(raError > 5.0 || decError > 5.0) {
+                Logger::Log("PolarAlignment: 绝对位置移动误差过大，移动失败", LogLevel::ERROR, DeviceType::MAIN);
+                return false;
+            }
         }
     }
     
@@ -1480,11 +1691,56 @@ bool PolarAlignment::waitForCaptureComplete()
     
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
-            // lastCapturedImage = QString("/home/quarcs/workspace/testimage/%1.fits").arg(testimage);
-            // testimage++;
-            // if (testimage > 9) {
-            //     testimage = 0;
-            // }
+            lastCapturedImage = QString("/home/quarcs/workspace/testimage/%1.fits").arg(testimage);
+            testimage++;
+            if (testimage > 9) {
+                testimage = 0;
+            }
+
+            cv::Mat image;
+            cv::Mat originalImage16;
+            cv::Mat image16;
+
+            int status = Tools::readFits(lastCapturedImage.toLocal8Bit().constData(), image);
+
+            if (status != 0)
+            {
+                Logger::Log("Failed to read FITS file: " + lastCapturedImage.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                return status;
+            }
+            if (image.type() == CV_8UC1 || image.type() == CV_8UC3 || image.type() == CV_16UC1)
+            {
+                originalImage16 = Tools::convert8UTo16U_BayerSafe(image, false);
+                image.release();
+            }
+            else
+            {
+                Logger::Log("The current image data type is not supported for processing.", LogLevel::WARNING, DeviceType::MAIN);
+                return -1;
+            }
+            int binning = 1;
+            int currentSize = originalImage16.cols;
+
+            // 逐步增加binning直到像素大小小于等于548
+            while (currentSize > 548 && binning <= 16)
+            {
+                binning *= 2;
+                currentSize = originalImage16.cols / binning;
+            }
+
+            // 限制最大binning为16
+            if (binning > 16)
+            {
+                binning = 16;
+            }
+               
+            image16 = Tools::processMatWithBinAvg(originalImage16, binning, binning, false, true);
+           
+            originalImage16.release();
+
+            Tools::SaveMatToFITS(image16);
+            image16.release();
+
             lastCapturedImage = QString("/dev/shm/MatToFITS.fits");
             loop.quit();
         }
@@ -1572,6 +1828,15 @@ double PolarAlignment::calculateTotalDeviation(double raDev, double decDev)
 
 bool PolarAlignment::calculateExpectedPolarPosition(double& expectedRA, double& expectedDEC)
 {
+    // 如果已经缓存了目标位置，直接返回缓存值
+    if (isTargetPositionCached) {
+        expectedRA = cachedTargetRA;
+        expectedDEC = cachedTargetDEC;
+        Logger::Log("PolarAlignment: 返回缓存的目标位置 - RA: " + std::to_string(expectedRA) + 
+                    "°, DEC: " + std::to_string(expectedDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+        return true;
+    }
+    
     Logger::Log("PolarAlignment: 计算期望的极点位置", LogLevel::INFO, DeviceType::MAIN);
     
     // 使用精确的极点计算函数
@@ -1582,7 +1847,11 @@ bool PolarAlignment::isNorthernHemisphere() const
 {
     // 根据纬度判断半球
     // 正值表示北半球，负值表示南半球
-    return config.latitude >= 0.0;
+    bool isNorth = config.latitude >= 0.0;
+    Logger::Log("PolarAlignment: 地理位置配置 - 纬度: " + std::to_string(config.latitude) + 
+                "°, 经度: " + std::to_string(config.longitude) + 
+                "°, 判断为: " + (isNorth ? "北半球" : "南半球"), LogLevel::INFO, DeviceType::MAIN);
+    return isNorth;
 }
 
 bool PolarAlignment::calculatePrecisePolarPosition(double& expectedRA, double& expectedDEC)
@@ -1749,6 +2018,30 @@ QString PolarAlignment::generateAdjustmentGuide(QString &adjustmentRa, QString &
     double azimuthDeviation = result.raDeviation;
     double altitudeDeviation = result.decDeviation;
     double totalDeviation = result.totalDeviation;
+    
+    // 检查数值有效性，避免NaN问题
+    if (std::isnan(azimuthDeviation) || std::isnan(altitudeDeviation) || std::isnan(totalDeviation)) {
+        Logger::Log("PolarAlignment: 检测到NaN值，重置为0", LogLevel::WARNING, DeviceType::MAIN);
+        azimuthDeviation = 0.0;
+        altitudeDeviation = 0.0;
+        totalDeviation = 0.0;
+        // 更新result结构体
+        result.raDeviation = 0.0;
+        result.decDeviation = 0.0;
+        result.totalDeviation = 0.0;
+    }
+    
+    // 检查数值范围，避免异常大的值
+    if (std::abs(azimuthDeviation) > 180.0 || std::abs(altitudeDeviation) > 90.0) {
+        Logger::Log("PolarAlignment: 检测到异常大的偏差值，重置为0", LogLevel::WARNING, DeviceType::MAIN);
+        azimuthDeviation = 0.0;
+        altitudeDeviation = 0.0;
+        totalDeviation = 0.0;
+        // 更新result结构体
+        result.raDeviation = 0.0;
+        result.decDeviation = 0.0;
+        result.totalDeviation = 0.0;
+    }
     
     // 根据方位角偏差生成调整指导
     if (std::abs(azimuthDeviation) > 0.1) {
@@ -1921,6 +2214,29 @@ bool PolarAlignment::calculatePolarDeviationCorrect(const SloveResults& pos1, co
 {
     Logger::Log("PolarAlignment: 开始正确的三点极轴校准计算", LogLevel::INFO, DeviceType::MAIN);
     
+    /*
+     * 三点极轴校准算法原理：
+     * 
+     * 1. 测量三个点：在不同RA位置拍摄并解析，获得三个星点坐标
+     *    - 这些点应该在不同的RA位置，但DEC位置应该相近（如果极轴对准的话）
+     * 
+     * 2. 计算假极轴：通过三点几何关系计算出假极轴位置
+     *    - 假极轴是当前赤道仪极轴指向的位置
+     *    - 使用三点确定一个平面，该平面的法向量指向假极轴
+     * 
+     * 3. 计算真极轴：根据当前时间和地理位置计算真实极轴位置
+     *    - 真极轴是地球自转轴在天球上的投影
+     *    - 考虑了岁差、章动等天文效应
+     * 
+     * 4. 计算偏差：假极轴与真极轴的差值就是极轴偏差
+     *    - 方位角偏差：假极轴在方位角方向上的偏移
+     *    - 高度角偏差：假极轴在高度角方向上的偏移
+     * 
+     * 5. 计算目标位置：当前位置 + 偏差 = 应该移动到的目标位置
+     *    - 将赤道仪移动到目标位置，使假极轴与真极轴重合
+     *    - 这样就实现了极轴校准
+     */
+    
     // 检查测量点是否足够分散
     double raDiff1 = std::abs(pos2.RA_Degree - pos1.RA_Degree);
     double raDiff2 = std::abs(pos3.RA_Degree - pos1.RA_Degree);
@@ -1984,14 +2300,38 @@ bool PolarAlignment::calculatePolarDeviationCorrect(const SloveResults& pos1, co
     
     // 7. 真实极点坐标（根据当前时间和地理位置计算）
     double realPolarRA, realPolarDEC;
-    if (!calculatePrecisePolarPosition(realPolarRA, realPolarDEC)) {
-        Logger::Log("PolarAlignment: 计算真实极点坐标失败", LogLevel::ERROR, DeviceType::MAIN);
+    
+    // 优先使用缓存的目标位置，避免频繁变化
+    if (isTargetPositionCached) {
+        realPolarRA = cachedTargetRA;
+        realPolarDEC = cachedTargetDEC;
+        Logger::Log("PolarAlignment: 使用缓存的目标位置进行偏差计算 - RA: " + std::to_string(realPolarRA) + 
+                    "°, DEC: " + std::to_string(realPolarDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    } else {
+        // 如果缓存不存在，重新计算
+        if (!calculatePrecisePolarPosition(realPolarRA, realPolarDEC)) {
+            Logger::Log("PolarAlignment: 计算真实极点坐标失败", LogLevel::ERROR, DeviceType::MAIN);
+            return false;
+        }
+        Logger::Log("PolarAlignment: 重新计算真实极点坐标 - RA: " + std::to_string(realPolarRA) + 
+                    "°, DEC: " + std::to_string(realPolarDEC) + "°", LogLevel::WARNING, DeviceType::MAIN);
+    }
+    
+    // 8. 计算偏差：假极轴位置 - 真极轴位置
+    azimuthDeviation = calculateAngleDifference(realPolarRA, fakePolarEquatorial.ra);
+    altitudeDeviation = fakePolarEquatorial.dec - realPolarDEC;
+    
+    // 检查计算结果的有效性，避免NaN
+    if (std::isnan(azimuthDeviation) || std::isnan(altitudeDeviation)) {
+        Logger::Log("PolarAlignment: 偏差计算结果为NaN，计算失败", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
     
-    // 8. 计算偏差
-    azimuthDeviation = calculateAngleDifference(fakePolarEquatorial.ra, realPolarRA);
-    altitudeDeviation = realPolarDEC - fakePolarEquatorial.dec;
+    // 检查计算结果的范围合理性
+    if (std::abs(azimuthDeviation) > 180.0 || std::abs(altitudeDeviation) > 90.0) {
+        Logger::Log("PolarAlignment: 偏差计算结果超出合理范围，计算失败", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
     
     Logger::Log("PolarAlignment: 方位角偏差: " + std::to_string(azimuthDeviation) + "°, 高度角偏差: " + std::to_string(altitudeDeviation) + "°", LogLevel::INFO, DeviceType::MAIN);
     

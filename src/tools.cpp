@@ -5638,11 +5638,12 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     QObject::connect(cmd_test, SIGNAL(finished(int)), instance_, SLOT(onSolveFinished(int)));
 
     // 连接输出和错误信号以实时处理输出
-    static QString lastOutput; // 上一次的输出内容
-    static int repeatCount = 0; // 重复次数
+    // 移除static关键字，每次调用都使用新的变量
+    QString lastOutput; // 上一次的输出内容
+    int repeatCount = 0; // 重复次数
 
-    QObject::connect(cmd_test, &QProcess::readyReadStandardOutput, [cmd_test]() {
-        static QString buffer;  // 用于累积输出的缓冲区
+    QObject::connect(cmd_test, &QProcess::readyReadStandardOutput, [cmd_test, &lastOutput, &repeatCount]() {
+        QString buffer;  // 移除static，每次都是新的缓冲区
         buffer += cmd_test->readAllStandardOutput();  // 累加新的输出到缓冲区
 
         int newlineIndex;

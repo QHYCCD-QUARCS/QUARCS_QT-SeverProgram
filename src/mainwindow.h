@@ -421,6 +421,7 @@ public:
     void TelescopeControl_SYNCHome();
 
     void TelescopeControl_SolveSYNC();
+    bool isSolveSYNC = false;
 
     LocationResult TelescopeControl_GetLocation();
 

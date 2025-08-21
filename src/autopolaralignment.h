@@ -185,6 +185,18 @@ public:
     PolarAlignmentState getCurrentState() const;
     
     /**
+     * @brief 获取当前状态消息
+     * @return 当前状态消息
+     */
+    QString getCurrentStatusMessage() const;
+
+    /**
+     * @brief 获取当前进度百分比
+     * @return 当前进度百分比
+     */
+    int getProgressPercentage() const;
+
+    /**
      * @brief 检查校准是否正在运行
      * @return 是否正在运行
      */
@@ -642,11 +654,16 @@ private:
     QString currentStatusMessage; // 当前状态消息
     int progressPercentage;      // 进度百分比
     
+
+    
     // 临时数据
     QString currentImageFile;    // 当前图像文件名
     SloveResults currentAnalysisResult; // 当前分析结果
     double currentRAPosition;    // 当前RA位置
     double currentDECPosition;   // 当前DEC位置
+    
+    // 当前解析结果数据
+    SloveResults currentSolveResult;    // 当前解析成功后的完整数据
     
     // 拍摄和解析状态
     bool isCaptureEnd;           // 拍摄是否结束
@@ -659,6 +676,11 @@ private:
 
     // 调整指导数据容器
     QVector<AdjustmentGuideData> adjustmentGuideDataHistory; // 调整指导数据历史记录
+
+    // 缓存目标位置，避免频繁重新计算
+    double cachedTargetRA;        // 缓存的目标RA位置
+    double cachedTargetDEC;       // 缓存的目标DEC位置
+    bool isTargetPositionCached;  // 目标位置是否已缓存
 
     // 测试图片
     int testimage;
