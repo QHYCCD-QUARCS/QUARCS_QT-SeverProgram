@@ -92,16 +92,9 @@ public:
     void setCaptureFailed();                               // 设置拍摄失败
     void resetCaptureStatus();                             // 重置拍摄状态
     
-    // 星点跟踪状态查询
-    bool isStarsLocked() const { return m_starsLocked; }
-    QPointF getReferenceStarPosition() const { return m_referenceStarPosition; }
-    double getReferenceStarHFR() const { return m_referenceStarHFR; }
-    
-    // 星点跟踪配置
-    void setTrackingRadius(double radius) { m_trackingRadius = radius; }
-    void setMaxTrackingAttempts(int attempts) { m_maxTrackingAttempts = attempts; }
-    double getTrackingRadius() const { return m_trackingRadius; }
-    int getMaxTrackingAttempts() const { return m_maxTrackingAttempts; }
+    // 星点选择配置
+    void setTopStarCount(int count) { m_topStarCount = count; }
+    int getTopStarCount() const { return m_topStarCount; }
     
     // 电调位置限制配置
     void setFocuserMinPosition(int minPos) { m_focuserMinPosition = minPos; }
@@ -175,24 +168,14 @@ private:
     QString m_lastCapturedImage;            // 最后拍摄的图像路径
     int m_defaultExposureTime;              // 默认曝光时间（毫秒）
     
+    // 星点选择相关
+    int m_topStarCount;                     // 选择置信度最高的星点数量
+    
     // ROI拍摄相关
     bool m_useROI;                          // 是否使用ROI拍摄
     QRect m_currentROI;                     // 当前ROI区域
     int m_roiSize;                          // ROI大小（正方形）
     QPointF m_roiCenter;                    // ROI中心位置
-    
-    // 星点跟踪相关
-    QList<FITSImage::Star> m_trackedStars; // 跟踪的星点列表
-    bool m_starsLocked;                     // 星点是否已锁定
-    QPointF m_referenceStarPosition;        // 参考星点位置
-    double m_referenceStarHFR;              // 参考星点HFR
-    
-    // 星点特征识别
-    double m_referenceStarPeak;             // 参考星点峰值亮度
-    double m_referenceStarFWHM;             // 参考星点FWHM
-    QVector<QPointF> m_referenceStarNeighbors; // 参考星点周围星点相对位置
-    double m_trackingRadius;                // 跟踪半径
-    int m_maxTrackingAttempts;              // 最大跟踪尝试次数
     
     // 电调位置限制
     int m_focuserMinPosition;               // 电调最小位置
@@ -214,6 +197,14 @@ private:
     int m_moveStartTime;                    // 移动开始时间
     int m_moveTimeout;                      // 移动超时时间（毫秒）
     int m_lastPosition;                     // 上次位置记录
+    
+    // 新增的优化参数
+    bool m_devicesValid;                    // 设备有效性缓存
+    qint64 m_lastDeviceCheck;               // 上次设备检查时间
+    int m_retryCount;                       // 当前重试次数
+    int m_maxRetryCount;                    // 最大重试次数
+    int m_imageWidth;                       // 图像宽度
+    int m_imageHeight;                      // 图像高度
 
     // 核心流程方法
     void processCurrentState();
@@ -229,6 +220,11 @@ private:
     bool detectStarsInImage();                      // 检测图像中的星点
     double calculateHFR();                          // 计算HFR值
     
+    // 星点选择方法
+    double selectTopStarsAndCalculateHFR();         // 选择置信度最高的星点并计算平均HFR
+    QList<FITSImage::Star> selectTopStarsByConfidence(const QList<FITSImage::Star>& stars); // 根据置信度选择最佳星点
+    double calculateStarConfidence(const FITSImage::Star& star); // 计算星点置信度
+    
     // 虚拟数据相关方法
     bool generateVirtualImage(int exposureTime, bool useROI = false); // 生成虚拟图像
     QString getNextVirtualImagePath();              // 获取下一个虚拟图像路径
@@ -241,19 +237,7 @@ private:
     QRect calculateROI(const QPointF& center, int size); // 计算ROI区域
     bool isROIValid(const QRect& roi) const;       // 检查ROI是否有效
     
-    // 星点跟踪方法
-    bool lockReferenceStar();                       // 锁定参考星点
-    double calculateHFRForTrackedStar();           // 计算跟踪星点的HFR
-    bool findAndTrackStar();                        // 查找并跟踪星点
-    QPointF findNearestStar(const QPointF& position, const QList<FITSImage::Star>& stars); // 查找最近星点
-    
-    // 智能星点跟踪方法
-    bool findStarByFeatures(const QList<FITSImage::Star>& stars); // 基于特征查找星点
-    bool validateStarMatch(const FITSImage::Star& candidate, double positionTolerance = 20.0); // 验证星点匹配
-    double calculateStarMatchScore(const FITSImage::Star& candidate, const QList<FITSImage::Star>& allStars); // 计算星点匹配分数
-    void updateReferenceStarFeatures(const FITSImage::Star& star, const QList<FITSImage::Star>& allStars); // 更新参考星点特征
-    QVector<QPointF> findStarNeighbors(const FITSImage::Star& centerStar, const QList<FITSImage::Star>& allStars); // 查找星点邻居
-    bool matchStarPattern(const QVector<QPointF>& pattern1, const QVector<QPointF>& pattern2, double tolerance = 10.0); // 匹配星点模式
+    // 电调控制方法
     void moveFocuser(int steps);                    // 移动电调
     int getCurrentFocuserPosition();                // 获取当前电调位置
     void setFocuserPosition(int position);          // 设置电调位置
@@ -310,6 +294,12 @@ private:
     void updateProgress(int progress);
     void handleError(const QString &error);
     void completeAutoFocus(bool success);
+    
+    // 新增的优化方法
+    bool validateDevices();                                  // 验证设备有效性（带缓存）
+    void executeFocuserMove(int targetPosition, const QString& moveReason); // 统一的电调移动执行
+    bool isPositionReached(int currentPos, int targetPos, int tolerance = 5); // 统一的位置检查
+    void handleErrorWithRetry(const QString &error, bool canRetry = false); // 带重试的错误处理
 };
 
 #endif // AUTOFOCUS_H

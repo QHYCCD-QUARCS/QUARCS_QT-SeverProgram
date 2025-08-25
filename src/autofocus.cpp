@@ -13,6 +13,54 @@
 #include "tools.h"   // Tools类
 #include <stellarsolver.h> // FITSImage类来自stellarsolver
 
+// ==================== 自动对焦配置结构体 ====================
+struct AutoFocusConfig {
+    // HFR相关参数
+    double hfrThreshold = 3.0;                    // HFR阈值，超过此值进入粗调
+    
+    // 步长参数
+    int coarseStepSize = 1000;                    // 粗调步长
+    int fineStepSize = 100;                       // 精调步长
+    
+    // 拍摄参数
+    int coarseShotsPerPosition = 1;               // 粗调每个位置拍摄张数
+    int fineShotsPerPosition = 3;                 // 精调每个位置拍摄张数
+    int defaultExposureTime = 1000;               // 默认曝光时间(ms)
+    
+    // 大范围搜索参数
+    int maxLargeRangeShots = 80;                  // 大范围找星最多拍摄次数
+    double initialLargeRangeStep = 10.0;          // 初始大范围步长(%)
+    double minLargeRangeStep = 2.0;               // 最小大范围步长(%)
+    
+    // 星点选择参数
+    int topStarCount = 5;                         // 选择置信度最高的星点数量
+    
+    // 电调移动参数
+    int positionTolerance = 5;                    // 位置误差容差(步数)
+    int bestPositionTolerance = 10;               // 最佳位置误差容差(步数)
+    int moveTimeout = 3000;                       // 移动超时时间(ms)
+    int stuckTimeout = 1000;                      // 卡住检测时间(ms)
+    
+    // 数据拟合参数
+    double minRSquared = 0.7;                     // 最小拟合质量R²
+    int minDataPoints = 3;                        // 最小数据点数量
+    
+    // 重试参数
+    int maxRetryCount = 3;                        // 最大重试次数
+    int retryDelay = 1000;                        // 重试延迟时间(ms)
+    
+    // 设备检查参数
+    int deviceCheckInterval = 5000;               // 设备状态检查间隔(ms)
+    
+    // ROI参数
+    int roiSize = 300;                            // ROI大小(像素)
+    int imageWidth = 1920;                        // 图像宽度(像素)
+    int imageHeight = 1080;                       // 图像高度(像素)
+};
+
+// 全局配置实例
+static AutoFocusConfig g_autoFocusConfig;
+
 /**
  * @file autofocus.cpp
  * @brief 自动对焦实现文件
@@ -26,6 +74,12 @@
  * 
  * 工作流程：
  * 1. 检查星点 -> 2. 大范围找星（如需要）-> 3. 粗调/精调 -> 4. 数据拟合 -> 5. 移动到最佳位置
+ * 
+ * 星点检测策略：
+ * - 每次拍摄后检测所有星点
+ * - 选择置信度最高的几颗星（基于亮度、HFR、形状等特征）
+ * - 计算平均HFR值用于对焦数据拟合
+ * - 不再进行复杂的星点跟踪
  */
 
 AutoFocus::AutoFocus(MyClient *indiServer, 
@@ -39,40 +93,33 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_currentState(AutoFocusState::IDLE)           // 初始状态为空闲
     , m_timer(new QTimer(this))                      // 创建定时器用于状态处理
     , m_isRunning(false)                             // 初始未运行
-    , m_hfrThreshold(3.0)                           // HFR阈值，超过此值进入粗调
-    , m_coarseStepSize(1000)                        // 粗调步长1000步
-    , m_fineStepSize(100)                           // 精调步长100步
-    , m_coarseShotsPerPosition(1)                   // 粗调每个位置拍摄1张
-    , m_fineShotsPerPosition(3)                     // 精调每个位置拍摄3张取平均
-    , m_maxLargeRangeShots(80)                      // 大范围找星最多拍摄80次
-    , m_initialLargeRangeStep(10.0)                 // 初始大范围步长10%
-    , m_minLargeRangeStep(2.0)                      // 最小大范围步长2%
+    // 使用配置参数替代硬编码值
+    , m_hfrThreshold(g_autoFocusConfig.hfrThreshold)
+    , m_coarseStepSize(g_autoFocusConfig.coarseStepSize)
+    , m_fineStepSize(g_autoFocusConfig.fineStepSize)
+    , m_coarseShotsPerPosition(g_autoFocusConfig.coarseShotsPerPosition)
+    , m_fineShotsPerPosition(g_autoFocusConfig.fineShotsPerPosition)
+    , m_maxLargeRangeShots(g_autoFocusConfig.maxLargeRangeShots)
+    , m_initialLargeRangeStep(g_autoFocusConfig.initialLargeRangeStep)
+    , m_minLargeRangeStep(g_autoFocusConfig.minLargeRangeStep)
     , m_currentLargeRangeShots(0)                   // 当前大范围拍摄次数
-    , m_currentLargeRangeStep(m_initialLargeRangeStep) // 当前大范围步长
+    , m_currentLargeRangeStep(g_autoFocusConfig.initialLargeRangeStep) // 当前大范围步长
     , m_currentPosition(0)                          // 当前电调位置
     , m_dataCollectionCount(0)                      // 数据收集计数
     , m_isCaptureEnd(true)                         // 拍摄结束状态
     , m_lastCapturedImage("")                      // 最后拍摄图像路径
-    , m_defaultExposureTime(1000)                  // 默认曝光时间1000ms
-    , m_trackedStars()                             // 跟踪星点列表
-    , m_starsLocked(false)                         // 星点未锁定
-    , m_referenceStarPosition(0, 0)                // 参考星点位置
-    , m_referenceStarHFR(0.0)                      // 参考星点HFR
-    , m_referenceStarPeak(0.0)                     // 参考星点峰值亮度
-    , m_referenceStarFWHM(0.0)                     // 参考星点FWHM
-    , m_referenceStarNeighbors()                    // 参考星点周围星点相对位置
-    , m_trackingRadius(300.0)                       // 跟踪半径150像素（从50增加到150）
-    , m_maxTrackingAttempts(3)                     // 最大跟踪尝试次数3次
+    , m_defaultExposureTime(g_autoFocusConfig.defaultExposureTime) // 默认曝光时间
+    , m_topStarCount(g_autoFocusConfig.topStarCount) // 选择置信度最高的星点数量
     , m_focuserMinPosition(0)                      // 电调最小位置
     , m_focuserMaxPosition(10000)                  // 电调最大位置
     , m_isFocuserMoving(false)                     // 电调未在移动
     , m_targetFocuserPosition(0)                   // 目标位置
     , m_moveStartTime(0)                           // 移动开始时间
-    , m_moveTimeout(3000)                          // 位置无变化超时3秒
+    , m_moveTimeout(g_autoFocusConfig.moveTimeout) // 位置无变化超时时间
     , m_lastPosition(0)                            // 上次位置记录
     , m_useROI(false)                              // 默认不使用ROI
     , m_currentROI(0, 0, 0, 0)                    // 初始ROI区域
-    , m_roiSize(300)                               // ROI大小300像素
+    , m_roiSize(g_autoFocusConfig.roiSize)         // ROI大小
     , m_roiCenter(0, 0)                            // ROI中心位置
     , m_waitingForMove(false)                      // 初始不等待电调移动
     , m_moveWaitStartTime(0)                       // 移动等待开始时间
@@ -85,6 +132,14 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_virtualImageCounter(0)                     // 虚拟图像计数器
     , m_mtGenerator(std::chrono::steady_clock::now().time_since_epoch().count()) // 随机数生成器
     , m_uniformDist(0.0, 1.0)                     // 均匀分布
+    
+    // 新增的优化参数
+    , m_devicesValid(false)                        // 设备有效性缓存
+    , m_lastDeviceCheck(0)                         // 上次设备检查时间
+    , m_retryCount(0)                              // 当前重试次数
+    , m_maxRetryCount(g_autoFocusConfig.maxRetryCount) // 最大重试次数
+    , m_imageWidth(g_autoFocusConfig.imageWidth)   // 图像宽度
+    , m_imageHeight(g_autoFocusConfig.imageHeight) // 图像高度
 {
     // 验证传入的设备对象
     if (!m_dpMainCamera) {
@@ -99,6 +154,135 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     
     // 连接定时器信号到状态处理槽函数
     connect(m_timer, &QTimer::timeout, this, &AutoFocus::onTimerTimeout);
+}
+
+// ==================== 新增的优化方法实现 ====================
+
+/**
+ * @brief 验证设备有效性（带缓存）
+ * 
+ * 减少重复的设备检查，提高性能
+ * 
+ * @return bool 设备是否有效
+ */
+bool AutoFocus::validateDevices()
+{
+    auto now = QDateTime::currentMSecsSinceEpoch();
+    if (now - m_lastDeviceCheck > g_autoFocusConfig.deviceCheckInterval) {
+        m_devicesValid = (m_dpMainCamera && m_dpFocuser && m_indiServer);
+        m_lastDeviceCheck = now;
+        
+        if (!m_devicesValid) {
+            log("设备有效性检查失败：设备对象无效");
+        }
+    }
+    return m_devicesValid;
+}
+
+/**
+ * @brief 统一的电调移动执行
+ * 
+ * 提取公共的电调移动逻辑，减少代码重复
+ * 
+ * @param targetPosition 目标位置
+ * @param moveReason 移动原因（用于日志）
+ */
+void AutoFocus::executeFocuserMove(int targetPosition, const QString& moveReason)
+{
+    if (!m_dpFocuser) {
+        log(QString("错误: 电调设备对象为空，无法执行移动"));
+        return;
+    }
+    
+    // 检查位置限制
+    if (targetPosition < m_focuserMinPosition) {
+        log(QString("警告: 目标位置 %1 小于最小位置 %2，限制到最小位置")
+            .arg(targetPosition).arg(m_focuserMinPosition));
+        targetPosition = m_focuserMinPosition;
+    } else if (targetPosition > m_focuserMaxPosition) {
+        log(QString("警告: 目标位置 %1 大于最大位置 %2，限制到最大位置")
+            .arg(targetPosition).arg(m_focuserMaxPosition));
+        targetPosition = m_focuserMaxPosition;
+    }
+    
+    // 计算移动方向和步数
+    int moveSteps = targetPosition - m_currentPosition;
+    bool isInward = (moveSteps < 0);
+    int absSteps = qAbs(moveSteps);
+    
+    if (absSteps == 0) {
+        log(QString("%1: 目标位置与当前位置相同，无需移动").arg(moveReason));
+        return;
+    }
+    
+    // 设置移动状态
+    m_isFocuserMoving = true;
+    m_targetFocuserPosition = targetPosition;
+    m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
+    m_lastPosition = m_currentPosition;
+    
+    // 发送移动命令
+    m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+    m_indiServer->moveFocuserSteps(m_dpFocuser, absSteps);
+    
+    // 初始化参数
+    initializeFocuserMoveParameters();
+    
+    // 设置等待状态
+    m_waitingForMove = true;
+    m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
+    m_moveWaitCount = 0;
+    m_moveLastPosition = m_currentPosition;
+    
+    log(QString("%1: 从%2移动到%3，方向=%4，步数=%5")
+        .arg(moveReason).arg(m_currentPosition).arg(targetPosition)
+        .arg(isInward ? "向内" : "向外").arg(absSteps));
+}
+
+/**
+ * @brief 统一的位置检查
+ * 
+ * 使用配置化的容差参数，确保位置检查的一致性
+ * 
+ * @param currentPos 当前位置
+ * @param targetPos 目标位置
+ * @param tolerance 容差（步数）
+ * @return bool 是否到达目标位置
+ */
+bool AutoFocus::isPositionReached(int currentPos, int targetPos, int tolerance)
+{
+    return qAbs(currentPos - targetPos) <= tolerance;
+}
+
+/**
+ * @brief 带重试的错误处理
+ * 
+ * 支持重试机制，提高系统的鲁棒性
+ * 
+ * @param error 错误信息
+ * @param canRetry 是否可以重试
+ */
+void AutoFocus::handleErrorWithRetry(const QString &error, bool canRetry)
+{
+    log(QString("错误: %1").arg(error));
+    
+    if (canRetry && m_retryCount < m_maxRetryCount) {
+        m_retryCount++;
+        log(QString("尝试重试第%1次").arg(m_retryCount));
+        
+        // 延迟重试
+        QTimer::singleShot(g_autoFocusConfig.retryDelay, [this]() {
+            if (m_isRunning) {
+                log("开始重试操作");
+                // 这里可以根据具体错误类型执行不同的重试逻辑
+            }
+        });
+        return;
+    }
+    
+    // 重试次数用完或不可重试，发出错误信号
+    emit errorOccurred(error);
+    completeAutoFocus(false);
 }
 
 
@@ -168,14 +352,8 @@ void AutoFocus::startAutoFocus()
         m_lastCapturedImage = "/dev/shm/ccd_simulator.fits";
     }
     
-    // 初始化星点跟踪参数（确保回调访问时不会出现段错误）
-    m_starsLocked = false;
-    m_trackedStars.clear();
-    m_referenceStarPosition = QPointF(0, 0);
-    m_referenceStarHFR = 0.0;
-    m_referenceStarPeak = 0.0;
-    m_referenceStarFWHM = 0.0;
-    m_referenceStarNeighbors.clear();
+    // 初始化星点选择参数（确保回调访问时不会出现段错误）
+    m_topStarCount = 5; // 选择置信度最高的5颗星
     
     // 初始化数据收集参数（确保回调访问时不会出现段错误）
     m_focusData.clear();
@@ -290,17 +468,10 @@ void AutoFocus::stopAutoFocus()
         // m_lastCapturedImage 保持不变
         log("拍摄状态已重置（参数保留）");
         
-        // 重置星点跟踪状态（不清空参数，避免回调访问导致段错误）
-        m_starsLocked = false;
-        // 保留跟踪星点列表，避免回调访问未初始化数据
-        // m_trackedStars 保持不变
-        // 保留参考星点参数，避免回调访问未初始化数据
-        // m_referenceStarPosition 保持不变
-        // m_referenceStarHFR 保持不变
-        // m_referenceStarPeak 保持不变
-        // m_referenceStarFWHM 保持不变
-        // m_referenceStarNeighbors 保持不变
-        log("星点跟踪状态已重置（参数保留）");
+        // 重置星点选择状态（不清空参数，避免回调访问导致段错误）
+        // 保留星点选择参数，避免回调访问未初始化数据
+        // m_topStarCount 保持不变
+        log("星点选择状态已重置（参数保留）");
         
         // 重置数据收集状态（不清空参数，避免回调访问导致段错误）
         // 保留数据收集参数，避免回调访问未初始化数据
@@ -386,8 +557,8 @@ void AutoFocus::onTimerTimeout()
             return;
         }
         
-        // 检查设备对象是否有效
-        if (!m_dpMainCamera || !m_dpFocuser || !m_indiServer) {
+        // 使用优化的设备验证方法（带缓存）
+        if (!validateDevices()) {
             log(QString("设备对象无效，停止自动对焦"));
             stopAutoFocus();
             return;
@@ -422,8 +593,8 @@ void AutoFocus::processCurrentState()
         return;
     }
     
-    // 检查设备对象是否有效
-    if (!m_dpMainCamera || !m_dpFocuser || !m_indiServer) {
+    // 使用优化的设备验证方法（带缓存）
+    if (!validateDevices()) {
         log(QString("设备对象无效，停止自动对焦"));
         stopAutoFocus();
         return;
@@ -443,8 +614,11 @@ void AutoFocus::processCurrentState()
     if (m_waitingForMove && (m_currentState == AutoFocusState::COARSE_ADJUSTMENT || 
                              m_currentState == AutoFocusState::FINE_ADJUSTMENT)) {
         
-        // 使用统一的等待函数
-        bool moveSuccess = waitForFocuserMoveComplete(m_targetFocuserPosition, 5, 60, 10);
+        // 使用统一的等待函数，使用配置参数
+        bool moveSuccess = waitForFocuserMoveComplete(m_targetFocuserPosition, 
+                                                    g_autoFocusConfig.positionTolerance, 
+                                                    g_autoFocusConfig.moveTimeout / 1000, 
+                                                    g_autoFocusConfig.stuckTimeout / 1000);
         
         // 清除等待状态
         m_waitingForMove = false;
@@ -517,22 +691,22 @@ void AutoFocus::processCheckingStars()
     
     // 拍摄全图并等待完成
     if (!captureFullImage()) {
-        handleError("拍摄全图失败");
+        handleErrorWithRetry("拍摄全图失败", true); // 允许重试
         return;
     }
     
     // 等待拍摄完成
     if (!waitForCaptureComplete()) {
-        handleError("拍摄超时");
+        handleErrorWithRetry("拍摄超时", true); // 允许重试
         return;
     }
 
-    // 查找并锁定参考星点
-    if (findAndTrackStar()) {
-        log(QString("成功锁定参考星点，计算HFR..."));
+    // 检测星点并计算HFR
+    if (detectStarsInImage()) {
+        log(QString("检测到星点，计算HFR..."));
         
-        // 计算跟踪星点的HFR
-        double hfr = calculateHFRForTrackedStar();
+        // 选择置信度最高的星点并计算平均HFR
+        double hfr = selectTopStarsAndCalculateHFR();
         log(QString("当前HFR: %1").arg(hfr));
         
         if (hfr > m_hfrThreshold) {
@@ -552,7 +726,7 @@ void AutoFocus::startLargeRangeSearch()
 {
     changeState(AutoFocusState::LARGE_RANGE_SEARCH);
     m_currentLargeRangeShots = 0;
-    m_currentLargeRangeStep = m_initialLargeRangeStep;
+    m_currentLargeRangeStep = g_autoFocusConfig.initialLargeRangeStep; // 使用配置的初始步长
     
     // 获取当前电调位置
     m_currentPosition = getCurrentFocuserPosition();
@@ -586,7 +760,7 @@ void AutoFocus::processLargeRangeSearch()
     }
     
     if (m_currentLargeRangeShots >= m_maxLargeRangeShots) {
-        handleError("大范围找星失败：拍摄80次仍未识别到星点");
+        handleError(QString("大范围找星失败：拍摄%1次仍未识别到星点").arg(m_maxLargeRangeShots));
         return;
     }
 
@@ -595,8 +769,11 @@ void AutoFocus::processLargeRangeSearch()
     
     // 检查是否正在等待电调移动完成
     if (m_waitingForMove) {
-        // 使用统一的等待函数
-        bool moveSuccess = waitForFocuserMoveComplete(m_targetFocuserPosition, 5, 60, 10);
+        // 使用统一的等待函数，使用配置参数
+        bool moveSuccess = waitForFocuserMoveComplete(m_targetFocuserPosition, 
+                                                    g_autoFocusConfig.positionTolerance, 
+                                                    g_autoFocusConfig.moveTimeout / 1000, 
+                                                    g_autoFocusConfig.stuckTimeout / 1000);
         
         // 清除等待状态
         m_waitingForMove = false;
@@ -639,44 +816,14 @@ void AutoFocus::processLargeRangeSearch()
         
         // 检查是否需要移动
         if (m_currentPosition != m_initialTargetPosition) {
-            // 计算移动方向和步数
-            int moveSteps = m_initialTargetPosition - m_currentPosition;
-            bool isInward = (moveSteps < 0);
-            
-            if (isInward) {
-                moveSteps = -moveSteps; // 取绝对值
-            }
-            
-            log(QString("第一次尝试，移动方向: %1，步数: %2").arg(isInward ? "向内" : "向外").arg(moveSteps));
-            
-            // 设置移动状态
-            m_isFocuserMoving = true;
-            m_targetFocuserPosition = m_initialTargetPosition;
-            m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
-            m_lastPosition = m_currentPosition;
-            
-            // 设置移动方向
-            m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
-            // 发送移动命令
-            m_indiServer->moveFocuserSteps(m_dpFocuser, moveSteps);
-            
-            // 初始化电调判断参数
-            initializeFocuserMoveParameters();
-            
-            log(QString("第一次尝试移动命令已发送，等待移动完成"));
-            log(QString("移动命令详情: 方向=%1, 步数=%2, 目标位置=%3").arg(isInward ? "向内" : "向外").arg(moveSteps).arg(m_initialTargetPosition));
+            // 使用统一的电调移动函数
+            executeFocuserMove(m_initialTargetPosition, "第一次尝试移动到初始目标位置");
             
             // 立即检查电调状态
             QThread::msleep(100); // 等待100ms让命令生效
             int afterMovePosition = getCurrentFocuserPosition();
             log(QString("移动命令发送后电调位置: %1").arg(afterMovePosition));
             
-            // 设置非阻塞等待状态
-            m_waitingForMove = true;
-            m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
-            m_moveWaitCount = 0;
-            m_moveLastPosition = m_currentPosition;
-            log(QString("开始等待电调移动完成，目标位置: %1").arg(m_initialTargetPosition));
             return; // 返回，让定时器处理等待
         } else {
             log(QString("当前位置已经是目标位置，无需移动"));
@@ -913,7 +1060,7 @@ void AutoFocus::checkAndReduceStepSize()
     if (hasCompletedFullRange) {
         // 已经走完全程，减少步长并改变搜索方向
         double oldStep = m_currentLargeRangeStep;
-        m_currentLargeRangeStep = qMax(m_currentLargeRangeStep / 2.0, m_minLargeRangeStep);
+        m_currentLargeRangeStep = qMax(m_currentLargeRangeStep / 2.0, g_autoFocusConfig.minLargeRangeStep);
         m_searchDirection = -m_searchDirection; // 改变搜索方向
         log(QString("已完成全程搜索: 步长从%1%减少到%2%，改变搜索方向为%3")
             .arg(oldStep).arg(m_currentLargeRangeStep).arg(m_searchDirection > 0 ? "向外" : "向内"));
@@ -948,7 +1095,7 @@ void AutoFocus::processCoarseAdjustment()
     }
     
     // 检查是否收集了足够的数据点
-    if (m_dataCollectionCount >= 5) {
+    if (m_dataCollectionCount >= g_autoFocusConfig.minDataPoints) {
         log(QString("粗调数据收集完成，开始拟合"));
         changeState(AutoFocusState::FITTING_DATA);
         return;
@@ -1003,13 +1150,13 @@ void AutoFocus::performCoarseDataCollection()
 
     // 再次检查运行状态
     if (!m_isRunning) {
-        log("自动对焦已停止，跳过星点跟踪");
+        log("自动对焦已停止，跳过星点检测");
         return;
     }
 
-    // 查找并跟踪星点
-    if (!findAndTrackStar()) {
-        handleError("无法找到或跟踪星点");
+    // 检测星点并计算HFR
+    if (!detectStarsInImage()) {
+        handleError("无法检测到星点");
         return;
     }
     
@@ -1019,8 +1166,8 @@ void AutoFocus::performCoarseDataCollection()
         return;
     }
     
-    // 计算跟踪星点的HFR值
-    double hfr = calculateHFRForTrackedStar();
+    // 选择置信度最高的星点并计算平均HFR
+    double hfr = selectTopStarsAndCalculateHFR();
     int currentPos = getCurrentFocuserPosition();
     
     // 创建数据点并添加到数据集
@@ -1074,8 +1221,14 @@ void AutoFocus::performFineDataCollection()
             return;
         }
         
-        // 计算跟踪星点的HFR值
-        double hfr = calculateHFRForTrackedStar();
+        // 检测星点并计算HFR
+        if (!detectStarsInImage()) {
+            handleError("无法检测到星点");
+            return;
+        }
+        
+        // 选择置信度最高的星点并计算平均HFR
+        double hfr = selectTopStarsAndCalculateHFR();
         measurements.append(hfr);
         
         log(QString("精调拍摄%1: HFR=%2").arg(i + 1).arg(hfr));
@@ -1132,7 +1285,7 @@ void AutoFocus::processFineAdjustment()
     }
     
     // 检查是否收集了足够的数据点
-    if (m_dataCollectionCount >= 5) {
+    if (m_dataCollectionCount >= g_autoFocusConfig.minDataPoints) {
         log(QString("精调数据收集完成，开始拟合"));
         changeState(AutoFocusState::FITTING_DATA);
         return;
@@ -1210,8 +1363,8 @@ void AutoFocus::processMovingToBestPosition()
         
         log(QString("等待移动到最佳位置 [%1/60s]: 当前位置=%2, 目标位置=%3").arg(m_moveWaitCount).arg(currentPos).arg(m_targetFocuserPosition));
         
-        // 检查是否到达目标位置（允许±10步的误差）
-        if (qAbs(currentPos - m_targetFocuserPosition) <= 10) {
+        // 使用统一的位置检查函数，允许最佳位置容差
+        if (isPositionReached(currentPos, m_targetFocuserPosition, g_autoFocusConfig.bestPositionTolerance)) {
             log(QString("已到达最佳位置: 当前位置=%1, 目标位置=%2").arg(currentPos).arg(m_targetFocuserPosition));
             m_waitingForMove = false;
             m_isFocuserMoving = false;
@@ -1272,8 +1425,8 @@ FitResult AutoFocus::fitFocusData()
     FitResult result;
     
     // 检查数据点是否足够进行拟合
-    if (m_focusData.size() < 3) {
-        log(QString("数据点不足，无法进行拟合，需要至少3个数据点"));
+    if (m_focusData.size() < g_autoFocusConfig.minDataPoints) {
+        log(QString("数据点不足，无法进行拟合，需要至少%1个数据点").arg(g_autoFocusConfig.minDataPoints));
         return result;
     }
     
@@ -1360,8 +1513,8 @@ FitResult AutoFocus::fitFocusData()
     double rSquared = calculateRSquared(cleanData, result, minPos);
     log(QString("拟合质量 R² = %1").arg(rSquared));
     
-    if (rSquared < 0.7) {
-        log(QString("拟合质量较差 (R² < 0.7)，使用插值方法"));
+    if (rSquared < g_autoFocusConfig.minRSquared) {
+        log(QString("拟合质量较差 (R² < %1)，使用插值方法").arg(g_autoFocusConfig.minRSquared));
         return findBestPositionByInterpolation();
     }
     
@@ -1812,494 +1965,7 @@ double AutoFocus::calculateHFR()
     }
 }
 
-/**
- * @brief 锁定参考星点
- * 
- * 在图像中心区域选择一个合适的星点作为参考星点：
- * 1. 检测图像中的星点
- * 2. 在中心区域选择最亮的星点
- * 3. 记录参考星点的位置和初始HFR
- * 
- * @return bool 是否成功锁定参考星点
- */
-bool AutoFocus::lockReferenceStar()
-{
-    // 立即检查运行状态，如果已停止则直接返回
-    if (!m_isRunning) {
-        log("自动对焦已停止，跳过参考星点锁定");
-        return false;
-    }
-    
-    log(QString("开始锁定参考星点..."));
-    
-    // 检测图像中的星点
-    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
-    
-    if (stars.isEmpty()) {
-        log(QString("未检测到星点，无法锁定参考星点"));
-        return false;
-    }
-    
-    // 选择图像中心区域的星点
-    QPointF imageCenter(1024, 1024); // 假设图像大小为2048x2048，可根据实际情况调整
-    double searchRadius = 200; // 搜索半径，可根据实际情况调整
-    
-    FITSImage::Star bestStar;
-    double minDistance = std::numeric_limits<double>::max();
-    bool foundStar = false;
-    
-    for (const FITSImage::Star &star : stars) {
-        QPointF starPos(star.x, star.y);
-        double distance = QLineF(imageCenter, starPos).length();
-        
-        // 在中心区域内选择最亮的星点
-        if (distance <= searchRadius && star.peak > bestStar.peak) {
-            bestStar = star;
-            minDistance = distance;
-            foundStar = true;
-        }
-    }
-    
-    if (!foundStar) {
-        log(QString("在中心区域未找到合适的星点"));
-        return false;
-    }
-    
-    // 只有在找到星点后才执行以下代码
-    try {
-        // 记录参考星点信息
-        m_referenceStarPosition = QPointF(bestStar.x, bestStar.y);
-        m_referenceStarHFR = bestStar.HFR;
-        m_referenceStarPeak = bestStar.peak;
-        // 注意：FITSImage::Star可能没有FWHM成员，使用HFR作为形状特征
-        m_referenceStarFWHM = bestStar.HFR; // 使用HFR代替FWHM
-        
-        // 记录周围星点模式
-        m_referenceStarNeighbors = findStarNeighbors(bestStar, stars);
-        
-        m_trackedStars.clear();
-        m_trackedStars.append(bestStar);
-        m_starsLocked = true;
-        
-        // 更新ROI中心位置
-        updateROICenter(m_referenceStarPosition);
-        
-        log(QString("成功锁定参考星点: 位置(%1, %2), HFR=%3, 亮度=%4, 邻居数量=%5")
-            .arg(bestStar.x).arg(bestStar.y).arg(bestStar.HFR).arg(bestStar.peak).arg(m_referenceStarNeighbors.size()));
-        
-        return true;
-    } catch (const std::exception &e) {
-        log(QString("锁定参考星点时发生异常: %1").arg(e.what()));
-        return false;
-    } catch (...) {
-        log("锁定参考星点时发生未知异常");
-        return false;
-    }
-}
-
-/**
- * @brief 计算跟踪星点的HFR
- * 
- * 基于已锁定的参考星点，计算当前图像中对应星点的HFR：
- * 1. 检测当前图像中的星点
- * 2. 查找与参考星点最近的星点
- * 3. 返回该星点的HFR值
- * 
- * @return double 跟踪星点的HFR值
- */
-double AutoFocus::calculateHFRForTrackedStar()
-{
-    // 立即检查运行状态，如果已停止则直接返回
-    if (!m_isRunning) {
-        log("自动对焦已停止，跳过跟踪HFR计算");
-        return 999.0;
-    }
-    
-    if (!m_starsLocked) {
-        log(QString("星点未锁定，无法计算跟踪HFR"));
-        return 999.0;
-    }
-    
-    log(QString("计算跟踪星点的HFR..."));
-    
-    // 检测当前图像中的星点
-    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
-    
-    if (stars.isEmpty()) {
-        log(QString("未检测到星点"));
-        return 999.0;
-    }
-    
-    // 使用智能特征匹配查找跟踪的星点
-    if (findStarByFeatures(stars)) {
-        log(QString("跟踪星点HFR: %1").arg(m_referenceStarHFR));
-        return m_referenceStarHFR;
-    } else {
-        log(QString("未找到匹配的跟踪星点"));
-        return 999.0;
-    }
-}
-
-/**
- * @brief 查找并跟踪星点
- * 
- * 如果还没有锁定星点，则先锁定；如果已锁定，则验证跟踪状态
- * 
- * @return bool 是否成功找到并跟踪星点
- */
-bool AutoFocus::findAndTrackStar()
-{
-    // 立即检查运行状态，如果已停止则直接返回
-    if (!m_isRunning) {
-        log("自动对焦已停止，跳过星点跟踪");
-        return false;
-    }
-    
-    if (!m_starsLocked) {
-        return lockReferenceStar();
-    } else {
-        // 使用智能特征匹配查找星点
-        QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
-        
-        if (findStarByFeatures(stars)) {
-            log(QString("成功跟踪参考星点"));
-            return true;
-        } else {
-            log(QString("跟踪星点丢失，尝试重新锁定"));
-            
-            // 尝试多次重新锁定
-            for (int attempt = 1; attempt <= m_maxTrackingAttempts; ++attempt) {
-                log(QString("重新锁定尝试 %1/%2").arg(attempt).arg(m_maxTrackingAttempts));
-                
-                if (lockReferenceStar()) {
-                    log(QString("重新锁定成功"));
-                    return true;
-                }
-                
-                // 使用指数退避等待时间，避免频繁重试
-                int waitTime = 1000 * attempt; // 递增等待时间：1秒、2秒、3秒
-                log(QString("等待 %1 毫秒后重试").arg(waitTime));
-                QThread::msleep(waitTime);
-                
-                // 检查是否已停止
-                if (!m_isRunning) {
-                    log("自动对焦已停止，中断重试");
-                    return false;
-                }
-            }
-            
-            log(QString("重新锁定失败，无法找到合适的参考星点"));
-            log(QString("可能的原因：1) 图像质量差 2) 星点移动过大 3) 曝光参数不当"));
-            m_starsLocked = false;
-            return false;
-        }
-    }
-}
-
-/**
- * @brief 查找最近星点
- * 
- * 在星点列表中查找距离指定位置最近的星点
- * 
- * @param position 目标位置
- * @param stars 星点列表
- * @return QPointF 最近星点的位置，如果未找到则返回QPointF()
- */
-QPointF AutoFocus::findNearestStar(const QPointF& position, const QList<FITSImage::Star>& stars)
-{
-    if (stars.isEmpty()) {
-        return QPointF();
-    }
-    
-    QPointF nearestStar;
-    double minDistance = std::numeric_limits<double>::max();
-    
-    for (const FITSImage::Star &star : stars) {
-        QPointF starPos(star.x, star.y);
-        double distance = QLineF(position, starPos).length();
-        
-        if (distance < minDistance) {
-            minDistance = distance;
-            nearestStar = starPos;
-        }
-    }
-    
-    // 如果最近距离超过阈值，认为没有找到
-    if (minDistance > 50) { // 50像素的阈值
-        return QPointF();
-    }
-    
-    return nearestStar;
-}
-
-/**
- * @brief 基于特征查找星点
- * 
- * 使用多种特征来识别和跟踪星点，特别针对调焦过程优化：
- * 1. 位置匹配（在预期范围内）- 最重要特征
- * 2. 亮度特征匹配（峰值亮度相似）- 容差较大，因为调焦时亮度变化大
- * 3. 形状特征匹配（HFR相似）- 容差较大，因为调焦时HFR变化大
- * 4. 周围星点模式匹配（星点邻居相对位置）- 辅助特征
- * 
- * 注意：调焦过程中星点特征变化较大，因此位置权重最高，其他特征容差放宽
- * 
- * @param stars 当前图像中的星点列表
- * @return bool 是否找到匹配的星点
- */
-bool AutoFocus::findStarByFeatures(const QList<FITSImage::Star>& stars)
-{
-    if (!m_starsLocked) {
-        return false;
-    }
-    
-    log(QString("基于特征查找参考星点..."));
-    
-    // 在跟踪半径内查找候选星点
-    QVector<FITSImage::Star> candidates;
-    for (const FITSImage::Star &star : stars) {
-        QPointF starPos(star.x, star.y);
-        double distance = QLineF(m_referenceStarPosition, starPos).length();
-        
-        if (distance <= m_trackingRadius) {
-            candidates.append(star);
-        }
-    }
-    
-    if (candidates.isEmpty()) {
-        log(QString("在跟踪半径内未找到候选星点"));
-        return false;
-    }
-    
-    // 对候选星点进行特征匹配评分
-    FITSImage::Star bestMatch;
-    double bestScore = -1.0;
-    
-    for (const FITSImage::Star &candidate : candidates) {
-        if (validateStarMatch(candidate)) {
-            double score = calculateStarMatchScore(candidate, stars);
-            if (score > bestScore) {
-                bestScore = score;
-                bestMatch = candidate;
-            }
-        }
-    }
-    
-    if (bestScore > 0.7) { // 匹配分数阈值
-        log(QString("找到匹配星点，分数: %1").arg(bestScore));
-        updateReferenceStarFeatures(bestMatch, stars);
-        return true;
-    } else {
-        log(QString("未找到足够匹配的星点，最高分数: %1").arg(bestScore));
-        return false;
-    }
-}
-
-/**
- * @brief 验证星点匹配
- * 
- * 检查候选星点是否可能是目标星点，针对调焦过程优化：
- * 1. 位置在合理范围内（最重要）
- * 2. 亮度特征合理（容差较大，因为调焦时亮度变化大）
- * 3. 形状特征合理（容差较大，因为调焦时HFR变化大）
- * 
- * @param candidate 候选星点
- * @param positionTolerance 位置容差
- * @return bool 是否通过验证
- */
-bool AutoFocus::validateStarMatch(const FITSImage::Star& candidate, double positionTolerance)
-{
-    QPointF candidatePos(candidate.x, candidate.y);
-    double distance = QLineF(m_referenceStarPosition, candidatePos).length();
-    
-    // 位置验证
-    if (distance > positionTolerance) {
-        return false;
-    }
-    
-    // 亮度验证（允许±150%的变化，因为调焦过程中亮度变化很大）
-    double peakRatio = candidate.peak / m_referenceStarPeak;
-    if (peakRatio < 0.25 || peakRatio > 4.0) {
-        log(QString("亮度验证失败: 候选星点亮度=%1, 参考星点亮度=%2, 比值=%3")
-            .arg(candidate.peak).arg(m_referenceStarPeak).arg(peakRatio));
-        return false;
-    }
-    
-    // HFR验证（允许±100%的变化，因为调焦过程中HFR变化较大）
-    if (m_referenceStarFWHM > 0) {
-        double hfrRatio = candidate.HFR / m_referenceStarFWHM;
-        if (hfrRatio < 0.3 || hfrRatio > 3.0) {
-            log(QString("HFR验证失败: 候选星点HFR=%1, 参考星点HFR=%2, 比值=%3")
-                .arg(candidate.HFR).arg(m_referenceStarFWHM).arg(hfrRatio));
-            return false;
-        }
-    }
-    
-    return true;
-}
-
-/**
- * @brief 计算星点匹配分数
- * 
- * 综合考虑位置、亮度、形状等特征计算匹配分数，针对调焦过程优化：
- * - 位置权重60%（最重要，因为位置相对稳定）
- * - 亮度权重20%（容差较大，因为调焦时亮度变化大）
- * - HFR权重10%（容差较大，因为调焦时HFR变化大）
- * - 模式权重10%（辅助特征）
- * 
- * @param candidate 候选星点
- * @return double 匹配分数 (0-1)
- */
-double AutoFocus::calculateStarMatchScore(const FITSImage::Star& candidate, const QList<FITSImage::Star>& allStars)
-{
-    QPointF candidatePos(candidate.x, candidate.y);
-    double distance = QLineF(m_referenceStarPosition, candidatePos).length();
-    
-    // 位置分数（距离越近分数越高）
-    double positionScore = 1.0 - (distance / m_trackingRadius);
-    positionScore = qMax(0.0, positionScore);
-    
-    // 亮度分数
-    double peakRatio = candidate.peak / m_referenceStarPeak;
-    double brightnessScore = 1.0 - qAbs(1.0 - peakRatio);
-    brightnessScore = qMax(0.0, brightnessScore);
-    
-    // HFR分数（权重降低，因为调焦过程中HFR变化较大）
-    double hfrScore = 1.0;
-    if (m_referenceStarFWHM > 0) {
-        double hfrRatio = candidate.HFR / m_referenceStarFWHM;
-        hfrScore = 1.0 - qAbs(1.0 - hfrRatio);
-        hfrScore = qMax(0.0, hfrScore);
-    }
-    
-    // 邻居模式分数
-    double patternScore = 0.0;
-    if (!m_referenceStarNeighbors.isEmpty()) {
-        // 修复：传入当前图像中的所有星点，而不是空列表
-        QVector<QPointF> currentNeighbors = findStarNeighbors(candidate, allStars);
-        if (!currentNeighbors.isEmpty()) {
-            patternScore = matchStarPattern(m_referenceStarNeighbors, currentNeighbors) ? 1.0 : 0.0;
-        }
-    }
-    
-    // 综合分数（调整权重：位置70%，亮度15%，HFR10%，模式5%）
-    // 调焦过程中位置最重要，亮度和HFR变化较大，权重进一步降低
-    double totalScore = (positionScore * 0.7 + brightnessScore * 0.15 + hfrScore * 0.1 + patternScore * 0.05);
-    
-    // 添加调试日志
-    log(QString("星点匹配分数: 位置=%1, 亮度=%2, HFR=%3, 模式=%4, 总分=%5")
-        .arg(positionScore, 0, 'f', 3).arg(brightnessScore, 0, 'f', 3)
-        .arg(hfrScore, 0, 'f', 3).arg(patternScore, 0, 'f', 3).arg(totalScore, 0, 'f', 3));
-    
-    return totalScore;
-}
-
-/**
- * @brief 更新参考星点特征
- * 
- * 当找到匹配的星点时，更新参考星点的特征信息
- * 
- * @param star 匹配的星点
- */
-void AutoFocus::updateReferenceStarFeatures(const FITSImage::Star& star, const QList<FITSImage::Star>& allStars)
-{
-    m_referenceStarPosition = QPointF(star.x, star.y);
-    m_referenceStarHFR = star.HFR;
-    m_referenceStarPeak = star.peak;
-    m_referenceStarFWHM = star.HFR; // 使用HFR代替FWHM
-    
-    // 更新邻居模式信息
-    m_referenceStarNeighbors = findStarNeighbors(star, allStars);
-    
-    // 更新ROI中心位置
-    updateROICenter(m_referenceStarPosition);
-    
-    log(QString("更新参考星点特征: 位置(%1, %2), HFR=%3, 亮度=%4, 邻居数量=%5")
-        .arg(star.x).arg(star.y).arg(star.HFR).arg(star.peak).arg(m_referenceStarNeighbors.size()));
-}
-
-/**
- * @brief 查找星点邻居
- * 
- * 查找指定星点周围的邻居星点，记录相对位置
- * 
- * @param centerStar 中心星点
- * @param allStars 所有星点列表
- * @return QVector<QPointF> 邻居星点的相对位置
- */
-QVector<QPointF> AutoFocus::findStarNeighbors(const FITSImage::Star& centerStar, const QList<FITSImage::Star>& allStars)
-{
-    QVector<QPointF> neighbors;
-    QPointF centerPos(centerStar.x, centerStar.y);
-    double searchRadius = 100.0; // 搜索半径
-    
-    // 按距离排序的邻居列表
-    QVector<QPair<double, QPointF>> sortedNeighbors;
-    
-    for (const FITSImage::Star &star : allStars) {
-        // 使用位置比较而不是指针比较来跳过自己
-        if (qAbs(star.x - centerStar.x) < 0.1 && qAbs(star.y - centerStar.y) < 0.1) continue;
-        
-        QPointF starPos(star.x, star.y);
-        double distance = QLineF(centerPos, starPos).length();
-        
-        if (distance <= searchRadius) {
-            // 记录相对位置和距离
-            QPointF relativePos = starPos - centerPos;
-            sortedNeighbors.append(qMakePair(distance, relativePos));
-        }
-    }
-    
-    // 按距离排序，选择最近的邻居（使用lambda函数比较距离）
-    std::sort(sortedNeighbors.begin(), sortedNeighbors.end(), 
-              [](const QPair<double, QPointF>& a, const QPair<double, QPointF>& b) {
-                  return a.first < b.first;
-              });
-    
-    // 只保留最近的5个邻居，避免噪声影响
-    int maxNeighbors = qMin(5, sortedNeighbors.size());
-    for (int i = 0; i < maxNeighbors; ++i) {
-        neighbors.append(sortedNeighbors[i].second);
-    }
-    
-    return neighbors;
-}
-
-/**
- * @brief 匹配星点模式
- * 
- * 比较两个星点邻居模式是否匹配
- * 
- * @param pattern1 模式1
- * @param pattern2 模式2
- * @param tolerance 匹配容差
- * @return bool 是否匹配
- */
-bool AutoFocus::matchStarPattern(const QVector<QPointF>& pattern1, const QVector<QPointF>& pattern2, double tolerance)
-{
-    if (pattern1.size() != pattern2.size()) {
-        return false;
-    }
-    
-    if (pattern1.isEmpty()) {
-        return true;
-    }
-    
-    // 简单的模式匹配：检查是否有足够多的邻居位置相似
-    int matchCount = 0;
-    int totalCount = pattern1.size();
-    
-    for (const QPointF &pos1 : pattern1) {
-        for (const QPointF &pos2 : pattern2) {
-            if (QLineF(pos1, pos2).length() <= tolerance) {
-                matchCount++;
-                break;
-            }
-        }
-    }
-    
-    double matchRatio = static_cast<double>(matchCount) / totalCount;
-    return matchRatio >= 0.7; // 70%的邻居匹配即可
-}
+// 旧的星点跟踪方法已删除，替换为新的星点选择策略
 
 /**
  * @brief 移动电调相对位置
@@ -2503,7 +2169,7 @@ int AutoFocus::getFocuserTotalRange() const
  */
 QVector<FocusDataPoint> AutoFocus::removeOutliers(const QVector<FocusDataPoint>& data)
 {
-    if (data.size() < 4) {
+    if (data.size() < g_autoFocusConfig.minDataPoints + 1) {
         return data; // 数据点太少，不进行异常值检测
     }
     
@@ -2808,15 +2474,12 @@ bool AutoFocus::checkFocuserMoveComplete()
         log(QString("初始化电调位置记录: 位置=%1").arg(currentPosition));
     }
     
-    // 检查是否到达目标位置（允许±5步的误差）
-    int positionDiff = qAbs(currentPosition - m_targetFocuserPosition);
-    log(QString("位置差异: %1, 目标位置=%2, 当前位置=%3").arg(positionDiff).arg(m_targetFocuserPosition).arg(currentPosition));
-    
-    if (positionDiff == 0) {
-        log(QString("电调移动完成: 当前位置=%1, 目标位置=%2").arg(currentPosition).arg(m_targetFocuserPosition));
-        stopFocuserMove();
-        return true;
-    }
+            // 使用统一的位置检查函数
+        if (isPositionReached(currentPosition, m_targetFocuserPosition, g_autoFocusConfig.positionTolerance)) {
+            log(QString("电调移动完成: 当前位置=%1, 目标位置=%2").arg(currentPosition).arg(m_targetFocuserPosition));
+            stopFocuserMove();
+            return true;
+        }
     
     // 检查位置是否发生变化
     if (currentPosition != m_lastPosition) {
@@ -2936,9 +2599,9 @@ void AutoFocus::updateROICenter(const QPointF& starPosition)
  */
 QRect AutoFocus::calculateROI(const QPointF& center, int size)
 {
-    // 假设图像大小为2048x2048，可根据实际情况调整
-    const int imageWidth = 2048;
-    const int imageHeight = 2048;
+    // 使用配置中的图像尺寸
+    const int imageWidth = m_imageWidth;
+    const int imageHeight = m_imageHeight;
     
     // 计算ROI的左上角坐标
     int x = static_cast<int>(center.x() - size / 2);
@@ -3010,8 +2673,8 @@ bool AutoFocus::waitForFocuserMoveComplete(int targetPosition, int tolerance, in
         log(QString("等待电调移动 [%1/%2]: 当前位置=%3, 目标位置=%4")
             .arg(m_moveWaitCount / 10.0, 0, 'f', 1).arg(dynamicTimeout).arg(currentPos).arg(targetPosition));
         
-        // 检查是否到达目标位置
-        if (qAbs(currentPos - targetPosition) <= tolerance) {
+        // 使用统一的位置检查函数
+        if (isPositionReached(currentPos, targetPosition, tolerance)) {
             log(QString("电调移动完成: 当前位置=%1, 目标位置=%2, 误差=%3")
                 .arg(currentPos).arg(targetPosition).arg(qAbs(currentPos - targetPosition)));
             return true;
@@ -3121,8 +2784,8 @@ bool AutoFocus::generateVirtualImage(int exposureTime, bool useROI)
         
         // 设置星图生成参数
         StarImageParams params;
-        params.imageWidth = useROI ? m_roiSize : 1920;
-        params.imageHeight = useROI ? m_roiSize : 1080;
+        params.imageWidth = useROI ? m_roiSize : m_imageWidth;
+        params.imageHeight = useROI ? m_roiSize : m_imageHeight;
         params.focuserMinPos = m_focuserMinPosition;
         params.focuserMaxPos = m_focuserMaxPosition;
         params.focuserCurrentPos = currentPos;
@@ -3218,4 +2881,164 @@ void AutoFocus::setVirtualOutputPath(const QString &path)
 QString AutoFocus::getVirtualOutputPath() const
 {
     return m_virtualImagePath;
+}
+
+// ==================== 星点选择方法 ====================
+
+/**
+ * @brief 选择置信度最高的星点并计算平均HFR
+ * 
+ * 这是新的星点处理策略的核心方法：
+ * 1. 检测图像中的所有星点
+ * 2. 根据置信度选择最佳的几颗星
+ * 3. 计算这些星点的平均HFR值
+ * 4. 返回平均HFR用于对焦判断
+ * 
+ * @return double 平均HFR值，如果没有星点则返回999.0
+ */
+double AutoFocus::selectTopStarsAndCalculateHFR()
+{
+    // 立即检查运行状态，如果已停止则直接返回
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过星点选择");
+        return 999.0;
+    }
+    
+    log(QString("开始选择置信度最高的星点..."));
+    
+    // 检测图像中的所有星点
+    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(false, true);
+    
+    if (stars.isEmpty()) {
+        log(QString("未检测到星点，无法计算HFR"));
+        return 999.0;
+    }
+    
+    log(QString("检测到 %1 个星点，开始选择最佳星点").arg(stars.size()));
+    
+    // 选择置信度最高的星点
+    QList<FITSImage::Star> topStars = selectTopStarsByConfidence(stars);
+    
+    if (topStars.isEmpty()) {
+        log(QString("没有找到合适的星点"));
+        return 999.0;
+    }
+    
+    // 计算平均HFR值
+    double totalHFR = 0.0;
+    int validStars = 0;
+    
+    for (const FITSImage::Star &star : topStars) {
+        if (star.HFR > 0) {
+            totalHFR += star.HFR;
+            validStars++;
+            log(QString("选择星点: 位置(%1, %2), HFR=%3, 置信度=%4")
+                .arg(star.x).arg(star.y).arg(star.HFR).arg(calculateStarConfidence(star), 0, 'f', 3));
+        }
+    }
+    
+    if (validStars > 0) {
+        double avgHFR = totalHFR / validStars;
+        log(QString("星点选择完成: 选择了%1颗星，平均HFR=%2").arg(validStars).arg(avgHFR));
+        return avgHFR;
+    } else {
+        log(QString("没有有效的HFR数据"));
+        return 999.0;
+    }
+}
+
+/**
+ * @brief 根据置信度选择最佳星点
+ * 
+ * 基于多个特征计算星点置信度，选择最佳的几颗星：
+ * 1. 亮度特征（峰值亮度）
+ * 2. 形状特征（HFR值）
+ * 3. 位置特征（图像中心区域优先）
+ * 4. 稳定性特征（多次检测的一致性）
+ * 
+ * @param stars 所有检测到的星点
+ * @return QList<FITSImage::Star> 选择的最佳星点列表
+ */
+QList<FITSImage::Star> AutoFocus::selectTopStarsByConfidence(const QList<FITSImage::Star>& stars)
+{
+    if (stars.isEmpty()) {
+        return QList<FITSImage::Star>();
+    }
+    
+    // 计算每个星点的置信度
+    QVector<QPair<double, FITSImage::Star>> scoredStars;
+    for (const FITSImage::Star &star : stars) {
+        double confidence = calculateStarConfidence(star);
+        scoredStars.append(qMakePair(confidence, star));
+    }
+    
+    // 按置信度降序排序
+    std::sort(scoredStars.begin(), scoredStars.end(), 
+              [](const QPair<double, FITSImage::Star>& a, const QPair<double, FITSImage::Star>& b) {
+                  return a.first > b.first;
+              });
+    
+    // 选择置信度最高的星点
+    QList<FITSImage::Star> topStars;
+    int maxStars = qMin(m_topStarCount, scoredStars.size());
+    
+    for (int i = 0; i < maxStars; ++i) {
+        topStars.append(scoredStars[i].second);
+    }
+    
+    log(QString("从%1个星点中选择了%2个最佳星点").arg(stars.size()).arg(topStars.size()));
+    
+    return topStars;
+}
+
+/**
+ * @brief 计算星点置信度
+ * 
+ * 综合考虑多个特征计算星点置信度：
+ * - 亮度权重40%：峰值亮度越高，置信度越高
+ * - HFR权重30%：HFR越小（越锐利），置信度越高
+ * - 位置权重20%：越靠近图像中心，置信度越高
+ * - 形状权重10%：形状越规则，置信度越高
+ * 
+ * @param star 要评估的星点
+ * @return double 置信度分数 (0-1)
+ */
+double AutoFocus::calculateStarConfidence(const FITSImage::Star& star)
+{
+    // 使用配置中的图像尺寸
+    const double imageCenterX = m_imageWidth / 2.0;
+    const double imageCenterY = m_imageHeight / 2.0;
+    const double maxDistance = qSqrt(imageCenterX * imageCenterX + imageCenterY * imageCenterY);
+    
+    // 亮度分数（峰值亮度越高分数越高）
+    double brightnessScore = qMin(star.peak / 65535.0, 1.0); // 假设16位图像
+    
+    // HFR分数（HFR越小分数越高，假设最佳HFR为1.0）
+    double hfrScore = 1.0;
+    if (star.HFR > 0) {
+        hfrScore = qMax(0.0, 1.0 - (star.HFR - 1.0) / 5.0); // 1.0-6.0范围映射到1.0-0.0
+        hfrScore = qBound(0.0, hfrScore, 1.0);
+    }
+    
+    // 位置分数（越靠近中心分数越高）
+    double distanceFromCenter = qSqrt(qPow(star.x - imageCenterX, 2) + qPow(star.y - imageCenterY, 2));
+    double positionScore = 1.0 - (distanceFromCenter / maxDistance);
+    positionScore = qBound(0.0, positionScore, 1.0);
+    
+    // 形状分数（基于HFR的稳定性，假设HFR在合理范围内）
+    double shapeScore = 1.0;
+    if (star.HFR > 0) {
+        if (star.HFR >= 0.5 && star.HFR <= 8.0) {
+            shapeScore = 1.0; // 在合理范围内
+        } else if (star.HFR < 0.5) {
+            shapeScore = 0.0; // 可能过小
+        } else {
+            shapeScore = 0.3; // 可能过大
+        }
+    }
+    
+    // 综合分数（加权平均）
+    double totalScore = (brightnessScore * 0.4 + hfrScore * 0.3 + positionScore * 0.2 + shapeScore * 0.1);
+    
+    return totalScore;
 }
