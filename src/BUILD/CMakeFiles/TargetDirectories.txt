@@ -1,0 +1,8 @@
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/client.dir
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/edit_cache.dir
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/rebuild_cache.dir
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/list_install_components.dir
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/install.dir
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/install/local.dir
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/install/strip.dir
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD/CMakeFiles/client_autogen.dir

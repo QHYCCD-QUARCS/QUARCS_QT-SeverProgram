@@ -512,6 +512,19 @@ void MainWindow::onMessageReceived(const QString &message)
         }
     }
 
+    else if (parts.size() == 2 && parts[0].trimmed() == "GotoThenSolve")
+    {
+        Logger::Log("GotoThenSolve ...", LogLevel::DEBUG, DeviceType::MOUNT);
+        if (parts[1].trimmed() == "true")
+        {
+            GotoThenSolve = true;
+        }
+        else
+        {
+            GotoThenSolve = false;
+        }
+    }
+
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainR")
     {
         ImageGainR = parts[1].trimmed().toDouble();
@@ -1194,6 +1207,10 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 setMountLocation(parts[0], parts[1]);
             }
+        }
+        if (ConfigName == "FocalLength")
+        {
+            glFocalLength = ConfigValue.toInt();
         }
 
         Logger::Log("saveToConfigFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
@@ -1942,6 +1959,7 @@ void MainWindow::onTimeout()
             {
                 emit wsThread->sendMessageToClient("MainCameraTemperature:" + QString::number(CameraTemp));
             }
+
         }
     }
 }
@@ -3711,7 +3729,7 @@ void MainWindow::AfterDeviceConnect()
         indi_Client->setTemperature(dpMainCamera, CameraTemperature);
         Logger::Log("CCD Temperature set to: " + std::to_string(CameraTemperature), LogLevel::INFO, DeviceType::MAIN);
 
-        if (maxX == 0 && maxY == 0)
+        if (isDSLR(dpMainCamera))
         {
             QString CameraName = dpMainCamera->getDeviceName();
             Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
@@ -3906,6 +3924,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 {
     if (dpMainCamera == dp)
     {
+        sleep(1); // 给与初始化数据更新时间
         indi_Client->GetAllPropertyName(dpMainCamera);
         Logger::Log("MainCamera connected after Device(" + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
@@ -3932,7 +3951,31 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         int maxX, maxY;
         double pixelsize, pixelsizX, pixelsizY;
         int bitDepth;
-        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+
+        if (isDSLR(dpMainCamera))
+        {
+            QString CameraName = dpMainCamera->getDeviceName();
+            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
+            if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
+            {
+                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
+                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+            }
+        }else{
+            int time = 0;
+            while ((maxX == 0 || maxY == 0) && time < 5)
+            {
+                time++;
+                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+            }    
+        }
+
         Logger::Log("CCD Basic Info - MaxX: " + std::to_string(maxX) + ", MaxY: " + std::to_string(maxY) + ", PixelSize: " + std::to_string(pixelsize), LogLevel::INFO, DeviceType::MAIN);
         if (bitDepth != 16)
         {
@@ -3948,23 +3991,6 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         // 设置初始温度
         indi_Client->setTemperature(dpMainCamera, CameraTemperature);
         Logger::Log("CCD Temperature set to: " + std::to_string(CameraTemperature), LogLevel::INFO, DeviceType::MAIN);
-
-        if (maxX == 0 && maxY == 0)
-        {
-            QString CameraName = dpMainCamera->getDeviceName();
-            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
-            if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
-            {
-                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
-                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
-                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
-            {
-                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
-            }
-        }
 
         glCameraSize_width = maxX * pixelsize / 1000;
         glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
@@ -4182,6 +4208,75 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         qDebug() << "是否连接：" << QString::fromStdString(std::to_string(indi_Client->GetDeviceFromList(i)->isConnected()));
         qDebug() << " *** *** *** *** *** *** ";
     }
+}
+
+
+bool MainWindow::hasProp(INDI::BaseDevice *dev, const char *prop)
+{
+    return dev && dev->getProperty(prop) != nullptr;
+}
+
+// 工具函数：检查多个属性是否存在其中之一
+bool MainWindow::hasAnyProp(INDI::BaseDevice *dev, std::initializer_list<const char*> props)
+{
+    for (auto p : props)
+    {
+        if (hasProp(dev, p))
+            return true;
+    }
+    return false;
+}
+
+bool MainWindow::isDSLR(INDI::BaseDevice *device)
+{
+    if (!device) return false;
+
+    // 转小写便于匹配
+    auto toLower = [](QString s){ return s.toLower(); };
+    QString drvExec = toLower(QString::fromUtf8(device->getDriverExec()));
+    QString devName = toLower(QString::fromUtf8(device->getDeviceName()));
+
+    auto nameHas = [&](const QString& key){
+        return drvExec.contains(key) || devName.contains(key);
+    };
+
+    bool nameLooksDSLR = nameHas("gphoto") || nameHas("dslr");
+
+    // 1) 反证：典型 SDK/制冷相机属性，若存在则优先判定为非 DSLR
+    bool looksLikeSDKCam = hasAnyProp(device, {
+        "CCD_COOLER", "CCD_COOLER_MODE", "CCD_COOLER_POWER", "CCD_HUMIDITY",
+        "CCD_GAIN", "CCD_OFFSET", "USB_TRAFFIC", "USB_BUFFER",
+        "SDK_VERSION", "READ_MODE"
+    });
+    if (looksLikeSDKCam)
+    {
+        Logger::Log("SDK/Coooler/Gain type properties found, treat as non-DSLR.",
+                    LogLevel::INFO, DeviceType::MAIN);
+        return false;
+    }
+
+    // 2) 正证：单反/微单常见属性
+    bool dslrProps = hasAnyProp(device, {
+        "ISO", "CCD_ISO", "APERTURE", "WB", "WHITE_BALANCE",
+        "CAPTURE_TARGET", "IMAGE_FORMAT", "LIVEVIEW", "LIVE_VIEW", "FOCUS_MODE"
+    });
+
+    if (dslrProps)
+    {
+        Logger::Log("Found DSLR-specific properties, treat as DSLR.",
+                    LogLevel::INFO, DeviceType::MAIN);
+        return true;
+    }
+
+    // 3) 兜底：驱动名提示
+    if (nameLooksDSLR)
+    {
+        Logger::Log("Driver name contains DSLR/GPhoto, treat as DSLR.",
+                    LogLevel::INFO, DeviceType::MAIN);
+        return true;
+    }
+
+    return false;
 }
 
 void MainWindow::disconnectIndiServer(MyClient *client)
@@ -8423,7 +8518,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                 int waitTime = 0;
                 bool connectState = false;
-                while (waitTime < 30)
+                while (waitTime < 10)
                 {
                     Logger::Log("ConnectDriver | Wait for Connect " + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
                     QThread::msleep(1000); // 等待1秒
@@ -8532,13 +8627,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             for (int j = 0; j < connectedPorts.size(); j++)
                             {
                                 Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                if (connectedPorts[j].contains("ttyUSB"))
+                                if (connectedPorts[j].contains("ttyACM"))
                                 {
-                                    Logger::Log("ConnectDriver | Found ttyUSB device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                    Logger::Log("ConnectDriver | Found ttyACM device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                                 }
                                 else
                                 {
-                                    Logger::Log("ConnectDriver | Not found ttyUSB device", LogLevel::INFO, DeviceType::MAIN);
+                                    Logger::Log("ConnectDriver | Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
                                     continue;
                                 }
                                 QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
@@ -10775,8 +10870,8 @@ bool MainWindow::initPolarAlignment()
     config.defaultExposureTime = 1000;         // 默认曝光时间1秒
     config.recoveryExposureTime = 5000;        // 恢复曝光时间5秒
     config.shortExposureTime = 500;            // 短曝光时间0.5秒
-    config.raRotationAngle = 1.0;              // RA轴每次移动1度
-    config.decRotationAngle = 1.0;             // DEC轴移动1度
+    config.raRotationAngle = 15.0;              // RA轴每次移动1度
+    config.decRotationAngle = 15.0;             // DEC轴移动1度
     config.maxRetryAttempts = 3;               // 最大重试3次
     config.captureAndAnalysisTimeout = 30000;  // 拍摄和分析超时30秒
     config.movementTimeout = 15000;            // 移动超时15秒

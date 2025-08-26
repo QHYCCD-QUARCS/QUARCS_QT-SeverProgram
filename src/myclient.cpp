@@ -645,6 +645,25 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QS
     return QHYCCD_SUCCESS;
 }
 
+uint32_t MyClient::setCCDCFA(INDI::BaseDevice *dp,int offsetX, int offsetY, QString CFATYPE)
+{
+    INDI::PropertyText ccdCFA = dp->getProperty("CCD_CFA");
+
+    if (!ccdCFA.isValid())
+    {
+        Logger::Log("indi_client | setCCDCFA | Error: unable to find  CCD_CFA property...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
+    ccdCFA[0].setText(std::to_string(offsetX).c_str());
+    ccdCFA[1].setText(std::to_string(offsetY).c_str());
+    ccdCFA[2].setText(CFATYPE.toStdString().c_str());
+    sendNewProperty(ccdCFA);
+    Logger::Log("indi_client | setCCDCFA | " + std::to_string(offsetX) + ", " + std::to_string(offsetY) + ", " + CFATYPE.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    return QHYCCD_SUCCESS;
+}
+
+
 uint32_t MyClient::getCCDSDKVersion(INDI::BaseDevice *dp, QString &version)
 {
     INDI::PropertyText ccdCFA = dp->getProperty("SDK_VERSION");
@@ -1453,9 +1472,9 @@ uint32_t MyClient::setTelescopeMoveWE(INDI::BaseDevice *dp,QString command)
         return QHYCCD_ERROR;
     }
 
-    if(command=="WEST")         {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
-    else if(command=="EAST")    {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
-    else if(command=="STOP")    {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);}
+    if(command=="WEST")         {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);ismove = true;}
+    else if(command=="EAST")    {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);ismove = true;}
+    else if(command=="STOP")    {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);ismove = false;}
 
     sendNewProperty(property);
     Logger::Log("indi_client | setTelescopeMoveWE" + command.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
@@ -1472,9 +1491,9 @@ uint32_t MyClient::getTelescopeMoveNS(INDI::BaseDevice *dp,QString &statu)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      {statu="NORTH";}
-    else if(property[1].getState()==ISS_ON) {statu="SOUTH";}
-    else                                    {statu="STOP";}
+    if(property[0].getState()==ISS_ON)      {statu="NORTH";ismove = true;}
+    else if(property[1].getState()==ISS_ON) {statu="SOUTH";ismove = true;}
+    else                                    {statu="STOP";ismove = false;}
     Logger::Log("indi_client | getTelescopeMoveNS" + statu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
@@ -1764,29 +1783,173 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
     return QHYCCD_SUCCESS;
 }
 
+// uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
+// {
+//     if(QString::fromStdString(dp->getDeviceName()) == "LX200 OnStep") {
+//         INDI::PropertyText property = dp->getProperty("OnStep Status");
 
+//         if (!property.isValid())
+//         {
+//             Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
+//             return QHYCCD_ERROR;
+//         }
+        
+//         // 打印property的所有内容
+//         Logger::Log("=== OnStep Status Property 详细信息 ===", LogLevel::INFO, DeviceType::MOUNT);
+//         Logger::Log("Property名称: " + QString::fromStdString(property.getName()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
+//         Logger::Log("Property标签: " + QString::fromStdString(property.getLabel()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
+//         Logger::Log("Property组名: " + QString::fromStdString(property.getGroupName()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
+//         Logger::Log("Property权限: " + QString::number(property.getPermission()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
+//         Logger::Log("Property状态: " + QString::fromStdString(property.getStateAsString()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
+//         Logger::Log("Property数量: " + QString::number(property.count()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
+        
+//         // 打印所有文本值
+//         for (int i = 0; i < property.count(); i++) {
+//             QString value = QString::fromStdString(property[i].getText());
+//             QString label = QString::fromStdString(property[i].getLabel());
+//             Logger::Log(QString("  [%1] Label: %2, Value: %3").arg(i).arg(label).arg(value).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
+//         }
+//         Logger::Log("=====================================", LogLevel::INFO, DeviceType::MOUNT);
+        
+//         statu = QString::fromStdString(property[1].getText());
+//         Logger::Log("当前赤道仪状态:" + statu.toStdString(), LogLevel::WARNING, DeviceType::MOUNT);
+//         // error = QString::fromStdString(property[7].getText());
+//         // qDebug()<<"OnStep error: "<< error;
+//         // if(error != "None") {
+//         //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
+//         // }
+        
+//         return QHYCCD_SUCCESS;
+//     }
+// }
 
-uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
+uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu, QString &error)
 {
-    if(QString::fromStdString(dp->getDeviceName()) == "LX200 OnStep") {
-        INDI::PropertyText property = dp->getProperty("OnStep Status");
 
-        if (!property.isValid())
-        {
-            Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
-            return QHYCCD_ERROR;
-        }
-        
+    INDI::PropertyText property = dp->getProperty("OnStep Status");
+    if (!property.isValid())
+    {
+        // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
+    }
+    else
+    {
         statu = property[1].getText();
-        // error = property[7].getText();
-        // qDebug()<<"OnStep error: "<< error;
-        // if(error != "None") {
-        //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
-        // }
-        
+    }
+
+    if (statu.isEmpty())
+    {
+        // Logger::Log("indi_client | getTelescopeStatus | Error: OnStep Status is empty", LogLevel::WARNING, DeviceType::CAMERA);
+    }
+    else
+    {
+        return QHYCCD_SUCCESS;
+    }
+
+    INDI::PropertyLight property1 = dp->getProperty("RASTATUS");
+    INDI::PropertyLight property2 = dp->getProperty("DESTATUS");
+
+    if (!property1.isValid() && !property2.isValid())
+    {
+        // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find RASTATUS OR DESTATUS property...", LogLevel::WARNING, DeviceType::CAMERA);
+    }
+    else
+    {
+        if (property1.count() == 5)
+        {
+            if (property1[0].getState() == 1)
+            {
+                // RAfirstTrack = true;
+                if (property1[1].getState() == 1)
+                {
+                    if(property1[2].getState() == 1)
+                    {
+                        statu = "Busy";
+                    }
+                    else if(property1[2].getState() == 2)
+                    {
+                        if(ismove)
+                        {
+                            statu = "Busy";
+                            // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Tracking", LogLevel::INFO, DeviceType::MOUNT);
+                        }
+                        else
+                        {
+                            statu = "Tracking";
+                            // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Idle", LogLevel::INFO, DeviceType::MOUNT);
+                        }
+                       
+                    }
+                }
+                else if (property1[1].getState() == 2)
+                {
+                    statu = "Idle";
+                }
+                else
+                {
+                    statu = "Busy";
+                    // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS state is not recognized", LogLevel::WARNING, DeviceType::CAMERA);
+                }
+            }
+        }
+      
+        if (property2.count() == 5 && statu != "Busy" )
+        {
+            if (property2[0].getState() == 1)
+            {
+                // DECfirstTrack = true;
+                if (property2[1].getState() == 1)
+                {
+                    statu = "Busy";
+                    // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Busy", LogLevel::INFO, DeviceType::MOUNT);    
+                }
+                else if (property2[1].getState() == 2)
+                {
+                    statu = "Idle";
+                }
+                else
+                {
+                    statu = "Busy";
+                    // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS state is not recognized", LogLevel::WARNING, DeviceType::CAMERA);
+                }
+            }
+
+           
+        }
+    }
+    if (statu.isEmpty())
+    {
+        // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS is empty", LogLevel::WARNING, DeviceType::CAMERA);
+        // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find mount state...", LogLevel::ERROR, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+    else
+    {
         return QHYCCD_SUCCESS;
     }
 }
+
+// uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
+// {
+//     if(QString::fromStdString(dp->getDeviceName()) == "LX200 OnStep") {
+//         INDI::PropertyText property = dp->getProperty("OnStep Status");
+
+//         if (!property.isValid())
+//         {
+//             Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
+//             return QHYCCD_ERROR;
+//         }
+        
+//         statu = QString::fromStdString(property[1].getText());
+//         Logger::Log("当前赤道仪状态:" + statu.toStdString(), LogLevel::WARNING, DeviceType::MOUNT);
+//         // error = QString::fromStdString(property[7].getText());
+//         // qDebug()<<"OnStep error: "<< error;
+//         // if(error != "None") {
+//         //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
+//         // }
+        
+//         return QHYCCD_SUCCESS;
+//     }
+// }
 
 /**************************************************************************************
 **                                  Focus API

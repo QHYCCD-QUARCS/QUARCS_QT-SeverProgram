@@ -433,8 +433,9 @@ void PolarAlignment::processCurrentState()
                         setState(PolarAlignmentState::MOVING_DEC_AWAY);
                     } else {
                         // 不在极点，已经获得第一个测量点，直接进入RA轴移动
-                        Logger::Log("PolarAlignment: 当前不在极点，已获得第一个测量点，直接进入RA轴移动", LogLevel::INFO, DeviceType::MAIN);
-                        setState(PolarAlignmentState::MOVING_RA_FIRST);
+                        // Logger::Log("PolarAlignment: 当前不在极点，已获得第一个测量点，直接进入RA轴移动", LogLevel::INFO, DeviceType::MAIN);
+                        // setState(PolarAlignmentState::MOVING_RA_FIRST);
+                        setState(PolarAlignmentState::MOVING_DEC_AWAY);
                     }
                 } else {
                     // 极点验证失败，直接设置为失败状态
@@ -866,47 +867,59 @@ PolarAlignment::PolarPointCheckResult PolarAlignment::checkPolarPoint()
         if (solveResult.DEC_Degree >= -90.0 && solveResult.DEC_Degree < -89.5) isNearPole = true;
     }
 
+    // if (isNearPole) {
+    //     Logger::Log("PolarAlignment: 当前指向极点，需要移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
+    //     return {true, true, ""};
+    // } else {
+    //     Logger::Log("PolarAlignment: 当前未指向极点，可以作为第一个测量点", LogLevel::INFO, DeviceType::MAIN);
+    //     SloveResults firstMeasurement;
+    //     firstMeasurement.RA_Degree = solveResult.RA_Degree;
+    //     firstMeasurement.DEC_Degree = solveResult.DEC_Degree;
+    //     measurements.append(firstMeasurement);
+    //     currentMeasurementIndex = 1;
+    //     Logger::Log("PolarAlignment: 已将当前位置记录为第一个测量点", LogLevel::INFO, DeviceType::MAIN);
+        
+    //     // 发送第一个校准点的视场数据
+    //     QString adjustmentRa = "";
+    //     QString adjustmentDec = "";
+        
+    //     // 保存调整指导数据到容器
+    //     AdjustmentGuideData guideData;
+    //     guideData.ra = solveResult.RA_Degree;
+    //     guideData.dec = solveResult.DEC_Degree;
+    //     guideData.maxRa = solveResult.RA_1;
+    //     guideData.minRa = solveResult.RA_0;
+    //     guideData.maxDec = solveResult.DEC_2;
+    //     guideData.minDec = solveResult.DEC_1;
+    //     guideData.targetRa = 0.0;
+    //     guideData.targetDec = 0.0;
+    //     guideData.offsetRa = 0.0;
+    //     guideData.offsetDec = 0.0;
+    //     guideData.adjustmentRa = adjustmentRa;
+    //     guideData.adjustmentDec = adjustmentDec;
+    //     guideData.timestamp = QDateTime::currentDateTime();
+        
+    //     adjustmentGuideDataHistory.append(guideData);
+        
+    //     emit adjustmentGuideData(solveResult.RA_Degree, solveResult.DEC_Degree,
+    //                 solveResult.RA_1, solveResult.RA_0, 
+    //                 solveResult.DEC_2, solveResult.DEC_1, 
+    //                 -1, -1, 0.0, 0.0, 
+    //                 adjustmentRa, adjustmentDec);
+        
+    //     return {true, false, ""};
+    // }
+
+    // 无论是否指向极点，都不记录第一个测量点，直接移动DEC轴
+    Logger::Log("PolarAlignment: 无论是否指向极点，都不记录第一个测量点，直接移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 返回结果，isNearPole字段不再影响后续流程，都返回true表示需要移动DEC轴
     if (isNearPole) {
-        Logger::Log("PolarAlignment: 当前指向极点，需要移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
+        Logger::Log("PolarAlignment: 当前指向极点，将移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
         return {true, true, ""};
     } else {
-        Logger::Log("PolarAlignment: 当前未指向极点，可以作为第一个测量点", LogLevel::INFO, DeviceType::MAIN);
-        SloveResults firstMeasurement;
-        firstMeasurement.RA_Degree = solveResult.RA_Degree;
-        firstMeasurement.DEC_Degree = solveResult.DEC_Degree;
-        measurements.append(firstMeasurement);
-        currentMeasurementIndex = 1;
-        Logger::Log("PolarAlignment: 已将当前位置记录为第一个测量点", LogLevel::INFO, DeviceType::MAIN);
-        
-        // 发送第一个校准点的视场数据
-        QString adjustmentRa = "";
-        QString adjustmentDec = "";
-        
-        // 保存调整指导数据到容器
-        AdjustmentGuideData guideData;
-        guideData.ra = solveResult.RA_Degree;
-        guideData.dec = solveResult.DEC_Degree;
-        guideData.maxRa = solveResult.RA_1;
-        guideData.minRa = solveResult.RA_0;
-        guideData.maxDec = solveResult.DEC_2;
-        guideData.minDec = solveResult.DEC_1;
-        guideData.targetRa = 0.0;
-        guideData.targetDec = 0.0;
-        guideData.offsetRa = 0.0;
-        guideData.offsetDec = 0.0;
-        guideData.adjustmentRa = adjustmentRa;
-        guideData.adjustmentDec = adjustmentDec;
-        guideData.timestamp = QDateTime::currentDateTime();
-        
-        adjustmentGuideDataHistory.append(guideData);
-        
-        emit adjustmentGuideData(solveResult.RA_Degree, solveResult.DEC_Degree,
-                    solveResult.RA_1, solveResult.RA_0, 
-                    solveResult.DEC_2, solveResult.DEC_1, 
-                    -1, -1, 0.0, 0.0, 
-                    adjustmentRa, adjustmentDec);
-        
-        return {true, false, ""};
+        Logger::Log("PolarAlignment: 当前未指向极点，也将移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
+        return {true, true, ""};
     }
 }
 
@@ -934,6 +947,7 @@ bool PolarAlignment::moveDecAxisAway()
         isNearPole = (currentDEC >= -90.0 && currentDEC < -89.5);
     }
     
+    // 无论是否在极点附近，都移动DEC轴
     if (isNearPole) {
         // 从极点移动，确保不超出有效范围
         double targetDEC;
@@ -954,8 +968,8 @@ bool PolarAlignment::moveDecAxisAway()
         bool success = moveTelescopeToAbsolutePosition(currentRA, targetDEC);
         return success;
     } else {
-        // 不在极点，使用相对移动
-        Logger::Log("PolarAlignment: 不在极点，使用相对移动", LogLevel::INFO, DeviceType::MAIN);
+        // 不在极点，也使用相对移动
+        Logger::Log("PolarAlignment: 不在极点，也使用相对移动", LogLevel::INFO, DeviceType::MAIN);
         // moveTelescope函数内部已经包含了等待移动完成的逻辑
         bool success = moveTelescope(0.0, currentDECAngle);
         return success;
@@ -1465,12 +1479,12 @@ bool PolarAlignment::moveTelescope(double ra, double dec)
             Logger::Log("PolarAlignment: 赤道仪正在移动中，等待完成后再发送新命令", LogLevel::WARNING, DeviceType::MAIN);
             // 等待当前移动完成
             int waitTime = 0;
-            while(currentStat.status == "Slewing" && waitTime < 30000) { // 最多等待30秒
+            while(currentStat.status == "Slewing" && waitTime < 60000) { // 最多等待30秒
                 QThread::msleep(500);
                 waitTime += 500;
                 indiServer->getTelescopeStatus(dpMount, currentStat.status, currentStat.error);
             }
-            if(waitTime >= 30000) {
+            if(waitTime >= 60000) {
                 Logger::Log("PolarAlignment: 等待赤道仪移动完成超时", LogLevel::ERROR, DeviceType::MAIN);
                 return false;
             }
@@ -1691,12 +1705,12 @@ bool PolarAlignment::waitForCaptureComplete()
     
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
-            lastCapturedImage = QString("/home/quarcs/workspace/testimage/%1.fits").arg(testimage);
-            testimage++;
-            if (testimage > 9) {
-                testimage = 0;
-            }
-
+            // lastCapturedImage = QString("/home/quarcs/workspace/testimage/%1.fits").arg(testimage);
+            // testimage++;
+            // if (testimage > 9) {
+            //     testimage = 0;
+            // }
+            lastCapturedImage = QString("/dev/shm/ccd_simulator.fits");
             cv::Mat image;
             cv::Mat originalImage16;
             cv::Mat image16;

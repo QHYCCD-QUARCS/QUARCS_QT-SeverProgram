@@ -127,6 +127,7 @@ class MyClient : public INDI::BaseClient
         uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property);
 
         uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error);
+        bool ismove = false;
 
         //--------------------CFW API
         uint32_t getCFWPosition(INDI::BaseDevice *dp,int & position,int &min,int &max);
@@ -214,6 +215,7 @@ class MyClient : public INDI::BaseClient
         std::vector<INDI::BaseDevice *> deviceList;
         // 存储设备名字的列表
         std::vector<std::string> deviceNames;
+        
 
     ImageReceivedCallback imageReceivedCallback;
 

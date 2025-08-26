@@ -5536,26 +5536,54 @@ SphericalCoordinates Tools::convertToSphericalCoordinates(CartesianCoordinates c
     return {rightAscension, declination};
 }
 
-MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height)
-{
-  MinMaxFOV result;
-  Logger::Log("FocalLength: " + std::to_string(FocalLength) + ", " + "CameraSize: " + std::to_string(CameraSize_width) + ", " + std::to_string(CameraSize_height), LogLevel::INFO, DeviceType::MAIN);
+// MinMaxFOV Tools::calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height)
+// {
+//   MinMaxFOV result;
+//   Logger::Log("FocalLength: " + std::to_string(FocalLength) + ", " + "CameraSize: " + std::to_string(CameraSize_width) + ", " + std::to_string(CameraSize_height), LogLevel::INFO, DeviceType::MAIN);
 
-  double CameraSize_diagonal = sqrt(pow(CameraSize_width, 2) + pow(CameraSize_height, 2));
-  // qDebug() << CameraSize_diagonal;
+//   double CameraSize_diagonal = sqrt(pow(CameraSize_width, 2) + pow(CameraSize_height, 2));
+//   // qDebug() << CameraSize_diagonal;
 
-  double minFOV,maxFOV;
+//   double minFOV,maxFOV;
 
-  minFOV = 2 * atan(CameraSize_height / (2 * FocalLength)) * 180 / M_PI;
-  maxFOV = 2 * atan(CameraSize_diagonal / (2 * FocalLength)) * 180 / M_PI;
+//   minFOV = 2 * atan(CameraSize_height / (2 * FocalLength)) * 180 / M_PI;
+//   maxFOV = 2 * atan(CameraSize_diagonal / (2 * FocalLength)) * 180 / M_PI;
 
-  result.minFOV = minFOV;
-  result.maxFOV = maxFOV;
+//   result.minFOV = minFOV;
+//   result.maxFOV = maxFOV;
   
-  Logger::Log("minFov: " + std::to_string(result.minFOV) + ", " + "maxFov: " + std::to_string(result.maxFOV), LogLevel::INFO, DeviceType::MAIN);
+//   Logger::Log("minFov: " + std::to_string(result.minFOV) + ", " + "maxFov: " + std::to_string(result.maxFOV), LogLevel::INFO, DeviceType::MAIN);
 
-  return result;
+//   return result;
+// }
+
+MinMaxFOV Tools::calculateFOV(int FocalLength, double CameraSize_width, double CameraSize_height)
+{
+    MinMaxFOV result;
+    Logger::Log("FocalLength: " + std::to_string(FocalLength) +
+                ", CameraSize: " + std::to_string(CameraSize_width) +
+                " x " + std::to_string(CameraSize_height),
+                LogLevel::INFO, DeviceType::MAIN);
+
+    // 对角线
+    double CameraSize_diagonal = std::hypot(CameraSize_width, CameraSize_height);
+
+    // 取宽高里的较小者
+    double min_side = std::min(CameraSize_width, CameraSize_height);
+
+    double minFOV = 2.0 * atan(min_side / (2.0 * FocalLength)) * 180.0 / M_PI;
+    double maxFOV = 2.0 * atan(CameraSize_diagonal / (2.0 * FocalLength)) * 180.0 / M_PI;
+
+    result.minFOV = minFOV;   // 最小视场（短边方向）
+    result.maxFOV = maxFOV;   // 最大视场（对角线方向）
+
+    Logger::Log("minFOV: " + std::to_string(result.minFOV) +
+                ", maxFOV: " + std::to_string(result.maxFOV),
+                LogLevel::INFO, DeviceType::MAIN);
+
+    return result;
 }
+
 
 // 计算格林尼治恒星时 (GST)
 double Tools::calculateGST(const std::tm& date) {
@@ -5673,7 +5701,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     {
       // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
       // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-      command_qstr = "solve-field " + filename + " --overwrite  --no-plots --uniformize 0 --timestamp  --objs 10 --pixel-error 1.5 --cpulimit 20";
+      command_qstr = "solve-field " + filename + " --overwrite  --no-plots --uniformize 0 --timestamp  --objs 10 --pixel-error 1.5 --cpulimit 20 --scale-low " + MinFOV + " --scale-high " + MaxFOV;
     }
     else
     {
