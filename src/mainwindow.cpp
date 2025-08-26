@@ -6825,7 +6825,8 @@ void MainWindow::startCapture(int ExpTime)
 
 bool MainWindow::WaitForTelescopeToComplete()
 {
-    return (TelescopeControl_Status().status != "Slewing");
+    // return (TelescopeControl_Status().status != "Slewing");
+    return (TelescopeControl_Status().status == "Tracking" || TelescopeControl_Status().status == "Idle");
 }
 
 bool MainWindow::WaitForShootToComplete()
@@ -7451,7 +7452,13 @@ void MainWindow::TelescopeControl_SolveSYNC()
                             INDI::PropertyNumber property = NULL;
                             Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::MAIN);
                             QString action = "SYNC";
-
+                            bool isTrack = false;
+                            indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+                            if (!isTrack)
+                            {
+                                indi_Client->setTelescopeTrackEnable(dpMount, true);
+                            }
+                            emit wsThread->sendMessageToClient("TelescopeTrack:ON");
                             indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
 
                             Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
@@ -7544,13 +7551,39 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
     // 启动等待赤道仪转动的定时器
     telescopeTimer.setSingleShot(true);
 
-    connect(&telescopeTimer, &QTimer::timeout, [this]()
+    connect(&telescopeTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
             {
         // 检查赤道仪状态
         if (WaitForTelescopeToComplete()) 
         {
             telescopeTimer.stop();  // 转动完成时停止定时器
             Logger::Log("MountGoto | Mount Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+            if (GotoThenSolve) // 判断是否进行解算
+            {
+                Logger::Log("MountGoto | Goto Then Solve!", LogLevel::INFO, DeviceType::MAIN);
+                // *****************
+                TelescopeControl_SolveSYNC(); // 开始拍摄解析
+                if (GotoOlveTimer != nullptr)
+                {
+                    delete GotoOlveTimer;
+                    GotoOlveTimer = nullptr;
+                }
+                GotoOlveTimer = new QTimer();
+                GotoOlveTimer->setSingleShot(true);
+                connect(GotoOlveTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
+                {
+                    if (isSolveSYNC)
+                    {
+                        GotoOlveTimer->stop();
+                        Logger::Log("MountGoto | Goto Then Solve Complete!", LogLevel::INFO, DeviceType::MAIN);
+                        // 重新goto
+                        TelescopeControl_Goto(Ra_Hour, Dec_Degree);
+                    }else{
+                        GotoOlveTimer->start(1000);
+                    }
+                });
+                GotoOlveTimer->start(1000);
+            }
         } 
         else 
         {

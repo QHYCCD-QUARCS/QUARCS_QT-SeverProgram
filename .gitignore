@@ -26,3 +26,4 @@ build/CMakeFiles/3.22.1/CompilerIdCXX/CMakeCXXCompilerId.cpp
 build/CMakeFiles/client_autogen.dir/AutogenInfo.json
 .vscode/settings.json
 src/build/*
+src/BUILD/*

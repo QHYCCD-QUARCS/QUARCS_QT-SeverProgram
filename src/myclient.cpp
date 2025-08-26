@@ -308,6 +308,8 @@ const char * MyClient::PropertyTypeToString(INDI_PROPERTY_TYPE type)
             return "Blob";
         case INDI_UNKNOWN:
             return "Unknown";
+        default:
+            return "Unknown";
     }
 }
 
@@ -645,23 +647,6 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QS
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDCFA(INDI::BaseDevice *dp,int offsetX, int offsetY, QString CFATYPE)
-{
-    INDI::PropertyText ccdCFA = dp->getProperty("CCD_CFA");
-
-    if (!ccdCFA.isValid())
-    {
-        Logger::Log("indi_client | setCCDCFA | Error: unable to find  CCD_CFA property...", LogLevel::WARNING, DeviceType::CAMERA);
-        return QHYCCD_ERROR;
-    }
-
-    ccdCFA[0].setText(std::to_string(offsetX).c_str());
-    ccdCFA[1].setText(std::to_string(offsetY).c_str());
-    ccdCFA[2].setText(CFATYPE.toStdString().c_str());
-    sendNewProperty(ccdCFA);
-    Logger::Log("indi_client | setCCDCFA | " + std::to_string(offsetX) + ", " + std::to_string(offsetY) + ", " + CFATYPE.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
-    return QHYCCD_SUCCESS;
-}
 
 
 uint32_t MyClient::getCCDSDKVersion(INDI::BaseDevice *dp, QString &version)

@@ -5654,6 +5654,7 @@ bool Tools::isSolveImageFinish() {
 
 bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK)
 {
+    filename = "/home/quarcs/workspace/testimage/0.fits";
     PlateSolveInProgress = true;
     isSolveImageFinished = false;
 

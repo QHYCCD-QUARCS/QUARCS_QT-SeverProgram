@@ -127,7 +127,9 @@ class MyClient : public INDI::BaseClient
         uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property);
 
         uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error);
+        
         bool ismove = false;
+
 
         //--------------------CFW API
         uint32_t getCFWPosition(INDI::BaseDevice *dp,int & position,int &min,int &max);

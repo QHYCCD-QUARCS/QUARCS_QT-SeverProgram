@@ -1328,8 +1328,8 @@ public:
     QElapsedTimer glMainCameraCaptureTimer; // 拍摄计时
 
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
-    // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/"; // 前端图像目录
-    std::string vueImagePath = "/var/www/html/img/";
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/"; // 前端图像目录
+    // std::string vueImagePath = "/var/www/html/img/";
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
     std::string PriorROIImage = "NULL";    // 上一帧 ROI 图
     std::string PriorCaptureImage = "NULL";// 上一帧拍摄图
@@ -1344,6 +1344,8 @@ public:
 
     QThread *m_thread = nullptr;           // 通用线程
     QTimer  *m_threadTimer = nullptr;      // 通用定时器
+
+    QTimer *GotoOlveTimer = nullptr;         // 解算定时器
 
     /**
      * @brief 通用定时器槽
