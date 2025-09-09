@@ -141,7 +141,8 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_imageWidth(g_autoFocusConfig.imageWidth)   // 图像宽度
     , m_imageHeight(g_autoFocusConfig.imageHeight) // 图像高度
 {
-    // 验证传入的设备对象
+        m_hasLastPosition = false;
+// 验证传入的设备对象
     if (!m_dpMainCamera) {
         log(QString("警告: 主相机设备对象为空"));
     }
@@ -353,7 +354,7 @@ void AutoFocus::startAutoFocus()
     }
     
     // 初始化星点选择参数（确保回调访问时不会出现段错误）
-    m_topStarCount = 5; // 选择置信度最高的5颗星
+    if (m_topStarCount <= 0) m_topStarCount = 5; // 未配置则默认选5颗星
     
     // 初始化数据收集参数（确保回调访问时不会出现段错误）
     m_focusData.clear();
@@ -389,6 +390,9 @@ void AutoFocus::startAutoFocus()
     m_indiServer->getFocuserAbsolutePosition(m_dpFocuser, currentPos);
     m_currentPosition = currentPos;
     log(QString("当前电调位置: %1").arg(m_currentPosition));
+    
+
+    
     
     // 切换到初始状态
     changeState(AutoFocusState::CHECKING_STARS);
@@ -750,284 +754,457 @@ void AutoFocus::startLargeRangeSearch()
     
     log(QString("开始大范围找星，初始步长: %1%，搜索方向: %2").arg(m_currentLargeRangeStep).arg(m_searchDirection > 0 ? "向外" : "向内"));
 }
+// ===================== 可直接替换的实现 =====================
 
 void AutoFocus::processLargeRangeSearch()
 {
-    // 立即检查运行状态，如果已停止则直接返回
+    // ---- 1) 基本早退与设备校验 ----
     if (!m_isRunning) {
         log("自动对焦已停止，跳过大范围搜索");
         return;
     }
-    
-    if (m_currentLargeRangeShots >= m_maxLargeRangeShots) {
-        handleError(QString("大范围找星失败：拍摄%1次仍未识别到星点").arg(m_maxLargeRangeShots));
-        return;
-    }
 
-    // 获取当前电调位置
-    m_currentPosition = getCurrentFocuserPosition();
-    
-    // 检查是否正在等待电调移动完成
-    if (m_waitingForMove) {
-        // 使用统一的等待函数，使用配置参数
-        bool moveSuccess = waitForFocuserMoveComplete(m_targetFocuserPosition, 
-                                                    g_autoFocusConfig.positionTolerance, 
-                                                    g_autoFocusConfig.moveTimeout / 1000, 
-                                                    g_autoFocusConfig.stuckTimeout / 1000);
-        
-        // 清除等待状态
-        m_waitingForMove = false;
-        m_isFocuserMoving = false;
-        
-        // 移动完成后，检查是否需要减少步长
-        checkAndReduceStepSize();
-        
-        // 无论移动是否成功，都要拍摄检查星点
-        log("电调移动完成，开始拍摄检查星点");
-        if (!captureFullImage()) {
-            handleError("拍摄图像失败");
-            return;
-        }
-        
-        // 等待拍摄完成
-        if (!waitForCaptureComplete()) {
-            handleError("拍摄超时");
-            return;
-        }
-
-        if (detectStarsInImage()) {
-            log("大范围找星成功，检测到星点");
-            changeState(AutoFocusState::CHECKING_STARS);
-            return;
-        }
-        
-        log("未检测到星点，继续搜索");
-        // 注意：这里不增加搜索计数，因为后续逻辑会处理
-        return;
-    }
-    
-    // 增加搜索计数（只在非等待状态下增加）
-    m_currentLargeRangeShots++;
-    log(QString("大范围找星第%1次尝试").arg(m_currentLargeRangeShots));
-    
-    // 如果是第一次尝试，先移动到初始目标位置
-    if (m_currentLargeRangeShots == 1) {
-        log(QString("第一次尝试，移动到初始目标位置: %1").arg(m_initialTargetPosition));
-        
-        // 检查是否需要移动
-        if (m_currentPosition != m_initialTargetPosition) {
-            // 使用统一的电调移动函数
-            executeFocuserMove(m_initialTargetPosition, "第一次尝试移动到初始目标位置");
-            
-            // 立即检查电调状态
-            QThread::msleep(100); // 等待100ms让命令生效
-            int afterMovePosition = getCurrentFocuserPosition();
-            log(QString("移动命令发送后电调位置: %1").arg(afterMovePosition));
-            
-            return; // 返回，让定时器处理等待
-        } else {
-            log(QString("当前位置已经是目标位置，无需移动"));
-            
-            // 即使不需要移动，也要拍摄检查星点
-            if (!captureFullImage()) {
-                handleError("拍摄图像失败");
-                return;
-            }
-            
-            // 等待拍摄完成
-            if (!waitForCaptureComplete()) {
-                handleError("拍摄超时");
-                return;
-            }
-
-            if (detectStarsInImage()) {
-                log("大范围找星成功，检测到星点");
-                changeState(AutoFocusState::CHECKING_STARS);
-                return;
-            }
-
-            // 第一次尝试完成，继续当前方向搜索
-            log(QString("第一次尝试完成，继续当前方向搜索"));
-            // 注意：这里不增加搜索计数，因为已经在前面增加了
-        }
-    }
-    
-    // 检查是否已达到位置限制并处理往返搜索
-    if (m_currentPosition >= m_focuserMaxPosition && m_searchDirection > 0) {
-        log(QString("已达到最大位置 %1，开始向内搜索").arg(m_currentPosition));
-        m_searchDirection = -1; // 改变搜索方向向内
-        // 计算向内移动的步数
-        int totalRange = m_focuserMaxPosition - m_focuserMinPosition;
-        int moveSteps = static_cast<int>(totalRange * m_currentLargeRangeStep / 100.0);
-        int targetPosition = m_currentPosition - moveSteps;
-        
-        // 确保不超出最小位置
-        if (targetPosition < m_focuserMinPosition) {
-            targetPosition = m_focuserMinPosition;
-        }
-        
-        // 计算移动方向和步数
-        int actualMoveSteps = targetPosition - m_currentPosition;
-        bool isInward = (actualMoveSteps < 0);
-        
-        if (isInward) {
-            actualMoveSteps = -actualMoveSteps; // 取绝对值
-        }
-        
-        log(QString("向内搜索: 从位置 %1 移动到 %2，方向: 向内，步数: %3").arg(m_currentPosition).arg(targetPosition).arg(actualMoveSteps));
-        
-        // 设置移动状态
-        m_isFocuserMoving = true;
-        m_targetFocuserPosition = targetPosition;
-        m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
-        m_lastPosition = m_currentPosition;
-        
-        // 设置移动方向并发送移动命令
-        m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
-        m_indiServer->moveFocuserSteps(m_dpFocuser, actualMoveSteps);
-        
-        // 初始化电调判断参数
-        initializeFocuserMoveParameters();
-        
-        log(QString("移动命令详情: 方向=%1, 步数=%2, 目标位置=%3").arg(isInward ? "向内" : "向外").arg(actualMoveSteps).arg(targetPosition));
-        
-        // 立即检查电调状态
-        QThread::msleep(100); // 等待100ms让命令生效
-        int afterMovePosition = getCurrentFocuserPosition();
-        log(QString("移动命令发送后电调位置: %1").arg(afterMovePosition));
-        
-        // 设置非阻塞等待状态
-        m_waitingForMove = true;
-        m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
-        m_moveWaitCount = 0;
-        m_moveLastPosition = m_currentPosition;
-        log(QString("开始等待电调移动完成，目标位置: %1").arg(targetPosition));
-        return; // 返回，让定时器处理等待
-    } else if (m_currentPosition <= m_focuserMinPosition && m_searchDirection < 0) {
-        log(QString("已达到最小位置 %1，开始向外搜索").arg(m_currentPosition));
-        m_searchDirection = 1; // 改变搜索方向向外
-        // 计算向外移动的步数
-        int totalRange = m_focuserMaxPosition - m_focuserMinPosition;
-        int moveSteps = static_cast<int>(totalRange * m_currentLargeRangeStep / 100.0);
-        int targetPosition = m_currentPosition + moveSteps;
-        
-        // 确保不超出最大位置
-        if (targetPosition > m_focuserMaxPosition) {
-            targetPosition = m_focuserMaxPosition;
-        }
-        
-        // 计算移动方向和步数
-        int actualMoveSteps2 = targetPosition - m_currentPosition;
-        bool isInward = (actualMoveSteps2 < 0);
-        
-        if (isInward) {
-            actualMoveSteps2 = -actualMoveSteps2; // 取绝对值
-        }
-        
-        log(QString("向外搜索: 从位置 %1 移动到 %2，方向: 向外，步数: %3").arg(m_currentPosition).arg(targetPosition).arg(actualMoveSteps2));
-        
-        // 设置移动状态
-        m_isFocuserMoving = true;
-        m_targetFocuserPosition = targetPosition;
-        m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
-        m_lastPosition = m_currentPosition;
-        
-        // 设置移动方向并发送移动命令
-        m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
-        m_indiServer->moveFocuserSteps(m_dpFocuser, actualMoveSteps2);
-        
-        // 初始化电调判断参数
-        initializeFocuserMoveParameters();
-        
-        // 设置非阻塞等待状态，让定时器处理等待
-        m_waitingForMove = true;
-        m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
-        m_moveWaitCount = 0;
-        m_moveLastPosition = m_currentPosition;
-        log(QString("开始等待电调移动完成，目标位置: %1").arg(targetPosition));
-        return; // 返回，让定时器处理等待
-    } else {
-        // 正常搜索：按照当前方向移动
-        int totalRange = m_focuserMaxPosition - m_focuserMinPosition;
-        int moveSteps = static_cast<int>(totalRange * m_currentLargeRangeStep / 100.0) * m_searchDirection;
-        
-        // 检查移动后是否会超出限制
-        int targetPosition = m_currentPosition + moveSteps;
-        if (targetPosition > m_focuserMaxPosition) {
-            log(QString("警告: 目标位置 %1 大于最大位置 %2，限制到最大位置").arg(targetPosition).arg(m_focuserMaxPosition));
-            targetPosition = m_focuserMaxPosition;
-        } else if (targetPosition < m_focuserMinPosition) {
-            log(QString("警告: 目标位置 %1 小于最小位置 %2，限制到最小位置").arg(targetPosition).arg(m_focuserMinPosition));
-            targetPosition = m_focuserMinPosition;
-        }
-        
-        // 计算移动方向和步数
-        int actualMoveSteps3 = targetPosition - m_currentPosition;
-        bool isInward = (actualMoveSteps3 < 0);
-        
-        if (isInward) {
-            actualMoveSteps3 = -actualMoveSteps3; // 取绝对值
-        }
-        
-        log(QString("电调移动: 当前位置=%1, 目标位置=%2, 方向=%3, 步数=%4").arg(m_currentPosition).arg(targetPosition).arg(m_searchDirection > 0 ? "向外" : "向内").arg(actualMoveSteps3));
-        
-        // 设置移动状态
-        m_isFocuserMoving = true;
-        m_targetFocuserPosition = targetPosition;
-        m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
-        m_lastPosition = m_currentPosition;
-        
-        // 设置移动方向并发送移动命令
-        m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
-        m_indiServer->moveFocuserSteps(m_dpFocuser, actualMoveSteps3);
-        
-        // 初始化电调判断参数
-        initializeFocuserMoveParameters();
-        
-        log(QString("移动命令详情: 方向=%1, 步数=%2, 目标位置=%3").arg(isInward ? "向内" : "向外").arg(actualMoveSteps3).arg(targetPosition));
-        
-        // 立即检查电调状态
-        QThread::msleep(100); // 等待100ms让命令生效
-        int afterMovePosition = getCurrentFocuserPosition();
-        log(QString("移动命令发送后电调位置: %1").arg(afterMovePosition));
-        
-        // 设置非阻塞等待状态，让定时器处理等待
-        m_waitingForMove = true;
-        m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
-        m_moveWaitCount = 0;
-        m_moveLastPosition = m_currentPosition;
-        log(QString("开始等待电调移动完成，目标位置: %1").arg(targetPosition));
-        return; // 返回，让定时器处理等待
-    }
-    
-    // 额外的安全检查：确保电调设备仍然有效
     if (!m_dpFocuser || !m_indiServer) {
-        log(QString("错误: 电调设备或INDI客户端已失效"));
+        log("错误: 电调设备或 INDI 客户端无效");
         handleError("电调设备连接已断开");
         return;
     }
-    
-    // 拍摄并等待完成
-    if (!captureFullImage()) {
-        handleError("拍摄图像失败");
+
+    if (m_currentLargeRangeShots >= m_maxLargeRangeShots) {
+        handleError(QString("大范围找星失败：尝试 %1 次仍未识别到星点").arg(m_maxLargeRangeShots));
         return;
     }
-    
-    // 等待拍摄完成
+
+    // ---- 2) 等待电调移动分支（非阻塞轮询）----
+    if (m_waitingForMove) {
+        // 将毫秒转为“向上取整”的秒，避免出现 0 秒
+        const int moveTimeoutSec  = (g_autoFocusConfig.moveTimeout  + 999) / 1000;
+        const int stuckTimeoutSec = (g_autoFocusConfig.stuckTimeout + 999) / 1000;
+
+        const bool moveSuccess = waitForFocuserMoveComplete(
+            m_targetFocuserPosition,
+            g_autoFocusConfig.positionTolerance,
+            moveTimeoutSec,
+            stuckTimeoutSec
+        );
+
+        // 统一清除等待标志（无论成功或失败）
+        m_waitingForMove   = false;
+        m_isFocuserMoving  = false;
+
+        // 按策略在“移动完成后”调整步长（内部需自带下限保护）
+        checkAndReduceStepSize();
+
+        // 移动完成后，立即拍一张检查星点
+        (void)moveSuccess; // 如需记录可用
+        log("电调移动阶段结束，开始拍摄以检查星点");
+        (void)captureAndDetectOnce(); // 成功时内部会切状态并返回
+        return;
+    }
+
+    // ---- 3) 非等待分支：计划一次新的移动（或直接拍照）----
+    m_currentLargeRangeShots++;
+    const int currentPos = getCurrentFocuserPosition();
+    log(QString("大范围找星：第 %1 次尝试，当前位置=%2")
+        .arg(m_currentLargeRangeShots)
+        .arg(currentPos));
+
+    // 3.1 第一次尝试：先移动到初始目标位置（若已在位则直接拍照）
+    if (m_currentLargeRangeShots == 1) {
+        log(QString("第一次尝试，目标初始位置=%1").arg(m_initialTargetPosition));
+
+        if (!beginMoveTo(m_initialTargetPosition, "第一次尝试移动到初始目标位置")) {
+            // 无需移动（或 0 步被跳过），直接拍照检测
+            if (captureAndDetectOnce()) return;
+            // 失败则继续按当前方向进行下一步搜索（由后续 tick 推进）
+        }
+        return; // 交给下一次 tick 处理等待/拍照
+    }
+
+    // 3.2 常规大步扫描（含触边掉头）
+    const int totalRange = std::max(0, m_focuserMaxPosition - m_focuserMinPosition);
+
+    // 百分比步长 -> 绝对步数，四舍五入并设最小 1 步，避免 0 步
+    int nominalStep = static_cast<int>(std::llround(totalRange * m_currentLargeRangeStep / 100.0));
+    nominalStep = std::max(1, nominalStep);
+
+    // 依据搜索方向计算目标位
+    int targetPos = currentPos + ((m_searchDirection > 0) ? nominalStep : -nominalStep);
+
+    // 夹紧到边界；若正好贴边，也同步调整下一次的搜索方向
+    if (targetPos >= m_focuserMaxPosition) {
+        log(QString("已触及最大边界：%1 → 夹紧为 %2").arg(targetPos).arg(m_focuserMaxPosition));
+        targetPos = m_focuserMaxPosition;
+        m_searchDirection = -1; // 下一次向内
+    } else if (targetPos <= m_focuserMinPosition) {
+        log(QString("已触及最小边界：%1 → 夹紧为 %2").arg(targetPos).arg(m_focuserMinPosition));
+        targetPos = m_focuserMinPosition;
+        m_searchDirection = 1; // 下一次向外
+    }
+
+    // 启动移动；若计算后为 0 步（目标==当前），直接拍一张
+    if (!beginMoveTo(targetPos, "大范围扫焦移动")) {
+        (void)captureAndDetectOnce();
+    }
+    // 启动成功则进入等待态，由下一次 tick 继续
+}
+
+
+// ===================== 私有辅助函数 =====================
+
+// 统一的“启动一次移动”的入口：
+// - 负责方向计算、步数下限、状态位、日志与下发命令
+// - 若目标==当前（或被夹紧后相等），返回 false，调用方可直接拍照或调整策略
+bool AutoFocus::beginMoveTo(int targetPosition, const QString& reason)
+{
+    if (!m_dpFocuser || !m_indiServer) {
+        handleError("电调设备连接已断开");
+        return false;
+    }
+
+    // 夹紧目标
+    targetPosition = std::clamp(targetPosition, m_focuserMinPosition, m_focuserMaxPosition);
+
+    const int current = getCurrentFocuserPosition();
+    int delta = targetPosition - current;
+
+    if (delta == 0) {
+        log(QString("目标与当前位置相同(%1)，跳过移动：%2").arg(targetPosition).arg(reason));
+        return false;
+    }
+
+    const bool isInward = (delta < 0);
+    int steps = std::abs(delta);
+    steps = std::max(1, steps); // 最小 1 步，避免 0 步等待
+
+    // ---- 设置等待/移动状态 ----
+    m_isFocuserMoving        = true;
+    m_waitingForMove         = true;
+    m_targetFocuserPosition  = targetPosition;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_moveStartTime   = now;
+    m_lastPosition    = current;
+    m_moveWaitStartTime = now;
+    m_moveWaitCount   = 0;
+    m_moveLastPosition = current;
+
+    // ---- 下发方向与步数 ----
+    m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+    m_indiServer->moveFocuserSteps(m_dpFocuser, steps);
+
+    // ---- 初始化移动判断参数（速度/停滞等）----
+    initializeFocuserMoveParameters();
+
+    log(QString("开始移动：%1 → %2，方向=%3，步数=%4，原因=%5")
+        .arg(current)
+        .arg(targetPosition)
+        .arg(isInward ? "向内" : "向外")
+        .arg(steps)
+        .arg(reason));
+
+    return true;
+}
+
+// 拍一张、等待完成并识星；若成功，内部切状态为 CHECKING_STARS
+bool AutoFocus::captureAndDetectOnce()
+{
+    if (!captureFullImage()) {
+        handleError("拍摄图像失败");
+        return false;
+    }
     if (!waitForCaptureComplete()) {
         handleError("拍摄超时");
-        return;
+        return false;
     }
 
     if (detectStarsInImage()) {
-        log("大范围找星成功，检测到星点");
+        log("大范围找星成功，检测到星点，进入 CHECKING_STARS");
         changeState(AutoFocusState::CHECKING_STARS);
-        return;
+        return true;
     }
 
-    // 步长减少逻辑已移到checkAndReduceStepSize()函数中
-    // 在电调移动完成后调用
+    log("未检测到星点，将继续搜索");
+    return false;
 }
+
+// void AutoFocus::processLargeRangeSearch()
+// {
+//     // 立即检查运行状态，如果已停止则直接返回
+//     if (!m_isRunning) {
+//         log("自动对焦已停止，跳过大范围搜索");
+//         return;
+//     }
+    
+//     if (m_currentLargeRangeShots >= m_maxLargeRangeShots) {
+//         handleError(QString("大范围找星失败：拍摄%1次仍未识别到星点").arg(m_maxLargeRangeShots));
+//         return;
+//     }
+
+//     // 获取当前电调位置
+//     m_currentPosition = getCurrentFocuserPosition();
+    
+//     // 检查是否正在等待电调移动完成
+//     if (m_waitingForMove) {
+//         // 使用统一的等待函数，使用配置参数
+//         bool moveSuccess = waitForFocuserMoveComplete(m_targetFocuserPosition, 
+//                                                     g_autoFocusConfig.positionTolerance, 
+//                                                     g_autoFocusConfig.moveTimeout / 1000, 
+//                                                     g_autoFocusConfig.stuckTimeout / 1000);
+        
+//         // 清除等待状态
+//         m_waitingForMove = false;
+//         m_isFocuserMoving = false;
+        
+//         // 移动完成后，检查是否需要减少步长
+//         checkAndReduceStepSize();
+        
+//         // 无论移动是否成功，都要拍摄检查星点
+//         log("电调移动完成，开始拍摄检查星点");
+//         if (!captureFullImage()) {
+//             handleError("拍摄图像失败");
+//             return;
+//         }
+        
+//         // 等待拍摄完成
+//         if (!waitForCaptureComplete()) {
+//             handleError("拍摄超时");
+//             return;
+//         }
+
+//         if (detectStarsInImage()) {
+//             log("大范围找星成功，检测到星点");
+//             changeState(AutoFocusState::CHECKING_STARS);
+//             return;
+//         }
+        
+//         log("未检测到星点，继续搜索");
+//         // 注意：这里不增加搜索计数，因为后续逻辑会处理
+//         return;
+//     }
+    
+//     // 增加搜索计数（只在非等待状态下增加）
+//     m_currentLargeRangeShots++;
+//     log(QString("大范围找星第%1次尝试").arg(m_currentLargeRangeShots));
+    
+//     // 如果是第一次尝试，先移动到初始目标位置
+//     if (m_currentLargeRangeShots == 1) {
+//         log(QString("第一次尝试，移动到初始目标位置: %1").arg(m_initialTargetPosition));
+        
+//         // 检查是否需要移动
+//         if (m_currentPosition != m_initialTargetPosition) {
+//             // 使用统一的电调移动函数
+//             executeFocuserMove(m_initialTargetPosition, "第一次尝试移动到初始目标位置");
+            
+//             // 立即检查电调状态
+//             QThread::msleep(100); // 等待100ms让命令生效
+//             int afterMovePosition = getCurrentFocuserPosition();
+//             log(QString("移动命令发送后电调位置: %1").arg(afterMovePosition));
+            
+//             return; // 返回，让定时器处理等待
+//         } else {
+//             log(QString("当前位置已经是目标位置，无需移动"));
+            
+//             // 即使不需要移动，也要拍摄检查星点
+//             if (!captureFullImage()) {
+//                 handleError("拍摄图像失败");
+//                 return;
+//             }
+            
+//             // 等待拍摄完成
+//             if (!waitForCaptureComplete()) {
+//                 handleError("拍摄超时");
+//                 return;
+//             }
+
+//             if (detectStarsInImage()) {
+//                 log("大范围找星成功，检测到星点");
+//                 changeState(AutoFocusState::CHECKING_STARS);
+//                 return;
+//             }
+
+//             // 第一次尝试完成，继续当前方向搜索
+//             log(QString("第一次尝试完成，继续当前方向搜索"));
+//             // 注意：这里不增加搜索计数，因为已经在前面增加了
+//         }
+//     }
+    
+//     // 检查是否已达到位置限制并处理往返搜索
+//     if (m_currentPosition >= m_focuserMaxPosition && m_searchDirection > 0) {
+//         log(QString("已达到最大位置 %1，开始向内搜索").arg(m_currentPosition));
+//         m_searchDirection = -1; // 改变搜索方向向内
+//         // 计算向内移动的步数
+//         int totalRange = m_focuserMaxPosition - m_focuserMinPosition;
+//         int moveSteps = static_cast<int>(totalRange * m_currentLargeRangeStep / 100.0);
+//         int targetPosition = m_currentPosition - moveSteps;
+        
+//         // 确保不超出最小位置
+//         if (targetPosition < m_focuserMinPosition) {
+//             targetPosition = m_focuserMinPosition;
+//         }
+        
+//         // 计算移动方向和步数
+//         int actualMoveSteps = targetPosition - m_currentPosition;
+//         bool isInward = (actualMoveSteps < 0);
+        
+//         if (isInward) {
+//             actualMoveSteps = -actualMoveSteps; // 取绝对值
+//         }
+        
+//         log(QString("向内搜索: 从位置 %1 移动到 %2，方向: 向内，步数: %3").arg(m_currentPosition).arg(targetPosition).arg(actualMoveSteps));
+        
+//         // 设置移动状态
+//         m_isFocuserMoving = true;
+//         m_targetFocuserPosition = targetPosition;
+//         m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
+//         m_lastPosition = m_currentPosition;
+        
+//         // 设置移动方向并发送移动命令
+//         m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+//         m_indiServer->moveFocuserSteps(m_dpFocuser, actualMoveSteps);
+        
+//         // 初始化电调判断参数
+//         initializeFocuserMoveParameters();
+        
+//         log(QString("移动命令详情: 方向=%1, 步数=%2, 目标位置=%3").arg(isInward ? "向内" : "向外").arg(actualMoveSteps).arg(targetPosition));
+        
+//         // 立即检查电调状态
+//         QThread::msleep(100); // 等待100ms让命令生效
+//         int afterMovePosition = getCurrentFocuserPosition();
+//         log(QString("移动命令发送后电调位置: %1").arg(afterMovePosition));
+        
+//         // 设置非阻塞等待状态
+//         m_waitingForMove = true;
+//         m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
+//         m_moveWaitCount = 0;
+//         m_moveLastPosition = m_currentPosition;
+//         log(QString("开始等待电调移动完成，目标位置: %1").arg(targetPosition));
+//         return; // 返回，让定时器处理等待
+//     } else if (m_currentPosition <= m_focuserMinPosition && m_searchDirection < 0) {
+//         log(QString("已达到最小位置 %1，开始向外搜索").arg(m_currentPosition));
+//         m_searchDirection = 1; // 改变搜索方向向外
+//         // 计算向外移动的步数
+//         int totalRange = m_focuserMaxPosition - m_focuserMinPosition;
+//         int moveSteps = static_cast<int>(totalRange * m_currentLargeRangeStep / 100.0);
+//         int targetPosition = m_currentPosition + moveSteps;
+        
+//         // 确保不超出最大位置
+//         if (targetPosition > m_focuserMaxPosition) {
+//             targetPosition = m_focuserMaxPosition;
+//         }
+        
+//         // 计算移动方向和步数
+//         int actualMoveSteps2 = targetPosition - m_currentPosition;
+//         bool isInward = (actualMoveSteps2 < 0);
+        
+//         if (isInward) {
+//             actualMoveSteps2 = -actualMoveSteps2; // 取绝对值
+//         }
+        
+//         log(QString("向外搜索: 从位置 %1 移动到 %2，方向: 向外，步数: %3").arg(m_currentPosition).arg(targetPosition).arg(actualMoveSteps2));
+        
+//         // 设置移动状态
+//         m_isFocuserMoving = true;
+//         m_targetFocuserPosition = targetPosition;
+//         m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
+//         m_lastPosition = m_currentPosition;
+        
+//         // 设置移动方向并发送移动命令
+//         m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+//         m_indiServer->moveFocuserSteps(m_dpFocuser, actualMoveSteps2);
+        
+//         // 初始化电调判断参数
+//         initializeFocuserMoveParameters();
+        
+//         // 设置非阻塞等待状态，让定时器处理等待
+//         m_waitingForMove = true;
+//         m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
+//         m_moveWaitCount = 0;
+//         m_moveLastPosition = m_currentPosition;
+//         log(QString("开始等待电调移动完成，目标位置: %1").arg(targetPosition));
+//         return; // 返回，让定时器处理等待
+//     } else {
+//         // 正常搜索：按照当前方向移动
+//         int totalRange = m_focuserMaxPosition - m_focuserMinPosition;
+//         int moveSteps = static_cast<int>(totalRange * m_currentLargeRangeStep / 100.0) * m_searchDirection;
+        
+//         // 检查移动后是否会超出限制
+//         int targetPosition = m_currentPosition + moveSteps;
+//         if (targetPosition > m_focuserMaxPosition) {
+//             log(QString("警告: 目标位置 %1 大于最大位置 %2，限制到最大位置").arg(targetPosition).arg(m_focuserMaxPosition));
+//             targetPosition = m_focuserMaxPosition;
+//         } else if (targetPosition < m_focuserMinPosition) {
+//             log(QString("警告: 目标位置 %1 小于最小位置 %2，限制到最小位置").arg(targetPosition).arg(m_focuserMinPosition));
+//             targetPosition = m_focuserMinPosition;
+//         }
+        
+//         // 计算移动方向和步数
+//         int actualMoveSteps3 = targetPosition - m_currentPosition;
+//         bool isInward = (actualMoveSteps3 < 0);
+        
+//         if (isInward) {
+//             actualMoveSteps3 = -actualMoveSteps3; // 取绝对值
+//         }
+        
+//         log(QString("电调移动: 当前位置=%1, 目标位置=%2, 方向=%3, 步数=%4").arg(m_currentPosition).arg(targetPosition).arg(m_searchDirection > 0 ? "向外" : "向内").arg(actualMoveSteps3));
+        
+//         // 设置移动状态
+//         m_isFocuserMoving = true;
+//         m_targetFocuserPosition = targetPosition;
+//         m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
+//         m_lastPosition = m_currentPosition;
+        
+//         // 设置移动方向并发送移动命令
+//         m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+//         m_indiServer->moveFocuserSteps(m_dpFocuser, actualMoveSteps3);
+        
+//         // 初始化电调判断参数
+//         initializeFocuserMoveParameters();
+        
+//         log(QString("移动命令详情: 方向=%1, 步数=%2, 目标位置=%3").arg(isInward ? "向内" : "向外").arg(actualMoveSteps3).arg(targetPosition));
+        
+//         // 立即检查电调状态
+//         QThread::msleep(100); // 等待100ms让命令生效
+//         int afterMovePosition = getCurrentFocuserPosition();
+//         log(QString("移动命令发送后电调位置: %1").arg(afterMovePosition));
+        
+//         // 设置非阻塞等待状态，让定时器处理等待
+//         m_waitingForMove = true;
+//         m_moveWaitStartTime = QDateTime::currentMSecsSinceEpoch();
+//         m_moveWaitCount = 0;
+//         m_moveLastPosition = m_currentPosition;
+//         log(QString("开始等待电调移动完成，目标位置: %1").arg(targetPosition));
+//         return; // 返回，让定时器处理等待
+//     }
+    
+//     // 额外的安全检查：确保电调设备仍然有效
+//     if (!m_dpFocuser || !m_indiServer) {
+//         log(QString("错误: 电调设备或INDI客户端已失效"));
+//         handleError("电调设备连接已断开");
+//         return;
+//     }
+    
+//     // 拍摄并等待完成
+//     if (!captureFullImage()) {
+//         handleError("拍摄图像失败");
+//         return;
+//     }
+    
+//     // 等待拍摄完成
+//     if (!waitForCaptureComplete()) {
+//         handleError("拍摄超时");
+//         return;
+//     }
+
+//     if (detectStarsInImage()) {
+//         log("大范围找星成功，检测到星点");
+//         changeState(AutoFocusState::CHECKING_STARS);
+//         return;
+//     }
+
+//     // 步长减少逻辑已移到checkAndReduceStepSize()函数中
+//     // 在电调移动完成后调用
+// }
 
 /**
  * @brief 检查并减少步长
@@ -1075,7 +1252,7 @@ void AutoFocus::startCoarseAdjustment()
     changeState(AutoFocusState::COARSE_ADJUSTMENT);
     m_focusData.clear();
     m_dataCollectionCount = 0;
-    log("开始粗调模式，步长1000步");
+    log(QString("开始粗调模式，步长%1步").arg(m_coarseStepSize));
 }
 
 /**
@@ -1264,7 +1441,7 @@ void AutoFocus::startFineAdjustment()
     changeState(AutoFocusState::FINE_ADJUSTMENT);
     m_focusData.clear();
     m_dataCollectionCount = 0;
-    log("开始精调模式，步长100步");
+    log(QString("开始精调模式，步长%1步").arg(m_fineStepSize));
 }
 
 /**
@@ -2469,8 +2646,9 @@ bool AutoFocus::checkFocuserMoveComplete()
     m_currentPosition = currentPosition;
     
     // 如果是第一次检查，初始化位置记录
-    if (m_lastPosition == 0) {
+    if (!m_hasLastPosition) {
         m_lastPosition = currentPosition;
+        m_hasLastPosition = true; // C++: true (we will fix case below)
         log(QString("初始化电调位置记录: 位置=%1").arg(currentPosition));
     }
     
@@ -2494,10 +2672,10 @@ bool AutoFocus::checkFocuserMoveComplete()
         // 检查是否超时（基于定时器100ms间隔计算）
         int timeoutCount = m_moveTimeout / 100; // 将毫秒转换为100ms间隔的计数
         if (m_moveWaitCount > timeoutCount) {
-            log(QString("电调移动超时: 位置%1秒未变化，目标位置: %2")
+            log(QString("警告: 电调移动超时: %1秒未检测到位置变化，目标位置: %2，视为失败")
                 .arg(m_moveTimeout / 1000.0).arg(m_targetFocuserPosition));
             stopFocuserMove();
-            return true; // 超时也算完成
+            return false; // 超时视为未完成，交由上层处理
         }
     }
     
@@ -2546,6 +2724,7 @@ void AutoFocus::initializeFocuserMoveParameters()
     
     // 初始化位置变化检测参数
     m_lastPosition = currentPosition;
+    m_hasLastPosition = true;
     m_moveWaitCount = 0; // 重置等待计数器
     
     log(QString("初始化电调移动判断参数: 当前位置=%1, 目标位置=%2")

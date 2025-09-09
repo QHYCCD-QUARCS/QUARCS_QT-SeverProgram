@@ -48,7 +48,75 @@ Tools::~Tools() {
 //   if (polerhandle_ != NULL) CloseQHYCCD(polerhandle_);
 //   ReleaseQHYCCDResource();
 }
+// 静态变量存储最后一次检测的FWHM值
+static double g_lastFWHM = 0.0;
 
+bool Tools::findStarsByPython_Process(QString filename)
+{
+    QString program = "python3";
+    QStringList arguments;
+    arguments << "../2.py" << filename;
+
+    QProcess process;
+    process.start(program, arguments);
+    bool started = process.waitForStarted();
+    if (!started) {
+        qDebug() << "Failed to start the Python script.";
+        return false;
+    }
+
+    bool finished = process.waitForFinished(-1); // -1 means wait indefinitely
+    if (!finished) {
+        qDebug() << "Python script did not finish.";
+        return false;
+    }
+
+    QByteArray output = process.readAllStandardOutput();
+    QByteArray errorOutput = process.readAllStandardError();
+
+    if (!errorOutput.isEmpty()) {
+        qDebug() << "Error from Python script:" << errorOutput;
+        return false;
+    }
+
+    qDebug() << "Output from Python script:" << output;
+    
+    // 解析Python脚本输出中的FWHM值
+    QString outputStr = QString::fromUtf8(output);
+    QStringList lines = outputStr.split('\n', Qt::SkipEmptyParts);
+    
+    // 查找包含"最终FWHM"的行
+    for (const QString& line : lines) {
+        if (line.contains("最终FWHM")) {
+            // 提取FWHM数值
+            QRegExp rx("最终FWHM\\s*=\\s*([0-9.]+)");
+            if (rx.indexIn(line) != -1) {
+                bool ok;
+                g_lastFWHM = rx.cap(1).toDouble(&ok);
+                if (ok) {
+                    qDebug() << "解析到FWHM值:" << g_lastFWHM;
+                } else {
+                    g_lastFWHM = 3.5; // 默认值
+                }
+            } else {
+                g_lastFWHM = 3.5; // 默认值
+            }
+            break;
+        }
+    }
+    
+    // 如果没有找到FWHM值，使用默认值
+    if (g_lastFWHM == 0.0) {
+        g_lastFWHM = 3.5;
+    }
+    
+    return true;
+}
+
+double Tools::getLastFWHM()
+{
+    return g_lastFWHM;
+}
 void Tools::Initialize() { instance_ = new Tools; }
 
 void Tools::Release() { delete instance_; }

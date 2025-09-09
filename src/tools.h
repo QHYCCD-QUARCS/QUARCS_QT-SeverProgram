@@ -268,6 +268,9 @@ class Tools : public QObject {
     return instance_;
   }
 
+  bool findStarsByPython_Process(QString filename);
+  double getLastFWHM();
+
   static void Initialize();
   static void Release();
 

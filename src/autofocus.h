@@ -197,6 +197,7 @@ private:
     int m_moveStartTime;                    // 移动开始时间
     int m_moveTimeout;                      // 移动超时时间（毫秒）
     int m_lastPosition;                     // 上次位置记录
+    bool m_hasLastPosition;                 // 是否已有上次位置记录的标志
     
     // 新增的优化参数
     bool m_devicesValid;                    // 设备有效性缓存
@@ -256,9 +257,13 @@ private:
     // 大范围找星流程
     void startLargeRangeSearch();
     void processLargeRangeSearch();
+    bool beginMoveTo(int targetPosition, const QString& reason);
+    bool captureAndDetectOnce();
     void checkAndReduceStepSize();                  // 检查并减少步长
     
     // 粗调流程
+
+    
     void startCoarseAdjustment();
     void processCoarseAdjustment();
     
