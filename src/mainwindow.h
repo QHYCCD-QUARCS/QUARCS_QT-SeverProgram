@@ -745,9 +745,9 @@ public:
 
     /**
      * @brief 获取赤道仪状态
-     * @return MountStatus
+     * @return 状态
      */
-    MountStatus TelescopeControl_Status();
+    QString TelescopeControl_Status();
 
     /**
      * @brief 公园（停机位）
@@ -1328,8 +1328,16 @@ public:
     QElapsedTimer glMainCameraCaptureTimer; // 拍摄计时
 
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
-    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/"; // 前端图像目录
-    // std::string vueImagePath = "/var/www/html/img/";
+    #ifdef __linux__
+        #ifdef __arm__  // 树莓派或其他ARM系统
+            std::string vueImagePath = "/var/www/html/img/";
+        #else  // Ubuntu等x86_64系统
+            std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+        #endif
+    #else
+        // 其他操作系统的默认路径
+        std::string vueImagePath = "/var/www/html/img/";
+    #endif
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
     std::string PriorROIImage = "NULL";    // 上一帧 ROI 图
     std::string PriorCaptureImage = "NULL";// 上一帧拍摄图

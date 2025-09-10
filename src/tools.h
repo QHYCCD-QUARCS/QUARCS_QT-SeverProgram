@@ -236,12 +236,6 @@ struct loadFitsResult
   uint8_t *imageBuffer;
 };
 
-struct MountStatus
-{
-  QString status;
-  QString error;
-};
-
 struct CamBin
 {
   int camxbin;

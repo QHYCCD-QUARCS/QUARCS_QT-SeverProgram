@@ -434,6 +434,20 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             indi_Client->setTelescopeAbortMotion(dpMount);
         }
+    }else if (parts[0].trimmed() == "MountMoveRAStop")
+    {
+        Logger::Log("MountMoveRAStop ...", LogLevel::DEBUG, DeviceType::MOUNT);
+        if (dpMount != NULL)
+        {
+            indi_Client->setTelescopeMoveWE(dpMount, "STOP");
+        }
+    }else if (parts[0].trimmed() == "MountMoveDECStop")
+    {
+        Logger::Log("MountMoveDECStop ...", LogLevel::DEBUG, DeviceType::MOUNT);
+        if (dpMount != NULL)
+        {
+            indi_Client->setTelescopeMoveNS(dpMount, "STOP");
+        }
     }
     else if (message == "MountPark")
     {
@@ -1175,7 +1189,7 @@ void MainWindow::onMessageReceived(const QString &message)
 
         if (dpMainCamera != NULL)
         {
-            indi_Client->setCCDBasicInfo(dpMainCamera, Width, Height, PixelSize, PixelSize, PixelSize, 8);
+            // indi_Client->setCCDBasicInfo(dpMainCamera, Width, Height, PixelSize, PixelSize, PixelSize, 8);
             AfterDeviceConnect(dpMainCamera);
 
             DSLRsInfo DSLRsInfo;
@@ -1377,7 +1391,7 @@ void MainWindow::onMessageReceived(const QString &message)
     }
     else if (parts[0].trimmed() == "testQtServerProcess")
     {
-        Logger::Log("testQtServerProcess ... .....................", LogLevel::DEBUG, DeviceType::MAIN);
+        // Logger::Log("testQtServerProcess ... .....................", LogLevel::DEBUG, DeviceType::MAIN);
         emit wsThread->sendProcessCommandReturn("ServerInitSuccess");
     }
     else if (parts[0].trimmed() == "getMainCameraParameters")
@@ -1497,22 +1511,6 @@ void MainWindow::onMessageReceived(const QString &message)
             Logger::Log("StopAutoPolarAlignment: polarAlignment is nullptr", LogLevel::WARNING, DeviceType::MAIN);
         }
         Logger::Log("StopAutoPolarAlignment finish!", LogLevel::DEBUG, DeviceType::MAIN);
-    }
-    else if (parts[0].trimmed() == "ResetAutoPolarAlignment")
-    {
-        Logger::Log("ResetAutoPolarAlignment ...", LogLevel::DEBUG, DeviceType::MAIN);
-        if (polarAlignment != nullptr)
-        {
-            polarAlignment->stopPolarAlignment();
-            delete polarAlignment;
-            polarAlignment = nullptr;
-            Logger::Log("ResetAutoPolarAlignment: Reset successfully", LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            Logger::Log("ResetAutoPolarAlignment: polarAlignment is nullptr", LogLevel::WARNING, DeviceType::MAIN);
-        }
-        Logger::Log("ResetAutoPolarAlignment finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
     else if (parts[0].trimmed() == "RestoreAutoPolarAlignment")
     {
@@ -1938,9 +1936,12 @@ void MainWindow::onTimeout()
                     }
                 }
 
-                emit wsThread->sendMessageToClient("TelescopeStatus:" + TelescopeControl_Status().status);
+                emit wsThread->sendMessageToClient("TelescopeStatus:" + TelescopeControl_Status());
 
                 mountDisplayCounter = 0;
+
+                // 打印当前状态
+                // indi_Client->mountState.printCurrentState();
             }
         }
     }
@@ -2129,6 +2130,11 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
         return -1;
     }
 
+    // 中值滤波
+    Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
+    cv::medianBlur(originalImage16, originalImage16, 3);
+    Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
+
     bool isColor = !(MainCameraCFA == "" || MainCameraCFA == "null");
     Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
@@ -2161,6 +2167,8 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
         image16 = originalImage16.clone();
     }
     originalImage16.release();
+
+
 
     // cv::Mat srcImage = image16.clone();
     // cv::Mat dstImage;
@@ -3716,7 +3724,7 @@ void MainWindow::AfterDeviceConnect()
         if (bitDepth != 16)
         {
             Logger::Log("The current camera outputs is not 16-bit data; attempting to modify it to 16-bit.", LogLevel::INFO, DeviceType::CAMERA);
-            indi_Client->setCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, 16);
+            // indi_Client->setCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, 16);
         }
 
         indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
@@ -3736,7 +3744,7 @@ void MainWindow::AfterDeviceConnect()
             DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
             if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
             {
-                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
+                // indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
                 indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
                 Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
             }
@@ -3816,6 +3824,7 @@ void MainWindow::AfterDeviceConnect()
         bool isPark;
         indi_Client->getTelescopePark(dpMount, isPark);
         Logger::Log("Telescope Park Status: " + std::string(isPark ? "Parked" : "Not Parked"), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("TelescopePark:" + QString::fromStdString(isPark ? "ON" : "OFF"));
 
         int maxspeed, minspeed, speedvalue, total;
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
@@ -3959,7 +3968,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
             if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
             {
-                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
+                // indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
                 indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
                 Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
             }
@@ -3973,6 +3982,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             {
                 time++;
                 indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+                sleep(1);
             }    
         }
 
@@ -3980,10 +3990,10 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         if (bitDepth != 16)
         {
             Logger::Log("The current camera outputs is not 16-bit data; attempting to modify it to 16-bit.", LogLevel::INFO, DeviceType::CAMERA);
-            indi_Client->setCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, 16);
+            // indi_Client->setCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, 16);
         }
 
-        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+        // indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
         if (bitDepth != 16)
         {
             Logger::Log("Failed to set the camera bit depth to 16-bit.", LogLevel::WARNING, DeviceType::CAMERA);
@@ -4095,6 +4105,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         bool isPark;
         indi_Client->getTelescopePark(dpMount, isPark);
         Logger::Log("Telescope Park Status: " + std::string(isPark ? "Parked" : "Unparked"), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("TelescopePark:" + QString::fromStdString(isPark ? "ON" : "OFF"));
 
         int maxspeed, minspeed, speedvalue, total;
         indi_Client->getTelescopeTotalSlewRate(dpMount, total);
@@ -6296,14 +6307,12 @@ void MainWindow::TelescopeControl_Goto(double Ra, double Dec)
     }
 }
 
-MountStatus MainWindow::TelescopeControl_Status()
+QString MainWindow::TelescopeControl_Status()
 {
     if (dpMount != NULL)
     {
-        MountStatus Stat;
-
-        indi_Client->getTelescopeStatus(dpMount, Stat.status, Stat.error);
-
+        QString Stat;
+        indi_Client->getTelescopeStatus(dpMount, Stat);
         return Stat;
     }
 }
@@ -6323,7 +6332,7 @@ bool MainWindow::TelescopeControl_Park()
             indi_Client->setTelescopePark(dpMount, false);
         }
         indi_Client->getTelescopePark(dpMount, isPark);
-        Logger::Log("TelescopeControl_Park | Telescope is Park ???:" + std::to_string(isPark), LogLevel::INFO, DeviceType::MAIN);
+        // Logger::Log("TelescopeControl_Park | Telescope is Park ???:" + std::to_string(isPark), LogLevel::INFO, DeviceType::MAIN);
     }
 
     return isPark;
@@ -6825,8 +6834,7 @@ void MainWindow::startCapture(int ExpTime)
 
 bool MainWindow::WaitForTelescopeToComplete()
 {
-    // return (TelescopeControl_Status().status != "Slewing");
-    return (TelescopeControl_Status().status == "Tracking" || TelescopeControl_Status().status == "Idle");
+    return (TelescopeControl_Status() != "Moving");
 }
 
 bool MainWindow::WaitForShootToComplete()
@@ -7401,14 +7409,13 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
     Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
     isSavePngSuccess = false;
-    INDI_Capture(1000); // 拍摄1s曝光进行解析同步
+    INDI_Capture(1000); // 拍摄1秒曝光进行解析同步
 
     captureTimer.setSingleShot(true);
 
-    // 连接计时器的超时信号到一个匿名函数，处理拍摄和解算后的逻辑
-    connect(&captureTimer, &QTimer::timeout, [this]()
-            {
-        // 如果需要结束拍摄和解算，则执行中止操作并返回
+    // 连接拍摄定时器的超时信号到处理函数，处理拍摄完成后的逻辑
+    connect(&captureTimer, &QTimer::timeout, [this](){
+        // 如果需要中止拍摄和解算，则执行中止操作并返回
         if (EndCaptureAndSolve)
         {
             EndCaptureAndSolve = false;
@@ -7420,16 +7427,15 @@ void MainWindow::TelescopeControl_SolveSYNC()
         }
         Logger::Log("TelescopeControl_SolveSYNC | WaitForShootToComplete ..." , LogLevel::INFO, DeviceType::MAIN);
   
-        // 检查拍摄和解算是否完成
+        // 检查拍摄是否完成
         if (isSavePngSuccess) 
         {
-            // 停止计时器，表示当前周期任务完成
+            // 停止拍摄定时器，表示拍摄任务完成
             captureTimer.stop();
-            // 根据是否循环解算，执行一次解算或继续循环解算
-            // MainWindow::process_fixed();
+            // 开始进行图像解析
             Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
 
-            solveTimer.setSingleShot(true);  //设置定时器为单次触发
+            solveTimer.setSingleShot(true);  // 设置解析定时器为单次触发
 
             connect(&solveTimer, &QTimer::timeout, [this]()
             {
@@ -7459,15 +7465,17 @@ void MainWindow::TelescopeControl_SolveSYNC()
                                 indi_Client->setTelescopeTrackEnable(dpMount, true);
                             }
                             emit wsThread->sendMessageToClient("TelescopeTrack:ON");
-                            indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
-
-                            Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-                            indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree);  // 设置望远镜的目标位置
+                            // indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
+                            // 同步望远镜的当前位置到目标位置
+                            indi_Client->syncTelescopeJNow(dpMount, result.RA_Degree, result.DEC_Degree, property);
                             Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
-                            double a, b;
-                            indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
-                            Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
+                            // Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+                            // indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree);  // 设置望远镜的目标位置
+                            // Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
+                            // double a, b;
+                            // indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
+                            // Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
                             emit wsThread->sendMessageToClient("SolveImageSucceeded");
                             isSolveSYNC = false;
                         }
@@ -7486,12 +7494,12 @@ void MainWindow::TelescopeControl_SolveSYNC()
                 } 
             });
 
-            solveTimer.start(1000);  // 启动定时器
+            solveTimer.start(1000);  // 启动解析定时器
 
         } 
         else 
         {
-            // 如果拍摄或解算未完成，重新启动计时器，继续等待
+            // 如果拍摄未完成，重新启动拍摄定时器，继续等待
             captureTimer.start(1000);
         } });
     captureTimer.start(1000);
@@ -7562,7 +7570,9 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
             {
                 Logger::Log("MountGoto | Goto Then Solve!", LogLevel::INFO, DeviceType::MAIN);
                 // *****************
+                isSolveSYNC = true;
                 TelescopeControl_SolveSYNC(); // 开始拍摄解析
+                
                 if (GotoOlveTimer != nullptr)
                 {
                     delete GotoOlveTimer;
@@ -7572,7 +7582,7 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
                 GotoOlveTimer->setSingleShot(true);
                 connect(GotoOlveTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
                 {
-                    if (isSolveSYNC)
+                    if (!isSolveSYNC)
                     {
                         GotoOlveTimer->stop();
                         Logger::Log("MountGoto | Goto Then Solve Complete!", LogLevel::INFO, DeviceType::MAIN);
@@ -10886,8 +10896,19 @@ bool MainWindow::initPolarAlignment()
     // 检查相机参数是否有效
     if (glCameraSize_width <= 0 || glCameraSize_height <= 0)
     {
-        Logger::Log("initPolarAlignment | Camera size parameters are invalid", LogLevel::ERROR, DeviceType::MAIN);
-        return false;
+        // 如果相机参数无效，则尝试重新获取
+        double pixelsize, pixelsizX, pixelsizY;
+        int maxX, maxY, bitDepth;
+        indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+        glCameraSize_width = maxX * pixelsize / 1000;
+        glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
+        glCameraSize_height = maxY * pixelsize / 1000;
+        glCameraSize_height = std::round(glCameraSize_height * 10) / 10;
+        if (glCameraSize_width <= 0 || glCameraSize_height <= 0)
+        {
+            Logger::Log("initPolarAlignment | Camera size parameters are invalid", LogLevel::ERROR, DeviceType::MAIN);
+            return false;
+        }
     }
 
     // 自动极轴校准初始化
@@ -10929,9 +10950,9 @@ bool MainWindow::initPolarAlignment()
             });
 
     connect(polarAlignment, &PolarAlignment::adjustmentGuideData,
-            [this](double ra, double dec, double maxRa, double minRa, double maxDec, double minDec, double targetRa, double targetDec, double offsetRa, double offsetDec, const QString &adjustmentRa, const QString &adjustmentDec)
+            [this](double ra, double dec, double maxRa, double minRa, double maxDec, double minDec, double targetRa, double targetDec, double offsetRa, double offsetDec, const QString &adjustmentRa, const QString &adjustmentDec, double fakePolarRA, double fakePolarDEC, double realPolarRA, double realPolarDEC)
             {
-                QString logMsg = QString("PolarAlignmentAdjustmentGuideData:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12")
+                QString logMsg = QString("PolarAlignmentAdjustmentGuideData:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13:%14:%15:%16")
                                      .arg(ra)
                                      .arg(dec)
                                      .arg(maxRa)
@@ -10943,8 +10964,14 @@ bool MainWindow::initPolarAlignment()
                                      .arg(offsetRa)
                                      .arg(offsetDec)
                                      .arg(adjustmentRa)
-                                     .arg(adjustmentDec);
+                                     .arg(adjustmentDec)
+                                     .arg(fakePolarRA)
+                                     .arg(fakePolarDEC)
+                                     .arg(realPolarRA)
+                                     .arg(realPolarDEC);
                 Logger::Log("目标点: " + std::to_string(targetRa) + ", " + std::to_string(targetDec), LogLevel::INFO, DeviceType::MAIN);
+                Logger::Log("假极轴: " + std::to_string(fakePolarRA) + ", " + std::to_string(fakePolarDEC), LogLevel::INFO, DeviceType::MAIN);
+                Logger::Log("真极轴: " + std::to_string(realPolarRA) + ", " + std::to_string(realPolarDEC), LogLevel::INFO, DeviceType::MAIN);
                 Logger::Log(logMsg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                 emit this->wsThread->sendMessageToClient(logMsg);
             });

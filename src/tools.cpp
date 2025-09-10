@@ -5654,7 +5654,7 @@ bool Tools::isSolveImageFinish() {
 
 bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK)
 {
-    filename = "/home/quarcs/workspace/testimage/0.fits";
+    // filename = "/home/quarcs/workspace/testimage/0.fits";
     PlateSolveInProgress = true;
     isSolveImageFinished = false;
 
@@ -5702,7 +5702,8 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     {
       // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
       // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-      command_qstr = "solve-field " + filename + " --overwrite  --no-plots --uniformize 0 --timestamp  --objs 10 --pixel-error 1.5 --cpulimit 20 --scale-low " + MinFOV + " --scale-high " + MaxFOV;
+      // command_qstr = "solve-field " + filename + " --overwrite  --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20 --scale-low " + MinFOV + " --scale-high " + MaxFOV;
+      command_qstr = "solve-field " + filename + " --overwrite  --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20" ;
     }
     else
     {

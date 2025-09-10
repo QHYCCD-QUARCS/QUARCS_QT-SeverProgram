@@ -7,13 +7,18 @@
 #include <iostream>
 #include <functional>
 #include <QElapsedTimer>
+#include <QObject>
+#include <QTimer>
 
 #include "Logger.h"
+#include "mountstate.h"
 
 // 回调函数类型定义
 using ImageReceivedCallback = std::function<void(const std::string& filename, const std::string& devname)>;
 
 using MessageReceivedCallback = std::function<void(const std::string& message)>;
+
+
 
 class MyClient : public INDI::BaseClient
 {
@@ -126,7 +131,7 @@ class MyClient : public INDI::BaseClient
         uint32_t slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,bool EnableTracking,INDI::PropertyNumber &property);
         uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property);
 
-        uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error);
+        uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu);
         
         bool ismove = false;
 
@@ -167,6 +172,12 @@ class MyClient : public INDI::BaseClient
         uint32_t getLocation(INDI::BaseDevice *dp,double &latitude_degree, double &longitude_degree, double &elevation);
         uint32_t setAtmosphere(INDI::BaseDevice *dp,double temperature, double pressure, double humidity);
         uint32_t getAtmosphere(INDI::BaseDevice *dp,double &temperature, double &pressure, double &humidity);
+
+        MountState mountState;
+        QTimer MountGotoTimer;
+        double oldRA_Hours = 0;
+        double oldDEC_Degree = 0;
+        void updateMountState(INDI::BaseDevice *dp);
 
     //public slots:
         //void slotUpdateUI(QString filename,QString devname);

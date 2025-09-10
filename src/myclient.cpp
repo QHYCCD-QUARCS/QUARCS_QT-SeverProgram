@@ -1,13 +1,12 @@
 #include "myclient.h"
 
-
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <QDebug>
 #include <QObject>
-//#include <qhyccd.h>
+// #include <qhyccd.h>
 
 #include <fitsio.h>
 #include "tools.h"
@@ -16,7 +15,6 @@
 #include "QThread"
 #include "QElapsedTimer"
 #include "QTimeZone"
-
 
 // #define SUDO
 
@@ -27,9 +25,9 @@
 MyClient::MyClient()
 {
 
-//   pMain = gui;
-  Logger::Log("indi_client | MyClient::MyClent", LogLevel::INFO, DeviceType::MAIN);
-//   qInfo()<<"MyClient::MyClent"<<gethostid()<<getPort()<<getegid()<<geteuid();
+    //   pMain = gui;
+    Logger::Log("indi_client | MyClient::MyClent", LogLevel::INFO, DeviceType::MAIN);
+    //   qInfo()<<"MyClient::MyClent"<<gethostid()<<getPort()<<getegid()<<geteuid();
 }
 
 //************************************************************************
@@ -46,25 +44,22 @@ void MyClient::newMessage(INDI::BaseDevice baseDevice, int messageID)
 
 void MyClient::newProperty(INDI::Property property)
 {
-   // if (!baseDevice.isDeviceNameMatch("Simple CCD"))
+    // if (!baseDevice.isDeviceNameMatch("Simple CCD"))
     //    return;
 
     // qDebug() << "newProperty: " << property->getName();
-    //qDebug("Recveing message from Server %s", baseDevice.messageQueue(messageID).c_str());
+    // qDebug("Recveing message from Server %s", baseDevice.messageQueue(messageID).c_str());
 }
 
-
-void MyClient::newDevice(INDI::BaseDevice baseDevice){
-//the new Device is a callback function , the connect server will trig it. it can be override here
+void MyClient::newDevice(INDI::BaseDevice baseDevice)
+{
+    // the new Device is a callback function , the connect server will trig it. it can be override here
 
     // Logger::Log("indi_client | newDevice", LogLevel::INFO, DeviceType::MAIN);
 
     const char *DeviceName = baseDevice.getDeviceName();
 
-
-    AddDevice(baseDevice,baseDevice.getDeviceName());
-
-    
+    AddDevice(baseDevice, baseDevice.getDeviceName());
 
     // Logger::Log("indi_client | newDevice | +++++++++++++++++++++++++++++++++", LogLevel::INFO, DeviceType::MAIN);
 }
@@ -91,14 +86,15 @@ void MyClient::updateProperty(INDI::Property property)
         // std::string devname = devname_.toStdString();
 
         // receiveImage(filename, devname);
-    } 
+    }
     else if (property.getType() == INDI_TEXT)
     {
         auto tvp = property.getText();
         if (tvp->isNameMatch("CCD_FILE_PATH"))
         {
             auto filepath = tvp->findWidgetByName("FILE_PATH");
-            if (filepath){
+            if (filepath)
+            {
                 Logger::Log("indi_client | updateProperty | New Capture Image Save To" + QString(filepath->getText()).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
                 // qDebug() << "\033[32m" << "New Capture Image Save To" << QString(filepath->getText()) << "\033[0m";
                 // qInfo() << "New Capture Image Save To" << QString(filepath->getText());
@@ -108,28 +104,34 @@ void MyClient::updateProperty(INDI::Property property)
                 CaptureTestTimer.invalidate();
 
                 QString devname_;
-                Tools::readFitsHeadForDevName(QString(filepath->getText()).toStdString(),devname_);
+                Tools::readFitsHeadForDevName(QString(filepath->getText()).toStdString(), devname_);
                 std::string devname = devname_.toStdString();
 
                 receiveImage(QString(filepath->getText()).toStdString(), devname);
                 Logger::Log("indi_client | updateProperty | receiveImage | " + QString(filepath->getText()).toStdString() + ", " + devname, LogLevel::INFO, DeviceType::CAMERA);
-            }  
+            }
         }
-    } else if (property.getType() == INDI_NUMBER) {
-
+    }
+    else if (property.getType() == INDI_NUMBER)
+    {
     }
 }
 
 //************************ device list management***********************************
 
-
-void MyClient::AddDevice(INDI::BaseDevice* device, const std::string& name) {
-    for (int i = 0; i < deviceNames.size(); i++) {
-        if (deviceNames[i] == name) {
-            if (deviceList[i]->isConnected()) {
+void MyClient::AddDevice(INDI::BaseDevice *device, const std::string &name)
+{
+    for (int i = 0; i < deviceNames.size(); i++)
+    {
+        if (deviceNames[i] == name)
+        {
+            if (deviceList[i]->isConnected())
+            {
                 // 如果设备已经连接，跳过这个设备
                 return;
-            } else {
+            }
+            else
+            {
                 // 如果设备没有连接，替换这个设备
                 deviceList[i] = device;
                 return;
@@ -142,43 +144,51 @@ void MyClient::AddDevice(INDI::BaseDevice* device, const std::string& name) {
     Logger::Log("indi_client | newDevice | New DeviceName:" + std::string(name) + ", GetDeviceCount:" + std::to_string(GetDeviceCount()), LogLevel::INFO, DeviceType::MAIN);
 }
 
-
-void MyClient::RemoveDevice(const std::string& name) {
+void MyClient::RemoveDevice(const std::string &name)
+{
     int index = -1;
-    for (int i = 0; i < deviceNames.size(); i++) {
-        if (deviceNames[i] == name) {
+    for (int i = 0; i < deviceNames.size(); i++)
+    {
+        if (deviceNames[i] == name)
+        {
             index = i;
             break;
         }
     }
 
-    if (index >= 0) {
+    if (index >= 0)
+    {
         deviceList.erase(deviceList.begin() + index);
         deviceNames.erase(deviceNames.begin() + index);
     }
 }
 
-int MyClient::GetDeviceCount() const {
+int MyClient::GetDeviceCount() const
+{
     return deviceList.size();
 }
 
-
-void MyClient::ClearDevices() {
+void MyClient::ClearDevices()
+{
     deviceList.clear();
     deviceNames.clear();
 }
 
-QString MyClient::PrintDevices() {
+QString MyClient::PrintDevices()
+{
     // qDebug() << "\033[1;36m--------- INDI Device List ---------\033[0m";
     // qInfo() << "--------- INDI Device List ---------";
     Logger::Log(" --------- INDI Device List ---------", LogLevel::INFO, DeviceType::MAIN);
     QString dev;
-    if(deviceNames.size()==0){
+    if (deviceNames.size() == 0)
+    {
         Logger::Log("indi_client | PrintDevices | no device exist", LogLevel::INFO, DeviceType::MAIN);
     }
 
-    else{
-        for (int i = 0; i < deviceNames.size(); i++) {
+    else
+    {
+        for (int i = 0; i < deviceNames.size(); i++)
+        {
             std::string logMessage = "indi_client | PrintDevices | Device " + std::to_string(i) + ": " + deviceNames[i] + " (Driver: " + deviceList[i]->getDriverExec() + ")";
             Logger::Log(logMessage, LogLevel::INFO, DeviceType::MAIN);
             if (i > 0)
@@ -194,31 +204,33 @@ QString MyClient::PrintDevices() {
     return dev;
 }
 
-
-INDI::BaseDevice* MyClient::GetDeviceFromList(int index) {
-//这个函数接受一个整型参数 index，表示要返回的设备在列表中的位置。如果 index 超出了列表的范围，函数返回 nullptr。否则，函数返回 deviceList 数组中对应位置的设备指针。
-    if (index < 0 || index >= deviceList.size()) {
+INDI::BaseDevice *MyClient::GetDeviceFromList(int index)
+{
+    // 这个函数接受一个整型参数 index，表示要返回的设备在列表中的位置。如果 index 超出了列表的范围，函数返回 nullptr。否则，函数返回 deviceList 数组中对应位置的设备指针。
+    if (index < 0 || index >= deviceList.size())
+    {
         return nullptr;
     }
     return deviceList[index];
 }
 
+INDI::BaseDevice *MyClient::GetDeviceFromListWithName(std::string devName)
+{
 
-
-INDI::BaseDevice* MyClient::GetDeviceFromListWithName(std::string devName) {
-
-    for(int i=0;i<deviceList.size();i++){
-        if(deviceNames[i]==devName) return deviceList[i];
+    for (int i = 0; i < deviceList.size(); i++)
+    {
+        if (deviceNames[i] == devName)
+            return deviceList[i];
     }
 
-    //if not found return null
+    // if not found return null
     return nullptr;
-
 }
 
-
-std::string MyClient::GetDeviceNameFromList(int index) {
-    if (index < 0 || index >= deviceNames.size()) {
+std::string MyClient::GetDeviceNameFromList(int index)
+{
+    if (index < 0 || index >= deviceNames.size())
+    {
         return "";
     }
     return deviceNames[index];
@@ -238,13 +250,14 @@ std::string MyClient::GetDeviceNameFromList(int index) {
 //     }
 // }
 
-void MyClient::disconnectAllDevice(void){
-    //disconnect all device in the device list
-    // INDI::BaseDevice *dp;
+void MyClient::disconnectAllDevice(void)
+{
+    // disconnect all device in the device list
+    //  INDI::BaseDevice *dp;
     QVector<INDI::BaseDevice *> dp;
     Logger::Log("indi_client | disconnectAllDevice", LogLevel::INFO, DeviceType::MAIN);
     PrintDevices();
-    for(int i=0;i<GetDeviceCount();i++)
+    for (int i = 0; i < GetDeviceCount(); i++)
     {
         dp.append(GetDeviceFromList(i));
         if (dp[i]->isConnected())
@@ -260,27 +273,25 @@ void MyClient::disconnectAllDevice(void){
     }
 }
 
+// need to wait the connection completely finished then call this , otherwise it may not output all
+void MyClient::listAllProperties(INDI::BaseDevice *dp)
+{
+    std::vector<INDI::Property> properties(dp->getProperties().begin(), dp->getProperties().end());
 
-
-
-//need to wait the connection completely finished then call this , otherwise it may not output all
-void MyClient::listAllProperties(INDI::BaseDevice *dp){
-    std::vector<INDI::Property> properties(dp->getProperties().begin(),dp->getProperties().end());
-
-     // Iterate over the list of properties and print the names of the PropertyNumber properties
-     for (INDI::Property *property : properties)
-     {
-       //INDI::PropertyNumber *numberProperty = static_cast<INDI::PropertyNumber *>(property);
-       if (property != nullptr)
-       {
-         std::cout << property->getName() << std::endl;
-       }
-     }
+    // Iterate over the list of properties and print the names of the PropertyNumber properties
+    for (INDI::Property *property : properties)
+    {
+        // INDI::PropertyNumber *numberProperty = static_cast<INDI::PropertyNumber *>(property);
+        if (property != nullptr)
+        {
+            std::cout << property->getName() << std::endl;
+        }
+    }
 }
 
 void MyClient::GetAllPropertyName(INDI::BaseDevice *dp)
 {
-     // 直接使用范围for循环遍历属性
+    // 直接使用范围for循环遍历属性
     for (const auto &property : dp->getProperties())
     {
         const char *propertyName = property->getName();
@@ -291,28 +302,27 @@ void MyClient::GetAllPropertyName(INDI::BaseDevice *dp)
     }
 }
 
-const char * MyClient::PropertyTypeToString(INDI_PROPERTY_TYPE type)
+const char *MyClient::PropertyTypeToString(INDI_PROPERTY_TYPE type)
 {
     // 使用一个自定义函数将属性类型枚举值转换为对应的字符串
     switch (type)
-    {  
-        case INDI_NUMBER: /*!< INumberVectorProperty. */
-            return "Number";
-        case INDI_SWITCH: /*!< ISwitchVectorProperty. */
-            return "Switch";
-        case INDI_TEXT:   /*!< ITextVectorProperty. */
-            return "Text";
-        case INDI_LIGHT:  /*!< ILightVectorProperty. */
-            return "Light";
-        case INDI_BLOB:   /*!< IBLOBVectorProperty. */
-            return "Blob";
-        case INDI_UNKNOWN:
-            return "Unknown";
-        default:
-            return "Unknown";
+    {
+    case INDI_NUMBER: /*!< INumberVectorProperty. */
+        return "Number";
+    case INDI_SWITCH: /*!< ISwitchVectorProperty. */
+        return "Switch";
+    case INDI_TEXT: /*!< ITextVectorProperty. */
+        return "Text";
+    case INDI_LIGHT: /*!< ILightVectorProperty. */
+        return "Light";
+    case INDI_BLOB: /*!< IBLOBVectorProperty. */
+        return "Blob";
+    case INDI_UNKNOWN:
+        return "Unknown";
+    default:
+        return "Unknown";
     }
 }
-
 
 uint32_t MyClient::setBaudRate(INDI::BaseDevice *dp, int baudRate)
 {
@@ -322,41 +332,52 @@ uint32_t MyClient::setBaudRate(INDI::BaseDevice *dp, int baudRate)
         Logger::Log("indi_client | setBaudRate | Error: unable to find DEVICE_BAUD_RATE property...", LogLevel::WARNING, DeviceType::MAIN);
         return QHYCCD_ERROR;
     }
-    if (baudRate == 9600) {
+    if (baudRate == 9600)
+    {
         baudRateProperty[0].setState(ISS_ON);
         baudRateProperty[1].setState(ISS_OFF);
         baudRateProperty[2].setState(ISS_OFF);
         baudRateProperty[3].setState(ISS_OFF);
         baudRateProperty[4].setState(ISS_OFF);
         baudRateProperty[5].setState(ISS_OFF);
-    } else if (baudRate == 19200) {
+    }
+    else if (baudRate == 19200)
+    {
         baudRateProperty[0].setState(ISS_OFF);
         baudRateProperty[1].setState(ISS_ON);
         baudRateProperty[2].setState(ISS_OFF);
         baudRateProperty[3].setState(ISS_OFF);
         baudRateProperty[4].setState(ISS_OFF);
         baudRateProperty[5].setState(ISS_OFF);
-    } else if (baudRate == 38400) {
+    }
+    else if (baudRate == 38400)
+    {
         baudRateProperty[0].setState(ISS_OFF);
         baudRateProperty[1].setState(ISS_OFF);
         baudRateProperty[2].setState(ISS_ON);
         baudRateProperty[3].setState(ISS_OFF);
         baudRateProperty[4].setState(ISS_OFF);
         baudRateProperty[5].setState(ISS_OFF);
-    } else if (baudRate == 57600) {
+    }
+    else if (baudRate == 57600)
+    {
         baudRateProperty[0].setState(ISS_OFF);
         baudRateProperty[1].setState(ISS_OFF);
         baudRateProperty[2].setState(ISS_OFF);
         baudRateProperty[3].setState(ISS_ON);
         baudRateProperty[4].setState(ISS_OFF);
         baudRateProperty[5].setState(ISS_OFF);
-    } else if (baudRate == 115200) {
+    }
+    else if (baudRate == 115200)
+    {
         baudRateProperty[0].setState(ISS_OFF);
         baudRateProperty[1].setState(ISS_OFF);
         baudRateProperty[2].setState(ISS_OFF);
         baudRateProperty[3].setState(ISS_OFF);
         baudRateProperty[4].setState(ISS_ON);
-    } else if (baudRate == 230400) {
+    }
+    else if (baudRate == 230400)
+    {
         baudRateProperty[0].setState(ISS_OFF);
         baudRateProperty[1].setState(ISS_OFF);
         baudRateProperty[2].setState(ISS_OFF);
@@ -372,9 +393,9 @@ uint32_t MyClient::setBaudRate(INDI::BaseDevice *dp, int baudRate)
 **                                  CCD API
 ***************************************************************************************/
 
-uint32_t MyClient::setTemperature(INDI::BaseDevice *dp,double value)
+uint32_t MyClient::setTemperature(INDI::BaseDevice *dp, double value)
 {
-    char* propertyName = "CCD_TEMPERATURE";
+    char *propertyName = "CCD_TEMPERATURE";
     INDI::PropertyNumber ccdTemperature = dp->getProperty(propertyName);
 
     if (!ccdTemperature.isValid())
@@ -389,31 +410,26 @@ uint32_t MyClient::setTemperature(INDI::BaseDevice *dp,double value)
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::getTemperature(INDI::BaseDevice *dp,double &value)
+uint32_t MyClient::getTemperature(INDI::BaseDevice *dp, double &value)
 {
 
-    char* propertyName = "CCD_TEMPERATURE";
+    char *propertyName = "CCD_TEMPERATURE";
     INDI::PropertyNumber ccdTemperature = dp->getProperty(propertyName);
-
-
-
 
     if (!ccdTemperature.isValid())
     {
-        //qDebug("Error: unable to find CCD_TEMPERATURE property...");
+        // qDebug("Error: unable to find CCD_TEMPERATURE property...");
         return QHYCCD_ERROR;
     }
 
-    //qDebug("getting temperature  %g C.", value);
+    // qDebug("getting temperature  %g C.", value);
 
     value = ccdTemperature->np[0].value;
 
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::takeExposure(INDI::BaseDevice *dp,double seconds)
+uint32_t MyClient::takeExposure(INDI::BaseDevice *dp, double seconds)
 {
     INDI::PropertyNumber ccdExposure = dp->getProperty("CCD_EXPOSURE");
 
@@ -437,23 +453,21 @@ uint32_t MyClient::setCCDAbortExposure(INDI::BaseDevice *dp)
 {
     INDI::PropertySwitch ccdabort = dp->getProperty("CCD_ABORT_EXPOSURE");
 
-     if (!ccdabort.isValid())
-     {
-         Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
-         return QHYCCD_ERROR;
-     }
+    if (!ccdabort.isValid())
+    {
+        Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
 
     //  ccdabort[0].setValue(1); //?? need to be confirmed with Jasem
-     ccdabort[0].setState(ISS_ON);
-     sendNewProperty(ccdabort);
-     return QHYCCD_SUCCESS;
+    ccdabort[0].setState(ISS_ON);
+    sendNewProperty(ccdabort);
+    return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getCCDFrameInfo(INDI::BaseDevice *dp,int &X,int &Y,int &WIDTH,int &HEIGHT)
+uint32_t MyClient::getCCDFrameInfo(INDI::BaseDevice *dp, int &X, int &Y, int &WIDTH, int &HEIGHT)
 {
     INDI::PropertyNumber ccdFrameInfo = dp->getProperty("CCD_FRAME");
-
-
 
     if (!ccdFrameInfo.isValid())
     {
@@ -470,7 +484,7 @@ uint32_t MyClient::getCCDFrameInfo(INDI::BaseDevice *dp,int &X,int &Y,int &WIDTH
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDFrameInfo(INDI::BaseDevice *dp,int X,int Y,int WIDTH,int HEIGHT)
+uint32_t MyClient::setCCDFrameInfo(INDI::BaseDevice *dp, int X, int Y, int WIDTH, int HEIGHT)
 {
     INDI::PropertyNumber ccdFrameInfo = dp->getProperty("CCD_FRAME");
 
@@ -501,16 +515,14 @@ uint32_t MyClient::resetCCDFrameInfo(INDI::BaseDevice *dp)
     }
 
     resetFrameInfo[0].setState(ISS_ON);
-    //resetFrameInfo[0].setState(ISS_OFF);  //?? if need to set back?
+    // resetFrameInfo[0].setState(ISS_OFF);  //?? if need to set back?
     sendNewProperty(resetFrameInfo);
     resetFrameInfo[0].setState(ISS_OFF);
     sendNewProperty(resetFrameInfo);
     return QHYCCD_SUCCESS;
 }
 
-
-
-uint32_t MyClient::setCCDCooler(INDI::BaseDevice *dp,bool enable)
+uint32_t MyClient::setCCDCooler(INDI::BaseDevice *dp, bool enable)
 {
     INDI::PropertySwitch ccdCooler = dp->getProperty("CCD_COOLER");
 
@@ -522,14 +534,16 @@ uint32_t MyClient::setCCDCooler(INDI::BaseDevice *dp,bool enable)
 
     Logger::Log("indi_client | setCCDCooler | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
 
-    if(enable==false)  ccdCooler[0].setState(ISS_OFF);
-    else               ccdCooler[0].setState(ISS_ON);
+    if (enable == false)
+        ccdCooler[0].setState(ISS_OFF);
+    else
+        ccdCooler[0].setState(ISS_ON);
 
     sendNewProperty(ccdCooler);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getCCDCooler(INDI::BaseDevice *dp,bool & enable)
+uint32_t MyClient::getCCDCooler(INDI::BaseDevice *dp, bool &enable)
 {
     INDI::PropertySwitch ccdCooler = dp->getProperty("CCD_COOLER");
 
@@ -541,13 +555,14 @@ uint32_t MyClient::getCCDCooler(INDI::BaseDevice *dp,bool & enable)
 
     Logger::Log("indi_client | getCCDCooler | " + std::to_string(ccdCooler[0].getState()), LogLevel::INFO, DeviceType::CAMERA);
 
-    if(ccdCooler[0].getState()==ISS_OFF) enable=false;
-    else                                 enable=true;
+    if (ccdCooler[0].getState() == ISS_OFF)
+        enable = false;
+    else
+        enable = true;
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::getCCDBasicInfo(INDI::BaseDevice *dp,int &maxX,int &maxY,double &pixelsize,double &pixelsizX,double &pixelsizY,int &bitDepth)
+uint32_t MyClient::getCCDBasicInfo(INDI::BaseDevice *dp, int &maxX, int &maxY, double &pixelsize, double &pixelsizX, double &pixelsizY, int &bitDepth)
 {
     INDI::PropertyNumber ccdInfo = dp->getProperty("CCD_INFO");
 
@@ -562,12 +577,13 @@ uint32_t MyClient::getCCDBasicInfo(INDI::BaseDevice *dp,int &maxX,int &maxY,doub
     pixelsize = ccdInfo->np[2].value;
     pixelsizX = ccdInfo->np[3].value;
     pixelsizY = ccdInfo->np[4].value;
-    bitDepth  = ccdInfo->np[5].value;
+    bitDepth = ccdInfo->np[5].value;
     Logger::Log("indi_client | getCCDBasicInfo | " + std::to_string(maxX) + ", " + std::to_string(maxY) + ", " + std::to_string(pixelsize) + ", " + std::to_string(pixelsizX) + ", " + std::to_string(pixelsizY) + ", " + std::to_string(bitDepth), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDBasicInfo(INDI::BaseDevice *dp,int maxX,int maxY,double pixelsize,double pixelsizX,double pixelsizY,int bitDepth){
+uint32_t MyClient::setCCDBasicInfo(INDI::BaseDevice *dp, int maxX, int maxY, double pixelsize, double pixelsizX, double pixelsizY, int bitDepth)
+{
     INDI::PropertyNumber ccdInfo = dp->getProperty("CCD_INFO");
 
     if (!ccdInfo.isValid())
@@ -589,7 +605,8 @@ uint32_t MyClient::setCCDBasicInfo(INDI::BaseDevice *dp,int maxX,int maxY,double
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getCCDBinning(INDI::BaseDevice *dp,int &BINX,int &BINY,int &BINXMAX,int &BINYMAX){
+uint32_t MyClient::getCCDBinning(INDI::BaseDevice *dp, int &BINX, int &BINY, int &BINXMAX, int &BINYMAX)
+{
     INDI::PropertyNumber ccdbinning = dp->getProperty("CCD_BINNING");
 
     if (!ccdbinning.isValid())
@@ -607,15 +624,15 @@ uint32_t MyClient::getCCDBinning(INDI::BaseDevice *dp,int &BINX,int &BINY,int &B
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::setCCDBinnign(INDI::BaseDevice *dp,int BINX,int BINY){
+uint32_t MyClient::setCCDBinnign(INDI::BaseDevice *dp, int BINX, int BINY)
+{
     INDI::PropertyNumber ccdbinning = dp->getProperty("CCD_BINNING");
 
     if (!ccdbinning.isValid())
     {
         Logger::Log("indi_client | setCCDBinnign | Error: unable to find  CCD_BINNING property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
-     }
+    }
 
     ccdbinning[0].setValue(BINX);
     ccdbinning[1].setValue(BINY);
@@ -624,7 +641,7 @@ uint32_t MyClient::setCCDBinnign(INDI::BaseDevice *dp,int BINX,int BINY){
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QString &CFATYPE)
+uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp, int &offsetX, int &offsetY, QString &CFATYPE)
 {
     INDI::PropertyText ccdCFA = dp->getProperty("CCD_CFA");
 
@@ -634,20 +651,18 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp,int &offsetX, int &offsetY, QS
         return QHYCCD_ERROR;
     }
 
-    std::string a,b,c;
+    std::string a, b, c;
 
     a = ccdCFA[0].getText();
     b = ccdCFA[1].getText();
     c = ccdCFA[2].getText();
 
-    offsetX= std::stoi(a);
-    offsetY= std::stoi(b);
-    CFATYPE= QString::fromStdString(c);
+    offsetX = std::stoi(a);
+    offsetY = std::stoi(b);
+    CFATYPE = QString::fromStdString(c);
     Logger::Log("indi_client | getCCDCFA | " + std::to_string(offsetX) + ", " + std::to_string(offsetY) + ", " + CFATYPE.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
-
-
 
 uint32_t MyClient::getCCDSDKVersion(INDI::BaseDevice *dp, QString &version)
 {
@@ -663,14 +678,12 @@ uint32_t MyClient::getCCDSDKVersion(INDI::BaseDevice *dp, QString &version)
 
     a = ccdCFA[0].getText();
 
-    version= QString::fromStdString(a);
-    //qDebug()<<version;
+    version = QString::fromStdString(a);
+    // qDebug()<<version;
     return QHYCCD_SUCCESS;
 }
 
-
-
-uint32_t MyClient::getCCDGain(INDI::BaseDevice *dp,int &value,int &min,int &max)
+uint32_t MyClient::getCCDGain(INDI::BaseDevice *dp, int &value, int &min, int &max)
 {
     INDI::PropertyNumber ccdgain = dp->getProperty("CCD_GAIN");
 
@@ -681,14 +694,15 @@ uint32_t MyClient::getCCDGain(INDI::BaseDevice *dp,int &value,int &min,int &max)
     }
 
     value = ccdgain->np[0].value;
-    min   = ccdgain->np[0].min;
-    max   = ccdgain->np[0].max;
+    min = ccdgain->np[0].min;
+    max = ccdgain->np[0].max;
 
     Logger::Log("indi_client | getCCDGain | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDGain(INDI::BaseDevice *dp,int value){
+uint32_t MyClient::setCCDGain(INDI::BaseDevice *dp, int value)
+{
     INDI::PropertyNumber ccdgain = dp->getProperty("CCD_GAIN");
 
     if (!ccdgain.isValid())
@@ -703,10 +717,7 @@ uint32_t MyClient::setCCDGain(INDI::BaseDevice *dp,int value){
     return QHYCCD_SUCCESS;
 }
 
-
-
-
-uint32_t MyClient::getCCDOffset(INDI::BaseDevice *dp,int &value,int &min,int &max)
+uint32_t MyClient::getCCDOffset(INDI::BaseDevice *dp, int &value, int &min, int &max)
 {
     INDI::PropertyNumber ccdoffset = dp->getProperty("CCD_OFFSET");
 
@@ -717,14 +728,14 @@ uint32_t MyClient::getCCDOffset(INDI::BaseDevice *dp,int &value,int &min,int &ma
     }
 
     value = ccdoffset->np[0].value;
-    min   = ccdoffset->np[0].min;
-    max   = ccdoffset->np[0].max;
+    min = ccdoffset->np[0].min;
+    max = ccdoffset->np[0].max;
 
     Logger::Log("indi_client | getCCDOffset | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDOffset(INDI::BaseDevice *dp,int value)
+uint32_t MyClient::setCCDOffset(INDI::BaseDevice *dp, int value)
 {
     INDI::PropertyNumber ccdoffset = dp->getProperty("CCD_OFFSET");
 
@@ -740,7 +751,7 @@ uint32_t MyClient::setCCDOffset(INDI::BaseDevice *dp,int value)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getCCDReadMode(INDI::BaseDevice *dp,int &value,int &min,int &max)
+uint32_t MyClient::getCCDReadMode(INDI::BaseDevice *dp, int &value, int &min, int &max)
 {
     INDI::PropertyNumber ccdreadmode = dp->getProperty("READ_MODE");
 
@@ -751,14 +762,14 @@ uint32_t MyClient::getCCDReadMode(INDI::BaseDevice *dp,int &value,int &min,int &
     }
 
     value = ccdreadmode->np[0].value;
-    min   = ccdreadmode->np[0].min;
-    max   = ccdreadmode->np[0].max;
+    min = ccdreadmode->np[0].min;
+    max = ccdreadmode->np[0].max;
 
     Logger::Log("indi_client | getCCDReadMode | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDReadMode(INDI::BaseDevice *dp,int value)
+uint32_t MyClient::setCCDReadMode(INDI::BaseDevice *dp, int value)
 {
     INDI::PropertyNumber ccdreadmode = dp->getProperty("READ_MODE");
 
@@ -774,7 +785,8 @@ uint32_t MyClient::setCCDReadMode(INDI::BaseDevice *dp,int value)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDUploadModeToLacal(INDI::BaseDevice *dp) {
+uint32_t MyClient::setCCDUploadModeToLacal(INDI::BaseDevice *dp)
+{
     INDI::PropertySwitch uploadmode = dp->getProperty("UPLOAD_MODE");
 
     if (!uploadmode.isValid())
@@ -791,7 +803,8 @@ uint32_t MyClient::setCCDUploadModeToLacal(INDI::BaseDevice *dp) {
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefix) {
+uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefix)
+{
     INDI::PropertyText upload = dp->getProperty("UPLOAD_SETTINGS");
 
     if (!upload.isValid())
@@ -807,14 +820,13 @@ uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefi
     return QHYCCD_SUCCESS;
 }
 
-
 uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 {
 
     Logger::Log("indi_client | StartWatch | start", LogLevel::INFO, DeviceType::CAMERA);
     // wait for the availability of the device
     watchDevice(dp->getDeviceName(), [this](INDI::BaseDevice device)
-    {
+                {
 
         // wait for the availability of the "CONNECTION" property
         device.watchProperty("CONNECTION", [this](INDI::Property)
@@ -855,11 +867,11 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
             {
                 // Save FITS file to disk
                 std::ofstream myfile;
-                #ifdef SUDO
+#ifdef SUDO
                 system("sudo rm ccd_simulator.fits");
-                #else
+#else
                 system("rm ccd_simulator.fits");
-                #endif
+#endif
 
                 myfile.open("ccd_simulator.fits", std::ios::out | std::ios::binary);
                 myfile.write(static_cast<char *>(property[0].getBlob()), property[0].getBlobLen());
@@ -867,8 +879,7 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 
                 Logger::Log("indi_client | StartWatch | Received image, saved as ccd_simulator.fits", LogLevel::INFO, DeviceType::CAMERA);
             });
-        });
-    });
+        }); });
 
     Logger::Log("indi_client | StartWatch | finish", LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
@@ -878,36 +889,36 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 **                                  Mount API
 ***************************************************************************************/
 
-uint32_t MyClient::setAutoFlip(INDI::BaseDevice *dp,bool ON)
+uint32_t MyClient::setAutoFlip(INDI::BaseDevice *dp, bool ON)
 {
     INDI::PropertySwitch flip = dp->getProperty("AutoFlip");
 
-     if (!flip.isValid())
-     {
-         Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
-         return QHYCCD_ERROR;
-     }
+    if (!flip.isValid())
+    {
+        Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
 
     //  ccdabort[0].setValue(1); //?? need to be confirmed with Jasem
-    if(ON)
+    if (ON)
     {
         flip[0].setState(ISS_OFF);
         flip[1].setState(ISS_ON);
         //   Logger::Log("flip[0].name =" + std::to_string(flip[0].getName().c_str()),LogLevel::WARNING, DeviceType::CAMERA);
         //   Logger::Log("flip[0].name =" + std::to_string(flip[0].getName().c_str()),LogLevel::WARNING, DeviceType::CAMERA);
-          qDebug()<<"flip[0].name =" <<flip[0].getName();
-          qDebug()<<"flip[1].name =" <<flip[1].getName();
+        qDebug() << "flip[0].name =" << flip[0].getName();
+        qDebug() << "flip[1].name =" << flip[1].getName();
         // Logger::Log("indi_client | setCCDAbortExposure | Error: unable to find  CCD_ABORT_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
     }
     else
     {
         flip[0].setState(ISS_ON);
         flip[1].setState(ISS_OFF);
-        // Logger::Log("indi_client | takeExposure | Taking a " + std::to_string(seconds) + " second exposure.", LogLevel::INFO, DeviceType::CAMERA); 
+        // Logger::Log("indi_client | takeExposure | Taking a " + std::to_string(seconds) + " second exposure.", LogLevel::INFO, DeviceType::CAMERA);
     }
-    
-     sendNewProperty(flip);
-     return QHYCCD_SUCCESS;
+
+    sendNewProperty(flip);
+    return QHYCCD_SUCCESS;
 }
 
 uint32_t MyClient::setAUXENCODERS(INDI::BaseDevice *dp)
@@ -926,8 +937,7 @@ uint32_t MyClient::setAUXENCODERS(INDI::BaseDevice *dp)
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_aperture,double & telescope_focal,double & guider_aperature, double &guider_focal)
+uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp, double &telescope_aperture, double &telescope_focal, double &guider_aperature, double &guider_focal)
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_INFO");
 
@@ -938,14 +948,14 @@ uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_apert
     }
 
     telescope_aperture = property->np[0].value;
-    telescope_focal    = property->np[1].value;
-    guider_aperature   = property->np[2].value;
-    guider_focal       = property->np[3].value;
+    telescope_focal = property->np[1].value;
+    guider_aperature = property->np[2].value;
+    guider_focal = property->np[3].value;
     Logger::Log("indi_client | getTelescopeInfo | " + std::to_string(telescope_aperture) + ", " + std::to_string(telescope_focal) + ", " + std::to_string(guider_aperature) + ", " + std::to_string(guider_focal), LogLevel::INFO, DeviceType::MOUNT);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeInfo(INDI::BaseDevice *dp,double telescope_aperture,double telescope_focal,double guider_aperature, double guider_focal)
+uint32_t MyClient::setTelescopeInfo(INDI::BaseDevice *dp, double telescope_aperture, double telescope_focal, double guider_aperature, double guider_focal)
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_INFO");
 
@@ -964,9 +974,7 @@ uint32_t MyClient::setTelescopeInfo(INDI::BaseDevice *dp,double telescope_apertu
     return QHYCCD_SUCCESS;
 }
 
-
-
-uint32_t MyClient::getTelescopePierSide(INDI::BaseDevice *dp,QString &side)
+uint32_t MyClient::getTelescopePierSide(INDI::BaseDevice *dp, QString &side)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_PIER_SIDE");
 
@@ -976,14 +984,18 @@ uint32_t MyClient::getTelescopePierSide(INDI::BaseDevice *dp,QString &side)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      side="WEST";
-    else if(property[1].getState()==ISS_ON) side="EAST";
+    if (property[0].getState() == ISS_ON)
+        side = "WEST";
+    else if (property[1].getState() == ISS_ON)
+        side = "EAST";
 
     // qDebug() << "getTelescopePierSide" << side ;
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getTelescopeTrackRate(INDI::BaseDevice *dp,QString &rate)
+/*
+// 未在mainwindow.cpp中使用的函数 - 已注释
+uint32_t MyClient::getTelescopeTrackRate(INDI::BaseDevice *dp, QString &rate)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_TRACK_RATE");
 
@@ -993,15 +1005,20 @@ uint32_t MyClient::getTelescopeTrackRate(INDI::BaseDevice *dp,QString &rate)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      rate="SIDEREAL";
-    else if(property[1].getState()==ISS_ON) rate="SOLAR";
-    else if(property[2].getState()==ISS_ON) rate="LUNAR"; //??
-    else if(property[3].getState()==ISS_ON) rate="CUSTOM";
+    if (property[0].getState() == ISS_ON)
+        rate = "SIDEREAL";
+    else if (property[1].getState() == ISS_ON)
+        rate = "SOLAR";
+    else if (property[2].getState() == ISS_ON)
+        rate = "LUNAR"; //??
+    else if (property[3].getState() == ISS_ON)
+        rate = "CUSTOM";
     Logger::Log("indi_client | getTelescopeTrackRate | " + rate.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
+*/
 
-uint32_t MyClient::setTelescopeTrackRate(INDI::BaseDevice *dp,QString rate)
+uint32_t MyClient::setTelescopeTrackRate(INDI::BaseDevice *dp, QString rate)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_TRACK_RATE");
 
@@ -1011,19 +1028,41 @@ uint32_t MyClient::setTelescopeTrackRate(INDI::BaseDevice *dp,QString rate)
         return QHYCCD_ERROR;
     }
 
-    if(rate=="SIDEREAL")      {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);property[2].setState(ISS_OFF);property[3].setState(ISS_OFF);}
-    else if(rate=="SOLAR")    {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);property[2].setState(ISS_OFF);property[3].setState(ISS_OFF);}
-    else if(rate=="LUNAR")    {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);property[2].setState(ISS_ON);property[3].setState(ISS_OFF);}
-    else if(rate=="CUSTOM")   {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);property[2].setState(ISS_OFF);property[3].setState(ISS_ON);}
+    if (rate == "SIDEREAL")
+    {
+        property[0].setState(ISS_ON);
+        property[1].setState(ISS_OFF);
+        property[2].setState(ISS_OFF);
+        property[3].setState(ISS_OFF);
+    }
+    else if (rate == "SOLAR")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_ON);
+        property[2].setState(ISS_OFF);
+        property[3].setState(ISS_OFF);
+    }
+    else if (rate == "LUNAR")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_OFF);
+        property[2].setState(ISS_ON);
+        property[3].setState(ISS_OFF);
+    }
+    else if (rate == "CUSTOM")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_OFF);
+        property[2].setState(ISS_OFF);
+        property[3].setState(ISS_ON);
+    }
 
     sendNewProperty(property);
-    //qDebug()<<"setTelescopeTrackRate"<< value;
+    // qDebug()<<"setTelescopeTrackRate"<< value;
     return QHYCCD_SUCCESS;
 }
 
-
-
-uint32_t MyClient::getTelescopeTrackEnable(INDI::BaseDevice *dp,bool &enable)
+uint32_t MyClient::getTelescopeTrackEnable(INDI::BaseDevice *dp, bool &enable)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_TRACK_STATE");
 
@@ -1033,29 +1072,40 @@ uint32_t MyClient::getTelescopeTrackEnable(INDI::BaseDevice *dp,bool &enable)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      enable=true;
-    else if(property[1].getState()==ISS_ON) enable=false;
-
-    QElapsedTimer t;
-    t.start();
-
-    while(t.elapsed()<3000){
-        QThread::msleep(100);
-        if(property->getState()==IPS_OK) break;
-        if(property->getState()==IPS_IDLE) break;
+    if (property[0].getState() == ISS_ON){
+        enable = true;
+        mountState.isTracking = true;
+    }
+    else if (property[1].getState() == ISS_ON)
+    {
+        enable = false;
+        mountState.isTracking = false;
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | getTelescopeTrackEnable | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
-    }
 
+    // QElapsedTimer t;
+    // t.start();
+
+    // while (t.elapsed() < 3000)
+    // {
+    //     QThread::msleep(100);
+    //     if (property->getState() == IPS_OK)
+    //         break;
+    //     if (property->getState() == IPS_IDLE)
+    //         break;
+    // }
+
+    // if (t.elapsed() > 3000)
+    // {
+    //     Logger::Log("indi_client | getTelescopeTrackEnable | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+    //     return QHYCCD_ERROR;
+    // }
 
     Logger::Log("indi_client | getTelescopeTrackEnable | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeTrackEnable(INDI::BaseDevice *dp,bool enable)
+uint32_t MyClient::setTelescopeTrackEnable(INDI::BaseDevice *dp, bool enable)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_TRACK_STATE");
 
@@ -1065,8 +1115,18 @@ uint32_t MyClient::setTelescopeTrackEnable(INDI::BaseDevice *dp,bool enable)
         return QHYCCD_ERROR;
     }
 
-    if(enable==true)          {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
-    else if(enable==false)    {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
+    if (enable == true)
+    {
+        property[0].setState(ISS_ON);
+        property[1].setState(ISS_OFF);
+        mountState.isTracking = true;
+    }
+    else if (enable == false)
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_ON);
+        mountState.isTracking = false;
+    }
 
     sendNewProperty(property);
 
@@ -1100,32 +1160,37 @@ uint32_t MyClient::setTelescopeTrackEnable(INDI::BaseDevice *dp,bool enable)
     return QHYCCD_SUCCESS;
 }
 
-
-
-
-
-uint32_t MyClient::setTelescopeParkOption(INDI::BaseDevice *dp,QString option)
+uint32_t MyClient::setTelescopeParkOption(INDI::BaseDevice *dp, QString option)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_PARK_OPTION");
 
     if (!property.isValid())
     {
-        Logger::Log("indi_client | setTelescopeParkOption | Error: unable to find  TELESCOPE_TRACK_RATE property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | setTelescopeParkOption | Error: unable to find  TELESCOPE_PARK_OPTION property...", LogLevel::WARNING, DeviceType::MOUNT);
         return QHYCCD_ERROR;
     }
 
-    if(option=="CURRENT")       {property[0].setState(ISS_ON);}
-    else if(option=="DEFAULT")  {property[1].setState(ISS_ON);}
-    else if(option=="WRITE")    {property[2].setState(ISS_ON);}
-
+    if (option == "CURRENT")
+    {
+        property[0].setState(ISS_ON);
+    }
+    else if (option == "DEFAULT")
+    {
+        property[1].setState(ISS_ON);
+    }
+    else if (option == "WRITE")
+    {
+        property[2].setState(ISS_ON);
+    }
 
     sendNewProperty(property);
     Logger::Log("indi_client | setTelescopeParkOption | " + option.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::getTelescopeParkPosition(INDI::BaseDevice *dp,double &RA_DEGREE,double &DEC_DEGREE)
+/*
+// 未在mainwindow.cpp中使用的函数 - 已注释
+uint32_t MyClient::getTelescopeParkPosition(INDI::BaseDevice *dp, double &RA_DEGREE, double &DEC_DEGREE)
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_PARK_POSITION");
 
@@ -1135,13 +1200,15 @@ uint32_t MyClient::getTelescopeParkPosition(INDI::BaseDevice *dp,double &RA_DEGR
         return QHYCCD_ERROR;
     }
 
-    RA_DEGREE   = property->np[0].value;
+    RA_DEGREE = property->np[0].value;
     DEC_DEGREE = property->np[1].value;
     Logger::Log("indi_client | getTelescopeParkPosition | " + std::to_string(RA_DEGREE) + ", " + std::to_string(DEC_DEGREE), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
-
 }
-uint32_t MyClient::setTelescopeParkPosition(INDI::BaseDevice *dp,double RA_DEGREE,double DEC_DEGREE)
+*/
+/*
+// 未在mainwindow.cpp中使用的函数 - 已注释
+uint32_t MyClient::setTelescopeParkPosition(INDI::BaseDevice *dp, double RA_DEGREE, double DEC_DEGREE)
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_PARK_POSITION");
 
@@ -1151,15 +1218,15 @@ uint32_t MyClient::setTelescopeParkPosition(INDI::BaseDevice *dp,double RA_DEGRE
         return QHYCCD_ERROR;
     }
 
-
-    property->np[0].value= RA_DEGREE;
-    property->np[1].value= DEC_DEGREE;
+    property->np[0].value = RA_DEGREE;
+    property->np[1].value = DEC_DEGREE;
 
     sendNewProperty(property);
     Logger::Log("indi_client | setTelescopeParkPosition | " + std::to_string(RA_DEGREE) + ", " + std::to_string(DEC_DEGREE), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
-uint32_t MyClient::getTelescopePark(INDI::BaseDevice *dp,bool &isParked)
+*/
+uint32_t MyClient::getTelescopePark(INDI::BaseDevice *dp, bool &isParked)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_PARK");
 
@@ -1168,14 +1235,24 @@ uint32_t MyClient::getTelescopePark(INDI::BaseDevice *dp,bool &isParked)
         Logger::Log("indi_client | getTelescopePark | Error: unable to find TELESCOPE_PARK property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
-    if(property[0].getState()==ISS_ON)        isParked=true;
-    else if(property[1].getState()==ISS_ON)   isParked=false;
+    if (property[0].getState() == ISS_ON){
+        isParked = true;
+        mountState.isParked = true;
+    }
+    else if (property[1].getState() == ISS_ON){
+        isParked = false;
+        mountState.isParked = false;
+    }
 
     Logger::Log("indi_client | getTelescopePark | " + std::to_string(isParked), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
-uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp,bool isParked)
+
+uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp, bool isParked)
 {
+    // 固定驻车状态为固定到当前位置
+    setTelescopeParkOption(dp, "CURRENT");
+
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_PARK");
 
     if (!property.isValid())
@@ -1184,68 +1261,57 @@ uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp,bool isParked)
         return QHYCCD_ERROR;
     }
 
-
-    if(isParked==false) {
+    if (isParked == false)
+    {
+        // 取消驻车
         property[1].setState(ISS_ON);
         property[0].setState(ISS_OFF);
+        // 启用跟踪
+        setTelescopeTrackEnable(dp, true);
+        mountState.isParked = false;
     }
     else
     {
+        // 驻车
         property[0].setState(ISS_ON);
         property[1].setState(ISS_OFF);
-    }                
+        // 停止跟踪
+        setTelescopeTrackEnable(dp, false);
+        mountState.isParked = true;
+    }
     sendNewProperty(property);
+
     Logger::Log("indi_client | setTelescopePark | " + std::to_string(isParked), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-
-
-uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp,QString command)
+uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
 {
-    INDI::PropertySwitch property = dp->getProperty("HOME_INIT");
-
-    if (!property.isValid())
+    // 判断command是否为SLEWHOME或SYNCHOME
+    if (command == "SLEWHOME")
     {
-        Logger::Log("indi_client | setTelescopeHomeInit | Error: unable to find HOME_INIT property...", LogLevel::WARNING, DeviceType::CAMERA);
+        mountState.isHoming = true;
+        setTelescopeRADECJNOW(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree);
+        Logger::Log("indi_client | setTelescopeHomeInit | SLEWHOME command sent", LogLevel::INFO, DeviceType::CAMERA);
+    }
+    else if (command == "SYNCHOME")
+    {
+        double currentRA;
+        double currentDEC;
+        getTelescopeRADECJNOW(dp, currentRA, currentDEC);
+        Logger::Log("indi_client | setTelescopeHomeInit | SYNCHOME command sent", LogLevel::INFO, DeviceType::CAMERA);
+        mountState.Home_RA_Hours = currentRA;
+        mountState.Home_DEC_Degree = currentDEC;
+    }
+    else
+    {
+        Logger::Log("indi_client | setTelescopeHomeInit | Error: invalid command", LogLevel::ERROR, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
-
-    if(command=="SLEWHOME")                   
-    { 
-        property[0].setState(ISS_ON); 
-        property[1].setState(ISS_OFF);
-    }
-    else if(command=="SYNCHOME")              
-    { 
-        property[1].setState(ISS_OFF); 
-        property[2].setState(ISS_ON);
-    }
-
-    sendNewProperty(property);
-
-    QElapsedTimer t;
-    t.start();
-
-    while(t.elapsed()<3000){
-        //qDebug()<<property->getStateAsString();
-        QThread::msleep(100);
-        if(property->getState()==IPS_IDLE) break;  // it will not wait the motor arrived
-    }
-
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | setTelescopeHomeInit | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
-    }
-
-    Logger::Log("indi_client | setTelescopeHomeInit | " + command.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-
-
-
-uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
+uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp, int &speed)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_SLEW_RATE");
 
@@ -1255,13 +1321,14 @@ uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
         return QHYCCD_ERROR;
     }
 
-    for(int i = 0; i < property.count(); i++)
+    for (int i = 0; i < property.count(); i++)
     {
-        if(property[i].getState() == ISS_ON)
+        if (property[i].getState() == ISS_ON)
         {
             speed = i + 1;
             Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed), LogLevel::INFO, DeviceType::MOUNT);
-            if(speed>=1 && speed<=property.count()) Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed) + " " + property[speed-1].getLabel(), LogLevel::INFO, DeviceType::MOUNT);
+            if (speed >= 1 && speed <= property.count())
+                Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed) + " " + property[speed - 1].getLabel(), LogLevel::INFO, DeviceType::MOUNT);
             return QHYCCD_SUCCESS;
         }
     }
@@ -1270,7 +1337,6 @@ uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
     speed = -1;
     return QHYCCD_ERROR;
 }
-
 
 // uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
 // {
@@ -1302,12 +1368,11 @@ uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed)
 //     Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed), LogLevel::INFO, DeviceType::MOUNT);
 //     if(speed>=0 && speed<=9) Logger::Log("indi_client | getTelescopeSlewRate | " + std::to_string(speed) + " " + property[speed].getLabel(), LogLevel::INFO, DeviceType::MOUNT);
 
-
 //     return QHYCCD_SUCCESS;
 
 // }
 
-uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp,int speed)
+uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp, int speed)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_SLEW_RATE");
 
@@ -1318,13 +1383,13 @@ uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp,int speed)
     }
 
     Logger::Log("indi_client | setTelescopeSlewRate | " + std::to_string(property->count()), LogLevel::INFO, DeviceType::CAMERA);
-    if(speed>=0 && speed <= property->count())  
+    if (speed >= 0 && speed <= property->count())
     {
-        property[speed-1].setState(ISS_ON);
+        property[speed - 1].setState(ISS_ON);
 
-        for(int i = 0; i < property->count(); i++)
+        for (int i = 0; i < property->count(); i++)
         {
-            if(i != speed-1)
+            if (i != speed - 1)
             {
                 property[i].setState(ISS_OFF);
             }
@@ -1337,8 +1402,7 @@ uint32_t MyClient::setTelescopeSlewRate(INDI::BaseDevice *dp,int speed)
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::getTelescopeTotalSlewRate(INDI::BaseDevice *dp,int &total)
+uint32_t MyClient::getTelescopeTotalSlewRate(INDI::BaseDevice *dp, int &total)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_SLEW_RATE");
 
@@ -1348,16 +1412,13 @@ uint32_t MyClient::getTelescopeTotalSlewRate(INDI::BaseDevice *dp,int &total)
         return QHYCCD_ERROR;
     }
 
-    total=property->count();
+    total = property->count();
 
     Logger::Log("indi_client | getTelescopeTotalSlewRate:" + std::to_string(total), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-
-
-
-uint32_t MyClient::getTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int &min, int &max,int &value)
+uint32_t MyClient::getTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp, int &min, int &max, int &value)
 {
     //?? maybe onstep only
     INDI::PropertyNumber property = dp->getProperty("Max slew Rate");
@@ -1368,17 +1429,15 @@ uint32_t MyClient::getTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int &min,
         return QHYCCD_ERROR;
     }
 
-    max  = property->np[0].max;
-    min  = property->np[0].min;
-    value= property->np[0].value;
+    max = property->np[0].max;
+    min = property->np[0].min;
+    value = property->np[0].value;
 
     Logger::Log("indi_client | getTelescopeMaxSlewRateOptions" + std::to_string(max) + " " + std::to_string(min) + " " + std::to_string(value), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
-
 }
 
-
-uint32_t MyClient::setTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int value)
+uint32_t MyClient::setTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp, int value)
 {
     //?? maybe onstep only
     INDI::PropertyNumber property = dp->getProperty("Max slew Rate");
@@ -1389,30 +1448,26 @@ uint32_t MyClient::setTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int value
         return QHYCCD_ERROR;
     }
 
-    property->np[0].value=value;
+    property->np[0].value = value;
     sendNewProperty(property);
 
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | setTelescopeMaxSlewRateOptions | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | setTelescopeMaxSlewRateOptions | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
 
     Logger::Log("indi_client | setTelescopeMaxSlewRateOptions" + std::to_string(value), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
-
-
-
-
-
-
 
 uint32_t MyClient::setTelescopeAbortMotion(INDI::BaseDevice *dp)
 {
@@ -1426,11 +1481,25 @@ uint32_t MyClient::setTelescopeAbortMotion(INDI::BaseDevice *dp)
 
     property[0].setState(ISS_ON);
     sendNewProperty(property);
-    //qDebug()<<"setTelescopeAbortMotion"<< value;
+
+    // 设置移动状态为停止
+    mountState.isNS_Moving = false;
+    mountState.isWE_Moving = false;
+    mountState.isSlewing = false;
+    mountState.isHoming = false;
+    mountState.isGuiding = false;
+    if(MountGotoTimer.isActive())
+    {
+        MountGotoTimer.stop();
+        QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
+    }
+    // 更新追踪状态
+    getTelescopeTrackEnable(dp, mountState.isTracking);
+
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getTelescopeMoveWE(INDI::BaseDevice *dp,QString &statu)
+uint32_t MyClient::getTelescopeMoveWE(INDI::BaseDevice *dp, QString &statu)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_MOTION_WE");
 
@@ -1440,14 +1509,26 @@ uint32_t MyClient::getTelescopeMoveWE(INDI::BaseDevice *dp,QString &statu)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      {statu="WEST";}
-    else if(property[1].getState()==ISS_ON) {statu="EAST";}
-    else                                    {statu="STOP";}
+    if (property[0].getState() == ISS_ON)
+    {
+        statu = "WEST";
+        mountState.isWE_Moving = true;
+    }
+    else if (property[1].getState() == ISS_ON)
+    {
+        statu = "EAST";
+        mountState.isWE_Moving = true;
+    }
+    else
+    {
+        statu = "STOP";
+        mountState.isWE_Moving = false;
+    }
     Logger::Log("indi_client | getTelescopeMoveWE" + statu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeMoveWE(INDI::BaseDevice *dp,QString command)
+uint32_t MyClient::setTelescopeMoveWE(INDI::BaseDevice *dp, QString command)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_MOTION_WE");
 
@@ -1457,16 +1538,31 @@ uint32_t MyClient::setTelescopeMoveWE(INDI::BaseDevice *dp,QString command)
         return QHYCCD_ERROR;
     }
 
-    if(command=="WEST")         {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);ismove = true;}
-    else if(command=="EAST")    {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);ismove = true;}
-    else if(command=="STOP")    {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);ismove = false;}
+    if (command == "WEST")
+    {
+        property[0].setState(ISS_ON);
+        property[1].setState(ISS_OFF);
+        mountState.isNS_Moving = true;
+    }
+    else if (command == "EAST")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_ON);
+        mountState.isNS_Moving = true;
+    }
+    else if (command == "STOP")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_OFF);
+        mountState.isNS_Moving = false;
+    }
 
     sendNewProperty(property);
     Logger::Log("indi_client | setTelescopeMoveWE" + command.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getTelescopeMoveNS(INDI::BaseDevice *dp,QString &statu)
+uint32_t MyClient::getTelescopeMoveNS(INDI::BaseDevice *dp, QString &statu)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_MOTION_NS");
 
@@ -1476,14 +1572,26 @@ uint32_t MyClient::getTelescopeMoveNS(INDI::BaseDevice *dp,QString &statu)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      {statu="NORTH";ismove = true;}
-    else if(property[1].getState()==ISS_ON) {statu="SOUTH";ismove = true;}
-    else                                    {statu="STOP";ismove = false;}
+    if (property[0].getState() == ISS_ON)
+    {
+        statu = "NORTH";
+        mountState.isNS_Moving = true;
+    }
+    else if (property[1].getState() == ISS_ON)
+    {
+        statu = "SOUTH";
+        mountState.isNS_Moving = true;
+    }
+    else
+    {
+        statu = "STOP";
+        mountState.isNS_Moving = false;
+    }
     Logger::Log("indi_client | getTelescopeMoveNS" + statu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeMoveNS(INDI::BaseDevice *dp,QString command)
+uint32_t MyClient::setTelescopeMoveNS(INDI::BaseDevice *dp, QString command)
 {
     INDI::PropertySwitch property = dp->getProperty("TELESCOPE_MOTION_NS");
 
@@ -1493,40 +1601,59 @@ uint32_t MyClient::setTelescopeMoveNS(INDI::BaseDevice *dp,QString command)
         return QHYCCD_ERROR;
     }
 
-    if(command=="NORTH")         {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
-    else if(command=="SOUTH")    {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
-    else if(command=="STOP")     {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);}
-
-
+    if (command == "NORTH")
+    {
+        property[0].setState(ISS_ON);
+        property[1].setState(ISS_OFF);
+        mountState.isNS_Moving = true;
+    }
+    else if (command == "SOUTH")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_ON);
+        mountState.isNS_Moving = true;
+    }
+    else if (command == "STOP")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_OFF);
+        mountState.isNS_Moving = false;
+    }
 
     sendNewProperty(property);
     Logger::Log("indi_client | setTelescopeMoveNS" + command.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeGuideNS(INDI::BaseDevice* dp, int dir, int time_guide)
+uint32_t MyClient::setTelescopeGuideNS(INDI::BaseDevice *dp, int dir, int time_guide)
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_TIMED_GUIDE_NS");
-    if (!property.isValid()) {
+    if (!property.isValid())
+    {
         Logger::Log("indi_client | setTelescopeGuideNS | Error: unable to find TELESCOPE_TIMED_GUIDE_NS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
-    if (dir == 1) {
+    if (dir == 1)
+    {
         property->np[1].value = time_guide;
         property->np[0].value = 0;
-    } else
+        mountState.isGuiding = true;
+    }
+    else
     {
         property->np[0].value = time_guide;
         property->np[1].value = 0;
+        mountState.isGuiding = false;
     }
     sendNewProperty(property);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeGuideWE(INDI::BaseDevice* dp, int dir, int time_guide)
+uint32_t MyClient::setTelescopeGuideWE(INDI::BaseDevice *dp, int dir, int time_guide)
 {
     INDI::PropertyNumber property = dp->getProperty("TELESCOPE_TIMED_GUIDE_WE");
-    if (!property.isValid()) {
+    if (!property.isValid())
+    {
         Logger::Log("indi_client | setTelescopeGuideWE | Error: unable to find TELESCOPE_TIMED_GUIDE_WE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
@@ -1534,16 +1661,19 @@ uint32_t MyClient::setTelescopeGuideWE(INDI::BaseDevice* dp, int dir, int time_g
     {
         property->np[0].value = time_guide;
         property->np[1].value = 0;
+        mountState.isGuiding = true;
     }
     else
-    {    property->np[1].value = time_guide;
+    {
+        property->np[1].value = time_guide;
         property->np[0].value = 0;
+        mountState.isGuiding = false;
     }
     sendNewProperty(property);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp,QString action)
+uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp, QString action)
 {
     INDI::PropertySwitch property = dp->getProperty("ON_COORD_SET");
 
@@ -1553,38 +1683,56 @@ uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp,QStri
         return QHYCCD_ERROR;
     }
 
-    //qDebug()<<"ON_COORD_SET"<< property->count();
-    //for(int i=0;i<property->count();i++){
-    //    qDebug()<<"ON_COORD_SET" <<property[i].getName();
-    //}
+    qDebug()<<"ON_COORD_SET"<< property->count();
+    for(int i=0;i<property->count();i++){
+        qDebug()<<"ON_COORD_SET name : " <<property[i].getName();
+        qDebug()<<"ON_COORD_SET label :" <<property[i].getLabel();
+        qDebug()<<"ON_COORD_SET state :" <<property[i].getState();
+        qDebug()<<"ON_COORD_SET aux :" <<property[i].getAux();
 
-    if(action=="STOP")          {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);property[2].setState(ISS_OFF);}
-    else if(action=="TRACK")    {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);property[2].setState(ISS_OFF);}
-    else if(action=="SYNC")     {property[0].setState(ISS_OFF);property[1].setState(ISS_OFF);property[2].setState(ISS_ON);}
 
+    }
+
+    if (action == "TRACK")
+    {
+        property[0].setState(ISS_ON);
+        property[1].setState(ISS_OFF);
+        property[2].setState(ISS_OFF);
+    }
+    else if (action == "SLEW")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_ON);
+        property[2].setState(ISS_OFF);
+    }
+    else if (action == "SYNC")
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_OFF);
+        property[2].setState(ISS_ON);
+    }
 
     sendNewProperty(property);
-
 
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | setTelescopeActionAfterPositionSet | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | setTelescopeActionAfterPositionSet | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
 
-    Logger::Log("indi_client | setTelescopeActionAfterPositionSet" + action.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("indi_client | setTelescopeActionAfterPositionSet " + action.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-
-
-uint32_t MyClient::getTelescopeRADECJ2000(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)
+uint32_t MyClient::getTelescopeRADECJ2000(INDI::BaseDevice *dp, double &RA_Hours, double &DEC_Degree)
 {
     INDI::PropertyNumber property = dp->getProperty("EQUATORIAL_COORD");
 
@@ -1594,13 +1742,15 @@ uint32_t MyClient::getTelescopeRADECJ2000(INDI::BaseDevice *dp,double & RA_Hours
         return QHYCCD_ERROR;
     }
 
-    RA_Hours   = property->np[0].value;
+    RA_Hours = property->np[0].value;
     DEC_Degree = property->np[1].value;
     Logger::Log("indi_client | getTelescopeRADECJ2000" + std::to_string(RA_Hours) + " " + std::to_string(DEC_Degree), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeRADECJ2000(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree)
+/*
+// 未在mainwindow.cpp中使用的函数 - 已注释
+uint32_t MyClient::setTelescopeRADECJ2000(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree)
 {
     INDI::PropertyNumber property = dp->getProperty("EQUATORIAL_COORD");
 
@@ -1610,16 +1760,16 @@ uint32_t MyClient::setTelescopeRADECJ2000(INDI::BaseDevice *dp,double RA_Hours,d
         return QHYCCD_ERROR;
     }
 
-
-    property->np[0].value= RA_Hours;
-    property->np[1].value= DEC_Degree;
+    property->np[0].value = RA_Hours;
+    property->np[1].value = DEC_Degree;
 
     sendNewProperty(property);
-    //qDebug()<<"setTelescopeRADECJ2000"<< value;
+    // qDebug()<<"setTelescopeRADECJ2000"<< value;
     return QHYCCD_SUCCESS;
 }
+*/
 
-uint32_t MyClient::getTelescopeRADECJNOW(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)
+uint32_t MyClient::getTelescopeRADECJNOW(INDI::BaseDevice *dp, double &RA_Hours, double &DEC_Degree)
 {
     INDI::PropertyNumber property = dp->getProperty("EQUATORIAL_EOD_COORD");
 
@@ -1628,48 +1778,215 @@ uint32_t MyClient::getTelescopeRADECJNOW(INDI::BaseDevice *dp,double & RA_Hours,
         Logger::Log("indi_client | getTelescopeRADECJNOW | Error: unable to find  EQUATORIAL_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
-
-    RA_Hours   = property->np[0].value;
+    RA_Hours = property->np[0].value;
     DEC_Degree = property->np[1].value;
-    //qDebug() << "getTelescopeRADECJNOW" << RA_Hours << DEC_Degree ;
+    // qDebug() << "getTelescopeRADECJNOW" << RA_Hours << DEC_Degree ;
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree)
+// uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree)
+// {
+//     INDI::PropertyNumber property = dp->getProperty("EQUATORIAL_EOD_COORD");
+
+//     if (!property.isValid())
+//     {
+//         Logger::Log("indi_client | setTelescopeRADECJNOW | Error: unable to find  EQUATORIAL_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
+//         return QHYCCD_ERROR;
+//     }
+
+//     property->np[0].value=RA_Hours;
+//     property->np[1].value=DEC_Degree;
+
+//     sendNewProperty(property);
+
+//     // 更新goto状态
+//     if (!mountState.isHoming){
+//         mountState.isSlewing = true;
+//     }
+//     connect(&MountGotoTimer, &QTimer::timeout, [this,dp,RA_Hours,DEC_Degree](){
+//         double currentRA,currentDEC;
+//         getTelescopeRADECJNOW(dp,currentRA,currentDEC);
+//         if (abs(currentRA - RA_Hours) < 0.01 && abs(currentDEC - DEC_Degree) < 0.01){
+//             MountGotoTimer.stop();
+//             disconnect(&MountGotoTimer, &QTimer::timeout, this, nullptr);
+//             if (mountState.isHoming){
+//                 mountState.isHoming = false;
+//             }else{
+//                 mountState.isSlewing = false;
+//             }
+//         }
+//         oldRA_Hours = currentRA;
+//         oldDEC_Degree = currentDEC;
+//     });
+//     MountGotoTimer.start(1000);
+
+//     return QHYCCD_SUCCESS;
+// }
+
+uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree)
 {
     INDI::PropertyNumber property = dp->getProperty("EQUATORIAL_EOD_COORD");
-
     if (!property.isValid())
     {
-        Logger::Log("indi_client | setTelescopeRADECJNOW | Error: unable to find  EQUATORIAL_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | setTelescopeRADECJNOW | Error: unable to find EQUATORIAL_EOD_COORD property...",
+                    LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-
-    property->np[0].value=RA_Hours;
-    property->np[1].value=DEC_Degree;
-
+    property->np[0].value = RA_Hours;
+    property->np[1].value = DEC_Degree;
     sendNewProperty(property);
 
-    // QElapsedTimer t;
-    // t.start();
+    // 若不是回零过程，标记为正在转动
+    if (!mountState.isHoming)
+        mountState.isSlewing = true;
 
-    // while(t.elapsed()<3000){
-    //     qDebug()<<property->getStateAsString();
-    //     QThread::msleep(100);
-    //     if(property->getState()==IPS_IDLE) break;  // it will not wait the motor arrived
-    // }
+    // ---------------- 判定参数（可按需调整） ----------------
+    const double TOL_RA_HOUR = 0.01; // RA 容差（小时）≈ 36 arcmin
+    const double TOL_DEC_DEG = 0.01; // DEC 容差（度）≈ 36 arcsec
+    const int    HIT_NEED    = 3;    // 连续命中次数（抗抖动）
+    const int    MAX_TICKS   = 600;  // 超时（1 Hz 轮询，600 秒）
 
-    // if(t.elapsed()>3000){
-    //    qDebug() << "setTelescopeRADECJNOW | ERROR : timeout ";
-    //    return QHYCCD_ERROR;
-    // }
+    const double MIN_MOVE_RA_H = 0.0005; // 卡死判定的最小位移阈值（小时）≈ 7.5"
+    const double MIN_MOVE_DEC  = 0.002;  // 卡死判定的最小位移阈值（度）   ≈ 7.2"
 
-    //qDebug()<<"setTelescopeRADECJNOW"<< value;
+    // RA 最短差（考虑 24h 环回）
+    auto raDiffHour = [](double a, double b)
+    {
+        double d = fabs(a - b);
+        if (d > 12.0) d = 24.0 - d; // 取最短差
+        return d;
+    };
+
+    // 极点判定：在极点附近 DEC≈±90° 时，RA 有 12h 等价
+    auto nearPole = [](double decDeg, double thrDeg = 89.0) {
+        return std::fabs(decDeg) >= thrDeg;
+    };
+
+    // 保险：先断开已有连接，避免重复回调
+    QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
+
+    QObject::connect(&MountGotoTimer, &QTimer::timeout,
+        // 捕获需要的外部变量；RA 跟踪速率放到回调内部定义
+        [this, dp, RA_Hours, DEC_Degree,
+         raDiffHour, nearPole,
+         TOL_RA_HOUR, TOL_DEC_DEG,
+         HIT_NEED, MAX_TICKS,
+         MIN_MOVE_RA_H, MIN_MOVE_DEC]()
+    {
+        // 静态状态：跨调用保存
+        static int hitCount   = 0;
+        static int tickCount  = 0;  // 近似经过的秒数（1s/次）
+        static int stallTicks = 0;  // 连续"几乎没动"的次数
+
+        // === 关键：目标 RA 漂移补偿（放在计时器内部） ===
+        // 恒星时跟踪速率（小时/秒）
+        const double RA_TRACK_HPS = 24.0 / 86164.0905; // ≈ 0.000278 h/s
+        // 动态目标 RA = 初始目标 + 跟踪速率 * 已过时间（秒）
+        double targetRA_now = RA_Hours + RA_TRACK_HPS * tickCount;
+        // 归一化到 [0, 24)
+        targetRA_now = fmod(targetRA_now, 24.0);
+        if (targetRA_now < 0) targetRA_now += 24.0;
+
+        // 读取当前位置
+        double currentRA = 0, currentDEC = 0;
+        getTelescopeRADECJNOW(dp, currentRA, currentDEC);
+
+        // ----------- 命中判定（含极点 12h 等价）-----------
+        // 常规 RA 误差（小时）
+        double dRA = raDiffHour(currentRA, targetRA_now);
+
+        // 极点区域：对 RA 误差应用"12h 等价"修正
+        bool poleZone = nearPole(DEC_Degree) || nearPole(currentDEC);
+        double raErr  = poleZone ? std::min(dRA, std::fabs(12.0 - dRA)) : dRA;
+
+        bool raOk  = (raErr <= TOL_RA_HOUR);
+        bool decOk = (std::fabs(currentDEC - DEC_Degree) <= TOL_DEC_DEG);
+
+        if (raOk && decOk)
+        {
+            hitCount++;
+            if (hitCount >= HIT_NEED)
+            {
+                MountGotoTimer.stop();
+                QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
+                if (mountState.isHoming) mountState.isHoming = false;
+                else                     mountState.isSlewing = false;
+                hitCount = tickCount = stallTicks = 0; // 清零静态状态
+                return;
+            }
+        }
+        else
+        {
+            hitCount = 0; // 未命中则清零，避免抖动误判
+        }
+        // ---------------------------------------------------
+
+        // ----------------- 卡死检测 -----------------
+        double dRA_move  = raDiffHour(currentRA, oldRA_Hours);
+        double dDEC_move = std::fabs(currentDEC - oldDEC_Degree);
+
+        // 在极点附近，RA 抖动/跳变可能无意义，但你要求不忽略 RA；
+        // 这里仍使用 RA+DEC 的"几乎没动"组合阈值
+        if (dRA_move < MIN_MOVE_RA_H && dDEC_move < MIN_MOVE_DEC)
+            stallTicks++;
+        else
+            stallTicks = 0;
+
+        // 30 秒内"几乎没动"判定为卡住（定时器周期 1s）
+        if (stallTicks >= 30)
+        {
+            MountGotoTimer.stop();
+            QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
+            if (mountState.isHoming) mountState.isHoming = false;
+            else                     mountState.isSlewing = false;
+            hitCount = tickCount = stallTicks = 0;
+            Logger::Log("indi_client | setTelescopeRADECJNOW | Error: slew stalled",
+                        LogLevel::WARNING, DeviceType::CAMERA);
+            return;
+        }
+        // --------------------------------------------
+
+        // 超时判断
+        tickCount++;
+        if (tickCount >= MAX_TICKS)
+        {
+            MountGotoTimer.stop();
+            QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
+            if (mountState.isHoming) mountState.isHoming = false;
+            else                     mountState.isSlewing = false;
+            hitCount = tickCount = stallTicks = 0;
+            Logger::Log("indi_client | setTelescopeRADECJNOW | Error: slew timeout",
+                        LogLevel::WARNING, DeviceType::CAMERA);
+            return;
+        }
+
+        // （可选）调试日志
+        // Logger::Log(
+        //     "indi_client | setTelescopeRADECJNOW | curRA=" + std::to_string(currentRA) +
+        //     " curDEC=" + std::to_string(currentDEC) +
+        //     " tgtRA(now)=" + std::to_string(targetRA_now) +
+        //     " tgtDEC=" + std::to_string(DEC_Degree) +
+        //     " raErr=" + std::to_string(raErr) +
+        //     " hitCount=" + std::to_string(hitCount),
+        //     LogLevel::INFO, DeviceType::CAMERA);
+
+        // 更新历史位置（供卡死检测/外部使用）
+        oldRA_Hours   = currentRA;
+        oldDEC_Degree = currentDEC;
+    });
+
+    // 统一用固定周期
+    MountGotoTimer.start(1000);
+
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)
+
+
+/*
+// 未在mainwindow.cpp中使用的函数 - 已注释
+uint32_t MyClient::getTelescopeTargetRADECJNOW(INDI::BaseDevice *dp, double &RA_Hours, double &DEC_Degree)
 {
     INDI::PropertyNumber property = dp->getProperty("TARGET_EOD_COORD");
 
@@ -1679,13 +1996,16 @@ uint32_t MyClient::getTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double & RA_
         return QHYCCD_ERROR;
     }
 
-    RA_Hours   = property->np[0].value;
+    RA_Hours = property->np[0].value;
     DEC_Degree = property->np[1].value;
     Logger::Log("indi_client | getTelescopeTargetRADECJNOW" + std::to_string(RA_Hours) + " " + std::to_string(DEC_Degree), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
+*/
 
-uint32_t MyClient::setTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree)
+/*
+// 未在mainwindow.cpp中使用的函数 - 已注释
+uint32_t MyClient::setTelescopeTargetRADECJNOW(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree)
 {
     INDI::PropertyNumber property = dp->getProperty("TARGET_EOD_COORD");
 
@@ -1695,47 +2015,46 @@ uint32_t MyClient::setTelescopeTargetRADECJNOW(INDI::BaseDevice *dp,double RA_Ho
         return QHYCCD_ERROR;
     }
 
-
-    property->np[0].value=RA_Hours;
-    property->np[1].value=DEC_Degree;
+    property->np[0].value = RA_Hours;
+    property->np[1].value = DEC_Degree;
 
     sendNewProperty(property);
-    //qDebug()<<"setTelescopeTargetRADECJNOW"<< value;
+    // qDebug()<<"setTelescopeTargetRADECJNOW"<< value;
+    return QHYCCD_SUCCESS;
+}
+*/
+
+// compose slew command
+uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree, bool EnableTracking, INDI::PropertyNumber &property)
+{
+    QString action;
+    if (EnableTracking == true)
+        action = "TRACK";
+    else
+        action = "SLEW";
+
+    uint32_t result1 = setTelescopeActionAfterPositionSet(dp, action);
+    uint32_t result2 = setTelescopeRADECJNOW(dp, RA_Hours, DEC_Degree);
+    
+    if (result1 != QHYCCD_SUCCESS || result2 != QHYCCD_SUCCESS) {
+        return QHYCCD_ERROR;
+    }
+    
     return QHYCCD_SUCCESS;
 }
 
-
-
-//compose slew command
-uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,bool EnableTracking,INDI::PropertyNumber &property)
-{
-    QString action;
-    if(EnableTracking==true) action="TRACK";
-    else                     action="STOP";
-
-    setTelescopeActionAfterPositionSet(dp,action);
-    setTelescopeRADECJNOW(dp,RA_Hours,DEC_Degree);
-}
-
-
-uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property)
+uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree, INDI::PropertyNumber &property)
 {
     Logger::Log("indi_client | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::CAMERA);
     QString action = "SYNC";
 
+    setTelescopeActionAfterPositionSet(dp, action);
 
-    setTelescopeActionAfterPositionSet(dp,action);
-
-    setTelescopeRADECJNOW(dp,RA_Hours,DEC_Degree);
+    setTelescopeRADECJNOW(dp, RA_Hours, DEC_Degree);
     Logger::Log("indi_client | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::CAMERA);
 }
 
-
-
-
-
-
-uint32_t MyClient::getTelescopetAZALT(INDI::BaseDevice *dp,double & AZ_DEGREE,double & ALT_DEGREE)
+uint32_t MyClient::getTelescopetAZALT(INDI::BaseDevice *dp, double &AZ_DEGREE, double &ALT_DEGREE)
 {
     INDI::PropertyNumber property = dp->getProperty("HORIZONTAL_COORD");
 
@@ -1745,13 +2064,15 @@ uint32_t MyClient::getTelescopetAZALT(INDI::BaseDevice *dp,double & AZ_DEGREE,do
         return QHYCCD_ERROR;
     }
 
-    ALT_DEGREE   = property->np[0].value;
-    AZ_DEGREE    = property->np[1].value;
+    ALT_DEGREE = property->np[0].value;
+    AZ_DEGREE = property->np[1].value;
     Logger::Log("indi_client | getTelescopetAZALT" + std::to_string(AZ_DEGREE) + " " + std::to_string(ALT_DEGREE), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,double ALT_DEGREE)
+/*
+// 未在mainwindow.cpp中使用的函数 - 已注释
+uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp, double AZ_DEGREE, double ALT_DEGREE)
 {
     INDI::PropertyNumber property = dp->getProperty("HORIZONTAL_COORD");
 
@@ -1760,13 +2081,14 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
         Logger::Log("indi_client | setTelescopetAZALT | Error: unable to find  HORIZONTAL_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =AZ_DEGREE;
-    property->np[1].value =ALT_DEGREE;
+    property->np[0].value = AZ_DEGREE;
+    property->np[1].value = ALT_DEGREE;
 
     sendNewProperty(property);
-    //qDebug()<<"setTelescopetAZALT"<< AZ_DEGREE <<ALT_DEGREE;
+    // qDebug()<<"setTelescopetAZALT"<< AZ_DEGREE <<ALT_DEGREE;
     return QHYCCD_SUCCESS;
 }
+*/
 
 // uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
 // {
@@ -1778,7 +2100,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 //             Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
 //             return QHYCCD_ERROR;
 //         }
-        
+
 //         // 打印property的所有内容
 //         Logger::Log("=== OnStep Status Property 详细信息 ===", LogLevel::INFO, DeviceType::MOUNT);
 //         Logger::Log("Property名称: " + QString::fromStdString(property.getName()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
@@ -1787,7 +2109,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 //         Logger::Log("Property权限: " + QString::number(property.getPermission()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
 //         Logger::Log("Property状态: " + QString::fromStdString(property.getStateAsString()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
 //         Logger::Log("Property数量: " + QString::number(property.count()).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
-        
+
 //         // 打印所有文本值
 //         for (int i = 0; i < property.count(); i++) {
 //             QString value = QString::fromStdString(property[i].getText());
@@ -1795,7 +2117,7 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 //             Logger::Log(QString("  [%1] Label: %2, Value: %3").arg(i).arg(label).arg(value).toStdString(), LogLevel::INFO, DeviceType::MOUNT);
 //         }
 //         Logger::Log("=====================================", LogLevel::INFO, DeviceType::MOUNT);
-        
+
 //         statu = QString::fromStdString(property[1].getText());
 //         Logger::Log("当前赤道仪状态:" + statu.toStdString(), LogLevel::WARNING, DeviceType::MOUNT);
 //         // error = QString::fromStdString(property[7].getText());
@@ -1803,115 +2125,126 @@ uint32_t MyClient::setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,doub
 //         // if(error != "None") {
 //         //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
 //         // }
-        
+
 //         return QHYCCD_SUCCESS;
 //     }
 // }
 
-uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu, QString &error)
+uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu)
 {
-
-    INDI::PropertyText property = dp->getProperty("OnStep Status");
-    if (!property.isValid())
-    {
-        // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
-    }
-    else
-    {
-        statu = property[1].getText();
-    }
-
-    if (statu.isEmpty())
-    {
-        // Logger::Log("indi_client | getTelescopeStatus | Error: OnStep Status is empty", LogLevel::WARNING, DeviceType::CAMERA);
-    }
-    else
-    {
-        return QHYCCD_SUCCESS;
-    }
-
-    INDI::PropertyLight property1 = dp->getProperty("RASTATUS");
-    INDI::PropertyLight property2 = dp->getProperty("DESTATUS");
-
-    if (!property1.isValid() && !property2.isValid())
-    {
-        // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find RASTATUS OR DESTATUS property...", LogLevel::WARNING, DeviceType::CAMERA);
-    }
-    else
-    {
-        if (property1.count() == 5)
-        {
-            if (property1[0].getState() == 1)
-            {
-                // RAfirstTrack = true;
-                if (property1[1].getState() == 1)
-                {
-                    if(property1[2].getState() == 1)
-                    {
-                        statu = "Busy";
-                    }
-                    else if(property1[2].getState() == 2)
-                    {
-                        if(ismove)
-                        {
-                            statu = "Busy";
-                            // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Tracking", LogLevel::INFO, DeviceType::MOUNT);
-                        }
-                        else
-                        {
-                            statu = "Tracking";
-                            // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Idle", LogLevel::INFO, DeviceType::MOUNT);
-                        }
-                       
-                    }
-                }
-                else if (property1[1].getState() == 2)
-                {
-                    statu = "Idle";
-                }
-                else
-                {
-                    statu = "Busy";
-                    // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS state is not recognized", LogLevel::WARNING, DeviceType::CAMERA);
-                }
-            }
-        }
-      
-        if (property2.count() == 5 && statu != "Busy" )
-        {
-            if (property2[0].getState() == 1)
-            {
-                // DECfirstTrack = true;
-                if (property2[1].getState() == 1)
-                {
-                    statu = "Busy";
-                    // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Busy", LogLevel::INFO, DeviceType::MOUNT);    
-                }
-                else if (property2[1].getState() == 2)
-                {
-                    statu = "Idle";
-                }
-                else
-                {
-                    statu = "Busy";
-                    // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS state is not recognized", LogLevel::WARNING, DeviceType::CAMERA);
-                }
-            }
-
-           
-        }
-    }
-    if (statu.isEmpty())
-    {
-        // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS is empty", LogLevel::WARNING, DeviceType::CAMERA);
-        // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find mount state...", LogLevel::ERROR, DeviceType::CAMERA);
-        return QHYCCD_ERROR;
-    }
-    else
-    {
-        return QHYCCD_SUCCESS;
-    }
+   bool isMoving = mountState.isMovingNow();
+   if(isMoving)
+   {
+        statu = "Moving";
+   }
+   else
+   {
+        statu = "Idle";
+   }
+   return QHYCCD_SUCCESS;
 }
+
+// uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu, QString &error)
+// {
+
+//     INDI::PropertyText property = dp->getProperty("OnStep Status");
+//     if (!property.isValid())
+//     {
+//         // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
+//     }
+//     else
+//     {
+//         statu = property[1].getText();
+//     }
+
+//     if (statu.isEmpty())
+//     {
+//         // Logger::Log("indi_client | getTelescopeStatus | Error: OnStep Status is empty", LogLevel::WARNING, DeviceType::CAMERA);
+//     }
+//     else
+//     {
+//         return QHYCCD_SUCCESS;
+//     }
+
+//     INDI::PropertyLight property1 = dp->getProperty("RASTATUS");
+//     INDI::PropertyLight property2 = dp->getProperty("DESTATUS");
+
+//     if (!property1.isValid() && !property2.isValid())
+//     {
+//         // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find RASTATUS OR DESTATUS property...", LogLevel::WARNING, DeviceType::CAMERA);
+//     }
+//     else
+//     {
+//         if (property1.count() == 5)
+//         {
+//             if (property1[0].getState() == 1)
+//             {
+//                 // RAfirstTrack = true;
+//                 if (property1[1].getState() == 1)
+//                 {
+//                     if (property1[2].getState() == 1)
+//                     {
+//                         statu = "Busy";
+//                     }
+//                     else if (property1[2].getState() == 2)
+//                     {
+//                         if (ismove)
+//                         {
+//                             statu = "Busy";
+//                             // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Tracking", LogLevel::INFO, DeviceType::MOUNT);
+//                         }
+//                         else
+//                         {
+//                             statu = "Tracking";
+//                             // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Idle", LogLevel::INFO, DeviceType::MOUNT);
+//                         }
+//                     }
+//                 }
+//                 else if (property1[1].getState() == 2)
+//                 {
+//                     statu = "Idle";
+//                 }
+//                 else
+//                 {
+//                     statu = "Busy";
+//                     // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS state is not recognized", LogLevel::WARNING, DeviceType::CAMERA);
+//                 }
+//             }
+//         }
+
+//         if (property2.count() == 5 && statu != "Busy")
+//         {
+//             if (property2[0].getState() == 1)
+//             {
+//                 // DECfirstTrack = true;
+//                 if (property2[1].getState() == 1)
+//                 {
+//                     statu = "Busy";
+//                     // Logger::Log("indi_client | getTelescopeStatus | RASTATUS state is Busy", LogLevel::INFO, DeviceType::MOUNT);
+//                 }
+//                 else if (property2[1].getState() == 2)
+//                 {
+//                     statu = "Idle";
+//                 }
+//                 else
+//                 {
+//                     statu = "Busy";
+//                     // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS state is not recognized", LogLevel::WARNING, DeviceType::CAMERA);
+//                 }
+//             }
+//         }
+//     }
+//     if (statu.isEmpty())
+//     {
+//         // Logger::Log("indi_client | getTelescopeStatus | Error: RASTATUS is empty", LogLevel::WARNING, DeviceType::CAMERA);
+//         // Logger::Log("indi_client | getTelescopeStatus | Error: unable to find mount state...", LogLevel::ERROR, DeviceType::CAMERA);
+//         return QHYCCD_ERROR;
+//     }
+//     else
+//     {
+//         return QHYCCD_SUCCESS;
+//     }
+// }
 
 // uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error)
 // {
@@ -1923,7 +2256,7 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu, QStr
 //             Logger::Log("indi_client | getTelescopeStatus | Error: unable to find  OnStep Status property...", LogLevel::WARNING, DeviceType::CAMERA);
 //             return QHYCCD_ERROR;
 //         }
-        
+
 //         statu = QString::fromStdString(property[1].getText());
 //         Logger::Log("当前赤道仪状态:" + statu.toStdString(), LogLevel::WARNING, DeviceType::MOUNT);
 //         // error = QString::fromStdString(property[7].getText());
@@ -1931,7 +2264,7 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu, QStr
 //         // if(error != "None") {
 //         //     qDebug() << "\033[32m" << "OnStep error: " << error << "\033[0m";
 //         // }
-        
+
 //         return QHYCCD_SUCCESS;
 //     }
 // }
@@ -1939,7 +2272,7 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu, QStr
 /**************************************************************************************
 **                                  Focus API
 ***************************************************************************************/
-uint32_t MyClient::getFocuserSpeed(INDI::BaseDevice *dp,int &value ,int &min,int &max,int &step)
+uint32_t MyClient::getFocuserSpeed(INDI::BaseDevice *dp, int &value, int &min, int &max, int &step)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_SPEED");
 
@@ -1949,15 +2282,15 @@ uint32_t MyClient::getFocuserSpeed(INDI::BaseDevice *dp,int &value ,int &min,int
         return QHYCCD_ERROR;
     }
 
-    value   = property->np[0].value;
-    min     = property->np[0].min;
-    max     = property->np[0].max;
-    step    = property->np[0].step;
+    value = property->np[0].value;
+    min = property->np[0].min;
+    max = property->np[0].max;
+    step = property->np[0].step;
     Logger::Log("indi_client | getFocuserSpeed" + std::to_string(value) + " " + std::to_string(min) + " " + std::to_string(max), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setFocuserSpeed(INDI::BaseDevice *dp,int value)
+uint32_t MyClient::setFocuserSpeed(INDI::BaseDevice *dp, int value)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_SPEED");
 
@@ -1966,7 +2299,7 @@ uint32_t MyClient::setFocuserSpeed(INDI::BaseDevice *dp,int value)
         Logger::Log("indi_client | setFocuserSpeed | Error: unable to find  FOCUS_SPEED property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =value;
+    property->np[0].value = value;
 
     sendNewProperty(property);
 
@@ -1974,7 +2307,7 @@ uint32_t MyClient::setFocuserSpeed(INDI::BaseDevice *dp,int value)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getFocuserMoveDiretion(INDI::BaseDevice *dp,bool & isDirectionIn)
+uint32_t MyClient::getFocuserMoveDiretion(INDI::BaseDevice *dp, bool &isDirectionIn)
 {
     INDI::PropertySwitch property = dp->getProperty("FOCUS_MOTION");
 
@@ -1984,14 +2317,20 @@ uint32_t MyClient::getFocuserMoveDiretion(INDI::BaseDevice *dp,bool & isDirectio
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      {isDirectionIn=true;}
-    else if(property[1].getState()==ISS_ON) {isDirectionIn=false;}
+    if (property[0].getState() == ISS_ON)
+    {
+        isDirectionIn = true;
+    }
+    else if (property[1].getState() == ISS_ON)
+    {
+        isDirectionIn = false;
+    }
 
     Logger::Log("indi_client | getFocuserMoveDiretion | IN/OUT isDirectionIn:" + std::to_string(isDirectionIn), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setFocuserMoveDiretion(INDI::BaseDevice *dp,bool isDirectionIn)
+uint32_t MyClient::setFocuserMoveDiretion(INDI::BaseDevice *dp, bool isDirectionIn)
 {
     INDI::PropertySwitch property = dp->getProperty("FOCUS_MOTION");
 
@@ -2001,14 +2340,22 @@ uint32_t MyClient::setFocuserMoveDiretion(INDI::BaseDevice *dp,bool isDirectionI
         return QHYCCD_ERROR;
     }
 
-    if(isDirectionIn==true)   {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
-    if(isDirectionIn==false)  {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
+    if (isDirectionIn == true)
+    {
+        property[0].setState(ISS_ON);
+        property[1].setState(ISS_OFF);
+    }
+    if (isDirectionIn == false)
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_ON);
+    }
     sendNewProperty(property);
     Logger::Log("indi_client | setFocuserMoveDiretion | IN/OUT isDirectionIn:" + std::to_string(isDirectionIn), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getFocuserMaxLimit(INDI::BaseDevice *dp,int & maxlimit)
+uint32_t MyClient::getFocuserMaxLimit(INDI::BaseDevice *dp, int &maxlimit)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_MAX");
 
@@ -2018,13 +2365,13 @@ uint32_t MyClient::getFocuserMaxLimit(INDI::BaseDevice *dp,int & maxlimit)
         return QHYCCD_ERROR;
     }
 
-    maxlimit   = property->np[0].value;
+    maxlimit = property->np[0].value;
 
     Logger::Log("indi_client | getFocuserMaxLimit" + std::to_string(maxlimit), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setFocuserMaxLimit(INDI::BaseDevice *dp,int  maxlimit)
+uint32_t MyClient::setFocuserMaxLimit(INDI::BaseDevice *dp, int maxlimit)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_MAX");
 
@@ -2033,7 +2380,7 @@ uint32_t MyClient::setFocuserMaxLimit(INDI::BaseDevice *dp,int  maxlimit)
         Logger::Log("indi_client | setFocuserMaxLimit | Error: unable to find  FOCUS_MAX property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =maxlimit;
+    property->np[0].value = maxlimit;
 
     sendNewProperty(property);
 
@@ -2041,7 +2388,7 @@ uint32_t MyClient::setFocuserMaxLimit(INDI::BaseDevice *dp,int  maxlimit)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getFocuserReverse(INDI::BaseDevice *dp,bool & isReversed)
+uint32_t MyClient::getFocuserReverse(INDI::BaseDevice *dp, bool &isReversed)
 {
     INDI::PropertySwitch property = dp->getProperty("FOCUS_REVERSE_MOTION");
 
@@ -2051,14 +2398,20 @@ uint32_t MyClient::getFocuserReverse(INDI::BaseDevice *dp,bool & isReversed)
         return QHYCCD_ERROR;
     }
 
-    if(property[0].getState()==ISS_ON)      {isReversed=true;}
-    else if(property[1].getState()==ISS_ON) {isReversed=false;}
+    if (property[0].getState() == ISS_ON)
+    {
+        isReversed = true;
+    }
+    else if (property[1].getState() == ISS_ON)
+    {
+        isReversed = false;
+    }
 
     Logger::Log("indi_client | getFocuserReverse | IN/OUT isDirectionIn:" + std::to_string(isReversed), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setFocuserReverse(INDI::BaseDevice *dp,bool  isReversed)
+uint32_t MyClient::setFocuserReverse(INDI::BaseDevice *dp, bool isReversed)
 {
     INDI::PropertySwitch property = dp->getProperty("FOCUS_REVERSE_MOTION");
 
@@ -2068,8 +2421,16 @@ uint32_t MyClient::setFocuserReverse(INDI::BaseDevice *dp,bool  isReversed)
         return QHYCCD_ERROR;
     }
 
-    if(isReversed==true)   {property[0].setState(ISS_ON);property[1].setState(ISS_OFF);}
-    if(isReversed==false)  {property[0].setState(ISS_OFF);property[1].setState(ISS_ON);}
+    if (isReversed == true)
+    {
+        property[0].setState(ISS_ON);
+        property[1].setState(ISS_OFF);
+    }
+    if (isReversed == false)
+    {
+        property[0].setState(ISS_OFF);
+        property[1].setState(ISS_ON);
+    }
     sendNewProperty(property);
     Logger::Log("indi_client | setFocuserReverse | IN/OUT isDirectionIn:" + std::to_string(isReversed), LogLevel::INFO, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
@@ -2077,8 +2438,7 @@ uint32_t MyClient::setFocuserReverse(INDI::BaseDevice *dp,bool  isReversed)
 
 //---------------actions------------------
 
-
-uint32_t MyClient::moveFocuserSteps(INDI::BaseDevice *dp,int steps)
+uint32_t MyClient::moveFocuserSteps(INDI::BaseDevice *dp, int steps)
 {
     INDI::PropertyNumber property = dp->getProperty("REL_FOCUS_POSITION");
 
@@ -2087,9 +2447,12 @@ uint32_t MyClient::moveFocuserSteps(INDI::BaseDevice *dp,int steps)
         Logger::Log("indi_client | moveFocuserSteps | Error: unable to find  REL_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    if (steps > 0) {
+    if (steps > 0)
+    {
         property->np[0].value = steps;
-    } else {
+    }
+    else
+    {
         Logger::Log("indi_client | moveFocuserSteps | Error: steps is negative", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
@@ -2100,7 +2463,7 @@ uint32_t MyClient::moveFocuserSteps(INDI::BaseDevice *dp,int steps)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getFocuserRange(INDI::BaseDevice *dp,int & min, int & max, int & step, int & value)
+uint32_t MyClient::getFocuserRange(INDI::BaseDevice *dp, int &min, int &max, int &step, int &value)
 {
     INDI::PropertyNumber property = dp->getProperty("ABS_FOCUS_POSITION");
     if (!property.isValid())
@@ -2115,8 +2478,7 @@ uint32_t MyClient::getFocuserRange(INDI::BaseDevice *dp,int & min, int & max, in
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::moveFocuserToAbsolutePosition(INDI::BaseDevice *dp,int position)
+uint32_t MyClient::moveFocuserToAbsolutePosition(INDI::BaseDevice *dp, int position)
 {
     INDI::PropertyNumber property = dp->getProperty("ABS_FOCUS_POSITION");
 
@@ -2125,7 +2487,7 @@ uint32_t MyClient::moveFocuserToAbsolutePosition(INDI::BaseDevice *dp,int positi
         Logger::Log("indi_client | moveFocuserToAbsolutePosition | Error: unable to find  ABS_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =position;
+    property->np[0].value = position;
 
     sendNewProperty(property);
 
@@ -2133,7 +2495,7 @@ uint32_t MyClient::moveFocuserToAbsolutePosition(INDI::BaseDevice *dp,int positi
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getFocuserAbsolutePosition(INDI::BaseDevice *dp,int & position)
+uint32_t MyClient::getFocuserAbsolutePosition(INDI::BaseDevice *dp, int &position)
 {
     INDI::PropertyNumber property = dp->getProperty("ABS_FOCUS_POSITION");
 
@@ -2142,7 +2504,7 @@ uint32_t MyClient::getFocuserAbsolutePosition(INDI::BaseDevice *dp,int & positio
         Logger::Log("indi_client | getFocuserAbsolutePosition | Error: unable to find  ABS_FOCUS_POSITION property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    
+
     position = property->np[0].value;
 
     // sendNewProperty(property);
@@ -2151,9 +2513,9 @@ uint32_t MyClient::getFocuserAbsolutePosition(INDI::BaseDevice *dp,int & positio
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::moveFocuserWithTime(INDI::BaseDevice *dp,int msec)
+uint32_t MyClient::moveFocuserWithTime(INDI::BaseDevice *dp, int msec)
 {
-    //move the focuser at defined motion direction and defined move speed with msec time
+    // move the focuser at defined motion direction and defined move speed with msec time
     INDI::PropertyNumber property = dp->getProperty("FOCUS_TIMER");
 
     if (!property.isValid())
@@ -2161,7 +2523,7 @@ uint32_t MyClient::moveFocuserWithTime(INDI::BaseDevice *dp,int msec)
         Logger::Log("indi_client | moveFocuserWithTime | Error: unable to find  FOCUS_TIMER property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =msec;
+    property->np[0].value = msec;
 
     sendNewProperty(property);
 
@@ -2186,7 +2548,7 @@ uint32_t MyClient::abortFocuserMove(INDI::BaseDevice *dp)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::syncFocuserPosition(INDI::BaseDevice *dp,int position)
+uint32_t MyClient::syncFocuserPosition(INDI::BaseDevice *dp, int position)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_SYNC");
 
@@ -2195,7 +2557,7 @@ uint32_t MyClient::syncFocuserPosition(INDI::BaseDevice *dp,int position)
         Logger::Log("indi_client | syncFocuserPosition | Error: unable to find  FOCUS_SYNC property...", LogLevel::WARNING, DeviceType::FOCUSER);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =position;
+    property->np[0].value = position;
 
     sendNewProperty(property);
 
@@ -2203,7 +2565,7 @@ uint32_t MyClient::syncFocuserPosition(INDI::BaseDevice *dp,int position)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getFocuserOutTemperature(INDI::BaseDevice *dp,double &value)
+uint32_t MyClient::getFocuserOutTemperature(INDI::BaseDevice *dp, double &value)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_TEMPERATURE");
 
@@ -2223,7 +2585,7 @@ uint32_t MyClient::getFocuserOutTemperature(INDI::BaseDevice *dp,double &value)
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getFocuserChipTemperature(INDI::BaseDevice *dp,double &value)
+uint32_t MyClient::getFocuserChipTemperature(INDI::BaseDevice *dp, double &value)
 {
     INDI::PropertyNumber property = dp->getProperty("CHIP_TEMPERATURE");
 
@@ -2241,33 +2603,31 @@ uint32_t MyClient::getFocuserChipTemperature(INDI::BaseDevice *dp,double &value)
     return QHYCCD_SUCCESS;
 }
 
-
-
 /**************************************************************************************
 **                                  CFW API
 ***************************************************************************************/
-uint32_t MyClient::getCFWPosition(INDI::BaseDevice *dp,int & position,int &min,int &max)
+uint32_t MyClient::getCFWPosition(INDI::BaseDevice *dp, int &position, int &min, int &max)
 {
     INDI::PropertyNumber property = dp->getProperty("FILTER_SLOT");
 
     if (!property.isValid())
     {
         Logger::Log("indi_client | getCFWPosition | Error: unable to find  FILTER_SLOT property...", LogLevel::WARNING, DeviceType::CAMERA);
-        min=0;
-        max=0;
-        position=0;
+        min = 0;
+        max = 0;
+        position = 0;
         return QHYCCD_ERROR;
     }
 
-    position   = property->np[0].value;
-    min        = property->np[0].min;
-    max        = property->np[0].max;
+    position = property->np[0].value;
+    min = property->np[0].min;
+    max = property->np[0].max;
 
     Logger::Log("indi_client | getCFWPosition" + std::to_string(position) + " " + std::to_string(min) + " " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp,int position)
+uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp, int position)
 {
     INDI::PropertyNumber property = dp->getProperty("FILTER_SLOT");
 
@@ -2276,34 +2636,36 @@ uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp,int position)
         Logger::Log("indi_client | setCFWPosition | Error: unable to find  FILTER_SLOT property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
-    property->np[0].value =position;
-
+    property->np[0].value = position;
 
     sendNewProperty(property);
 
     QElapsedTimer t;
     t.start();
 
-    int timeout=10000;
-    while(t.elapsed()<timeout){
+    int timeout = 10000;
+    while (t.elapsed() < timeout)
+    {
         Logger::Log("indi_client | setCFWPosition | State:" + std::string(property->getStateAsString()), LogLevel::DEBUG, DeviceType::CAMERA);
         // qDebug() << "State:" << property->getState();
         QThread::msleep(300);
-        if(property->getState()==IPS_OK) {
+        if (property->getState() == IPS_OK)
+        {
             Logger::Log("indi_client | setCFWPosition | State:" + std::string(property->getStateAsString()), LogLevel::INFO, DeviceType::CAMERA);
-            break;  // it will not wait the motor arrived
+            break; // it will not wait the motor arrived
         }
     }
 
-    if(t.elapsed()>timeout){
-       Logger::Log("indi_client | setCFWPosition | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > timeout)
+    {
+        Logger::Log("indi_client | setCFWPosition | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
 
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getCFWSlotName(INDI::BaseDevice *dp,QString & name)
+uint32_t MyClient::getCFWSlotName(INDI::BaseDevice *dp, QString &name)
 {
     INDI::PropertyText property = dp->getProperty("FILTER_NAME");
 
@@ -2313,13 +2675,13 @@ uint32_t MyClient::getCFWSlotName(INDI::BaseDevice *dp,QString & name)
         return QHYCCD_ERROR;
     }
 
-    name   = property[0].getText();
+    name = property[0].getText();
 
     Logger::Log("indi_client | getCFWSlotName" + name.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setCFWSlotName(INDI::BaseDevice *dp,QString name)
+uint32_t MyClient::setCFWSlotName(INDI::BaseDevice *dp, QString name)
 {
     INDI::PropertyText property = dp->getProperty("FILTER_NAME");
 
@@ -2332,14 +2694,14 @@ uint32_t MyClient::setCFWSlotName(INDI::BaseDevice *dp,QString name)
     property[0].setText(name.toLatin1().data());
 
     sendNewProperty(property);
-    //qDebug()<<"setCFWSlotName"<< name ;
+    // qDebug()<<"setCFWSlotName"<< name ;
     return QHYCCD_SUCCESS;
 }
 
 /**************************************************************************************
 **                         Generic Properties
 ***************************************************************************************/
-uint32_t MyClient::getDevicePort(INDI::BaseDevice *dp,QString &Device_Port)        //add by CJQ 2023.3.3
+uint32_t MyClient::getDevicePort(INDI::BaseDevice *dp, QString &Device_Port) // add by CJQ 2023.3.3
 {
     INDI::PropertyText property = dp->getProperty("DEVICE_PORT");
 
@@ -2349,14 +2711,14 @@ uint32_t MyClient::getDevicePort(INDI::BaseDevice *dp,QString &Device_Port)     
         return QHYCCD_ERROR;
     }
 
-    Device_Port = property[0].getText(); 
+    Device_Port = property[0].getText();
 
     Logger::Log("indi_client | getDevicePort" + Device_Port.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
-    
+
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setDevicePort(INDI::BaseDevice *dp,QString Device_Port)        //add by CJQ 2023.3.28
+uint32_t MyClient::setDevicePort(INDI::BaseDevice *dp, QString Device_Port) // add by CJQ 2023.3.28
 {
     INDI::PropertyText property = dp->getProperty("DEVICE_PORT");
 
@@ -2371,11 +2733,11 @@ uint32_t MyClient::setDevicePort(INDI::BaseDevice *dp,QString Device_Port)      
     sendNewProperty(property);
 
     Logger::Log("indi_client | setDevicePort" + Device_Port.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
-    
+
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
+uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp, QDateTime datetime)
 {
     INDI::PropertyText property = dp->getProperty("TIME_UTC");
 
@@ -2386,7 +2748,7 @@ uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
     }
 
     QDateTime datetime_utc;
-    datetime_utc=datetime.toUTC();
+    datetime_utc = datetime.toUTC();
 
     QString time_utc = datetime_utc.toString(Qt::ISODate);
     QTimeZone timeZone = datetime.timeZone();
@@ -2394,12 +2756,9 @@ uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
     Logger::Log("indi_client | setTimeUTC | Time zone offset:" + std::to_string(timeZone.offsetFromUtc(datetime)), LogLevel::INFO, DeviceType::CAMERA);
     Logger::Log("indi_client | setTimeUTC | Time zone abbreviation:" + timeZone.abbreviation(datetime).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
-    int timezone_hours = (timeZone.offsetFromUtc(datetime_utc))/3600;
-
-
+    int timezone_hours = (timeZone.offsetFromUtc(datetime_utc)) / 3600;
 
     QString offset = QString::number(timezone_hours);
-
 
     Logger::Log("indi_client | setTimeUTC" + time_utc.toStdString() + " " + offset.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     property[0].setText(time_utc.toLatin1().data());
@@ -2407,29 +2766,28 @@ uint32_t MyClient::setTimeUTC(INDI::BaseDevice *dp,QDateTime datetime)
 
     Logger::Log("indi_client | setTimeUTC | property[0].setText(time_utc.toLatin1().data());" + std::string(time_utc.toLatin1().data()), LogLevel::INFO, DeviceType::CAMERA);
     Logger::Log("indi_client | setTimeUTC | property[1].setText(offset.toLatin1().data());" + std::string(offset.toLatin1().data()), LogLevel::INFO, DeviceType::CAMERA);
-    
-    sendNewProperty(property); 
+
+    sendNewProperty(property);
 
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | setTimeUTC | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | setTimeUTC | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
-
-
 
     Logger::Log("indi_client | setTimeUTC" + time_utc.toStdString() + " " + offset.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::getTimeUTC(INDI::BaseDevice *dp,QDateTime &datetime)
+uint32_t MyClient::getTimeUTC(INDI::BaseDevice *dp, QDateTime &datetime)
 {
     INDI::PropertyText property = dp->getProperty("TIME_UTC");
 
@@ -2439,33 +2797,33 @@ uint32_t MyClient::getTimeUTC(INDI::BaseDevice *dp,QDateTime &datetime)
         return QHYCCD_ERROR;
     }
 
-    QString time   = property[0].getText();  //ISO8601 string , UTC
+    QString time = property[0].getText(); // ISO8601 string , UTC
     QString offset = property[1].getText();
 
     Logger::Log("indi_client | getTimeUTC" + time.toStdString() + " " + offset.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     datetime = QDateTime::fromString(time, Qt::ISODate);
-    QTimeZone timeZone(offset.toInt()*3600);
+    QTimeZone timeZone(offset.toInt() * 3600);
     datetime.setTimeZone(timeZone);
 
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | getTimeUTC | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | getTimeUTC | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
-
 
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::setLocation(INDI::BaseDevice *dp,double latitude_degree, double longitude_degree, double elevation)
+uint32_t MyClient::setLocation(INDI::BaseDevice *dp, double latitude_degree, double longitude_degree, double elevation)
 {
     INDI::PropertyNumber property = dp->getProperty("GEOGRAPHIC_COORD");
 
@@ -2481,25 +2839,25 @@ uint32_t MyClient::setLocation(INDI::BaseDevice *dp,double latitude_degree, doub
 
     sendNewProperty(property);
 
-
-
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | setLocation | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | setLocation | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
 
     Logger::Log("indi_client | setLocation" + std::to_string(latitude_degree) + " " + std::to_string(longitude_degree) + " " + std::to_string(elevation), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getLocation(INDI::BaseDevice *dp,double &latitude_degree, double &longitude_degree, double &elevation)
+uint32_t MyClient::getLocation(INDI::BaseDevice *dp, double &latitude_degree, double &longitude_degree, double &elevation)
 {
     INDI::PropertyNumber property = dp->getProperty("GEOGRAPHIC_COORD");
 
@@ -2509,30 +2867,30 @@ uint32_t MyClient::getLocation(INDI::BaseDevice *dp,double &latitude_degree, dou
         return QHYCCD_ERROR;
     }
 
-    latitude_degree   = property->np[0].value;  //ISO8601 string
-    longitude_degree  = property->np[1].value;
-    elevation         = property->np[2].value;
+    latitude_degree = property->np[0].value; // ISO8601 string
+    longitude_degree = property->np[1].value;
+    elevation = property->np[2].value;
 
     Logger::Log("indi_client | getLocation" + std::to_string(latitude_degree) + " " + std::to_string(longitude_degree) + " " + std::to_string(elevation), LogLevel::INFO, DeviceType::CAMERA);
-
 
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | getLocation | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | getLocation | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
 
     return QHYCCD_SUCCESS;
 }
 
-
-uint32_t MyClient::setAtmosphere(INDI::BaseDevice *dp,double temperature, double pressure, double humidity)
+uint32_t MyClient::setAtmosphere(INDI::BaseDevice *dp, double temperature, double pressure, double humidity)
 {
     INDI::PropertyNumber property = dp->getProperty("ATMOSPHERE");
 
@@ -2551,20 +2909,22 @@ uint32_t MyClient::setAtmosphere(INDI::BaseDevice *dp,double temperature, double
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | setAtmosphere | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | setAtmosphere | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
 
     Logger::Log("indi_client | setAtmosphere" + std::to_string(temperature) + " " + std::to_string(pressure) + " " + std::to_string(humidity), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::getAtmosphere(INDI::BaseDevice *dp,double &temperature, double &pressure, double &humidity)
+uint32_t MyClient::getAtmosphere(INDI::BaseDevice *dp, double &temperature, double &pressure, double &humidity)
 {
     INDI::PropertyNumber property = dp->getProperty("ATMOSPHERE");
 
@@ -2574,28 +2934,25 @@ uint32_t MyClient::getAtmosphere(INDI::BaseDevice *dp,double &temperature, doubl
         return QHYCCD_ERROR;
     }
 
-    temperature   = property->np[0].value;  //ISO8601 string
-    pressure      = property->np[1].value;
-    humidity      = property->np[2].value;
+    temperature = property->np[0].value; // ISO8601 string
+    pressure = property->np[1].value;
+    humidity = property->np[2].value;
 
     Logger::Log("indi_client | getAtmosphere" + std::to_string(temperature) + " " + std::to_string(pressure) + " " + std::to_string(humidity), LogLevel::INFO, DeviceType::CAMERA);
-
 
     QElapsedTimer t;
     t.start();
 
-    while(property->getState()!=IPS_OK && t.elapsed()<3000){
+    while (property->getState() != IPS_OK && t.elapsed() < 3000)
+    {
         QThread::msleep(100);
     }
 
-    if(t.elapsed()>3000){
-       Logger::Log("indi_client | getAtmosphere | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-       return QHYCCD_ERROR;
+    if (t.elapsed() > 3000)
+    {
+        Logger::Log("indi_client | getAtmosphere | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
     }
 
     return QHYCCD_SUCCESS;
 }
-
-
-
-
