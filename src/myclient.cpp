@@ -1250,6 +1250,10 @@ uint32_t MyClient::getTelescopePark(INDI::BaseDevice *dp, bool &isParked)
 
 uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp, bool isParked)
 {
+    if (mountState.isMovingNow()) {
+        Logger::Log("indi_client | setTelescopePark | Telescope is moving, abort motion...", LogLevel::INFO, DeviceType::CAMERA);
+        setTelescopeAbortMotion(dp);
+    }
     // 固定驻车状态为固定到当前位置
     setTelescopeParkOption(dp, "CURRENT");
 
@@ -1290,6 +1294,10 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
     // 判断command是否为SLEWHOME或SYNCHOME
     if (command == "SLEWHOME")
     {
+        if (mountState.isMovingNow() || mountState.isParked){
+            Logger::Log("indi_client | setTelescopeHomeInit | Telescope is moving or parked, return...", LogLevel::INFO, DeviceType::CAMERA);
+            return QHYCCD_ERROR;
+        }
         mountState.isHoming = true;
         setTelescopeRADECJNOW(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree);
         Logger::Log("indi_client | setTelescopeHomeInit | SLEWHOME command sent", LogLevel::INFO, DeviceType::CAMERA);
@@ -1537,24 +1545,36 @@ uint32_t MyClient::setTelescopeMoveWE(INDI::BaseDevice *dp, QString command)
         Logger::Log("indi_client | setTelescopeMoveWE | Error: unable to find  TELESCOPE_MOTION_WE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
+    if (mountState.isMovingNow() &&  command != "STOP")
+    {
+        Logger::Log("indi_client | setTelescopeMoveWE | Telescope is moving, return...", LogLevel::INFO, DeviceType::CAMERA);
+        return QHYCCD_SUCCESS;
+    }
+    if (mountState.isParked) return QHYCCD_ERROR;
 
     if (command == "WEST")
     {
         property[0].setState(ISS_ON);
         property[1].setState(ISS_OFF);
-        mountState.isNS_Moving = true;
+        mountState.isWE_Moving = true;
     }
     else if (command == "EAST")
     {
         property[0].setState(ISS_OFF);
         property[1].setState(ISS_ON);
-        mountState.isNS_Moving = true;
+        mountState.isWE_Moving = true;
     }
     else if (command == "STOP")
     {
+        // 如果当前轴没有在移动，STOP 指令也不能通过
+        if (!mountState.isWE_Moving)
+        {
+            Logger::Log("indi_client | setTelescopeMoveWE | STOP command not allowed, axis not moving...", LogLevel::INFO, DeviceType::CAMERA);
+            return QHYCCD_SUCCESS;
+        }
         property[0].setState(ISS_OFF);
         property[1].setState(ISS_OFF);
-        mountState.isNS_Moving = false;
+        mountState.isWE_Moving = false;
     }
 
     sendNewProperty(property);
@@ -1571,6 +1591,7 @@ uint32_t MyClient::getTelescopeMoveNS(INDI::BaseDevice *dp, QString &statu)
         Logger::Log("indi_client | getTelescopeMoveNS | Error: unable to find  TELESCOPE_MOTION_NS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
+    
 
     if (property[0].getState() == ISS_ON)
     {
@@ -1600,6 +1621,12 @@ uint32_t MyClient::setTelescopeMoveNS(INDI::BaseDevice *dp, QString command)
         Logger::Log("indi_client | setTelescopeMoveNS | Error: unable to find  TELESCOPE_MOTION_NS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
+    if (mountState.isMovingNow() && command != "STOP")
+    {
+        Logger::Log("indi_client | setTelescopeMoveNS | Telescope is moving, return...", LogLevel::INFO, DeviceType::CAMERA);
+        return QHYCCD_SUCCESS;
+    }
+    if (mountState.isParked) return QHYCCD_ERROR;
 
     if (command == "NORTH")
     {
@@ -1615,6 +1642,12 @@ uint32_t MyClient::setTelescopeMoveNS(INDI::BaseDevice *dp, QString command)
     }
     else if (command == "STOP")
     {
+        // 如果当前轴没有在移动，STOP 指令也不能通过
+        if (!mountState.isNS_Moving)
+        {
+            Logger::Log("indi_client | setTelescopeMoveNS | STOP command not allowed, axis not moving...", LogLevel::INFO, DeviceType::CAMERA);
+            return QHYCCD_SUCCESS;
+        }
         property[0].setState(ISS_OFF);
         property[1].setState(ISS_OFF);
         mountState.isNS_Moving = false;
@@ -1633,6 +1666,7 @@ uint32_t MyClient::setTelescopeGuideNS(INDI::BaseDevice *dp, int dir, int time_g
         Logger::Log("indi_client | setTelescopeGuideNS | Error: unable to find TELESCOPE_TIMED_GUIDE_NS property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
+    if (mountState.isParked) return QHYCCD_ERROR;
     if (dir == 1)
     {
         property->np[1].value = time_guide;
@@ -1683,15 +1717,15 @@ uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp, QStr
         return QHYCCD_ERROR;
     }
 
-    qDebug()<<"ON_COORD_SET"<< property->count();
-    for(int i=0;i<property->count();i++){
-        qDebug()<<"ON_COORD_SET name : " <<property[i].getName();
-        qDebug()<<"ON_COORD_SET label :" <<property[i].getLabel();
-        qDebug()<<"ON_COORD_SET state :" <<property[i].getState();
-        qDebug()<<"ON_COORD_SET aux :" <<property[i].getAux();
+    // qDebug()<<"ON_COORD_SET"<< property->count();
+    // for(int i=0;i<property->count();i++){
+    //     qDebug()<<"ON_COORD_SET name : " <<property[i].getName();
+    //     qDebug()<<"ON_COORD_SET label :" <<property[i].getLabel();
+    //     qDebug()<<"ON_COORD_SET state :" <<property[i].getState();
+    //     qDebug()<<"ON_COORD_SET aux :" <<property[i].getAux();
 
 
-    }
+    // }
 
     if (action == "TRACK")
     {
@@ -1879,6 +1913,20 @@ uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp, double RA_Hours, 
         static int tickCount  = 0;  // 近似经过的秒数（1s/次）
         static int stallTicks = 0;  // 连续"几乎没动"的次数
 
+        // === 优先检查外部完成信号 ===
+        if (externalSlewComplete)
+        {
+            MountGotoTimer.stop();
+            QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
+            if (mountState.isHoming) mountState.isHoming = false;
+            else                     mountState.isSlewing = false;
+            hitCount = tickCount = stallTicks = 0; // 清零静态状态
+            externalSlewComplete = false; // 重置外部信号
+            Logger::Log("indi_client | setTelescopeRADECJNOW | Slew completed by external signal",
+                        LogLevel::INFO, DeviceType::CAMERA);
+            return;
+        }
+
         // === 关键：目标 RA 漂移补偿（放在计时器内部） ===
         // 恒星时跟踪速率（小时/秒）
         const double RA_TRACK_HPS = 24.0 / 86164.0905; // ≈ 0.000278 h/s
@@ -2032,6 +2080,9 @@ uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp, double RA_Hou
         action = "TRACK";
     else
         action = "SLEW";
+    
+    if (mountState.isMovingNow()) return QHYCCD_ERROR;
+    if (mountState.isParked) return QHYCCD_ERROR;
 
     uint32_t result1 = setTelescopeActionAfterPositionSet(dp, action);
     uint32_t result2 = setTelescopeRADECJNOW(dp, RA_Hours, DEC_Degree);

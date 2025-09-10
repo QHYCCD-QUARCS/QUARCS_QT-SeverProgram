@@ -133,7 +133,11 @@ class MyClient : public INDI::BaseClient
 
         uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu);
         
-        bool ismove = false;
+        
+        // 添加外部完成信号控制
+        void setExternalSlewCompleteSignal(bool complete) {
+            externalSlewComplete = complete;
+        }
 
 
         //--------------------CFW API
@@ -228,6 +232,9 @@ class MyClient : public INDI::BaseClient
         std::vector<INDI::BaseDevice *> deviceList;
         // 存储设备名字的列表
         std::vector<std::string> deviceNames;
+
+        // indi发出goto完成信号标志
+        bool externalSlewComplete = false;
         
 
     ImageReceivedCallback imageReceivedCallback;

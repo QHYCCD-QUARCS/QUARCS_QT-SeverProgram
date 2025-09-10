@@ -1697,6 +1697,11 @@ void MainWindow::initINDIClient()
                 // 移除日志类型
                 messageStr = QString::fromStdString(std::regex_replace(messageStr.toStdString(), typeRegex, ""));
             }
+            if (messageStr.contains("Telescope slew is complete"))
+            {
+                Logger::Log("赤道仪goto完成! ", LogLevel::INFO, DeviceType::MAIN);
+                indi_Client->setExternalSlewCompleteSignal(true);
+            }
 
             if (messageStr.contains("Telescope focal length is missing.") ||
                 messageStr.contains("Telescope aperture is missing."))
@@ -1942,6 +1947,7 @@ void MainWindow::onTimeout()
 
                 // 打印当前状态
                 // indi_Client->mountState.printCurrentState();
+                Logger::Log("当前位置 - RA: "+std::to_string(CurrentRA_Degree)+"度 , DEC: "+std::to_string(CurrentDEC_Degree)+" 度", LogLevel::INFO, DeviceType::MAIN);
             }
         }
     }
