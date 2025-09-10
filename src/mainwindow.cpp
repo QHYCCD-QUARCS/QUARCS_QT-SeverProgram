@@ -9936,7 +9936,7 @@ void MainWindow::startAutoFocus()
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
     autoFocus->setDefaultExposureTime(1000); // 1s曝光
-    autoFocus->setUseVirtualData(true);      // 使用虚拟数据
+    autoFocus->setUseVirtualData(false);      // 使用虚拟数据
 
     connect(autoFocus, &AutoFocus::roiInfoChanged, this, [this](const QRect &roi)
             {
