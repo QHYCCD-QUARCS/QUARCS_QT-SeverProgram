@@ -11,6 +11,7 @@ struct MountState{
     bool isTracking = false;
     bool isGuiding = false;
     bool isHoming = false;
+    bool isMoving = false;  // 移动中(可能是翻转，也可能是移动)
     bool isNS_Moving = false;
     bool isWE_Moving = false;
 
@@ -47,6 +48,6 @@ struct MountState{
     }
 
     bool isMovingNow() const {
-        return isSlewing || isHoming || isNS_Moving || isWE_Moving;
+        return isSlewing || isHoming || isNS_Moving || isWE_Moving || isMoving;
     }
 };

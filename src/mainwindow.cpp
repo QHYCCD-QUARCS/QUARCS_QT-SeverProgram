@@ -537,8 +537,56 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             GotoThenSolve = false;
         }
+        Tools::saveParameter("Mount", "GotoThenSolve", parts[1].trimmed());
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "AutoFlip")
+    {
+        if (parts[1].trimmed() == "true")
+        {
+            if (dpMount != NULL)
+            {
+                uint32_t success = indi_Client->setAutoFlip(dpMount, true);
+                if (success == QHYCCD_SUCCESS)
+                {
+                    isAutoFlip = false;
+                    Tools::saveParameter("Mount", "AutoFlip", parts[1].trimmed());
+                }
+            }
+            isAutoFlip = true;
+            Tools::saveParameter("Mount", "AutoFlip", parts[1].trimmed());
+        }else{
+            if (dpMount != NULL)
+            {
+                uint32_t success = indi_Client->setAutoFlip(dpMount, false);
+                if (success == QHYCCD_SUCCESS)
+                {
+                    isAutoFlip = false;
+                    Tools::saveParameter("Mount", "AutoFlip", parts[1].trimmed());
+                }
+            }
 
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "EastMinutesPastMeridian")
+    {
+        EastMinutesPastMeridian = parts[1].trimmed().toDouble();
+        Tools::saveParameter("Mount", "EastMinutesPastMeridian", parts[1].trimmed());
+        if (dpMount != NULL)
+        {
+            indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
+            // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "WestMinutesPastMeridian")
+    {
+        WestMinutesPastMeridian = parts[1].trimmed().toDouble();
+        Tools::saveParameter("Mount", "WestMinutesPastMeridian", parts[1].trimmed());
+        if (dpMount != NULL)
+        {
+            indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
+            // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
+        }
+    }
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageGainR")
     {
         ImageGainR = parts[1].trimmed().toDouble();
@@ -1400,6 +1448,12 @@ void MainWindow::onMessageReceived(const QString &message)
         getMainCameraParameters();
         Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
+    else if (parts[0].trimmed() == "getMountParameters")
+    {
+        Logger::Log("getMountParameters ...", LogLevel::DEBUG, DeviceType::MAIN);
+        getMountParameters();
+        Logger::Log("getMountParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }
     else if (parts[0].trimmed() == "SynchronizeTime")
     {
         QRegExp rx("SynchronizeTime:(\\d{2}:\\d{2}:\\d{2}):(\\d{4}-\\d{2}-\\d{2})");
@@ -1697,11 +1751,6 @@ void MainWindow::initINDIClient()
                 // 移除日志类型
                 messageStr = QString::fromStdString(std::regex_replace(messageStr.toStdString(), typeRegex, ""));
             }
-            if (messageStr.contains("Telescope slew is complete"))
-            {
-                Logger::Log("赤道仪goto完成! ", LogLevel::INFO, DeviceType::MAIN);
-                indi_Client->setExternalSlewCompleteSignal(true);
-            }
 
             if (messageStr.contains("Telescope focal length is missing.") ||
                 messageStr.contains("Telescope aperture is missing."))
@@ -1910,6 +1959,7 @@ void MainWindow::onTimeout()
 
     // 显示赤道仪指向
     mountDisplayCounter++;
+    static int mountSlowCounter = 0;   // 新增计数器
     if (dpMount != NULL)
     {
         if (dpMount->isConnected())
@@ -1921,33 +1971,67 @@ void MainWindow::onTimeout()
                 double CurrentRA_Degree = Tools::HourToDegree(RA_HOURS);
                 double CurrentDEC_Degree = DEC_DEGREE;
 
-                emit wsThread->sendMessageToClient("TelescopeRADEC:" + QString::number(CurrentRA_Degree) + ":" + QString::number(CurrentDEC_Degree));
+                emit wsThread->sendMessageToClient("TelescopeRADEC:" 
+                    + QString::number(CurrentRA_Degree) 
+                    + ":" + QString::number(CurrentDEC_Degree));
 
-                // bool isSlewing = (TelescopeControl_Status() != "Slewing");
+                // -------------------------------
+                // 慢速（约3秒一次）的查询部分
+                // -------------------------------
+                mountSlowCounter++;
+                if (mountSlowCounter >= 3)   // 100ms * 30 ≈ 3s
+                {
+                    bool isParked = false;
+                    indi_Client->getTelescopePark(dpMount, isParked);
+                    emit wsThread->sendMessageToClient(
+                        isParked ? "TelescopePark:ON" : "TelescopePark:OFF");
 
-                indi_Client->getTelescopePierSide(dpMount, TelescopePierSide);
-                // qDebug() << "TelescopePierSide: " << TelescopePierSide;
-                emit wsThread->sendMessageToClient("TelescopePierSide:" + TelescopePierSide);
+                    indi_Client->getTelescopePierSide(dpMount, TelescopePierSide);
+                    emit wsThread->sendMessageToClient("TelescopePierSide:" + TelescopePierSide);
+
+                    indi_Client->getTelescopeMoving(dpMount);
+
+                    mountSlowCounter = 0;
+                }
+                // -------------------------------
+
+                bool isTrack = false;
+                indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+                emit wsThread->sendMessageToClient(isTrack ? "TelescopeTrack:ON" 
+                                                           : "TelescopeTrack:OFF");
 
                 if (!FirstRecordTelescopePierSide)
                 {
                     if (FirstTelescopePierSide != TelescopePierSide)
-                    {
                         isMeridianFlipped = true;
-                    }
                     else
-                    {
                         isMeridianFlipped = false;
-                    }
                 }
 
                 emit wsThread->sendMessageToClient("TelescopeStatus:" + TelescopeControl_Status());
 
                 mountDisplayCounter = 0;
 
-                // 打印当前状态
-                // indi_Client->mountState.printCurrentState();
-                Logger::Log("当前位置 - RA: "+std::to_string(CurrentRA_Degree)+"度 , DEC: "+std::to_string(CurrentDEC_Degree)+" 度", LogLevel::INFO, DeviceType::MAIN);
+                const MeridianStatus ms = checkMeridianStatus();
+                switch (ms.event) {
+                  case FlipEvent::Started: emit wsThread->sendMessageToClient("MeridianFlip:STARTED"); break;
+                  case FlipEvent::Done:    emit wsThread->sendMessageToClient("MeridianFlip:DONE");    break;
+                  case FlipEvent::Failed:  emit wsThread->sendMessageToClient("MeridianFlip:FAILED");  break;
+                  default: break;
+                }
+
+                if (!std::isnan(ms.etaMinutes)) {
+                    const int totalSeconds = static_cast<int>(std::llround(ms.etaMinutes * 60.0));
+                    const int hours = totalSeconds / 3600;
+                    const int mins  = (totalSeconds % 3600) / 60;
+                    const int secs  = totalSeconds % 60;
+
+                    const QString hms = QString("%1:%2:%3")
+                                            .arg(hours, 2, 10, QLatin1Char('0'))
+                                            .arg(mins,  2, 10, QLatin1Char('0'))
+                                            .arg(secs,  2, 10, QLatin1Char('0'));
+                    emit wsThread->sendMessageToClient("MeridianETA_hms:" + hms);
+                }
             }
         }
     }
@@ -1970,6 +2054,123 @@ void MainWindow::onTimeout()
         }
     }
 }
+
+MeridianStatus MainWindow::checkMeridianStatus()
+{
+    MeridianStatus out;
+
+    if (!dpMount || !dpMount->isConnected())
+        return out;
+
+    // -------- 翻转检测（极简状态机，静态局部持久化）--------
+    constexpr int kDebounceMs = 800;
+    constexpr int kTimeoutMs  = 180000;
+
+    static bool initialized = false;
+    static QString lastPier = "UNKNOWN";
+    static bool flipping = false;
+    static QElapsedTimer pierStableTimer;
+    static QElapsedTimer flipTimer;
+
+    // 读 PierSide（你已有的接口）
+    QString pier = "UNKNOWN";
+    indi_Client->getTelescopePierSide(dpMount, pier); // "EAST"/"WEST"/"UNKNOWN"
+
+    // 读 Slew/Track（若你没有 mountState，就把两行改成通过设备属性判断）
+    const bool isSlewing  = indi_Client->mountState.isSlewing;
+    const bool isTracking = indi_Client->mountState.isTracking;
+
+    if (!initialized) {
+        lastPier = pier;
+        pierStableTimer.start();
+        initialized = true;
+    } else {
+        if (pier != lastPier && pier != "UNKNOWN") {
+            lastPier = pier;
+            pierStableTimer.restart();
+
+            if (!flipping) {
+                flipping = true;
+                flipTimer.restart();
+                out.event = FlipEvent::Started;
+            }
+        }
+
+        if (flipping) {
+            // 完成：停止 Slew 且 PierSide 已稳定一段时间
+            if (!isSlewing && (isTracking || true)) {
+                if (pierStableTimer.isValid() && pierStableTimer.elapsed() >= kDebounceMs) {
+                    flipping = false;
+                    out.event = FlipEvent::Done;
+                }
+            }
+            // 超时
+            if (flipTimer.isValid() && flipTimer.elapsed() > kTimeoutMs) {
+                flipping = false;
+                out.event = FlipEvent::Failed;
+            }
+        }
+    }
+
+    // -------- 过中天 ETA（分钟）--------
+    // 1) 当前赤经（小时）
+    double raH = 0.0, decDeg = 0.0;
+    indi_Client->getTelescopeRADECJNOW(dpMount, raH, decDeg);
+
+    // 2) LST 小时（优先 TIME_LST；否则 UTC+经度估算）
+    auto norm24 = [](double h){ h=fmod(h,24.0); if(h<0) h+=24.0; return h; };
+    double lstH = std::numeric_limits<double>::quiet_NaN();
+
+    // 2.1 用 INDI::PropertyNumber 读取 TIME_LST（避免 p->np 报错）
+    if (true) {
+        INDI::PropertyNumber lst = dpMount->getNumber("TIME_LST");
+        if (lst.isValid() && lst.size() > 0) {
+            lstH = lst[0].getValue();   // 部分驱动名字也可能是 "LST"
+        }
+    }
+
+    // 2.2 若没有 TIME_LST，则从 GEOGRAPHIC_COORD 取经度，用 UTC 算 LST
+    if (std::isnan(lstH)) {
+        double lonDeg = std::numeric_limits<double>::quiet_NaN();
+        INDI::PropertyNumber geo = dpMount->getNumber("GEOGRAPHIC_COORD");
+        if (geo.isValid()) {
+            // 通常顺序 LAT(0), LONG(1), ELEV(2)；若你的驱动是命名项，也可用 geo["LONG"].getValue()
+            if (geo.size() >= 2)
+                lonDeg = geo[1].getValue();
+        }
+        if (!std::isnan(lonDeg)) {
+            const QDateTime utc = QDateTime::currentDateTimeUtc();
+            const int Y=utc.date().year(), M=utc.date().month(), D=utc.date().day();
+            const int H=utc.time().hour(), Min=utc.time().minute(), S=utc.time().second(), ms=utc.time().msec();
+
+            auto jdUTC = [&](int Y,int M,int D,int H,int Min,int S,int ms)->double{
+                int a=(14-M)/12, y=Y+4800-a, m=M+12*a-3;
+                long JDN=D+(153*m+2)/5+365*y+y/4-y/100+y/400-32045;
+                double dayfrac=(H-12)/24.0 + Min/1440.0 + (S + ms/1000.0)/86400.0;
+                return JDN + dayfrac;
+            };
+            const double JD = jdUTC(Y,M,D,H,Min,S,ms);
+            const double Dd = JD - 2451545.0;
+            double GMST = 18.697374558 + 24.06570982441908 * Dd; // 小时
+            lstH = norm24(GMST + lonDeg/15.0);
+        }
+    }
+
+    if (!std::isnan(lstH)) {
+        auto wrap12 = [](double h){ while(h<=-12) h+=24; while(h>12) h-=24; return h; };
+        const double HA = wrap12(lstH - raH); // 小时；<0 东侧，>0 西侧
+        out.etaMinutes = (-HA) * 60.0;        // >0 距中天；<0 已过中天
+        constexpr double kSiderealDayMin = 86164.0905 / 60.0; // ≈ 1436.068175 分
+        if (!std::isnan(out.etaMinutes)) {
+            // 归一化到 [0, 恒星日) 区间
+            out.etaMinutes = std::fmod(out.etaMinutes, kSiderealDayMin);
+            if (out.etaMinutes < 0) out.etaMinutes += kSiderealDayMin;
+        }
+    }
+
+    return out;
+}
+
 
 // void MainWindow::saveFitsAsJPG(QString filename)
 // {
@@ -2174,19 +2375,6 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     }
     originalImage16.release();
 
-
-
-    // cv::Mat srcImage = image16.clone();
-    // cv::Mat dstImage;
-    // Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
-    // cv::medianBlur(srcImage, dstImage, 3);
-    // srcImage.release();
-    // Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
-
-    // cv::imwrite(SolveImageFileName.toStdString(), dstImage);
-    // dstImage.release();
-    // Logger::Log("Blurred image saved to " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
-
     Tools::SaveMatToFITS(image16);
     Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
 
@@ -2303,6 +2491,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     {
         autoFocus->setCaptureComplete(fitsFileName);
     }
+
 }
 
 cv::Mat MainWindow::colorImage(cv::Mat img16)
@@ -3810,8 +3999,17 @@ void MainWindow::AfterDeviceConnect()
         Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         getClientSettings();
+        getMountParameters();
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
-        indi_Client->setAutoFlip(dpMount, true);
+        uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
+        if (success == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
+            indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
+            emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
+            emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
+            // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
+        }
         indi_Client->setAUXENCODERS(dpMount);
 
         QDateTime datetime = QDateTime::currentDateTime();
@@ -3866,6 +4064,7 @@ void MainWindow::AfterDeviceConnect()
         Logger::Log("Telescope Pier Side: " + side.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
         Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
     }
 
     if (dpFocuser != NULL)
@@ -4080,19 +4279,30 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->GetAllPropertyName(dpMount);
 
         getClientSettings();
+        getMountParameters();
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
-        indi_Client->setAutoFlip(dpMount, true);
+        Logger::Log("Mount location set to Latitude: " + QString::number(observatorylatitude).toStdString() + ", Longitude: " + QString::number(observatorylongitude).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
+        if (success == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
+            indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
+            emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
+            emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
+            // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
+        }
+
         indi_Client->setAUXENCODERS(dpMount);
 
         indi_Client->getDevicePort(dpMount, DevicePort);
         Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-        double glLongitude_radian, glLatitude_radian;
-        glLongitude_radian = Tools::getDecAngle("116° 14' 53.91");
-        glLatitude_radian = Tools::getDecAngle("40° 09' 14.93");
-        Logger::Log("Mount location set to Longitude: " + QString::number(Tools::RadToDegree(glLongitude_radian)).toStdString() + ", Latitude: " + QString::number(Tools::RadToDegree(glLatitude_radian)).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        // double glLongitude_radian, glLatitude_radian;
+        // glLongitude_radian = Tools::getDecAngle(localLat);
+        // glLatitude_radian = Tools::getDecAngle(localLon);
+        // Logger::Log("Mount location set to Longitude: " + QString::number(Tools::RadToDegree(glLongitude_radian)).toStdString() + ", Latitude: " + QString::number(Tools::RadToDegree(glLatitude_radian)).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-        indi_Client->setLocation(dpMount, Tools::RadToDegree(glLatitude_radian), Tools::RadToDegree(glLongitude_radian), 10);
+        // indi_Client->setLocation(dpMount, Tools::RadToDegree(glLatitude_radian), Tools::RadToDegree(glLongitude_radian), 10);
         QDateTime datetime = QDateTime::currentDateTime();
         indi_Client->setTimeUTC(dpMount, datetime);
         Logger::Log("UTC Time set for Mount: " + datetime.toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -4146,6 +4356,10 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         Logger::Log("Telescope Pier Side: " + side.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
         Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+
+        // 设置home位置
+        indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
+        
     }
 
     if (dpFocuser == dp)
@@ -7209,6 +7423,23 @@ void MainWindow::getClientSettings()
                 observatorylatitude = coordinates[0].toDouble();
             }
         }
+        if (pair.first == "AutoFlip")
+        {
+            isAutoFlip = pair.second == "true";
+        }
+        if (pair.first == "EastMinutesPastMeridian")
+        {
+            EastMinutesPastMeridian = std::stod(pair.second);
+        }
+        if (pair.first == "WestMinutesPastMeridian")
+        {
+            WestMinutesPastMeridian = std::stod(pair.second);
+        }
+        if (pair.first == "GotoThenSolve")
+        {
+            GotoThenSolve = pair.second == "true";
+        }
+
     }
     Logger::Log("getClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
 }
@@ -9806,8 +10037,8 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         autoFocus->setCaptureComplete(filename);
     }
     image16.release();
-    QTimer::singleShot(200, this, [this]()
-                       { focusLoopShooting(isFocusLoopShooting); });
+    focusLoopShooting(isFocusLoopShooting); 
+
 }
 
 // void MainWindow::AutoFocus(QPointF selectStarPosition){
@@ -10779,6 +11010,51 @@ void MainWindow::getMainCameraParameters()
     emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
 }
 
+void MainWindow::getMountParameters()
+{
+    Logger::Log("getMountUiInfo ...", LogLevel::DEBUG, DeviceType::MAIN);
+    QMap<QString, QString> parameters = Tools::readParameters("Mount");
+    for (auto it = parameters.begin(); it != parameters.end(); ++it)
+    {
+        Logger::Log("getMountParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        if (it.key() == "AutoFlip"){
+            if (dpMount == nullptr)continue;
+            
+            INDI::PropertySwitch autoFlip = dpMount->getProperty("AutoFlip");
+            if (autoFlip.isValid()){
+                emit wsThread->sendMessageToClient("AutoFlip:" + it.value());
+                isAutoFlip = it.value() == "true";
+            }
+            continue;
+        }
+        if (it.key() == "EastMinutesPastMeridian"){
+            if (dpMount == nullptr)continue;
+            INDI::PropertyNumber mpm = dpMount->getProperty("Minutes Past Meridian");
+            if (mpm.isValid()){
+                emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + it.value());
+                EastMinutesPastMeridian = it.value().toDouble();
+            }
+            continue;
+        }
+        if (it.key() == "WestMinutesPastMeridian"){
+            if (dpMount == nullptr)continue;
+            INDI::PropertyNumber mpm = dpMount->getProperty("Minutes Past Meridian");
+            if (mpm.isValid()){
+                emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + it.value());
+                WestMinutesPastMeridian = it.value().toDouble();
+            }
+            continue;
+        }
+        if (it.key() == "GotoThenSolve"){
+            emit wsThread->sendMessageToClient("GotoThenSolve:" + it.value());
+            GotoThenSolve = it.value() == "true";
+            continue;
+        }
+        emit wsThread->sendMessageToClient(it.key() + ":" + it.value());
+    }
+    Logger::Log("getMountParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
+}
+
 void MainWindow::synchronizeTime(QString time, QString date)
 {
     Logger::Log("synchronizeTime start ...", LogLevel::DEBUG, DeviceType::MAIN);
@@ -10810,8 +11086,7 @@ void MainWindow::setMountLocation(QString lat, QString lon)
     if (dpMount != nullptr)
     {
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
-        indi_Client->setAutoFlip(dpMount, true);
-        indi_Client->setAUXENCODERS(dpMount);
+ 
     }
 }
 
@@ -10929,7 +11204,6 @@ bool MainWindow::initPolarAlignment()
     PolarAlignmentConfig config;
     config.defaultExposureTime = 1000;         // 默认曝光时间1秒
     config.recoveryExposureTime = 5000;        // 恢复曝光时间5秒
-    config.shortExposureTime = 500;            // 短曝光时间0.5秒
     config.raRotationAngle = 15.0;              // RA轴每次移动1度
     config.decRotationAngle = 15.0;             // DEC轴移动1度
     config.maxRetryAttempts = 3;               // 最大重试3次

@@ -29,19 +29,22 @@ enum class PolarAlignmentState {
     CHECKING_POLAR_POINT,   // 检查极点位置 - 检查望远镜是否指向极点
     MOVING_DEC_AWAY,        // 移动DEC轴脱离极点 - 将DEC轴从极点位置移开
     WAITING_DEC_MOVE_END,   // 等待DEC轴移动结束 - 等待DEC轴移动结束
-    FIRST_CAPTURE,          // 第一次拍摄 - 在第一个位置拍摄图像
-    FIRST_ANALYSIS,         // 第一次分析 - 分析第一次拍摄的图像
-    FIRST_RECOVERY,         // 第一次恢复 - 第一次分析失败时的恢复处理
-    MOVING_RA_FIRST,        // 第一次RA轴移动 - 移动RA轴到第二个位置
-    WAITING_RA_MOVE_END,    // 等待RA轴移动结束 - 等待RA轴移动结束
-    SECOND_CAPTURE,         // 第二次拍摄 - 在第二个位置拍摄图像
-    SECOND_ANALYSIS,        // 第二次分析 - 分析第二次拍摄的图像
-    SECOND_RECOVERY,        // 第二次恢复 - 第二次分析失败时的恢复处理
-    MOVING_RA_SECOND,       // 第二次RA轴移动 - 移动RA轴到第三个位置
-    WAITING_RA_MOVE_END_2,  // 等待RA轴移动结束 - 等待RA轴移动结束
-    THIRD_CAPTURE,          // 第三次拍摄 - 在第三个位置拍摄图像
-    THIRD_ANALYSIS,         // 第三次分析 - 分析第三次拍摄的图像
-    THIRD_RECOVERY,         // 第三次恢复 - 第三次分析失败时的恢复处理
+    FIRST_CAPTURE,                    // 第一次拍摄 - 在第一个位置拍摄图像（短曝光）
+    FIRST_CAPTURE_LONG_EXPOSURE,      // 第一次拍摄长曝光重试 - 第一次拍摄失败后的长曝光重试
+    FIRST_CAPTURE_DEC_AVOIDANCE,      // 第一次拍摄DEC轴避障 - 第一次拍摄失败后的DEC轴避障
+    WAITING_FIRST_DEC_AVOIDANCE,      // 等待第一次DEC轴避障完成
+    MOVING_RA_FIRST,                  // 第一次RA轴移动 - 移动RA轴到第二个位置
+    WAITING_RA_MOVE_END,              // 等待RA轴移动结束 - 等待RA轴移动结束
+    SECOND_CAPTURE,                   // 第二次拍摄 - 在第二个位置拍摄图像（短曝光）
+    SECOND_CAPTURE_LONG_EXPOSURE,     // 第二次拍摄长曝光重试 - 第二次拍摄失败后的长曝光重试
+    SECOND_CAPTURE_RA_AVOIDANCE,      // 第二次拍摄RA轴避障 - 第二次拍摄失败后的RA轴避障
+    WAITING_SECOND_RA_AVOIDANCE,      // 等待第二次RA轴避障完成
+    MOVING_RA_SECOND,                 // 第二次RA轴移动 - 移动RA轴到第三个位置
+    WAITING_RA_MOVE_END_2,            // 等待RA轴移动结束 - 等待RA轴移动结束
+    THIRD_CAPTURE,                    // 第三次拍摄 - 在第三个位置拍摄图像（短曝光）
+    THIRD_CAPTURE_LONG_EXPOSURE,      // 第三次拍摄长曝光重试 - 第三次拍摄失败后的长曝光重试
+    THIRD_CAPTURE_RA_AVOIDANCE,       // 第三次拍摄RA轴避障 - 第三次拍摄失败后的RA轴避障
+    WAITING_THIRD_RA_AVOIDANCE,       // 等待第三次RA轴避障完成
     CALCULATING_DEVIATION,  // 计算偏差 - 根据三次测量计算极轴偏差
     GUIDING_ADJUSTMENT,     // 指导调整 - 指导用户调整极轴
     FINAL_VERIFICATION,     // 最终验证 - 验证调整效果
@@ -75,6 +78,11 @@ struct AdjustmentGuideData {
     double offsetDec;       // DEC偏移
     QString adjustmentRa;   // 调整指导RA
     QString adjustmentDec;  // 调整指导DEC
+    double fakePolarRA;     // 假极轴RA
+    double fakePolarDEC;    // 假极轴DEC
+    double realPolarRA;     // 真极轴RA
+    double realPolarDEC;    // 真极轴DEC
+    
     QDateTime timestamp;    // 时间戳
     
     // 地平坐标系数据
@@ -89,7 +97,8 @@ struct AdjustmentGuideData {
     
     AdjustmentGuideData() : ra(0.0), dec(0.0), maxRa(0.0), minRa(0.0), 
                            maxDec(0.0), minDec(0.0), targetRa(0.0), targetDec(0.0),
-                           offsetRa(0.0), offsetDec(0.0), azimuth(0.0), altitude(0.0),
+                           offsetRa(0.0), offsetDec(0.0), fakePolarRA(0.0), fakePolarDEC(0.0),
+                           realPolarRA(0.0), realPolarDEC(0.0), azimuth(0.0), altitude(0.0),
                            targetAzimuth(0.0), targetAltitude(0.0), azimuthDeviation(0.0),
                            altitudeDeviation(0.0) {}
 };
@@ -98,7 +107,6 @@ struct AdjustmentGuideData {
 struct PolarAlignmentConfig {
     int defaultExposureTime = 1000;    // 默认曝光时间（毫秒）- 正常拍摄的曝光时间
     int recoveryExposureTime = 5000;   // 恢复曝光时间（毫秒）- 分析失败时使用的较长曝光时间
-    int shortExposureTime = 1000;      // 短曝光时间（毫秒）- 快速拍摄的曝光时间
     double raRotationAngle = 15.0;     // RA轴旋转角度（度）- 每次RA轴移动的角度
     double decRotationAngle = 10.0;    // DEC轴旋转角度（度）- DEC轴从极点移开的角度
     int maxRetryAttempts = 3;          // 最大重试次数 - 分析失败时的最大重试次数
@@ -266,10 +274,46 @@ public:
     void clearAdjustmentGuideData();
     
     /**
+     * @brief 保存并发送调整指导数据（智能管理：最多3个校准点+1个解析数据）
+     * @param ra 当前RA位置
+     * @param dec 当前DEC位置
+     * @param maxRa 最大RA
+     * @param minRa 最小RA
+     * @param maxDec 最大DEC
+     * @param minDec 最小DEC
+     * @param targetRa 目标RA
+     * @param targetDec 目标DEC
+     * @param offsetRa RA偏移
+     * @param offsetDec DEC偏移
+     * @param adjustmentRa 调整指导RA
+     * @param adjustmentDec 调整指导DEC
+     * @param fakePolarRA 假极轴RA
+     * @param fakePolarDEC 假极轴DEC
+     * @param realPolarRA 真极轴RA
+     * @param realPolarDEC 真极轴DEC
+     */
+    void saveAndEmitAdjustmentGuideData(double ra, double dec, double maxRa, double minRa, 
+                                       double maxDec, double minDec, double targetRa, double targetDec,
+                                       double offsetRa, double offsetDec, QString adjustmentRa, QString adjustmentDec,
+                                       double fakePolarRA, double fakePolarDEC, double realPolarRA, double realPolarDEC);
+    
+    /**
+     * @brief 添加调整指导数据（已废弃，请使用saveAndEmitAdjustmentGuideData）
+     * @param data 要添加的调整指导数据
+     */
+    void addAdjustmentGuideData(const AdjustmentGuideData& data);
+    
+    /**
      * @brief 获取调整指导数据容器的大小
      * @return 数据条数
      */
     int getAdjustmentGuideDataCount() const;
+    
+    /**
+     * @brief 重新发送所有保存的调整指导数据
+     * 根据保存的完整数据重新发送所有信号
+     */
+    void resendAllAdjustmentGuideData();
     
 
 signals:
@@ -381,6 +425,12 @@ private:
     bool moveDecAxisAway();
     
     /**
+     * @brief DEC轴避障移动（专门用于避障）
+     * @return 是否成功移动
+     */
+    bool moveDecAxisForObstacleAvoidance();
+    
+    /**
      * @brief 拍摄并分析图像
      * @param attempt 尝试次数（1为正常，2为恢复）
      * @return 是否成功
@@ -392,6 +442,25 @@ private:
      * @return 是否成功移动
      */
     bool moveRAAxis();
+    
+    /**
+     * @brief 避开遮挡移动（通用）
+     * @return 是否成功移动
+     */
+    bool moveToAvoidObstacle();
+    
+    
+    /**
+     * @brief 第一次RA轴避障移动
+     * @return 是否成功移动
+     */
+    bool moveToAvoidObstacleRA1();
+    
+    /**
+     * @brief 第二次RA轴避障移动
+     * @return 是否成功移动
+     */
+    bool moveToAvoidObstacleRA2();
     
     /**
      * @brief 计算极轴偏差
@@ -841,13 +910,20 @@ private:
     INDI::BaseDevice* dpMainCamera; // 主相机设备指针
     
     PolarAlignmentState currentState;    // 当前校准状态
+    PolarAlignmentState obstacleFromState; // 避开遮挡前的状态
+    
+    // 避障相关变量
+    double initialRA;                    // 初始RA位置（用于RA避障）
+    double initialDEC;                   // 初始DEC位置（用于DEC避障）
+    bool ra1ObstacleAvoided;             // 第一次RA轴是否已进行避障
+    bool ra2ObstacleAvoided;             // 第二次RA轴是否已进行避障
+    bool justCompletedObstacleAvoidance; // 是否刚刚完成避障（用于避免RA角度调整）
     PolarAlignmentConfig config;         // 校准配置参数
     PolarAlignmentResult result;         // 校准结果
     
     // 测量数据
     QVector<SloveResults> measurements; // 测量结果数组
     int currentMeasurementIndex;         // 当前测量索引
-    int currentRetryAttempt;             // 当前重试次数
     int currentAdjustmentAttempt;        // 当前调整尝试次数
     double currentRAAngle;              // 当前RA角度
     double currentDECAngle;             // 当前DEC角度
@@ -885,6 +961,13 @@ private:
     // 失败计数
     int captureFailureCount;     // 拍摄失败计数
     int solveFailureCount;       // 解析失败计数
+    int firstCaptureAvoidanceCount;  // 第一次拍摄避障次数计数
+    int secondCaptureAvoidanceCount; // 第二次拍摄避障次数计数
+    int thirdCaptureAvoidanceCount;  // 第三次拍摄避障次数计数
+    bool decMovedToAvoidObstacle; // 是否已经移动DEC轴避开遮挡
+    bool decMovedAtStart;         // 是否在开始时移动了DEC轴脱离极点
+    bool secondCaptureAvoided;    // 是否进行了第二次拍摄避障
+    int captureAttemptCount;     // 遮挡检测时的拍摄尝试次数
 
     // 调整指导数据容器
     QVector<AdjustmentGuideData> adjustmentGuideDataHistory; // 调整指导数据历史记录

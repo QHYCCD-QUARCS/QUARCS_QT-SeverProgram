@@ -918,6 +918,57 @@ uint32_t MyClient::setAutoFlip(INDI::BaseDevice *dp, bool ON)
     }
 
     sendNewProperty(flip);
+
+    if (auto mpm = dp->getNumber("Minutes Past Meridian"); mpm.isValid())
+    {
+        Logger::Log("indi_client | Minutes Past Meridian 属性内容：", LogLevel::INFO, DeviceType::CAMERA);
+
+        for (int i = 0; i < mpm.size(); i++)
+        {
+            auto &n = mpm[i];
+
+            Logger::Log("  名称: " + std::string(n.getName()),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("  标签: " + std::string(n.getLabel()),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("  当前值: " + QString::number(n.getValue(), 'f', 2).toStdString(),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("  最小值: " + QString::number(n.getMin(), 'f', 2).toStdString(),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("  最大值: " + QString::number(n.getMax(), 'f', 2).toStdString(),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("  步长: " + QString::number(n.getStep(), 'f', 2).toStdString(),
+                        LogLevel::INFO, DeviceType::CAMERA);
+        }
+    }
+    // setMinutesPastMeridian(dp,10.0,10.0);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::setMinutesPastMeridian(INDI::BaseDevice *dp, double Eastvalue , double Westvalue)
+{
+    INDI::PropertyNumber mpm = dp->getProperty("Minutes Past Meridian");
+    if (!mpm.isValid())
+    {
+        Logger::Log("indi_client | setMinutesPastMeridian | Error: unable to find  Minutes Past Meridian property...", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+    mpm[0].setValue(Eastvalue);
+    mpm[1].setValue(Westvalue);
+    sendNewProperty(mpm);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::getMinutesPastMeridian(INDI::BaseDevice *dp, double &Eastvalue, double &Westvalue)
+{
+    INDI::PropertyNumber mpm = dp->getProperty("Minutes Past Meridian");
+    if (!mpm.isValid())
+    {
+        Logger::Log("indi_client | getMinutesPastMeridian | Error: unable to find  Minutes Past Meridian property...", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+    Eastvalue = mpm[0].getValue();
+    Westvalue = mpm[1].getValue();
     return QHYCCD_SUCCESS;
 }
 
@@ -1082,26 +1133,7 @@ uint32_t MyClient::getTelescopeTrackEnable(INDI::BaseDevice *dp, bool &enable)
         mountState.isTracking = false;
     }
 
-
-    // QElapsedTimer t;
-    // t.start();
-
-    // while (t.elapsed() < 3000)
-    // {
-    //     QThread::msleep(100);
-    //     if (property->getState() == IPS_OK)
-    //         break;
-    //     if (property->getState() == IPS_IDLE)
-    //         break;
-    // }
-
-    // if (t.elapsed() > 3000)
-    // {
-    //     Logger::Log("indi_client | getTelescopeTrackEnable | ERROR : timeout ", LogLevel::WARNING, DeviceType::CAMERA);
-    //     return QHYCCD_ERROR;
-    // }
-
-    Logger::Log("indi_client | getTelescopeTrackEnable | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
+    // Logger::Log("indi_client | getTelescopeTrackEnable | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1130,32 +1162,6 @@ uint32_t MyClient::setTelescopeTrackEnable(INDI::BaseDevice *dp, bool enable)
 
     sendNewProperty(property);
 
-    /*
-    QElapsedTimer t;
-    t.start();
-
-
-    if(enable==true){
-     while(t.elapsed()<6000){
-        qDebug()<<property->getStateAsString();
-        QThread::msleep(100);
-        if(property->getState()==IPS_IDLE) break;  //when enabled, it will become busy
-     }
-    }
-    else{
-        while(t.elapsed()<6000){
-           qDebug()<<property->getStateAsString();
-           QThread::msleep(100);
-           if(property->getState()==IPS_IDLE) break;  //when disabled, it will become idle
-     }
-    }
-
-    if(t.elapsed()>3000){
-       qDebug() << "setTelescopeTrackEnable | ERROR : timeout ";
-       return QHYCCD_ERROR;
-    }
-
-    */
     Logger::Log("indi_client | setTelescopeTrackEnable | " + std::to_string(enable), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
@@ -1244,7 +1250,7 @@ uint32_t MyClient::getTelescopePark(INDI::BaseDevice *dp, bool &isParked)
         mountState.isParked = false;
     }
 
-    Logger::Log("indi_client | getTelescopePark | " + std::to_string(isParked), LogLevel::INFO, DeviceType::CAMERA);
+    // Logger::Log("indi_client | getTelescopePark | " + std::to_string(isParked), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
@@ -1291,33 +1297,175 @@ uint32_t MyClient::setTelescopePark(INDI::BaseDevice *dp, bool isParked)
 
 uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
 {
-    // 判断command是否为SLEWHOME或SYNCHOME
-    if (command == "SLEWHOME")
+    // ---------- 优先尝试 HOME_INIT（Switch） ----------
+    INDI::PropertySwitch prop = dp->getProperty("HOME_INIT");
+    if (prop.isValid())
     {
-        if (mountState.isMovingNow() || mountState.isParked){
-            Logger::Log("indi_client | setTelescopeHomeInit | Telescope is moving or parked, return...", LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("indi_client | setTelescopeHomeInit | HOME_INIT found",
+                    LogLevel::INFO, DeviceType::CAMERA);
+
+        // SLEW 到 Home 时的前置限制
+        if ((command == "RETURN_HOME" || command == "AT_HOME") && (mountState.isMovingNow() || mountState.isParked))
+        {
+            Logger::Log("indi_client | setTelescopeHomeInit | Telescope is moving or parked, return...",
+                        LogLevel::INFO, DeviceType::CAMERA);
             return QHYCCD_ERROR;
         }
-        mountState.isHoming = true;
-        setTelescopeRADECJNOW(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree);
-        Logger::Log("indi_client | setTelescopeHomeInit | SLEWHOME command sent", LogLevel::INFO, DeviceType::CAMERA);
-    }
-    else if (command == "SYNCHOME")
-    {
-        double currentRA;
-        double currentDEC;
-        getTelescopeRADECJNOW(dp, currentRA, currentDEC);
-        Logger::Log("indi_client | setTelescopeHomeInit | SYNCHOME command sent", LogLevel::INFO, DeviceType::CAMERA);
-        mountState.Home_RA_Hours = currentRA;
-        mountState.Home_DEC_Degree = currentDEC;
+
+        // 先全部关
+        for (int i = 0; i < prop->nsp; ++i)
+            prop[i].setState(ISS_OFF);
+
+        if (command == "SLEWHOME" || command == "RETURN_HOME")
+        {
+            prop[0].setState(ISS_ON);
+            sendNewProperty(prop);
+
+            mountState.isHoming = true; // 标记正在回零
+
+            Logger::Log(QString("indi_client | setTelescopeHomeInit | %1 via HOME_INIT")
+                            .arg(command).toUtf8().constData(),
+                        LogLevel::INFO, DeviceType::CAMERA);
+
+            // === 每秒打印一次 HOME_INIT 状态 ===
+            QTimer *timer = new QTimer();
+            QObject::connect(timer, &QTimer::timeout, [dp, timer, this]() {
+                // mountState.printCurrentState();
+                INDI::PropertyNumber eq = dp->getProperty("EQUATORIAL_EOD_COORD");
+                if (eq.isValid()) {
+                    sleep(1);
+                    if (eq.getState() == IPS_OK || eq.getState() == IPS_IDLE){
+                        timer->stop();
+                        QObject::disconnect(timer, &QTimer::timeout, nullptr, nullptr);
+                        mountState.isHoming = false;
+                        Logger::Log("indi_client | setTelescopeHomeInit | HOME_INIT completed",
+                                    LogLevel::INFO, DeviceType::CAMERA);
+                        mountState.Home_RA_Hours   = eq->np[0].value;
+                        mountState.Home_DEC_Degree = eq->np[1].value;
+                        return;
+                    }
+                }else{
+                    Logger::Log("indi_client | setTelescopeHomeInit | EQUATORIAL_EOD_COORD not found",
+                                LogLevel::WARNING, DeviceType::CAMERA);
+                    QObject::disconnect(timer, &QTimer::timeout, nullptr, nullptr);
+                    mountState.isHoming = false;
+                    return ;
+                }
+            });
+            timer->start(1000); // 1秒一次
+
+            return QHYCCD_SUCCESS;
+        }else if (command == "SYNCHOME" || command == "AT_HOME")
+        {
+            prop[1].setState(ISS_ON);
+            sendNewProperty(prop);
+            // mountState.isHoming = true; // 标记正在回零
+            Logger::Log(QString("indi_client | setTelescopeHomeInit | %1 via HOME_INIT")
+                            .arg(command).toUtf8().constData(),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            return QHYCCD_SUCCESS;
+        }
+
+        // HOME_INIT 存在但缺少目标项 → 回退
+        Logger::Log(QString("indi_client | setTelescopeHomeInit | HOME_INIT missing target item: %1, fallback...")
+                        .arg(command).toUtf8().constData(),
+                    LogLevel::WARNING, DeviceType::CAMERA);
     }
     else
     {
-        Logger::Log("indi_client | setTelescopeHomeInit | Error: invalid command", LogLevel::ERROR, DeviceType::CAMERA);
+        Logger::Log("indi_client | setTelescopeHomeInit | HOME_INIT not found, fallback...",
+                    LogLevel::DEBUG, DeviceType::CAMERA);
+    }
+
+    // ---------- 回退：用 GOTO 实现 ----------
+    if (command == "SLEWHOME" || command == "RETURN_HOME")
+    {
+        if (mountState.isMovingNow() || mountState.isParked)
+        {
+            Logger::Log("indi_client | setTelescopeHomeInit | Telescope is moving or parked, return...",
+                        LogLevel::INFO, DeviceType::CAMERA);
+            return QHYCCD_ERROR;
+        }
+        
+
+        mountState.isHoming = true;
+        setTelescopeRADECJNOW(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree);
+        Logger::Log("indi_client | setTelescopeHomeInit | Fallback: RETURN_HOME by RA/DEC goto",
+                    LogLevel::INFO, DeviceType::CAMERA);
+        return QHYCCD_SUCCESS;
+    }
+    else if (command == "SYNCHOME" || command == "AT_HOME")
+    {
+        double currentRA = NAN, currentDEC = NAN;
+        getTelescopeRADECJNOW(dp, currentRA, currentDEC);
+        if (std::isnan(currentRA) || std::isnan(currentDEC))
+        {
+            Logger::Log("indi_client | setTelescopeHomeInit | Fallback AT_HOME failed: invalid RA/DEC",
+                        LogLevel::ERROR, DeviceType::CAMERA);
+            return QHYCCD_ERROR;
+        }
+
+        mountState.Home_RA_Hours   = currentRA;
+        mountState.Home_DEC_Degree = currentDEC;
+        Logger::Log("indi_client | setTelescopeHomeInit | Fallback: AT_HOME by saving current RA/DEC",
+                    LogLevel::INFO, DeviceType::CAMERA);
+        return QHYCCD_SUCCESS;
+    }
+
+    Logger::Log("indi_client | setTelescopeHomeInit | Error: invalid command (post-fallback)",
+                LogLevel::ERROR, DeviceType::CAMERA);
+    return QHYCCD_ERROR;
+}
+
+uint32_t MyClient::getTelescopeMoving(INDI::BaseDevice *dp)
+{
+    INDI::PropertyNumber eq = dp->getProperty("EQUATORIAL_EOD_COORD");
+    if (eq.isValid()) {
+        if (eq.getState() == IPS_OK || eq.getState() == IPS_IDLE){
+            mountState.isMoving = false;
+        }else{
+            mountState.isMoving = true;
+        }
+    }else{
+        Logger::Log("indi_client | getTelescopeMoving | Error: unable to find EQUATORIAL_EOD_COORD property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
     return QHYCCD_SUCCESS;
 }
+
+
+
+
+// uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
+// {
+//     // 判断command是否为SLEWHOME或SYNCHOME
+//     if (command == "SLEWHOME")
+//     {
+        
+//         if (mountState.isMovingNow() || mountState.isParked){
+//             Logger::Log("indi_client | setTelescopeHomeInit | Telescope is moving or parked, return...", LogLevel::INFO, DeviceType::CAMERA);
+//             return QHYCCD_ERROR;
+//         }
+//         mountState.isHoming = true;
+//         setTelescopeRADECJNOW(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree);
+//         Logger::Log("indi_client | setTelescopeHomeInit | SLEWHOME command sent", LogLevel::INFO, DeviceType::CAMERA);
+//     }
+//     else if (command == "SYNCHOME")
+//     {
+//         double currentRA;
+//         double currentDEC;
+//         getTelescopeRADECJNOW(dp, currentRA, currentDEC);
+//         Logger::Log("indi_client | setTelescopeHomeInit | SYNCHOME command sent", LogLevel::INFO, DeviceType::CAMERA);
+//         mountState.Home_RA_Hours = currentRA;
+//         mountState.Home_DEC_Degree = currentDEC;
+//     }
+//     else
+//     {
+//         Logger::Log("indi_client | setTelescopeHomeInit | Error: invalid command", LogLevel::ERROR, DeviceType::CAMERA);
+//         return QHYCCD_ERROR;
+//     }
+//     return QHYCCD_SUCCESS;
+// }
 
 uint32_t MyClient::getTelescopeSlewRate(INDI::BaseDevice *dp, int &speed)
 {
@@ -1900,128 +2048,27 @@ uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp, double RA_Hours, 
     // 保险：先断开已有连接，避免重复回调
     QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
 
-    QObject::connect(&MountGotoTimer, &QTimer::timeout,
-        // 捕获需要的外部变量；RA 跟踪速率放到回调内部定义
-        [this, dp, RA_Hours, DEC_Degree,
-         raDiffHour, nearPole,
-         TOL_RA_HOUR, TOL_DEC_DEG,
-         HIT_NEED, MAX_TICKS,
-         MIN_MOVE_RA_H, MIN_MOVE_DEC]()
+    QObject::connect(&MountGotoTimer, &QTimer::timeout,[this, dp]()
     {
-        // 静态状态：跨调用保存
-        static int hitCount   = 0;
-        static int tickCount  = 0;  // 近似经过的秒数（1s/次）
-        static int stallTicks = 0;  // 连续"几乎没动"的次数
-
-        // === 优先检查外部完成信号 ===
-        if (externalSlewComplete)
-        {
-            MountGotoTimer.stop();
-            QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
-            if (mountState.isHoming) mountState.isHoming = false;
-            else                     mountState.isSlewing = false;
-            hitCount = tickCount = stallTicks = 0; // 清零静态状态
-            externalSlewComplete = false; // 重置外部信号
-            Logger::Log("indi_client | setTelescopeRADECJNOW | Slew completed by external signal",
-                        LogLevel::INFO, DeviceType::CAMERA);
-            return;
-        }
-
-        // === 关键：目标 RA 漂移补偿（放在计时器内部） ===
-        // 恒星时跟踪速率（小时/秒）
-        const double RA_TRACK_HPS = 24.0 / 86164.0905; // ≈ 0.000278 h/s
-        // 动态目标 RA = 初始目标 + 跟踪速率 * 已过时间（秒）
-        double targetRA_now = RA_Hours + RA_TRACK_HPS * tickCount;
-        // 归一化到 [0, 24)
-        targetRA_now = fmod(targetRA_now, 24.0);
-        if (targetRA_now < 0) targetRA_now += 24.0;
-
-        // 读取当前位置
-        double currentRA = 0, currentDEC = 0;
-        getTelescopeRADECJNOW(dp, currentRA, currentDEC);
-
-        // ----------- 命中判定（含极点 12h 等价）-----------
-        // 常规 RA 误差（小时）
-        double dRA = raDiffHour(currentRA, targetRA_now);
-
-        // 极点区域：对 RA 误差应用"12h 等价"修正
-        bool poleZone = nearPole(DEC_Degree) || nearPole(currentDEC);
-        double raErr  = poleZone ? std::min(dRA, std::fabs(12.0 - dRA)) : dRA;
-
-        bool raOk  = (raErr <= TOL_RA_HOUR);
-        bool decOk = (std::fabs(currentDEC - DEC_Degree) <= TOL_DEC_DEG);
-
-        if (raOk && decOk)
-        {
-            hitCount++;
-            if (hitCount >= HIT_NEED)
-            {
+        INDI::PropertyNumber eq = dp->getProperty("EQUATORIAL_EOD_COORD");
+        if (eq.isValid()) {
+            if (eq.getState() == IPS_OK || eq.getState() == IPS_IDLE){
                 MountGotoTimer.stop();
                 QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
                 if (mountState.isHoming) mountState.isHoming = false;
                 else                     mountState.isSlewing = false;
-                hitCount = tickCount = stallTicks = 0; // 清零静态状态
+                Logger::Log("indi_client | setTelescopeRADECJNOW | Mount Goto Completed",
+                            LogLevel::INFO, DeviceType::MOUNT);
                 return;
             }
-        }
-        else
-        {
-            hitCount = 0; // 未命中则清零，避免抖动误判
-        }
-        // ---------------------------------------------------
-
-        // ----------------- 卡死检测 -----------------
-        double dRA_move  = raDiffHour(currentRA, oldRA_Hours);
-        double dDEC_move = std::fabs(currentDEC - oldDEC_Degree);
-
-        // 在极点附近，RA 抖动/跳变可能无意义，但你要求不忽略 RA；
-        // 这里仍使用 RA+DEC 的"几乎没动"组合阈值
-        if (dRA_move < MIN_MOVE_RA_H && dDEC_move < MIN_MOVE_DEC)
-            stallTicks++;
-        else
-            stallTicks = 0;
-
-        // 30 秒内"几乎没动"判定为卡住（定时器周期 1s）
-        if (stallTicks >= 30)
-        {
-            MountGotoTimer.stop();
+        }else{
+            Logger::Log("indi_client | setTelescopeRADECJNOW | EQUATORIAL_EOD_COORD not found",
+                        LogLevel::WARNING, DeviceType::MOUNT);
             QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
-            if (mountState.isHoming) mountState.isHoming = false;
-            else                     mountState.isSlewing = false;
-            hitCount = tickCount = stallTicks = 0;
-            Logger::Log("indi_client | setTelescopeRADECJNOW | Error: slew stalled",
-                        LogLevel::WARNING, DeviceType::CAMERA);
-            return;
-        }
-        // --------------------------------------------
+            mountState.isHoming = false;
+            return ;
+        } 
 
-        // 超时判断
-        tickCount++;
-        if (tickCount >= MAX_TICKS)
-        {
-            MountGotoTimer.stop();
-            QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
-            if (mountState.isHoming) mountState.isHoming = false;
-            else                     mountState.isSlewing = false;
-            hitCount = tickCount = stallTicks = 0;
-            Logger::Log("indi_client | setTelescopeRADECJNOW | Error: slew timeout",
-                        LogLevel::WARNING, DeviceType::CAMERA);
-            return;
-        }
-
-        // （可选）调试日志
-        // Logger::Log(
-        //     "indi_client | setTelescopeRADECJNOW | curRA=" + std::to_string(currentRA) +
-        //     " curDEC=" + std::to_string(currentDEC) +
-        //     " tgtRA(now)=" + std::to_string(targetRA_now) +
-        //     " tgtDEC=" + std::to_string(DEC_Degree) +
-        //     " raErr=" + std::to_string(raErr) +
-        //     " hitCount=" + std::to_string(hitCount),
-        //     LogLevel::INFO, DeviceType::CAMERA);
-
-        // 更新历史位置（供卡死检测/外部使用）
-        oldRA_Hours   = currentRA;
-        oldDEC_Degree = currentDEC;
     });
 
     // 统一用固定周期

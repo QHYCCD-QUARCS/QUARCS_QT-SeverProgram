@@ -256,8 +256,13 @@ PolarAlignment::PolarAlignment(MyClient* indiServer, INDI::BaseDevice* dpMount, 
     , dpMount(dpMount)
     , dpMainCamera(dpMainCamera)
     , currentState(PolarAlignmentState::IDLE)
+    , obstacleFromState(PolarAlignmentState::IDLE)
+    , initialRA(0.0)
+    , initialDEC(0.0)
+    , ra1ObstacleAvoided(false)
+    , ra2ObstacleAvoided(false)
+    , justCompletedObstacleAvoidance(false)
     , currentMeasurementIndex(0)
-    , currentRetryAttempt(0)
     , isRunningFlag(false)
     , isPausedFlag(false)
     , userAdjustmentConfirmed(false)
@@ -332,7 +337,6 @@ bool PolarAlignment::startPolarAlignment()
     // 初始化校准状态和参数
     currentState = PolarAlignmentState::INITIALIZING;
     currentMeasurementIndex = 0;
-    currentRetryAttempt = 0;
     currentAdjustmentAttempt = 0;
     currentRAAngle = config.raRotationAngle;
     currentDECAngle = config.decRotationAngle;
@@ -347,6 +351,13 @@ bool PolarAlignment::startPolarAlignment()
     lastCapturedImage = "";
     captureFailureCount = 0;
     solveFailureCount = 0;
+    firstCaptureAvoidanceCount = 0;
+    secondCaptureAvoidanceCount = 0;
+    thirdCaptureAvoidanceCount = 0;
+    decMovedToAvoidObstacle = false;
+    decMovedAtStart = false;
+    secondCaptureAvoided = false;
+    captureAttemptCount = 0;
     
     // 重置目标位置缓存，每次校准都重新计算
     isTargetPositionCached = false;
@@ -379,6 +390,8 @@ void PolarAlignment::stopPolarAlignment()
     isRunningFlag = false;
     isPausedFlag = false;
     currentState = PolarAlignmentState::IDLE;
+
+    indiServer->setTelescopeAbortMotion(dpMount);
     
     Logger::Log("PolarAlignment: 极轴校准已停止", LogLevel::INFO, DeviceType::MAIN);
     emit stateChanged(currentState, "极轴校准已停止",-1);
@@ -493,13 +506,15 @@ void PolarAlignment::setConfig(const PolarAlignmentConfig& config)
 void PolarAlignment::onStateTimerTimeout()
 {
     if (isPausedFlag) return;
+    
+    
     processCurrentState();
 }
 
 void PolarAlignment::onCaptureAndAnalysisTimerTimeout()
 {
     Logger::Log("PolarAlignment: 拍摄和分析超时", LogLevel::WARNING, DeviceType::MAIN);
-    handleAnalysisFailure(currentRetryAttempt);
+    handleAnalysisFailure(1);
 }
 
 void PolarAlignment::onMovementTimerTimeout()
@@ -537,11 +552,38 @@ void PolarAlignment::setState(PolarAlignmentState newState)
         case PolarAlignmentState::FIRST_CAPTURE:
             currentStatusMessage = "第一次拍摄...";
             break;
-        case PolarAlignmentState::FIRST_ANALYSIS:
-            currentStatusMessage = "第一次分析...";
+        case PolarAlignmentState::FIRST_CAPTURE_LONG_EXPOSURE:
+            currentStatusMessage = "第一次拍摄长曝光重试...";
             break;
-        case PolarAlignmentState::FIRST_RECOVERY:
-            currentStatusMessage = "第一次恢复...";
+        case PolarAlignmentState::FIRST_CAPTURE_DEC_AVOIDANCE:
+            currentStatusMessage = "第一次拍摄DEC轴避障...";
+            break;
+        case PolarAlignmentState::WAITING_FIRST_DEC_AVOIDANCE:
+            currentStatusMessage = "等待第一次拍摄DEC轴避障...";
+            break;
+        case PolarAlignmentState::SECOND_CAPTURE:
+            currentStatusMessage = "第二次拍摄...";
+            break;
+        case PolarAlignmentState::SECOND_CAPTURE_LONG_EXPOSURE:
+            currentStatusMessage = "第二次拍摄长曝光重试...";
+            break;
+        case PolarAlignmentState::SECOND_CAPTURE_RA_AVOIDANCE:
+            currentStatusMessage = "第二次拍摄RA轴避障...";
+            break;
+        case PolarAlignmentState::WAITING_SECOND_RA_AVOIDANCE:
+            currentStatusMessage = "等待第二次拍摄RA轴避障...";
+            break;
+        case PolarAlignmentState::THIRD_CAPTURE:
+            currentStatusMessage = "第三次拍摄...";
+            break;
+        case PolarAlignmentState::THIRD_CAPTURE_LONG_EXPOSURE:
+            currentStatusMessage = "第三次拍摄长曝光重试...";
+            break;
+        case PolarAlignmentState::THIRD_CAPTURE_RA_AVOIDANCE:
+            currentStatusMessage = "第三次拍摄RA轴避障...";
+            break;
+        case PolarAlignmentState::WAITING_THIRD_RA_AVOIDANCE:
+            currentStatusMessage = "等待第三次拍摄RA轴避障...";
             break;
         case PolarAlignmentState::MOVING_RA_FIRST:
             currentStatusMessage = "第一次RA轴移动...";
@@ -549,29 +591,11 @@ void PolarAlignment::setState(PolarAlignmentState newState)
         case PolarAlignmentState::WAITING_RA_MOVE_END:
             currentStatusMessage = "等待RA第一次轴移动...";
             break;
-        case PolarAlignmentState::SECOND_CAPTURE:
-            currentStatusMessage = "第二次拍摄...";
-            break;
-        case PolarAlignmentState::SECOND_ANALYSIS:
-            currentStatusMessage = "第二次分析...";
-            break;
-        case PolarAlignmentState::SECOND_RECOVERY:
-            currentStatusMessage = "第二次恢复...";
-            break;
         case PolarAlignmentState::MOVING_RA_SECOND:
             currentStatusMessage = "第二次RA轴移动...";
             break;
         case PolarAlignmentState::WAITING_RA_MOVE_END_2:
             currentStatusMessage = "等待RA第二次轴移动...";
-            break;
-        case PolarAlignmentState::THIRD_CAPTURE:
-            currentStatusMessage = "第三次拍摄...";
-            break;
-        case PolarAlignmentState::THIRD_ANALYSIS:
-            currentStatusMessage = "第三次分析...";
-            break;
-        case PolarAlignmentState::THIRD_RECOVERY:
-            currentStatusMessage = "第三次恢复...";
             break;
         case PolarAlignmentState::CALCULATING_DEVIATION:
             currentStatusMessage = "计算偏差...";
@@ -602,45 +626,80 @@ void PolarAlignment::setState(PolarAlignmentState newState)
     // 根据状态更新进度百分比
     int newProgress = 0;
     switch (newState) {
+        // 初始化阶段 (0-10%)
         case PolarAlignmentState::INITIALIZING:
-            newProgress = 5;
+            newProgress = 2;
             break;
         case PolarAlignmentState::CHECKING_POLAR_POINT:
-            newProgress = 10;
+            newProgress = 5;
             break;
         case PolarAlignmentState::MOVING_DEC_AWAY:
+            newProgress = 7;
+            break;
         case PolarAlignmentState::WAITING_DEC_MOVE_END:
-            newProgress = 15;
+            newProgress = 8;
             break;
         
+        // 第一次拍摄阶段 (10-30%) - 节点: 25%
         case PolarAlignmentState::FIRST_CAPTURE:
-        case PolarAlignmentState::FIRST_ANALYSIS:
-        case PolarAlignmentState::FIRST_RECOVERY:
+            newProgress = 15;
+            break;
+        case PolarAlignmentState::FIRST_CAPTURE_LONG_EXPOSURE:
             newProgress = 20;
             break;
-        case PolarAlignmentState::MOVING_RA_FIRST:
-        case PolarAlignmentState::WAITING_RA_MOVE_END:
-            newProgress = 25;
+        case PolarAlignmentState::FIRST_CAPTURE_DEC_AVOIDANCE:
+            newProgress = 22;
             break;
+        case PolarAlignmentState::WAITING_FIRST_DEC_AVOIDANCE:
+            newProgress = 24;
+            break;
+        case PolarAlignmentState::MOVING_RA_FIRST:
+            newProgress = 26;
+            break;
+        case PolarAlignmentState::WAITING_RA_MOVE_END:
+            newProgress = 28;
+            break;
+        
+        // 第二次拍摄阶段 (30-55%) - 节点: 50%
         case PolarAlignmentState::SECOND_CAPTURE:
-        case PolarAlignmentState::SECOND_ANALYSIS:
-        case PolarAlignmentState::SECOND_RECOVERY:
-            newProgress = 45;
+            newProgress = 35;
+            break;
+        case PolarAlignmentState::SECOND_CAPTURE_LONG_EXPOSURE:
+            newProgress = 40;
+            break;
+        case PolarAlignmentState::SECOND_CAPTURE_RA_AVOIDANCE:
+            newProgress = 42;
+            break;
+        case PolarAlignmentState::WAITING_SECOND_RA_AVOIDANCE:
+            newProgress = 44;
             break;
         case PolarAlignmentState::MOVING_RA_SECOND:
+            newProgress = 46;
+            break;
         case PolarAlignmentState::WAITING_RA_MOVE_END_2:
-            newProgress = 50;
+            newProgress = 48;
             break;
+        
+        // 第三次拍摄阶段 (55-80%) - 节点: 75%
         case PolarAlignmentState::THIRD_CAPTURE:
-        case PolarAlignmentState::THIRD_ANALYSIS:
-        case PolarAlignmentState::THIRD_RECOVERY:
-            newProgress = 75;
+            newProgress = 60;
             break;
+        case PolarAlignmentState::THIRD_CAPTURE_LONG_EXPOSURE:
+            newProgress = 65;
+            break;
+        case PolarAlignmentState::THIRD_CAPTURE_RA_AVOIDANCE:
+            newProgress = 67;
+            break;
+        case PolarAlignmentState::WAITING_THIRD_RA_AVOIDANCE:
+            newProgress = 69;
+            break;
+        
+        // 计算和调整阶段 (80-100%)
         case PolarAlignmentState::CALCULATING_DEVIATION:
-            newProgress = 85;
+            newProgress = 82;
             break;
         case PolarAlignmentState::GUIDING_ADJUSTMENT:
-            newProgress = 90;
+            newProgress = 88;
             break;
         case PolarAlignmentState::FINAL_VERIFICATION:
             newProgress = 95;
@@ -674,7 +733,6 @@ void PolarAlignment::setState(PolarAlignmentState newState)
 
 void PolarAlignment::processCurrentState()
 {
-    qDebug() << "processCurrentState";
     QString Stat;
     switch (currentState) {
         case PolarAlignmentState::INITIALIZING:
@@ -685,9 +743,10 @@ void PolarAlignment::processCurrentState()
                 PolarPointCheckResult checkResult = checkPolarPoint();
                 if (checkResult.success) {
                     if (checkResult.isNearPole) {
-                        // 如果指向极点，需要移动DEC轴
+                        // 如果需要移动DEC轴，则移动到DEC轴脱离极点状态
                         setState(PolarAlignmentState::MOVING_DEC_AWAY);
                     } else {
+                        // 如果不需要移动DEC轴，直接开始第一次拍摄
                         setState(PolarAlignmentState::FIRST_CAPTURE);
                     }
                 } else {
@@ -710,6 +769,10 @@ void PolarAlignment::processCurrentState()
         case PolarAlignmentState::WAITING_DEC_MOVE_END:
             indiServer->getTelescopeStatus(dpMount, Stat);
             if (Stat == "Idle") {
+                // DEC移动完成，记录初始位置并开始第一次拍摄
+                indiServer->getTelescopeRADECJNOW(dpMount, initialRA, initialDEC);
+                initialRA = Tools::HourToDegree(initialRA);
+                Logger::Log("PolarAlignment: DEC轴移动完成，记录初始位置 - RA: " + std::to_string(initialRA) + "°, DEC: " + std::to_string(initialDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
                 setState(PolarAlignmentState::FIRST_CAPTURE);
             }else{
                 Logger::Log("PolarAlignment: 等待DEC轴移动完成,当前状态: " + Stat.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
@@ -723,7 +786,7 @@ void PolarAlignment::processCurrentState()
             if (captureAndAnalyze(1)) {
                 setState(PolarAlignmentState::MOVING_RA_FIRST);
                 if (measurements.size() >= 1) {
-                    emit adjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
+                    saveAndEmitAdjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
                             measurements[0].RA_1, measurements[0].RA_0, 
                             measurements[0].DEC_2, measurements[0].DEC_1, 
                             -1, -1, 0.0, 0.0, 
@@ -736,16 +799,20 @@ void PolarAlignment::processCurrentState()
                     // 拍摄失败，直接退出
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，重新尝试
-                    setState(PolarAlignmentState::FIRST_RECOVERY);
+                    // 解析失败，必须进行长曝光重试
+                    Logger::Log("PolarAlignment: 第一次拍摄失败，必须尝试长曝光重试", LogLevel::WARNING, DeviceType::MAIN);
+                    setState(PolarAlignmentState::FIRST_CAPTURE_LONG_EXPOSURE);
                 }
             }
             break;
-        case PolarAlignmentState::FIRST_RECOVERY:
+            
+        case PolarAlignmentState::FIRST_CAPTURE_LONG_EXPOSURE:
+            // 第一次拍摄长曝光重试
             if (captureAndAnalyze(2)) {
+                // 长曝光重试成功，继续正常流程
                 setState(PolarAlignmentState::MOVING_RA_FIRST);
                 if (measurements.size() >= 1) {
-                    emit adjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
+                    saveAndEmitAdjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
                             measurements[0].RA_1, measurements[0].RA_0, 
                             measurements[0].DEC_2, measurements[0].DEC_1, 
                             -1, -1, 0.0, 0.0, 
@@ -753,27 +820,51 @@ void PolarAlignment::processCurrentState()
                             0.0, 0.0, 0.0, 0.0);
                 }
             } else {
-                // 检查是否是拍摄失败导致的退出
-                if (captureFailureCount >= 2) {
-                    // 拍摄失败，直接退出
+                // 长曝光重试也失败，检查避障次数
+                if (firstCaptureAvoidanceCount >= 1) {
+                    // 已经进行过避障，仍然失败，校准失败
+                    Logger::Log("PolarAlignment: 第一次拍摄长曝光重试也失败，且已进行过避障，校准失败", LogLevel::ERROR, DeviceType::MAIN);
                     setState(PolarAlignmentState::FAILED);
+                } else if (decMovedAtStart) {
+                    // 如果开始时移动了DEC轴脱离极点，进行DEC轴避障（移动到相反位置）
+                    Logger::Log("PolarAlignment: 第一次拍摄长曝光重试也失败，进行DEC轴避障（移动到相反位置）", LogLevel::WARNING, DeviceType::MAIN);
+                    firstCaptureAvoidanceCount++;
+                    setState(PolarAlignmentState::FIRST_CAPTURE_DEC_AVOIDANCE);
                 } else {
-                    // 解析失败，继续重试，增加重试次数
-                    currentRetryAttempt++;
-                    if (currentRetryAttempt >= config.maxRetryAttempts * 2) { // 增加重试次数
-                        Logger::Log("PolarAlignment: 第一次恢复重试次数过多，尝试调整角度", LogLevel::WARNING, DeviceType::MAIN);
-                        // 调整角度后重新开始
-                        currentRAAngle *= 0.8;
-                        currentRetryAttempt = 0;
-                        setState(PolarAlignmentState::FIRST_CAPTURE);
-                    } else {
-                        Logger::Log("PolarAlignment: 第一次恢复重试，当前次数: " + std::to_string(currentRetryAttempt) + 
-                                    "/" + std::to_string(config.maxRetryAttempts * 2), LogLevel::INFO, DeviceType::MAIN);
-                        setState(PolarAlignmentState::FIRST_RECOVERY);
-                    }
+                    // 如果开始时不在极点附近，认为已经手动避障成功，直接报错
+                    Logger::Log("PolarAlignment: 第一次拍摄长曝光重试也失败，且不在极点附近，校准失败", LogLevel::ERROR, DeviceType::MAIN);
+                    setState(PolarAlignmentState::FAILED);
                 }
             }
             break;
+            
+        case PolarAlignmentState::FIRST_CAPTURE_DEC_AVOIDANCE:
+            // 第一次拍摄DEC轴避障
+            if (moveDecAxisForObstacleAvoidance()) {
+                setState(PolarAlignmentState::WAITING_FIRST_DEC_AVOIDANCE);
+            } else {
+                Logger::Log("PolarAlignment: 第一次拍摄DEC轴避障移动失败，请检查环境和焦距设置", LogLevel::ERROR, DeviceType::MAIN);
+                setState(PolarAlignmentState::FAILED);
+            }
+            break;
+            
+        case PolarAlignmentState::WAITING_FIRST_DEC_AVOIDANCE:
+            indiServer->getTelescopeStatus(dpMount, Stat);
+            if (Stat == "Idle") {
+                // DEC轴避障移动完成，重新开始第一次拍摄
+                Logger::Log("PolarAlignment: 第一次拍摄DEC轴避障移动完成，重新开始第一次拍摄", LogLevel::INFO, DeviceType::MAIN);
+                justCompletedObstacleAvoidance = true; // 标记刚刚完成避障
+                setState(PolarAlignmentState::FIRST_CAPTURE);
+            } else {
+                Logger::Log("PolarAlignment: 等待第一次拍摄DEC轴避障移动完成,当前状态: " + Stat.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                if (isRunningFlag && !isPausedFlag) {
+                    stateTimer.start(1000); // 1秒后再次检查
+                }
+            }
+            break;
+            
+            
+            
         case PolarAlignmentState::MOVING_RA_FIRST:
             if (moveRAAxis()) {
                 setState(PolarAlignmentState::WAITING_RA_MOVE_END);
@@ -799,7 +890,7 @@ void PolarAlignment::processCurrentState()
             if (captureAndAnalyze(1)) {
                 setState(PolarAlignmentState::MOVING_RA_SECOND);
                 if (measurements.size() >= 2) {
-                    emit adjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
+                    saveAndEmitAdjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
                             measurements[1].RA_1, measurements[1].RA_0, 
                             measurements[1].DEC_2, measurements[1].DEC_1, 
                             -1, -1, 0.0, 0.0, 
@@ -812,16 +903,20 @@ void PolarAlignment::processCurrentState()
                     // 拍摄失败，直接退出
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，重新尝试
-                    setState(PolarAlignmentState::SECOND_RECOVERY);
+                    // 解析失败，必须进行长曝光重试
+                    Logger::Log("PolarAlignment: 第二次拍摄失败，必须尝试长曝光重试", LogLevel::WARNING, DeviceType::MAIN);
+                    setState(PolarAlignmentState::SECOND_CAPTURE_LONG_EXPOSURE);
                 }
             }
             break;
-        case PolarAlignmentState::SECOND_RECOVERY:
+            
+        case PolarAlignmentState::SECOND_CAPTURE_LONG_EXPOSURE:
+            // 第二次拍摄长曝光重试
             if (captureAndAnalyze(2)) {
+                // 长曝光重试成功，继续正常流程
                 setState(PolarAlignmentState::MOVING_RA_SECOND);
                 if (measurements.size() >= 2) {
-                    emit adjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
+                    saveAndEmitAdjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
                             measurements[1].RA_1, measurements[1].RA_0, 
                             measurements[1].DEC_2, measurements[1].DEC_1, 
                             -1, -1, 0.0, 0.0, 
@@ -829,24 +924,42 @@ void PolarAlignment::processCurrentState()
                             0.0, 0.0, 0.0, 0.0);
                 }
             } else {
-                // 检查是否是拍摄失败导致的退出
-                if (captureFailureCount >= 2) {
-                    // 拍摄失败，直接退出
+                // 长曝光重试也失败，检查避障次数
+                if (secondCaptureAvoidanceCount >= 1) {
+                    // 已经进行过避障，仍然失败，校准失败
+                    Logger::Log("PolarAlignment: 第二次拍摄长曝光重试也失败，且已进行过避障，校准失败", LogLevel::ERROR, DeviceType::MAIN);
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，继续重试，增加重试次数
-                    currentRetryAttempt++;
-                    if (currentRetryAttempt >= config.maxRetryAttempts * 2) { // 增加重试次数
-                        Logger::Log("PolarAlignment: 第二次恢复重试次数过多，尝试调整角度", LogLevel::WARNING, DeviceType::MAIN);
-                        // 调整角度后重新开始
-                        currentRAAngle *= 0.8;
-                        currentRetryAttempt = 0;
-                        setState(PolarAlignmentState::SECOND_CAPTURE);
-                    } else {
-                        Logger::Log("PolarAlignment: 第二次恢复重试，当前次数: " + std::to_string(currentRetryAttempt) + 
-                                    "/" + std::to_string(config.maxRetryAttempts * 2), LogLevel::INFO, DeviceType::MAIN);
-                        setState(PolarAlignmentState::SECOND_RECOVERY);
-                    }
+                    // 进行RA轴避障
+                    Logger::Log("PolarAlignment: 第二次拍摄长曝光重试也失败，进行RA轴避障", LogLevel::WARNING, DeviceType::MAIN);
+                    secondCaptureAvoidanceCount++;
+                    secondCaptureAvoided = true; // 标记进行了第二次拍摄避障
+                    setState(PolarAlignmentState::SECOND_CAPTURE_RA_AVOIDANCE);
+                }
+            }
+            break;
+            
+        case PolarAlignmentState::SECOND_CAPTURE_RA_AVOIDANCE:
+            // 第二次拍摄RA轴避障
+            if (moveToAvoidObstacleRA1()) {
+                setState(PolarAlignmentState::WAITING_SECOND_RA_AVOIDANCE);
+            } else {
+                Logger::Log("PolarAlignment: 第二次拍摄RA轴避障移动失败，请检查环境和焦距设置", LogLevel::ERROR, DeviceType::MAIN);
+                setState(PolarAlignmentState::FAILED);
+            }
+            break;
+            
+        case PolarAlignmentState::WAITING_SECOND_RA_AVOIDANCE:
+            indiServer->getTelescopeStatus(dpMount, Stat);
+            if (Stat == "Idle") {
+                // RA轴避障移动完成，重新开始第二次拍摄
+                Logger::Log("PolarAlignment: 第二次拍摄RA轴避障移动完成，重新开始第二次拍摄", LogLevel::INFO, DeviceType::MAIN);
+                justCompletedObstacleAvoidance = true; // 标记刚刚完成避障
+                setState(PolarAlignmentState::SECOND_CAPTURE);
+            } else {
+                Logger::Log("PolarAlignment: 等待第二次拍摄RA轴避障移动完成,当前状态: " + Stat.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                if (isRunningFlag && !isPausedFlag) {
+                    stateTimer.start(1000); // 1秒后再次检查
                 }
             }
             break;
@@ -876,7 +989,7 @@ void PolarAlignment::processCurrentState()
             if (captureAndAnalyze(1)) {
                 setState(PolarAlignmentState::CALCULATING_DEVIATION);
                 if (measurements.size() >= 3) {
-                    emit adjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
+                    saveAndEmitAdjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
                             measurements[2].RA_1, measurements[2].RA_0, 
                             measurements[2].DEC_2, measurements[2].DEC_1, 
                             -1, -1, 0.0, 0.0, 
@@ -889,16 +1002,20 @@ void PolarAlignment::processCurrentState()
                     // 拍摄失败，直接退出
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，重新尝试
-                    setState(PolarAlignmentState::THIRD_RECOVERY);
+                    // 解析失败，必须进行长曝光重试
+                    Logger::Log("PolarAlignment: 第三次拍摄失败，必须尝试长曝光重试", LogLevel::WARNING, DeviceType::MAIN);
+                    setState(PolarAlignmentState::THIRD_CAPTURE_LONG_EXPOSURE);
                 }
             }
             break;
-        case PolarAlignmentState::THIRD_RECOVERY:
+            
+        case PolarAlignmentState::THIRD_CAPTURE_LONG_EXPOSURE:
+            // 第三次拍摄长曝光重试
             if (captureAndAnalyze(2)) {
+                // 长曝光重试成功，继续正常流程
                 setState(PolarAlignmentState::CALCULATING_DEVIATION);
                 if (measurements.size() >= 3) {
-                    emit adjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
+                    saveAndEmitAdjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
                             measurements[2].RA_1, measurements[2].RA_0, 
                             measurements[2].DEC_2, measurements[2].DEC_1, 
                             -1, -1, 0.0, 0.0, 
@@ -906,24 +1023,41 @@ void PolarAlignment::processCurrentState()
                             0.0, 0.0, 0.0, 0.0);
                 }
             } else {
-                // 检查是否是拍摄失败导致的退出
-                if (captureFailureCount >= 2) {
-                    // 拍摄失败，直接退出
+                // 长曝光重试也失败，检查避障次数
+                if (thirdCaptureAvoidanceCount >= 1) {
+                    // 已经进行过避障，仍然失败，校准失败
+                    Logger::Log("PolarAlignment: 第三次拍摄长曝光重试也失败，且已进行过避障，校准失败", LogLevel::ERROR, DeviceType::MAIN);
                     setState(PolarAlignmentState::FAILED);
                 } else {
-                    // 解析失败，继续重试，增加重试次数
-                    currentRetryAttempt++;
-                    if (currentRetryAttempt >= config.maxRetryAttempts * 2) { // 增加重试次数
-                        Logger::Log("PolarAlignment: 第三次恢复重试次数过多，尝试调整角度", LogLevel::WARNING, DeviceType::MAIN);
-                        // 调整角度后重新开始
-                        currentRAAngle *= 0.8;
-                        currentRetryAttempt = 0;
-                        setState(PolarAlignmentState::THIRD_CAPTURE);
-                    } else {
-                        Logger::Log("PolarAlignment: 第三次恢复重试，当前次数: " + std::to_string(currentRetryAttempt) + 
-                                    "/" + std::to_string(config.maxRetryAttempts * 2), LogLevel::INFO, DeviceType::MAIN);
-                        setState(PolarAlignmentState::THIRD_RECOVERY);
-                    }
+                    // 进行RA轴避障
+                    Logger::Log("PolarAlignment: 第三次拍摄长曝光重试也失败，进行RA轴避障", LogLevel::WARNING, DeviceType::MAIN);
+                    thirdCaptureAvoidanceCount++;
+                    setState(PolarAlignmentState::THIRD_CAPTURE_RA_AVOIDANCE);
+                }
+            }
+            break;
+            
+        case PolarAlignmentState::THIRD_CAPTURE_RA_AVOIDANCE:
+            // 第三次拍摄RA轴避障
+            if (moveToAvoidObstacleRA2()) {
+                setState(PolarAlignmentState::WAITING_THIRD_RA_AVOIDANCE);
+            } else {
+                Logger::Log("PolarAlignment: 第三次拍摄RA轴避障移动失败，请检查环境和焦距设置", LogLevel::ERROR, DeviceType::MAIN);
+                setState(PolarAlignmentState::FAILED);
+            }
+            break;
+            
+        case PolarAlignmentState::WAITING_THIRD_RA_AVOIDANCE:
+            indiServer->getTelescopeStatus(dpMount, Stat);
+            if (Stat == "Idle") {
+                // RA轴避障移动完成，重新开始第三次拍摄
+                Logger::Log("PolarAlignment: 第三次拍摄RA轴避障移动完成，重新开始第三次拍摄", LogLevel::INFO, DeviceType::MAIN);
+                justCompletedObstacleAvoidance = true; // 标记刚刚完成避障
+                setState(PolarAlignmentState::THIRD_CAPTURE);
+            } else {
+                Logger::Log("PolarAlignment: 等待第三次拍摄RA轴避障移动完成,当前状态: " + Stat.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                if (isRunningFlag && !isPausedFlag) {
+                    stateTimer.start(1000); // 1秒后再次检查
                 }
             }
             break;
@@ -931,87 +1065,89 @@ void PolarAlignment::processCurrentState()
             if (calculateDeviation()) {
                 setState(PolarAlignmentState::GUIDING_ADJUSTMENT);
             } else {
+                // 计算偏差失败，校准失败
+                Logger::Log("PolarAlignment: 计算偏差失败，校准失败", LogLevel::ERROR, DeviceType::MAIN);
                 setState(PolarAlignmentState::FAILED);
             }
             break;
-            case PolarAlignmentState::GUIDING_ADJUSTMENT:
-            {
-                static int adjustmentAttempts = 0;
-                adjustmentAttempts++;
-            
-                Logger::Log("PolarAlignment: 开始第 " + std::to_string(adjustmentAttempts) + " 次调整尝试",
-                            LogLevel::INFO, DeviceType::MAIN);
-            
-                if (!captureAndAnalyze(1)) {
-                    Logger::Log("PolarAlignment: 验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
-                    if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
-                    break;
-                }
-            
-                if (!isTargetPositionCached) {
-                    Logger::Log("PolarAlignment: 目标未锁定，请先完成三点校准", LogLevel::ERROR, DeviceType::MAIN);
-                    break;
-                }
-            
-                // 当前实际解算点（只读）
-                const double currentRA  = currentSolveResult.RA_Degree;
-                const double currentDEC = currentSolveResult.DEC_Degree;
-            
-                Logger::Log("PolarAlignment: 单次验证 - 当前: (" + std::to_string(currentRA) + ", " +
-                            std::to_string(currentDEC) + "), 目标(固定): (" +
-                            std::to_string(targetRA) + ", " + std::to_string(targetDEC) + ")",
-                            LogLevel::INFO, DeviceType::MAIN);
-            
-                // —— 用固定目标计算东/北分量与球面距离（不再用 RA/DEC 线性差）——
-                SingleShotGuide guide = delta_to_fixed_target(currentRA, currentDEC, targetRA, targetDEC);
-            
-                // 这些“像 az/alt 偏差”的输出仅为兼容旧接口（单位：度），实义是 EN 分量
-                double east_deg  = guide.east_arcmin  / 60.0;
-                double north_deg = guide.north_arcmin / 60.0;
-                double total_deg = guide.distance_arcmin / 60.0;
-            
-                Logger::Log(
-                    "PolarAlignment: 偏差 - 东 " + std::to_string(guide.east_arcmin) + "′, 北 " +
-                    std::to_string(guide.north_arcmin) + "′, 距离 " + std::to_string(guide.distance_arcmin) +
-                    "′, 方位(自北顺时针) " + std::to_string(guide.bearing_deg_from_north) + "°",
-                    LogLevel::INFO, DeviceType::MAIN
-                );
-            
-                // 生成指导文案（建议改为基于 EN 分量）
-                QString adjustmentRa, adjustmentDec;
-                QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
-                Logger::Log("PolarAlignment: 调整指导: " + adjustmentGuide.toStdString(),
-                            LogLevel::INFO, DeviceType::MAIN);
-            
-                // 发信号给 UI：把 EN 分量通过原参数传出（或新增字段更清晰）
-                emit adjustmentGuideData(
-                    currentRAPosition, currentDECPosition,
-                    currentSolveResult.RA_1, currentSolveResult.RA_0,
-                    currentSolveResult.DEC_2, currentSolveResult.DEC_1,
-                    targetRA, targetDEC,         // 固定目标
-                    east_deg, north_deg,         // 兼容旧“az/alt”槽位
-                    adjustmentRa, adjustmentDec,
-                    cachedFakePolarRA, cachedFakePolarDEC,
-                    realPolarRA, realPolarDEC
-                );
-            
-                // 达标判断用球面距离
-                double precisionThreshold = config.finalVerificationThreshold; // 仍然“度”
-                if (total_deg < precisionThreshold) {
-                    Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
-                                std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
-                    result.raDeviation  = east_deg;
-                    result.decDeviation = north_deg;
-                    result.totalDeviation = total_deg;
-                    adjustmentAttempts = 0;
-                    setState(PolarAlignmentState::FINAL_VERIFICATION);
-                } else {
-                    Logger::Log("PolarAlignment: 精度未达标，继续调整",
-                                LogLevel::WARNING, DeviceType::MAIN);
-                    if (isRunningFlag && !isPausedFlag) stateTimer.start(3000);
-                }
+        case PolarAlignmentState::GUIDING_ADJUSTMENT:
+        {
+            static int adjustmentAttempts = 0;
+            adjustmentAttempts++;
+        
+            Logger::Log("PolarAlignment: 开始第 " + std::to_string(adjustmentAttempts) + " 次调整尝试",
+                        LogLevel::INFO, DeviceType::MAIN);
+        
+            if (!captureAndAnalyze(1)) {
+                Logger::Log("PolarAlignment: 验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+                break;
             }
-            break;
+        
+            if (!isTargetPositionCached) {
+                Logger::Log("PolarAlignment: 目标未锁定，请先完成三点校准", LogLevel::ERROR, DeviceType::MAIN);
+                break;
+            }
+        
+            // 当前实际解算点（只读）
+            const double currentRA  = currentSolveResult.RA_Degree;
+            const double currentDEC = currentSolveResult.DEC_Degree;
+        
+            Logger::Log("PolarAlignment: 单次验证 - 当前: (" + std::to_string(currentRA) + ", " +
+                        std::to_string(currentDEC) + "), 目标(固定): (" +
+                        std::to_string(targetRA) + ", " + std::to_string(targetDEC) + ")",
+                        LogLevel::INFO, DeviceType::MAIN);
+        
+            // —— 用固定目标计算东/北分量与球面距离（不再用 RA/DEC 线性差）——
+            SingleShotGuide guide = delta_to_fixed_target(currentRA, currentDEC, targetRA, targetDEC);
+        
+            // 这些“像 az/alt 偏差”的输出仅为兼容旧接口（单位：度），实义是 EN 分量
+            double east_deg  = guide.east_arcmin  / 60.0;
+            double north_deg = guide.north_arcmin / 60.0;
+            double total_deg = guide.distance_arcmin / 60.0;
+        
+            Logger::Log(
+                "PolarAlignment: 偏差 - 东 " + std::to_string(guide.east_arcmin) + "′, 北 " +
+                std::to_string(guide.north_arcmin) + "′, 距离 " + std::to_string(guide.distance_arcmin) +
+                "′, 方位(自北顺时针) " + std::to_string(guide.bearing_deg_from_north) + "°",
+                LogLevel::INFO, DeviceType::MAIN
+            );
+        
+            // 生成指导文案（建议改为基于 EN 分量）
+            QString adjustmentRa, adjustmentDec;
+            QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
+            Logger::Log("PolarAlignment: 调整指导: " + adjustmentGuide.toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        
+            // 发信号给 UI：把 EN 分量通过原参数传出（或新增字段更清晰）
+            saveAndEmitAdjustmentGuideData(
+                currentRAPosition, currentDECPosition,
+                currentSolveResult.RA_1, currentSolveResult.RA_0,
+                currentSolveResult.DEC_2, currentSolveResult.DEC_1,
+                targetRA, targetDEC,         // 固定目标
+                east_deg, north_deg,         // 兼容旧"az/alt"槽位
+                adjustmentRa, adjustmentDec,
+                cachedFakePolarRA, cachedFakePolarDEC,
+                realPolarRA, realPolarDEC
+            );
+        
+            // 达标判断用球面距离
+            double precisionThreshold = config.finalVerificationThreshold; // 仍然“度”
+            if (total_deg < precisionThreshold) {
+                Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
+                            std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
+                result.raDeviation  = east_deg;
+                result.decDeviation = north_deg;
+                result.totalDeviation = total_deg;
+                adjustmentAttempts = 0;
+                setState(PolarAlignmentState::FINAL_VERIFICATION);
+            } else {
+                Logger::Log("PolarAlignment: 精度未达标，继续调整",
+                            LogLevel::WARNING, DeviceType::MAIN);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(3000);
+            }
+        }
+        break;
             
         case PolarAlignmentState::FINAL_VERIFICATION:
             if (performFinalVerification()) {
@@ -1020,10 +1156,15 @@ void PolarAlignment::processCurrentState()
                 setState(PolarAlignmentState::GUIDING_ADJUSTMENT);
             }
             break;
+            
+            
+            
         case PolarAlignmentState::ADJUSTING_FOR_OBSTACLE:
             if (adjustForObstacle()) {
                 setState(PolarAlignmentState::GUIDING_ADJUSTMENT);
             } else {
+                // 调整避开遮挡物失败，校准失败
+                Logger::Log("PolarAlignment: 调整避开遮挡物失败，校准失败", LogLevel::ERROR, DeviceType::MAIN);
                 setState(PolarAlignmentState::FAILED);
             }
             break;
@@ -1057,16 +1198,19 @@ PolarAlignment::PolarPointCheckResult PolarAlignment::checkPolarPoint()
         isNearPole = false;
     }
 
-    // 无论是否指向极点，都不记录第一个测量点，直接移动DEC轴
-    Logger::Log("PolarAlignment: 无论是否指向极点，都不记录第一个测量点，直接移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
+    // 检查是否在极点（DEC=90°±5°或-90°±5°）
+    bool isAtPole = (currentDEC >= 85.0 && currentDEC <= 90.0) || (currentDEC >= -90.0 && currentDEC <= -85.0);
     
-    // 返回结果，isNearPole字段不再影响后续流程，都返回true表示需要移动DEC轴
-    if (isNearPole) {
-        Logger::Log("PolarAlignment: 当前指向极点，将移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
-        return {true, true, ""};
+    if (isAtPole) {
+        // 在极点，需要移动DEC轴脱离极点
+        Logger::Log("PolarAlignment: 当前位置在极点，需要移动DEC轴脱离极点", LogLevel::INFO, DeviceType::MAIN);
+        decMovedAtStart = true; // 记录移动了DEC轴
+        return {true, true, ""}; // 需要拍摄，也需要移动DEC轴
     } else {
-        Logger::Log("PolarAlignment: 当前未指向极点，也将移动DEC轴", LogLevel::INFO, DeviceType::MAIN);
-        return {true, true, ""};
+        // 不在极点，不移动DEC轴，直接拍摄
+        Logger::Log("PolarAlignment: 当前位置不在极点，不移动DEC轴，直接拍摄", LogLevel::INFO, DeviceType::MAIN);
+        decMovedAtStart = false; // 记录没有移动DEC轴
+        return {true, false, ""}; // 需要拍摄，但不需要移动DEC轴
     }
 }
 
@@ -1103,7 +1247,45 @@ bool PolarAlignment::moveDecAxisAway()
     // 直接移动到目标位置
     bool success = moveTelescopeToAbsolutePosition(currentRA, targetDEC);
     return success;
+}
 
+bool PolarAlignment::moveDecAxisForObstacleAvoidance()
+{
+    Logger::Log("PolarAlignment: DEC轴避障移动（移动到相反位置）", LogLevel::INFO, DeviceType::MAIN);
+    if (!dpMount) {
+        Logger::Log("PolarAlignment: 望远镜设备不可用", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+    
+    // 获取当前望远镜位置
+    double currentRA_Hours, currentDEC_Degree;
+    indiServer->getTelescopeRADECJNOW(dpMount, currentRA_Hours, currentDEC_Degree);
+    double currentRA = Tools::HourToDegree(currentRA_Hours);
+    double currentDEC = currentDEC_Degree;
+    
+    Logger::Log("PolarAlignment: 当前位置 - RA: " + std::to_string(currentRA) + "°, DEC: " + std::to_string(currentDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // DEC轴避障移动：移动到相反位置（以极点为对称中心）
+    double targetDEC;
+    if (isNorthernHemisphere()) {
+        // 北半球：从当前DEC移动到相反位置（以90°为对称中心）
+        // 如果当前DEC是85°，则移动到95°（但DEC不能超过90°，所以移动到85°）
+        // 实际上是以90°为对称中心，移动到对称位置
+        targetDEC = 90.0 - (currentDEC - 90.0); // 以90°为对称中心
+        if (targetDEC > 90.0) targetDEC = 90.0; // 确保不超出范围
+        if (targetDEC < 0) targetDEC = 0; // 确保不超出范围
+    } else {
+        // 南半球：从当前DEC移动到相反位置（以-90°为对称中心）
+        targetDEC = -90.0 - (currentDEC - (-90.0)); // 以-90°为对称中心
+        if (targetDEC < -90.0) targetDEC = -90.0; // 确保不超出范围
+        if (targetDEC > 0) targetDEC = 0; // 确保不超出范围
+    }
+    
+    Logger::Log("PolarAlignment: DEC轴避障移动到相反位置DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 直接移动到目标位置
+    bool success = moveTelescopeToAbsolutePosition(currentRA, targetDEC);
+    return success;
 }
 
 bool PolarAlignment::captureAndAnalyze(int attempt)
@@ -1136,7 +1318,6 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
     if (!captureImage(exposureTime)) {
         Logger::Log("PolarAlignment: 图像拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
         captureFailureCount++;
-        currentRetryAttempt = attempt;
         
         // 检查是否达到两次拍摄失败的限制
         if (captureFailureCount >= 2) {
@@ -1154,7 +1335,6 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
     if (!waitForCaptureComplete()) {
         Logger::Log("PolarAlignment: 拍摄超时", LogLevel::WARNING, DeviceType::MAIN);
         captureFailureCount++;
-        currentRetryAttempt = attempt;
         
         // 检查是否达到两次拍摄失败的限制
         if (captureFailureCount >= 2) {
@@ -1174,45 +1354,17 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
     // 解析图像
     if (!solveImage(lastCapturedImage)) {
         Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
-        solveFailureCount++;
-        currentRetryAttempt = attempt;
-        
-        // 解析失败时，增加重试次数限制，允许更多重试
-        if (solveFailureCount >= config.maxRetryAttempts) {
-            Logger::Log("PolarAlignment: 解析失败次数过多，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
-            currentRAAngle *= 0.8; // 减小RA角度
-            solveFailureCount = 0; // 重置解析失败计数
-            return false; // 返回false让状态机重新尝试
-        }
-        
-        // 解析失败但未达到最大重试次数，继续重试
-        Logger::Log("PolarAlignment: 解析失败，当前失败次数: " + std::to_string(solveFailureCount) + 
-                    "/" + std::to_string(config.maxRetryAttempts) + "，继续重试", LogLevel::WARNING, DeviceType::MAIN);
-        return false; // 返回false让状态机重新尝试
+        return false; // 直接返回失败，不进行重试
     }
     
     // 等待解析完成
     if (!waitForSolveComplete()) {
         Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
-        solveFailureCount++;
-        currentRetryAttempt = attempt;
-        
-        // 解析超时时，增加重试次数限制，允许更多重试
-        if (solveFailureCount >= config.maxRetryAttempts) {
-            Logger::Log("PolarAlignment: 解析超时次数过多，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
-            currentRAAngle *= 0.8; // 减小RA角度
-            solveFailureCount = 0; // 重置解析失败计数
-            return false; // 返回false让状态机重新尝试
-        }
-        
-        // 解析超时但未达到最大重试次数，继续重试
-        Logger::Log("PolarAlignment: 解析超时，当前失败次数: " + std::to_string(solveFailureCount) + 
-                    "/" + std::to_string(config.maxRetryAttempts) + "，继续重试", LogLevel::WARNING, DeviceType::MAIN);
-        return false; // 返回false让状态机重新尝试
+        return false; // 直接返回失败，不进行重试
     }
     
-    // 解析成功，重置解析失败计数
-    solveFailureCount = 0;
+    // 解析成功，但不立即重置解析失败计数，让重试逻辑处理
+    // solveFailureCount = 0;
     
     // 获取解析结果
     SloveResults analysisResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
@@ -1227,29 +1379,20 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
         if (currentMeasurementIndex < 3) {
             measurements.append(analysisResult);
             currentMeasurementIndex++;
-            currentRetryAttempt = 0;
+            // 成功完成一个测量点，重置失败次数
+            solveFailureCount = 0;
+            firstCaptureAvoidanceCount = 0; // 重置第一次拍摄避障计数
+            secondCaptureAvoidanceCount = 0; // 重置第二次拍摄避障计数
+            thirdCaptureAvoidanceCount = 0; // 重置第三次拍摄避障计数
+            decMovedToAvoidObstacle = false; // 重置DEC移动标志
+            secondCaptureAvoided = false; // 重置第二次拍摄避障标志
+            captureAttemptCount = 0; // 重置拍摄尝试计数
             Logger::Log("PolarAlignment: 拍摄和分析成功，测量次数 " + std::to_string(currentMeasurementIndex), LogLevel::INFO, DeviceType::MAIN);
             
             QString adjustmentRa = "";
             QString adjustmentDec = "";
             
-            // 保存调整指导数据到容器
-            AdjustmentGuideData guideData;
-            guideData.ra = analysisResult.RA_Degree;
-            guideData.dec = analysisResult.DEC_Degree;
-            guideData.maxRa = analysisResult.RA_1;
-            guideData.minRa = analysisResult.RA_0;
-            guideData.maxDec = analysisResult.DEC_2;
-            guideData.minDec = analysisResult.DEC_1;
-            guideData.targetRa = 0.0;
-            guideData.targetDec = 0.0;
-            guideData.offsetRa = 0.0;
-            guideData.offsetDec = 0.0;
-            guideData.adjustmentRa = adjustmentRa;
-            guideData.adjustmentDec = adjustmentDec;
-            guideData.timestamp = QDateTime::currentDateTime();
-            
-            adjustmentGuideDataHistory.append(guideData);
+            // 校准点数据将在emit adjustmentGuideData时保存
             
             // emit adjustmentGuideData(analysisResult.RA_Degree, analysisResult.DEC_Degree,
             //             analysisResult.RA_1, analysisResult.RA_0, 
@@ -1258,34 +1401,38 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
             //             adjustmentRa, adjustmentDec);
         } else {
             Logger::Log("PolarAlignment: 已达到最大测量次数，跳过添加", LogLevel::WARNING, DeviceType::MAIN);
-            currentRetryAttempt = 0;
         }
         currentRAPosition = analysisResult.RA_Degree;
         currentDECPosition = analysisResult.DEC_Degree;
         return true;
     } else {
         Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
-        solveFailureCount++;
-        currentRetryAttempt = attempt;
-        
-        // 解析结果无效时，增加重试次数限制，允许更多重试
-        if (solveFailureCount >= config.maxRetryAttempts) {
-            Logger::Log("PolarAlignment: 解析结果无效次数过多，修正RA角度重新进行", LogLevel::WARNING, DeviceType::MAIN);
-            currentRAAngle *= 0.8; // 减小RA角度
-            solveFailureCount = 0; // 重置解析失败计数
-            return false; // 返回false让状态机重新尝试
-        }
-        
-        // 解析结果无效但未达到最大重试次数，继续重试
-        Logger::Log("PolarAlignment: 解析结果无效，当前失败次数: " + std::to_string(solveFailureCount) + 
-                    "/" + std::to_string(config.maxRetryAttempts) + "，继续重试", LogLevel::WARNING, DeviceType::MAIN);
-        return false; // 返回false让状态机重新尝试
+        return false; // 直接返回失败，不进行重试
     }
 }
 
 bool PolarAlignment::moveRAAxis()
 {
-    Logger::Log("PolarAlignment: 移动RA轴 " + std::to_string(currentRAAngle) + " 度", LogLevel::INFO, DeviceType::MAIN);
+    double moveAngle = currentRAAngle;
+    
+    // 根据当前状态和避障标志决定移动方向
+    if (currentState == PolarAlignmentState::MOVING_RA_SECOND) {
+        // 第三次移动：根据是否进行了第二次拍摄避障决定方向
+        if (secondCaptureAvoided) {
+            // 避障后第三次移动：RA - currentRAAngle
+            moveAngle = -currentRAAngle;
+            Logger::Log("PolarAlignment: 避障后第三次移动RA轴 " + std::to_string(moveAngle) + " 度", LogLevel::INFO, DeviceType::MAIN);
+        } else {
+            // 未避障第三次移动：RA + currentRAAngle
+            moveAngle = currentRAAngle;
+            Logger::Log("PolarAlignment: 未避障第三次移动RA轴 " + std::to_string(moveAngle) + " 度", LogLevel::INFO, DeviceType::MAIN);
+        }
+    } else {
+        // 第一次移动：正常移动 RA + currentRAAngle
+        moveAngle = currentRAAngle;
+        Logger::Log("PolarAlignment: 第一次移动RA轴 " + std::to_string(moveAngle) + " 度", LogLevel::INFO, DeviceType::MAIN);
+    }
+    
     if (!dpMount) {
         Logger::Log("PolarAlignment: 望远镜设备不可用", LogLevel::ERROR, DeviceType::MAIN);
         return false;
@@ -1293,8 +1440,35 @@ bool PolarAlignment::moveRAAxis()
     
     // 移动RA轴到下一个位置
     // moveTelescope函数内部已经包含了等待移动完成的逻辑，不需要再次调用waitForMovementComplete
-    bool success = moveTelescope(currentRAAngle, 0.0);
+    bool success = moveTelescope(moveAngle, 0.0);
     return success;
+}
+
+bool PolarAlignment::moveToAvoidObstacle()
+{
+    Logger::Log("PolarAlignment: 第一次拍摄失败，移动到反向位置", LogLevel::INFO, DeviceType::MAIN);
+    if (!dpMount) {
+        Logger::Log("PolarAlignment: 望远镜设备不可用", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+    
+    // 获取当前望远镜位置
+    double currentRA_Hours, currentDEC_Degree;
+    indiServer->getTelescopeRADECJNOW(dpMount, currentRA_Hours, currentDEC_Degree);
+    double currentRA = Tools::HourToDegree(currentRA_Hours);
+    double currentDEC = currentDEC_Degree;
+    
+    Logger::Log("PolarAlignment: 当前位置 - RA: " + std::to_string(currentRA) + "°, DEC: " + std::to_string(currentDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 第一次拍摄失败：移动到反向位置（RA+180°）
+    double targetRA = currentRA + 180.0;
+    if (targetRA >= 360.0) targetRA -= 360.0; // 确保RA在0-360度范围内
+    double targetDEC = currentDEC; // DEC保持不变
+    
+    Logger::Log("PolarAlignment: 移动到反向位置，目标RA: " + std::to_string(targetRA) + "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 移动到目标位置
+    return moveTelescopeToAbsolutePosition(targetRA, targetDEC);
 }
 
 bool PolarAlignment::calculateDeviation()
@@ -1387,25 +1561,10 @@ bool PolarAlignment::calculateDeviation()
         isRealPolarCached  = true;
     }
 
-    // 记录调整历史（保持你原有变量语义）
-    AdjustmentGuideData guideData;
-    guideData.ra          = currentRAPosition;
-    guideData.dec         = currentDECPosition;
-    guideData.maxRa       = currentSolveResult.RA_1;
-    guideData.minRa       = currentSolveResult.RA_0;
-    guideData.maxDec      = currentSolveResult.DEC_2;
-    guideData.minDec      = currentSolveResult.DEC_1;
-    guideData.targetRa    = targetRA;          // 应移动到的目标位置
-    guideData.targetDec   = targetDEC;
-    guideData.offsetRa    = result.raDeviation;   // 切平面分量（用于 UI），不是 RA 线性量
-    guideData.offsetDec   = result.decDeviation;
-    guideData.adjustmentRa  = adjustmentRa;
-    guideData.adjustmentDec = adjustmentDec;
-    guideData.timestamp   = QDateTime::currentDateTime();
-    adjustmentGuideDataHistory.append(guideData);
+    // 解析数据将在emit adjustmentGuideData时保存
 
     // 发出信号：当前位置、目标位置、偏差值、假极轴、真极轴
-    emit adjustmentGuideData(
+    saveAndEmitAdjustmentGuideData(
         currentRAPosition, currentDECPosition,
         currentSolveResult.RA_1, currentSolveResult.RA_0,
         currentSolveResult.DEC_2, currentSolveResult.DEC_1,
@@ -1687,27 +1846,27 @@ bool PolarAlignment::waitForCaptureComplete()
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
             if (true) {
-                if (currentState == PolarAlignmentState::CHECKING_POLAR_POINT) {
-                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/1.fits");
-                }
-                else if (currentState == PolarAlignmentState::FIRST_CAPTURE) {
+                // if (currentState == PolarAlignmentState::CHECKING_POLAR_POINT) {
+                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/1.fits");
+                // }
+                if (currentState == PolarAlignmentState::FIRST_CAPTURE) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
                 }
                 else if (currentState == PolarAlignmentState::SECOND_CAPTURE) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/3.fits");
                 }
-                else if (currentState == PolarAlignmentState::THIRD_CAPTURE) {
-                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
-                }else {
-                    if (testimage > 8) {
-                        testimage = 5;
-                    }
-                    if (testimage < 1) {
-                        testimage = 1;
-                    }
-                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/%1.fits").arg(testimage);
-                    testimage++;
-                }
+                // else if (currentState == PolarAlignmentState::THIRD_CAPTURE) {
+                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
+                // }else {
+                //     if (testimage > 8) {
+                //         testimage = 5;
+                //     }
+                //     if (testimage < 1) {
+                //         testimage = 1;
+                //     }
+                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/%1.fits").arg(testimage);
+                //     testimage++;
+                // }
             }
             else {
                 lastCapturedImage = QString("/dev/shm/ccd_simulator.fits");
@@ -1899,7 +2058,6 @@ void PolarAlignment::handleAnalysisFailure(int attempt)
     if (attempt >= config.maxRetryAttempts) {
         handleCriticalFailure();
     } else {
-        currentRetryAttempt = attempt + 1;
     }
 }
 
@@ -2292,8 +2450,9 @@ bool PolarAlignment::isFirstCaptureFailure()
 {
     // 判断是否为第一次拍摄失败
     return (currentState == PolarAlignmentState::FIRST_CAPTURE || 
-            currentState == PolarAlignmentState::FIRST_ANALYSIS || 
-            currentState == PolarAlignmentState::FIRST_RECOVERY);
+            currentState == PolarAlignmentState::FIRST_CAPTURE_LONG_EXPOSURE || 
+            currentState == PolarAlignmentState::FIRST_CAPTURE_DEC_AVOIDANCE ||
+            currentState == PolarAlignmentState::WAITING_FIRST_DEC_AVOIDANCE);
 }
 
 bool PolarAlignment::handlePostMovementFailure()
@@ -3139,35 +3298,47 @@ bool PolarAlignment::calculatePolarAlignmentAdjustment(double raDeviation, doubl
 
 void PolarAlignment::sendValidAdjustmentGuideData()
 {
-    Logger::Log("PolarAlignment: 发送满足条件的调整指导数据", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("PolarAlignment: 发送校准点和最后解析数据", LogLevel::INFO, DeviceType::MAIN);
     
     if (adjustmentGuideDataHistory.isEmpty()) {
         Logger::Log("PolarAlignment: 调整指导数据容器为空", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
     
-    // 发送所有offsetRa和offsetDec都为0的数据
+    // 发送三个校准点时的数据（offsetRa和offsetDec都为0的数据）
+    int calibrationPointCount = 0;
     for (const AdjustmentGuideData& data : adjustmentGuideDataHistory) {
-        if (data.offsetRa == 0.0 && data.offsetDec == 0.0) {
-            Logger::Log("PolarAlignment: 发送零偏移数据 - RA: " + std::to_string(data.ra) + 
-                       "°, DEC: " + std::to_string(data.dec) + "°", LogLevel::INFO, DeviceType::MAIN);
+        if (data.offsetRa == 0.0 && data.offsetDec == 0.0 && data.targetRa == -1.0) {
+            calibrationPointCount++;
+            Logger::Log("PolarAlignment: 发送校准点" + std::to_string(calibrationPointCount) + 
+                       " - RA: " + std::to_string(data.ra) + "°, DEC: " + std::to_string(data.dec) + "°", 
+                       LogLevel::INFO, DeviceType::MAIN);
             
             emit adjustmentGuideData(data.ra, data.dec, data.maxRa, data.minRa, 
                                    data.maxDec, data.minDec, data.targetRa, data.targetDec,
                                    data.offsetRa, data.offsetDec, data.adjustmentRa, data.adjustmentDec,
-                                   0.0, 0.0, 0.0, 0.0);
+                                   data.fakePolarRA, data.fakePolarDEC, data.realPolarRA, data.realPolarDEC);
+            
+            // 只发送前三个校准点
+            if (calibrationPointCount >= 3) {
+                break;
+            }
         }
     }
     
-    // 发送最后一个星点的数据
+    // 发送最后一次解析的数据（最后一个星点的数据）
     const AdjustmentGuideData& lastData = adjustmentGuideDataHistory.last();
-    Logger::Log("PolarAlignment: 发送最后一个星点数据 - RA: " + std::to_string(lastData.ra) + 
-               "°, DEC: " + std::to_string(lastData.dec) + "°", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("PolarAlignment: 发送最后解析数据 - RA: " + std::to_string(lastData.ra) + 
+               "°, DEC: " + std::to_string(lastData.dec) + "°, 偏移RA: " + std::to_string(lastData.offsetRa) + 
+               "°, 偏移DEC: " + std::to_string(lastData.offsetDec) + "°", LogLevel::INFO, DeviceType::MAIN);
     
     emit adjustmentGuideData(lastData.ra, lastData.dec, lastData.maxRa, lastData.minRa, 
                            lastData.maxDec, lastData.minDec, lastData.targetRa, lastData.targetDec,
                            lastData.offsetRa, lastData.offsetDec, lastData.adjustmentRa, lastData.adjustmentDec,
-                           0.0, 0.0, 0.0, 0.0);
+                           lastData.fakePolarRA, lastData.fakePolarDEC, lastData.realPolarRA, lastData.realPolarDEC);
+    
+    Logger::Log("PolarAlignment: 已发送" + std::to_string(calibrationPointCount) + "个校准点和1个最后解析数据", 
+               LogLevel::INFO, DeviceType::MAIN);
 }
 
 void PolarAlignment::clearAdjustmentGuideData()
@@ -3176,7 +3347,199 @@ void PolarAlignment::clearAdjustmentGuideData()
     adjustmentGuideDataHistory.clear();
 }
 
+void PolarAlignment::saveAndEmitAdjustmentGuideData(double ra, double dec, double maxRa, double minRa, 
+                                                   double maxDec, double minDec, double targetRa, double targetDec,
+                                                   double offsetRa, double offsetDec, QString adjustmentRa, QString adjustmentDec,
+                                                   double fakePolarRA, double fakePolarDEC, double realPolarRA, double realPolarDEC)
+{
+    // 创建数据结构
+    AdjustmentGuideData data;
+    data.ra = ra;
+    data.dec = dec;
+    data.maxRa = maxRa;
+    data.minRa = minRa;
+    data.maxDec = maxDec;
+    data.minDec = minDec;
+    data.targetRa = targetRa;
+    data.targetDec = targetDec;
+    data.offsetRa = offsetRa;
+    data.offsetDec = offsetDec;
+    data.adjustmentRa = adjustmentRa;
+    data.adjustmentDec = adjustmentDec;
+    data.fakePolarRA = fakePolarRA;
+    data.fakePolarDEC = fakePolarDEC;
+    data.realPolarRA = realPolarRA;
+    data.realPolarDEC = realPolarDEC;
+    data.timestamp = QDateTime::currentDateTime();
+    
+    // 判断是校准点还是解析数据
+    bool isCalibrationPoint = (offsetRa == 0.0 && offsetDec == 0.0 && targetRa == -1.0);
+    
+    if (isCalibrationPoint) {
+        // 校准点数据：最多保存3个
+        int calibrationPointCount = 0;
+        for (const AdjustmentGuideData& existingData : adjustmentGuideDataHistory) {
+            if (existingData.offsetRa == 0.0 && existingData.offsetDec == 0.0 && existingData.targetRa == -1.0) {
+                calibrationPointCount++;
+            }
+        }
+        
+        if (calibrationPointCount < 3) {
+            adjustmentGuideDataHistory.append(data);
+            Logger::Log("PolarAlignment: 保存校准点" + std::to_string(calibrationPointCount + 1) + 
+                       " - RA: " + std::to_string(ra) + "°, DEC: " + std::to_string(dec) + "°", 
+                       LogLevel::INFO, DeviceType::MAIN);
+        } else {
+            Logger::Log("PolarAlignment: 已有3个校准点，跳过保存新的校准点", LogLevel::WARNING, DeviceType::MAIN);
+        }
+    } else {
+        // 解析数据：替换最后一个解析数据（第4个位置）
+        // 先移除之前的解析数据
+        for (int i = adjustmentGuideDataHistory.size() - 1; i >= 0; i--) {
+            const AdjustmentGuideData& existingData = adjustmentGuideDataHistory[i];
+            if (existingData.offsetRa != 0.0 || existingData.offsetDec != 0.0) {
+                adjustmentGuideDataHistory.removeAt(i);
+                Logger::Log("PolarAlignment: 移除旧的解析数据", LogLevel::INFO, DeviceType::MAIN);
+                break;
+            }
+        }
+        
+        // 添加新的解析数据
+        adjustmentGuideDataHistory.append(data);
+        Logger::Log("PolarAlignment: 保存解析数据 - RA: " + std::to_string(ra) + "°, DEC: " + std::to_string(dec) + 
+                   "°, 偏移RA: " + std::to_string(offsetRa) + "°, 偏移DEC: " + std::to_string(offsetDec) + "°", 
+                   LogLevel::INFO, DeviceType::MAIN);
+    }
+    
+    // 发送信号
+    emit adjustmentGuideData(ra, dec, maxRa, minRa, maxDec, minDec, targetRa, targetDec,
+                           offsetRa, offsetDec, adjustmentRa, adjustmentDec,
+                           fakePolarRA, fakePolarDEC, realPolarRA, realPolarDEC);
+}
+
+void PolarAlignment::addAdjustmentGuideData(const AdjustmentGuideData& data)
+{
+    // 这个方法现在主要用于重新发送，不再用于添加新数据
+    Logger::Log("PolarAlignment: addAdjustmentGuideData已废弃，请使用saveAndEmitAdjustmentGuideData", 
+               LogLevel::WARNING, DeviceType::MAIN);
+}
+
 int PolarAlignment::getAdjustmentGuideDataCount() const
 {
     return adjustmentGuideDataHistory.size();
+}
+
+void PolarAlignment::resendAllAdjustmentGuideData()
+{
+    Logger::Log("PolarAlignment: 重新发送所有保存的调整指导数据", LogLevel::INFO, DeviceType::MAIN);
+    
+    if (adjustmentGuideDataHistory.isEmpty()) {
+        Logger::Log("PolarAlignment: 调整指导数据容器为空", LogLevel::WARNING, DeviceType::MAIN);
+        return;
+    }
+    
+    int calibrationPointCount = 0;
+    int parsedDataCount = 0;
+    
+    for (const AdjustmentGuideData& data : adjustmentGuideDataHistory) {
+        if (data.offsetRa == 0.0 && data.offsetDec == 0.0 && data.targetRa == -1.0) {
+            // 校准点数据
+            calibrationPointCount++;
+            Logger::Log("PolarAlignment: 重新发送校准点" + std::to_string(calibrationPointCount) + 
+                       " - RA: " + std::to_string(data.ra) + "°, DEC: " + std::to_string(data.dec) + "°", 
+                       LogLevel::INFO, DeviceType::MAIN);
+        } else {
+            // 解析数据
+            parsedDataCount++;
+            Logger::Log("PolarAlignment: 重新发送解析数据" + std::to_string(parsedDataCount) + 
+                       " - RA: " + std::to_string(data.ra) + "°, DEC: " + std::to_string(data.dec) + 
+                       "°, 偏移RA: " + std::to_string(data.offsetRa) + "°, 偏移DEC: " + std::to_string(data.offsetDec) + "°", 
+                       LogLevel::INFO, DeviceType::MAIN);
+        }
+        
+        // 发送完整的数据
+        emit adjustmentGuideData(data.ra, data.dec, data.maxRa, data.minRa, 
+                               data.maxDec, data.minDec, data.targetRa, data.targetDec,
+                               data.offsetRa, data.offsetDec, data.adjustmentRa, data.adjustmentDec,
+                               data.fakePolarRA, data.fakePolarDEC, data.realPolarRA, data.realPolarDEC);
+    }
+    
+    Logger::Log("PolarAlignment: 已重新发送" + std::to_string(calibrationPointCount) + "个校准点和" + 
+               std::to_string(parsedDataCount) + "个解析数据", LogLevel::INFO, DeviceType::MAIN);
+}
+
+
+bool PolarAlignment::moveToAvoidObstacleRA1()
+{
+    Logger::Log("PolarAlignment: 第二次拍摄失败，RA-2*currentRAAngle", LogLevel::INFO, DeviceType::MAIN);
+    if (!dpMount) {
+        Logger::Log("PolarAlignment: 望远镜设备不可用", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+    
+    // 获取当前望远镜位置
+    double currentRA_Hours, currentDEC_Degree;
+    indiServer->getTelescopeRADECJNOW(dpMount, currentRA_Hours, currentDEC_Degree);
+    double currentRA = Tools::HourToDegree(currentRA_Hours);
+    double currentDEC = currentDEC_Degree;
+    
+    Logger::Log("PolarAlignment: 当前位置 - RA: " + std::to_string(currentRA) + "°, DEC: " + std::to_string(currentDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 第二次拍摄失败：RA - 2*currentRAAngle（正常移动是RA+currentRAAngle，避障应该是RA-2*currentRAAngle）
+    double targetRA = currentRA - 2.0 * currentRAAngle;
+    if (targetRA < 0) targetRA += 360.0; // 确保RA在0-360度范围内
+    if (targetRA >= 360.0) targetRA -= 360.0; // 确保RA在0-360度范围内
+    double targetDEC = currentDEC; // 保持DEC不变
+    
+    Logger::Log("PolarAlignment: RA-2*currentRAAngle，目标位置 - RA: " + std::to_string(targetRA) + "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 移动到目标位置避开遮挡
+    bool success = moveTelescopeToAbsolutePosition(targetRA, targetDEC);
+    if (success) {
+        Logger::Log("PolarAlignment: 第一次RA轴避障移动命令发送成功", LogLevel::INFO, DeviceType::MAIN);
+    }
+    return success;
+}
+
+bool PolarAlignment::moveToAvoidObstacleRA2()
+{
+    Logger::Log("PolarAlignment: 第三次拍摄失败，根据移动方向取反", LogLevel::INFO, DeviceType::MAIN);
+    if (!dpMount) {
+        Logger::Log("PolarAlignment: 望远镜设备不可用", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+    
+    // 获取当前望远镜位置
+    double currentRA_Hours, currentDEC_Degree;
+    indiServer->getTelescopeRADECJNOW(dpMount, currentRA_Hours, currentDEC_Degree);
+    double currentRA = Tools::HourToDegree(currentRA_Hours);
+    double currentDEC = currentDEC_Degree;
+    
+    Logger::Log("PolarAlignment: 当前位置 - RA: " + std::to_string(currentRA) + "°, DEC: " + std::to_string(currentDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 第三次拍摄失败：根据移动方向取反，移动距离为currentRAAngle/2
+    double targetRA;
+    if (secondCaptureAvoided) {
+        // 如果进行了第二次拍摄避障，第三次移动是RA - currentRAAngle，避障应该是RA + currentRAAngle/2
+        targetRA = currentRA + currentRAAngle / 2.0;
+        Logger::Log("PolarAlignment: 避障后第三次拍摄失败，RA + currentRAAngle/2", LogLevel::INFO, DeviceType::MAIN);
+    } else {
+        // 如果未进行第二次拍摄避障，第三次移动是RA + currentRAAngle，避障应该是RA - currentRAAngle/2
+        targetRA = currentRA - currentRAAngle / 2.0;
+        Logger::Log("PolarAlignment: 未避障第三次拍摄失败，RA - currentRAAngle/2", LogLevel::INFO, DeviceType::MAIN);
+    }
+    
+    if (targetRA < 0) targetRA += 360.0; // 确保RA在0-360度范围内
+    if (targetRA >= 360.0) targetRA -= 360.0;
+    
+    double targetDEC = currentDEC; // 保持DEC不变
+    
+    Logger::Log("PolarAlignment: 根据移动方向取反(currentRAAngle/2)，目标位置 - RA: " + std::to_string(targetRA) + "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 移动到目标位置避开遮挡
+    bool success = moveTelescopeToAbsolutePosition(targetRA, targetDEC);
+    if (success) {
+        Logger::Log("PolarAlignment: 第二次RA轴避障移动命令发送成功", LogLevel::INFO, DeviceType::MAIN);
+    }
+    return success;
 }

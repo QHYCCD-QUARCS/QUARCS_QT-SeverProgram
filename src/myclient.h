@@ -101,6 +101,7 @@ class MyClient : public INDI::BaseClient
         uint32_t getTelescopePark(INDI::BaseDevice *dp,bool &isParked);
         uint32_t setTelescopePark(INDI::BaseDevice *dp,bool isParked);
         uint32_t setTelescopeHomeInit(INDI::BaseDevice *dp,QString command);
+        uint32_t getTelescopeMoving(INDI::BaseDevice *dp);
 
         uint32_t getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed);
         uint32_t setTelescopeSlewRate(INDI::BaseDevice *dp,int speed);
@@ -110,6 +111,8 @@ class MyClient : public INDI::BaseClient
 
 
         uint32_t setAutoFlip(INDI::BaseDevice *dp,bool ON);
+        uint32_t setMinutesPastMeridian(INDI::BaseDevice *dp,double Eastvalue , double Westvalue);
+        uint32_t getMinutesPastMeridian(INDI::BaseDevice *dp,double &Eastvalue, double &Westvalue);
         uint32_t setAUXENCODERS(INDI::BaseDevice *dp);
         uint32_t getTelescopeMoveWE(INDI::BaseDevice *dp,QString &statu) ;
         uint32_t setTelescopeMoveWE(INDI::BaseDevice *dp,QString command);
@@ -133,11 +136,7 @@ class MyClient : public INDI::BaseClient
 
         uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu);
         
-        
-        // 添加外部完成信号控制
-        void setExternalSlewCompleteSignal(bool complete) {
-            externalSlewComplete = complete;
-        }
+    
 
 
         //--------------------CFW API
@@ -233,8 +232,7 @@ class MyClient : public INDI::BaseClient
         // 存储设备名字的列表
         std::vector<std::string> deviceNames;
 
-        // indi发出goto完成信号标志
-        bool externalSlewComplete = false;
+
         
 
     ImageReceivedCallback imageReceivedCallback;

@@ -44,6 +44,7 @@
 #include <chrono>
 #include <cmath>
 #include <math.h>
+#include <QElapsedTimer>
 
 #include <filesystem>
 #include <filesystem>  //（按原文件保留重复包含）
@@ -106,6 +107,20 @@ struct StarMatch
     int vector1_id = -1, vector2_id = -1, vector3_id = -1; // 关联向量编号
     bool isMatch1 = false, isMatch2 = false, isMatch3 = false; // 各向量是否匹配
 };
+
+/**
+ * @brief 翻转事件类型
+ */
+enum class FlipEvent { None, Started, Done, Failed };
+
+/**
+ * @brief 中天翻转状态
+ */
+struct MeridianStatus {
+    FlipEvent event = FlipEvent::None;
+    double etaMinutes = std::numeric_limits<double>::quiet_NaN(); // >0 距中天；<0 已过中天
+};
+
 
 /*
 //*************************************************
@@ -363,6 +378,7 @@ public:
     QVector<QString> ConnectDriverList;   // 已连接驱动名
     QVector<QString> INDI_Driver_List;    // INDI 驱动列表缓存
     QVector<ConnectedDevice> ConnectedDevices; // 已连接设备详细列表
+
 
 /**********************  图像采集/处理（FITS/JPG/PNG/伪彩）  **********************/
 public:
@@ -795,6 +811,12 @@ public:
      * @return 球面坐标
      */
     SphericalCoordinates TelescopeControl_GetRaDec();
+
+    /**
+     * @brief 轮询中天翻转事件
+     * @return 翻转事件类型
+     */
+    MeridianStatus checkMeridianStatus();
 
     /**
      * @brief 单次图像板解
@@ -1275,6 +1297,11 @@ public:
      */
     void getMainCameraParameters();
 
+    /**
+     * @brief 获取赤道仪参数（自动翻转、东边分钟过中天、西边分钟过中天）
+     */
+    void getMountParameters();
+
 /**********************  客户端设置（持久化）  **********************/
 public:
     /**
@@ -1327,17 +1354,16 @@ public:
     QString glMainCameraStatu;            // 主相机状态
     QElapsedTimer glMainCameraCaptureTimer; // 拍摄计时
 
+    bool isAutoFlip = false;                  // 是否自动翻转
+    double EastMinutesPastMeridian = 10;       // 东边分钟过中天
+    double WestMinutesPastMeridian = 10;       // 西边分钟过中天
+
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
-    #ifdef __linux__
-        #ifdef __arm__  // 树莓派或其他ARM系统
-            std::string vueImagePath = "/var/www/html/img/";
-        #else  // Ubuntu等x86_64系统
-            std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
-        #endif
-    #else
-        // 其他操作系统的默认路径
-        std::string vueImagePath = "/var/www/html/img/";
-    #endif
+ 
+    // std::string vueImagePath = "/var/www/html/img/";
+
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
     std::string PriorROIImage = "NULL";    // 上一帧 ROI 图
     std::string PriorCaptureImage = "NULL";// 上一帧拍摄图
