@@ -481,6 +481,13 @@ private:
     bool performFinalVerification();
     
     /**
+     * @brief 执行一次指导阶段的重算与信号发送
+     * 在 GUIDING_ADJUSTMENT 状态下调用，完成一次拍摄解析→偏差重算→UI 通知→达标判定→状态流转。
+     * @return 是否成功执行本次指导步骤
+     */
+    bool performGuidanceAdjustmentStep();
+    
+    /**
      * @brief 生成调整指导信息
      * @param adjustmentRa 调整指导RA
      * @param adjustmentDec 调整指导DEC

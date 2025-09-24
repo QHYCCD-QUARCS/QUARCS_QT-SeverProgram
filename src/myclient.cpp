@@ -1340,8 +1340,6 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
                         mountState.isHoming = false;
                         Logger::Log("indi_client | setTelescopeHomeInit | HOME_INIT completed",
                                     LogLevel::INFO, DeviceType::CAMERA);
-                        mountState.Home_RA_Hours   = eq->np[0].value;
-                        mountState.Home_DEC_Degree = eq->np[1].value;
                         return;
                     }
                 }else{
@@ -1383,37 +1381,50 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
         if (mountState.isMovingNow() || mountState.isParked)
         {
             Logger::Log("indi_client | setTelescopeHomeInit | Telescope is moving or parked, return...",
-                        LogLevel::INFO, DeviceType::CAMERA);
+                        LogLevel::INFO, DeviceType::MOUNT);
             return QHYCCD_ERROR;
         }
         
 
         mountState.isHoming = true;
-        setTelescopeRADECJNOW(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree);
+        mountState.updateHomeRAHours(mountState.Latitude_Degree, mountState.Longitude_Degree);
+        if (mountState.isTracking)
+        {
+            uint32_t result = slewTelescopeJNowNonBlock(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree,true);
+            if (result != QHYCCD_SUCCESS)
+            {
+                Logger::Log("indi_client | setTelescopeHomeInit | Fallback: RETURN_HOME by RA/DEC goto failed",
+                            LogLevel::ERROR, DeviceType::MOUNT);
+                mountState.isHoming = false;
+                return QHYCCD_ERROR;
+            }
+        }
+        else
+        {
+            uint32_t result = slewTelescopeJNowNonBlock(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree,false);
+            if (result != QHYCCD_SUCCESS)
+            {
+                Logger::Log("indi_client | setTelescopeHomeInit | Fallback: RETURN_HOME by RA/DEC goto failed",
+                            LogLevel::ERROR, DeviceType::MOUNT);
+                mountState.isHoming = false;
+                return QHYCCD_ERROR;
+            }
+        }
         Logger::Log("indi_client | setTelescopeHomeInit | Fallback: RETURN_HOME by RA/DEC goto",
-                    LogLevel::INFO, DeviceType::CAMERA);
+                    LogLevel::INFO, DeviceType::MOUNT);
         return QHYCCD_SUCCESS;
     }
     else if (command == "SYNCHOME" || command == "AT_HOME")
     {
-        double currentRA = NAN, currentDEC = NAN;
-        getTelescopeRADECJNOW(dp, currentRA, currentDEC);
-        if (std::isnan(currentRA) || std::isnan(currentDEC))
-        {
-            Logger::Log("indi_client | setTelescopeHomeInit | Fallback AT_HOME failed: invalid RA/DEC",
-                        LogLevel::ERROR, DeviceType::CAMERA);
-            return QHYCCD_ERROR;
-        }
-
-        mountState.Home_RA_Hours   = currentRA;
-        mountState.Home_DEC_Degree = currentDEC;
+        mountState.updateHomeRAHours(mountState.Latitude_Degree, mountState.Longitude_Degree);
+        syncTelescopeJNow(dp, mountState.Home_RA_Hours, mountState.Home_DEC_Degree);
         Logger::Log("indi_client | setTelescopeHomeInit | Fallback: AT_HOME by saving current RA/DEC",
-                    LogLevel::INFO, DeviceType::CAMERA);
+                    LogLevel::INFO, DeviceType::MOUNT);
         return QHYCCD_SUCCESS;
     }
 
     Logger::Log("indi_client | setTelescopeHomeInit | Error: invalid command (post-fallback)",
-                LogLevel::ERROR, DeviceType::CAMERA);
+                LogLevel::ERROR, DeviceType::MOUNT);
     return QHYCCD_ERROR;
 }
 
@@ -2120,7 +2131,7 @@ uint32_t MyClient::setTelescopeTargetRADECJNOW(INDI::BaseDevice *dp, double RA_H
 */
 
 // compose slew command
-uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree, bool EnableTracking, INDI::PropertyNumber &property)
+uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree, bool EnableTracking)
 {
     QString action;
     if (EnableTracking == true)
@@ -2141,7 +2152,7 @@ uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp, double RA_Hou
     return QHYCCD_SUCCESS;
 }
 
-uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree, INDI::PropertyNumber &property)
+uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree)
 {
     Logger::Log("indi_client | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::CAMERA);
     QString action = "SYNC";

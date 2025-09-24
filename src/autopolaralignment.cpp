@@ -1072,79 +1072,8 @@ void PolarAlignment::processCurrentState()
             break;
         case PolarAlignmentState::GUIDING_ADJUSTMENT:
         {
-            static int adjustmentAttempts = 0;
-            adjustmentAttempts++;
-        
-            Logger::Log("PolarAlignment: 开始第 " + std::to_string(adjustmentAttempts) + " 次调整尝试",
-                        LogLevel::INFO, DeviceType::MAIN);
-        
-            if (!captureAndAnalyze(1)) {
-                Logger::Log("PolarAlignment: 验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
-                if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
-                break;
-            }
-        
-            if (!isTargetPositionCached) {
-                Logger::Log("PolarAlignment: 目标未锁定，请先完成三点校准", LogLevel::ERROR, DeviceType::MAIN);
-                break;
-            }
-        
-            // 当前实际解算点（只读）
-            const double currentRA  = currentSolveResult.RA_Degree;
-            const double currentDEC = currentSolveResult.DEC_Degree;
-        
-            Logger::Log("PolarAlignment: 单次验证 - 当前: (" + std::to_string(currentRA) + ", " +
-                        std::to_string(currentDEC) + "), 目标(固定): (" +
-                        std::to_string(targetRA) + ", " + std::to_string(targetDEC) + ")",
-                        LogLevel::INFO, DeviceType::MAIN);
-        
-            // —— 用固定目标计算东/北分量与球面距离（不再用 RA/DEC 线性差）——
-            SingleShotGuide guide = delta_to_fixed_target(currentRA, currentDEC, targetRA, targetDEC);
-        
-            // 这些“像 az/alt 偏差”的输出仅为兼容旧接口（单位：度），实义是 EN 分量
-            double east_deg  = guide.east_arcmin  / 60.0;
-            double north_deg = guide.north_arcmin / 60.0;
-            double total_deg = guide.distance_arcmin / 60.0;
-        
-            Logger::Log(
-                "PolarAlignment: 偏差 - 东 " + std::to_string(guide.east_arcmin) + "′, 北 " +
-                std::to_string(guide.north_arcmin) + "′, 距离 " + std::to_string(guide.distance_arcmin) +
-                "′, 方位(自北顺时针) " + std::to_string(guide.bearing_deg_from_north) + "°",
-                LogLevel::INFO, DeviceType::MAIN
-            );
-        
-            // 生成指导文案（建议改为基于 EN 分量）
-            QString adjustmentRa, adjustmentDec;
-            QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
-            Logger::Log("PolarAlignment: 调整指导: " + adjustmentGuide.toStdString(),
-                        LogLevel::INFO, DeviceType::MAIN);
-        
-            // 发信号给 UI：把 EN 分量通过原参数传出（或新增字段更清晰）
-            saveAndEmitAdjustmentGuideData(
-                currentRAPosition, currentDECPosition,
-                currentSolveResult.RA_1, currentSolveResult.RA_0,
-                currentSolveResult.DEC_2, currentSolveResult.DEC_1,
-                targetRA, targetDEC,         // 固定目标
-                east_deg, north_deg,         // 兼容旧"az/alt"槽位
-                adjustmentRa, adjustmentDec,
-                cachedFakePolarRA, cachedFakePolarDEC,
-                realPolarRA, realPolarDEC
-            );
-        
-            // 达标判断用球面距离
-            double precisionThreshold = config.finalVerificationThreshold; // 仍然“度”
-            if (total_deg < precisionThreshold) {
-                Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
-                            std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
-                result.raDeviation  = east_deg;
-                result.decDeviation = north_deg;
-                result.totalDeviation = total_deg;
-                adjustmentAttempts = 0;
-                setState(PolarAlignmentState::FINAL_VERIFICATION);
-            } else {
-                Logger::Log("PolarAlignment: 精度未达标，继续调整",
-                            LogLevel::WARNING, DeviceType::MAIN);
-                if (isRunningFlag && !isPausedFlag) stateTimer.start(3000);
+            if (!performGuidanceAdjustmentStep()) {
+                // 失败时 performGuidanceAdjustmentStep 内部已有日志与节拍控制
             }
         }
         break;
@@ -1663,6 +1592,86 @@ bool PolarAlignment::performFinalVerification()
     return false;
 }
 
+bool PolarAlignment::performGuidanceAdjustmentStep()
+{
+    static int adjustmentAttempts = 0;
+    adjustmentAttempts++;
+
+    Logger::Log("PolarAlignment: 开始第 " + std::to_string(adjustmentAttempts) + " 次调整尝试",
+                LogLevel::INFO, DeviceType::MAIN);
+
+    if (!captureAndAnalyze(1)) {
+        Logger::Log("PolarAlignment: 验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        return false;
+    }
+
+    if (!isTargetPositionCached) {
+        Logger::Log("PolarAlignment: 目标未锁定，请先完成三点校准", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    // 当前实际解算点（只读）
+    const double currentRA  = currentSolveResult.RA_Degree;
+    const double currentDEC = currentSolveResult.DEC_Degree;
+
+    Logger::Log("PolarAlignment: 单次验证 - 当前: (" + std::to_string(currentRA) + ", " +
+                std::to_string(currentDEC) + "), 目标(固定): (" +
+                std::to_string(targetRA) + ", " + std::to_string(targetDEC) + ")",
+                LogLevel::INFO, DeviceType::MAIN);
+
+    // —— 用固定目标计算东/北分量与球面距离（不再用 RA/DEC 线性差）——
+    SingleShotGuide guide = delta_to_fixed_target(currentRA, currentDEC, targetRA, targetDEC);
+
+    // 这些“像 az/alt 偏差”的输出仅为兼容旧接口（单位：度），实义是 EN 分量
+    double east_deg  = guide.east_arcmin  / 60.0;
+    double north_deg = guide.north_arcmin / 60.0;
+    double total_deg = guide.distance_arcmin / 60.0;
+
+    Logger::Log(
+        "PolarAlignment: 偏差 - 东 " + std::to_string(guide.east_arcmin) + "′, 北 " +
+        std::to_string(guide.north_arcmin) + "′, 距离 " + std::to_string(guide.distance_arcmin) +
+        "′, 方位(自北顺时针) " + std::to_string(guide.bearing_deg_from_north) + "°",
+        LogLevel::INFO, DeviceType::MAIN
+    );
+
+    // 生成指导文案（建议改为基于 EN 分量）
+    QString adjustmentRa, adjustmentDec;
+    QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
+    Logger::Log("PolarAlignment: 调整指导: " + adjustmentGuide.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
+
+    // 发信号给 UI：把 EN 分量通过原参数传出（或新增字段更清晰）
+    saveAndEmitAdjustmentGuideData(
+        currentRAPosition, currentDECPosition,
+        currentSolveResult.RA_1, currentSolveResult.RA_0,
+        currentSolveResult.DEC_2, currentSolveResult.DEC_1,
+        targetRA, targetDEC,         // 固定目标
+        east_deg, north_deg,         // 兼容旧"az/alt"槽位
+        adjustmentRa, adjustmentDec,
+        cachedFakePolarRA, cachedFakePolarDEC,
+        realPolarRA, realPolarDEC
+    );
+
+    // 达标判断用球面距离
+    double precisionThreshold = config.finalVerificationThreshold; // 仍然“度”
+    if (total_deg < precisionThreshold) {
+        Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
+                    std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
+        result.raDeviation  = east_deg;
+        result.decDeviation = north_deg;
+        result.totalDeviation = total_deg;
+        adjustmentAttempts = 0;
+        setState(PolarAlignmentState::FINAL_VERIFICATION);
+    } else {
+        Logger::Log("PolarAlignment: 精度未达标，继续调整",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(3000);
+    }
+
+    return true;
+}
+
 bool PolarAlignment::captureImage(int exposureTime)
 {
     Logger::Log("PolarAlignment: 拍摄图像，曝光时间 " + std::to_string(exposureTime) + "ms", LogLevel::INFO, DeviceType::MAIN);
@@ -1771,8 +1780,7 @@ bool PolarAlignment::moveTelescope(double ra, double dec)
             dpMount,
             Tools::DegreeToHour(newRA),
             newDEC,
-            /*block*/ true,
-            property
+            true
         );
 
     }
@@ -1819,8 +1827,7 @@ bool PolarAlignment::moveTelescopeToAbsolutePosition(double ra, double dec)
             }
         }
         
-        INDI::PropertyNumber property = NULL;
-        indiServer->slewTelescopeJNowNonBlock(dpMount, Tools::DegreeToHour(ra), dec, true, property);
+        indiServer->slewTelescopeJNowNonBlock(dpMount, Tools::DegreeToHour(ra), dec, true);
     }
     
     return true;

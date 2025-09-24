@@ -131,8 +131,8 @@ class MyClient : public INDI::BaseClient
         uint32_t setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,double ALT_DEGREE);
 
 
-        uint32_t slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,bool EnableTracking,INDI::PropertyNumber &property);
-        uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property);
+        uint32_t slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,bool EnableTracking);
+        uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree);
 
         uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu);
         

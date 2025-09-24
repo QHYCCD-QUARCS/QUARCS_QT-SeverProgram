@@ -1959,7 +1959,6 @@ void MainWindow::onTimeout()
 
     // 显示赤道仪指向
     mountDisplayCounter++;
-    static int mountSlowCounter = 0;   // 新增计数器
     if (dpMount != NULL)
     {
         if (dpMount->isConnected())
@@ -1975,25 +1974,18 @@ void MainWindow::onTimeout()
                     + QString::number(CurrentRA_Degree) 
                     + ":" + QString::number(CurrentDEC_Degree));
 
-                // -------------------------------
-                // 慢速（约3秒一次）的查询部分
-                // -------------------------------
-                mountSlowCounter++;
-                if (mountSlowCounter >= 3)   // 100ms * 30 ≈ 3s
-                {
-                    bool isParked = false;
-                    indi_Client->getTelescopePark(dpMount, isParked);
-                    emit wsThread->sendMessageToClient(
-                        isParked ? "TelescopePark:ON" : "TelescopePark:OFF");
+                Logger::Log("当前指向:RA:" + std::to_string(RA_HOURS) + " 小时,DEC:" + std::to_string(CurrentDEC_Degree) + " 度", LogLevel::INFO, DeviceType::MAIN);
 
-                    indi_Client->getTelescopePierSide(dpMount, TelescopePierSide);
-                    emit wsThread->sendMessageToClient("TelescopePierSide:" + TelescopePierSide);
+                // 直接每次执行原“慢速”查询内容
+                bool isParked = false;
+                indi_Client->getTelescopePark(dpMount, isParked);
+                emit wsThread->sendMessageToClient(
+                    isParked ? "TelescopePark:ON" : "TelescopePark:OFF");
 
-                    indi_Client->getTelescopeMoving(dpMount);
+                indi_Client->getTelescopePierSide(dpMount, TelescopePierSide);
+                emit wsThread->sendMessageToClient("TelescopePierSide:" + TelescopePierSide);
 
-                    mountSlowCounter = 0;
-                }
-                // -------------------------------
+                indi_Client->getTelescopeMoving(dpMount);
 
                 bool isTrack = false;
                 indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
@@ -4064,7 +4056,9 @@ void MainWindow::AfterDeviceConnect()
         Logger::Log("Telescope Pier Side: " + side.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
         Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
-        indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
+        // indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
+        indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
+        indi_Client->mountState.printCurrentState();
     }
 
     if (dpFocuser != NULL)
@@ -4358,7 +4352,9 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
 
         // 设置home位置
-        indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
+        // indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
+        indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
+        indi_Client->mountState.printCurrentState();
         
     }
 
@@ -6522,8 +6518,14 @@ void MainWindow::TelescopeControl_Goto(double Ra, double Dec)
 {
     if (dpMount != NULL)
     {
-        INDI::PropertyNumber property = NULL;
-        indi_Client->slewTelescopeJNowNonBlock(dpMount, Ra, Dec, true, property);
+        if (indi_Client->mountState.isTracking)
+        {
+            indi_Client->slewTelescopeJNowNonBlock(dpMount, Ra, Dec, true);
+        }
+        else
+        {
+            indi_Client->slewTelescopeJNowNonBlock(dpMount, Ra, Dec, false);
+        }
     }
 }
 
@@ -7704,7 +7706,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
                             emit wsThread->sendMessageToClient("TelescopeTrack:ON");
                             // indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
                             // 同步望远镜的当前位置到目标位置
-                            indi_Client->syncTelescopeJNow(dpMount, result.RA_Degree, result.DEC_Degree, property);
+                            indi_Client->syncTelescopeJNow(dpMount, result.RA_Degree, result.DEC_Degree);
                             Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
                             // Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
@@ -11060,6 +11062,28 @@ void MainWindow::synchronizeTime(QString time, QString date)
     Logger::Log("synchronizeTime start ...", LogLevel::DEBUG, DeviceType::MAIN);
     Logger::Log("synchronizeTime time: " + time.toStdString() + ", date: " + date.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
 
+    // 先禁用自动时间同步
+    Logger::Log("Disabling automatic time synchronization...", LogLevel::DEBUG, DeviceType::MAIN);
+    
+    // 禁用 systemd-timesyncd 服务
+    int disableResult1 = system("sudo systemctl stop systemd-timesyncd");
+    int disableResult2 = system("sudo systemctl disable systemd-timesyncd");
+    
+    // 禁用 NTP 同步
+    int disableResult3 = system("sudo timedatectl set-ntp false");
+    
+    if (disableResult1 != 0 || disableResult2 != 0 || disableResult3 != 0)
+    {
+        Logger::Log("Warning: Failed to disable some automatic time sync services", LogLevel::WARNING, DeviceType::MAIN);
+    }
+    else
+    {
+        Logger::Log("Automatic time synchronization disabled successfully", LogLevel::DEBUG, DeviceType::MAIN);
+    }
+
+    // 等待一秒确保服务完全停止
+    QThread::msleep(1000);
+
     // Create the command string
     QString command = "sudo date -s \"" + date + " " + time + "\"";
 
@@ -11085,6 +11109,7 @@ void MainWindow::setMountLocation(QString lat, QString lon)
     observatorylongitude = lon.toDouble();
     if (dpMount != nullptr)
     {
+        indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
  
     }
