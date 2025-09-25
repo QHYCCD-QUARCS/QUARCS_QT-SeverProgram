@@ -124,7 +124,7 @@ inline Vec3 rotate_minimal_map_a_to_b(const Vec3& v, const Vec3& a, const Vec3& 
     return v * c + cross(k, v) * s + k * ( dot(k, v) * (1.0 - c) );
 }
 
-// 用三点在球面上拟合“小圆”的球心（假极点）与半径（弧度）
+// 用三点在球面上拟合"小圆"的球心（假极点）与半径（弧度）
 // 噪声下采用三对差分的法向量近似（无需第三方库）；返回 residual_rms 表征残差
 inline bool fit_spherical_circle_3pt(const Vec3& q1, const Vec3& q2, const Vec3& q3,
                                      Vec3& c_hat, double& rho, double& residual_rms)
@@ -149,7 +149,7 @@ inline bool fit_spherical_circle_3pt(const Vec3& q1, const Vec3& q2, const Vec3&
 } // anonymous namespace
 
 
-// 把当前点 currentRA/DEC 通过“把假极点 c 旋到真极点 p 的最小旋转”映到目标点
+// 把当前点 currentRA/DEC 通过"把假极点 c 旋到真极点 p 的最小旋转"映到目标点
 static void computeTargetByAxisRotation(double currentRA_deg, double currentDEC_deg,
     double realPolarRA_deg, double realPolarDEC_deg,
     double fakePolarRA_deg, double fakePolarDEC_deg,
@@ -159,7 +159,7 @@ Vec3 s = radecDeg_to_vec(currentRA_deg, currentDEC_deg);
 Vec3 p = radecDeg_to_vec(realPolarRA_deg,  realPolarDEC_deg);
 Vec3 c = radecDeg_to_vec(fakePolarRA_deg,  fakePolarDEC_deg);
 
-// 目标 = 把 s 用“把 c 旋到 p 的最小旋转 R”作用
+// 目标 = 把 s 用"把 c 旋到 p 的最小旋转 R"作用
 Vec3 t = rotate_minimal_map_a_to_b(s, c, p);
 
 vec_to_radecDeg(t, targetRA_deg, targetDEC_deg);
@@ -192,10 +192,10 @@ targetRA_deg, targetDEC_deg);
 
 // 2) 以当前点 S 为切点建立 EN 基底
 Vec3 S = radecDeg_to_vec(currentRA_deg, currentDEC_deg);
-// “北”方向：指向更高赤纬（沿经线）
+// "北"方向：指向更高赤纬（沿经线）
 Vec3 Zc = {0,0,1};                     // 天球北极方向
 Vec3 north_dir = normalize( cross( cross(S, Zc), S ) ); // 去除法向分量
-// “东”方向：正东 = 北 × 视线
+// "东"方向：正东 = 北 × 视线
 Vec3 east_dir  = normalize( cross(north_dir, S) );
 TangentBasis B = { east_dir, north_dir }; // e1=东, e2=北
 
@@ -228,7 +228,7 @@ constexpr double kRad2Deg = 180.0 / M_PI;
 Vec3 S = radecDeg_to_vec(currentRA_deg, currentDEC_deg);
 Vec3 T = radecDeg_to_vec(targetRA_deg, targetDEC_deg);
 
-// 以 S 为切点构造“北/东”基底
+// 以 S 为切点构造"北/东"基底
 Vec3 Zc = {0,0,1};
 Vec3 north = normalize( cross( cross(S, Zc), S ) ); // 朝更高赤纬
 Vec3 east  = normalize( cross(north, S) );          // 北 × 视线
@@ -787,8 +787,10 @@ void PolarAlignment::processCurrentState()
                 setState(PolarAlignmentState::MOVING_RA_FIRST);
                 if (measurements.size() >= 1) {
                     saveAndEmitAdjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
-                            measurements[0].RA_1, measurements[0].RA_0, 
-                            measurements[0].DEC_2, measurements[0].DEC_1, 
+                            measurements[0].RA_0, measurements[0].DEC_0, 
+                            measurements[0].RA_1, measurements[0].DEC_1, 
+                            measurements[0].RA_2, measurements[0].DEC_2, 
+                            measurements[0].RA_3, measurements[0].DEC_3,
                             -1, -1, 0.0, 0.0, 
                             "", "",
                             0.0, 0.0, 0.0, 0.0);
@@ -813,8 +815,10 @@ void PolarAlignment::processCurrentState()
                 setState(PolarAlignmentState::MOVING_RA_FIRST);
                 if (measurements.size() >= 1) {
                     saveAndEmitAdjustmentGuideData(measurements[0].RA_Degree, measurements[0].DEC_Degree,
-                            measurements[0].RA_1, measurements[0].RA_0, 
-                            measurements[0].DEC_2, measurements[0].DEC_1, 
+                            measurements[0].RA_0, measurements[0].DEC_0, 
+                            measurements[0].RA_1, measurements[0].DEC_1, 
+                            measurements[0].RA_2, measurements[0].DEC_2,
+                            measurements[0].RA_3, measurements[0].DEC_3,
                             -1, -1, 0.0, 0.0, 
                             "", "",
                             0.0, 0.0, 0.0, 0.0);
@@ -891,10 +895,11 @@ void PolarAlignment::processCurrentState()
                 setState(PolarAlignmentState::MOVING_RA_SECOND);
                 if (measurements.size() >= 2) {
                     saveAndEmitAdjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
-                            measurements[1].RA_1, measurements[1].RA_0, 
-                            measurements[1].DEC_2, measurements[1].DEC_1, 
-                            -1, -1, 0.0, 0.0, 
-                            "", "",
+                            measurements[1].RA_0, measurements[1].DEC_0, 
+                            measurements[1].RA_1, measurements[1].DEC_1, 
+                            measurements[1].RA_2, measurements[1].DEC_2, 
+                            measurements[1].RA_3, measurements[1].DEC_3,
+                            -1, -1, 0.0, 0.0, "", "",
                             0.0, 0.0, 0.0, 0.0);
                 }
             } else {
@@ -917,10 +922,11 @@ void PolarAlignment::processCurrentState()
                 setState(PolarAlignmentState::MOVING_RA_SECOND);
                 if (measurements.size() >= 2) {
                     saveAndEmitAdjustmentGuideData(measurements[1].RA_Degree, measurements[1].DEC_Degree,
-                            measurements[1].RA_1, measurements[1].RA_0, 
-                            measurements[1].DEC_2, measurements[1].DEC_1, 
-                            -1, -1, 0.0, 0.0, 
-                            "", "",
+                            measurements[1].RA_0, measurements[1].DEC_0, 
+                            measurements[1].RA_1, measurements[1].DEC_1, 
+                            measurements[1].RA_2, measurements[1].DEC_2, 
+                            measurements[1].RA_3, measurements[1].DEC_3,
+                            -1, -1, 0.0, 0.0, "", "",
                             0.0, 0.0, 0.0, 0.0);
                 }
             } else {
@@ -990,10 +996,11 @@ void PolarAlignment::processCurrentState()
                 setState(PolarAlignmentState::CALCULATING_DEVIATION);
                 if (measurements.size() >= 3) {
                     saveAndEmitAdjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
-                            measurements[2].RA_1, measurements[2].RA_0, 
-                            measurements[2].DEC_2, measurements[2].DEC_1, 
-                            -1, -1, 0.0, 0.0, 
-                            "", "",
+                            measurements[2].RA_0, measurements[2].DEC_0, 
+                            measurements[2].RA_1, measurements[2].DEC_1, 
+                            measurements[2].RA_2, measurements[2].DEC_2, 
+                            measurements[2].RA_3, measurements[2].DEC_3,
+                            -1, -1, 0.0, 0.0, "", "",
                             0.0, 0.0, 0.0, 0.0);
                 }
             } else {
@@ -1016,10 +1023,11 @@ void PolarAlignment::processCurrentState()
                 setState(PolarAlignmentState::CALCULATING_DEVIATION);
                 if (measurements.size() >= 3) {
                     saveAndEmitAdjustmentGuideData(measurements[2].RA_Degree, measurements[2].DEC_Degree,
-                            measurements[2].RA_1, measurements[2].RA_0, 
-                            measurements[2].DEC_2, measurements[2].DEC_1, 
-                            -1, -1, 0.0, 0.0, 
-                            "", "",
+                            measurements[2].RA_0, measurements[2].DEC_0, 
+                            measurements[2].RA_1, measurements[2].DEC_1, 
+                            measurements[2].RA_2, measurements[2].DEC_2, 
+                            measurements[2].RA_3, measurements[2].DEC_3,
+                            -1, -1, 0.0, 0.0, "", "",
                             0.0, 0.0, 0.0, 0.0);
                 }
             } else {
@@ -1495,8 +1503,10 @@ bool PolarAlignment::calculateDeviation()
     // 发出信号：当前位置、目标位置、偏差值、假极轴、真极轴
     saveAndEmitAdjustmentGuideData(
         currentRAPosition, currentDECPosition,
-        currentSolveResult.RA_1, currentSolveResult.RA_0,
-        currentSolveResult.DEC_2, currentSolveResult.DEC_1,
+        currentSolveResult.RA_0, currentSolveResult.DEC_0,
+        currentSolveResult.RA_1, currentSolveResult.DEC_1,
+        currentSolveResult.RA_2, currentSolveResult.DEC_2,
+        currentSolveResult.RA_3, currentSolveResult.DEC_3,
         targetRA, targetDEC,
         result.raDeviation, result.decDeviation,
         adjustmentRa, adjustmentDec,
@@ -1623,7 +1633,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     // —— 用固定目标计算东/北分量与球面距离（不再用 RA/DEC 线性差）——
     SingleShotGuide guide = delta_to_fixed_target(currentRA, currentDEC, targetRA, targetDEC);
 
-    // 这些“像 az/alt 偏差”的输出仅为兼容旧接口（单位：度），实义是 EN 分量
+    // 这些"像 az/alt 偏差"的输出仅为兼容旧接口（单位：度），实义是 EN 分量
     double east_deg  = guide.east_arcmin  / 60.0;
     double north_deg = guide.north_arcmin / 60.0;
     double total_deg = guide.distance_arcmin / 60.0;
@@ -1644,8 +1654,10 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     // 发信号给 UI：把 EN 分量通过原参数传出（或新增字段更清晰）
     saveAndEmitAdjustmentGuideData(
         currentRAPosition, currentDECPosition,
-        currentSolveResult.RA_1, currentSolveResult.RA_0,
-        currentSolveResult.DEC_2, currentSolveResult.DEC_1,
+        currentSolveResult.RA_0, currentSolveResult.DEC_0,
+        currentSolveResult.RA_1, currentSolveResult.DEC_1,
+        currentSolveResult.RA_2, currentSolveResult.DEC_2,
+        currentSolveResult.RA_3, currentSolveResult.DEC_3,
         targetRA, targetDEC,         // 固定目标
         east_deg, north_deg,         // 兼容旧"az/alt"槽位
         adjustmentRa, adjustmentDec,
@@ -1654,7 +1666,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     );
 
     // 达标判断用球面距离
-    double precisionThreshold = config.finalVerificationThreshold; // 仍然“度”
+    double precisionThreshold = config.finalVerificationThreshold; // 仍然"度"
     if (total_deg < precisionThreshold) {
         Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
                     std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
@@ -1709,15 +1721,103 @@ bool PolarAlignment::captureImage(int exposureTime)
 
 
 
+int PolarAlignment::selectOptimalSolveMode()
+{
+    // 模式说明：0=全局解析；1=加视场；2=加视场+RA/DEC窗口
+    // 输入指标：
+    //   - devAbs = sqrt(raDeviation^2 + decDeviation^2)（切平面偏差幅值，度）
+    //   - distanceFromHistory = 最近一次解析点与当前位置的球面角距（度）
+    // 目标：
+    //   - 偏差大时优先 0；中等时 1；接近时 2；带轻微滞回避免频繁切换
+
+    bool hasValidHistory = isAnalysisSuccessful(currentSolveResult);
+    if (!hasValidHistory) {
+        Logger::Log("PolarAlignment: 无历史解析数据，选择模式1（视场）", LogLevel::INFO, DeviceType::MAIN);
+        return 1;
+    }
+
+    // 计算 devAbs（若无有效 result 则置大）
+    double devAbs = (result.isSuccessful && !std::isnan(result.raDeviation) && !std::isnan(result.decDeviation))
+                    ? std::hypot(result.raDeviation, result.decDeviation) : 1e9;
+
+    // 计算与历史的角距
+    double currentRA, currentDEC;
+    indiServer->getTelescopeRADECJNOW(dpMount, currentRA, currentDEC);
+    currentRA = Tools::HourToDegree(currentRA);
+    double distanceFromHistory = calculateSphericalDistance(currentRA, currentDEC,
+                                                            currentSolveResult.RA_Degree, currentSolveResult.DEC_Degree);
+
+    // 阈值（可通过 config 调整）
+    double th2 = std::min(config.solveMode2MaxOffsetDeg, 5.0);   // 模式2窗口硬上限 5°
+    double th1 = std::max(config.solveMode1MaxOffsetDeg, th2 + 1.0); // 模式1阈值 ≥ 模式2阈值
+
+    // 基于两个指标的决策：任一指标大则降级
+    // - 若 devAbs 很小且 distance 小 → 模式2
+    // - 若二者处于中间 → 模式1
+    // - 若 devAbs 或 distance 很大 → 模式0
+    int chosen = 0;
+    if (distanceFromHistory <= th2 && devAbs <= config.largeDeviationThresholdDeg) {
+        chosen = 2;
+    } else if (distanceFromHistory <= th1 && devAbs <= (config.largeDeviationThresholdDeg * 2.0)) {
+        chosen = 1;
+    } else {
+        chosen = 0;
+    }
+
+    Logger::Log(
+        "PolarAlignment: 解析模式选择 - devAbs=" + std::to_string(devAbs) +
+        "°, distHist=" + std::to_string(distanceFromHistory) +
+        "°, th2=" + std::to_string(th2) +
+        "°, th1=" + std::to_string(th1) +
+        ", chosen=" + std::to_string(chosen),
+        LogLevel::INFO, DeviceType::MAIN
+    );
+
+    return chosen;
+}
+
+double PolarAlignment::calculateSphericalDistance(double ra1, double dec1, double ra2, double dec2)
+{
+    // 使用球面三角法计算两点间的角距离（度）
+    double ra1_rad = ra1 * M_PI / 180.0;
+    double dec1_rad = dec1 * M_PI / 180.0;
+    double ra2_rad = ra2 * M_PI / 180.0;
+    double dec2_rad = dec2 * M_PI / 180.0;
+    
+    // 球面余弦定理
+    double cos_distance = sin(dec1_rad) * sin(dec2_rad) + 
+                         cos(dec1_rad) * cos(dec2_rad) * cos(ra1_rad - ra2_rad);
+    
+    // 防止数值误差导致的域外值
+    cos_distance = std::max(-1.0, std::min(1.0, cos_distance));
+    
+    double distance_rad = acos(cos_distance);
+    double distance_deg = distance_rad * 180.0 / M_PI;
+    
+    return distance_deg;
+}
+
 bool PolarAlignment::solveImage(const QString& imageFile)
 {
     Logger::Log("PolarAlignment: 解析图像 " + imageFile.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     
     int focalLength = config.focalLength; // 焦距（毫米）
     double cameraWidth = config.cameraWidth; // 相机传感器宽度（毫米）
-    double cameraHeight = config.cameraHeight; // 相机传感器高度（毫米）    
+    double cameraHeight = config.cameraHeight; // 相机传感器高度（毫米）
+    
+    // 智能选择解析模式
+    int solveMode = selectOptimalSolveMode();
+    double lastRA = 0.0, lastDEC = 0.0;
+    
+    // 如果选择模式2，使用历史位置数据
+    if (solveMode == 2) {
+        lastRA = currentSolveResult.RA_Degree;
+        lastDEC = currentSolveResult.DEC_Degree;
+        Logger::Log("PolarAlignment: 使用模式2解析，参考位置 - RA: " + std::to_string(lastRA) + "°, DEC: " + std::to_string(lastDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    }
+    
     // 调用图像解析功能
-    bool ret = Tools::PlateSolve(imageFile, focalLength, cameraWidth, cameraHeight, false);
+    bool ret = Tools::PlateSolve(imageFile, focalLength, cameraWidth, cameraHeight, false, solveMode, lastRA, lastDEC);
     if(!ret)
     {
         Logger::Log("PolarAlignment: 图像解析命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
@@ -2254,130 +2354,128 @@ QString PolarAlignment::generateAdjustmentGuide(QString &adjustmentRa, QString &
     
     QString guide = "";
     
-    // 获取当前地平坐标
-    double currentAzimuth, currentAltitude;
-    bool hasHorizontalCoords = getCurrentHorizontalCoordinates(currentAzimuth, currentAltitude);
+    // 可选：获取当前地平坐标，仅用于日志
+    double currentAzimuth = 0.0, currentAltitude = 0.0;
+    getCurrentHorizontalCoordinates(currentAzimuth, currentAltitude);
     
-    if (!hasHorizontalCoords) {
-        Logger::Log("PolarAlignment: 无法获取地平坐标，使用赤道坐标生成指导", LogLevel::WARNING, DeviceType::MAIN);
-        
-        // 回退到使用赤道坐标的简单指导
-        double raDeviation = result.raDeviation;
-        double decDeviation = result.decDeviation;
-        double totalDeviation = result.totalDeviation;
-        
-        // 检查数值有效性
-        if (std::isnan(raDeviation) || std::isnan(decDeviation) || std::isnan(totalDeviation)) {
-            Logger::Log("PolarAlignment: 检测到NaN值，重置为0", LogLevel::WARNING, DeviceType::MAIN);
-            raDeviation = 0.0;
-            decDeviation = 0.0;
-            totalDeviation = 0.0;
-        }
-        
-        // 生成赤道坐标调整指导
-        if (std::abs(raDeviation) > 0.1) {
-            if (raDeviation > 0) {
-                guide += QString("RA: 向西调整 %1 度; ").arg(std::abs(raDeviation), 0, 'f', 2);
-                adjustmentRa = QString("向西调整 %1 度; ").arg(std::abs(raDeviation), 0, 'f', 2);
-            } else {
-                guide += QString("RA: 向东调整 %1 度; ").arg(std::abs(raDeviation), 0, 'f', 2);
-                adjustmentRa = QString("向东调整 %1 度; ").arg(std::abs(raDeviation), 0, 'f', 2);
-            }
+    // 计算机械调整量：根据偏差大小在两种方法间平滑切换
+    double azimuthAdjustment = 0.0;
+    double altitudeAdjustment = 0.0;
+    double observerLat = 0.0, observerLon = 0.0, observerElev = 0.0;
+    if (getObserverLocation(observerLat, observerLon, observerElev)) {
+        // 计算偏差幅值
+        double devAbs = std::hypot(result.raDeviation, result.decDeviation);
+        double wJac = 0.0; // 雅可比权重
+        // 分段平滑：小于 small 完全雅可比；大于 large 完全非线性；中间线性插值
+        if (devAbs <= config.smallDeviationThresholdDeg) {
+            wJac = 1.0;
+        } else if (devAbs >= config.largeDeviationThresholdDeg) {
+            wJac = 0.0;
         } else {
-            guide += "RA: 已对齐; ";
-            adjustmentRa = "已对齐; ";
+            double t = (config.largeDeviationThresholdDeg - devAbs) /
+                       (config.largeDeviationThresholdDeg - config.smallDeviationThresholdDeg);
+            wJac = std::clamp(t, 0.0, 1.0);
         }
-        
-        if (std::abs(decDeviation) > 0.1) {
-            if (decDeviation > 0) {
-                guide += QString("DEC: 向上调整 %1 度; ").arg(std::abs(decDeviation), 0, 'f', 2);
-                adjustmentDec = QString("向上调整 %1 度; ").arg(std::abs(decDeviation), 0, 'f', 2);
-            } else {
-                guide += QString("DEC: 向下调整 %1 度; ").arg(std::abs(decDeviation), 0, 'f', 2);
-                adjustmentDec = QString("向下调整 %1 度; ").arg(std::abs(decDeviation), 0, 'f', 2);
+
+        // 方法A：机械轴雅可比（小偏差更准）
+        double azJac = result.raDeviation, altJac = result.decDeviation;
+        if (!calculatePolarAlignmentAdjustment(result.raDeviation, result.decDeviation,
+                                              observerLat, observerLon, azJac, altJac)) {
+            azJac = result.raDeviation;
+            altJac = result.decDeviation;
+        }
+
+        // 方法B：非线性机械法（大偏差更稳）
+        // 1) 构造 p（与 calculatePolarAlignmentAdjustment 一致）：优先假极轴，否则理想天极
+        auto dot3 = [](const CartesianCoordinates& a, const CartesianCoordinates& b){ return a.x*b.x + a.y*b.y + a.z*b.z; };
+        auto norm3 = [&](const CartesianCoordinates& a){ double L = sqrt(dot3(a,a)); return (L>0) ? CartesianCoordinates{a.x/L, a.y/L, a.z/L} : CartesianCoordinates{0,0,0}; };
+        auto rodrigues = [&](const CartesianCoordinates& k_unit, double angle, const CartesianCoordinates& v){
+            double c = cos(angle), s = sin(angle);
+            CartesianCoordinates kxv = crossProduct(k_unit, v);
+            double kdotv = dot3(k_unit, v);
+            CartesianCoordinates term1 = { v.x * c, v.y * c, v.z * c };
+            CartesianCoordinates term2 = { kxv.x * s, kxv.y * s, kxv.z * s };
+            CartesianCoordinates term3 = { k_unit.x * kdotv * (1 - c), k_unit.y * kdotv * (1 - c), k_unit.z * kdotv * (1 - c) };
+            return CartesianCoordinates{ term1.x + term2.x + term3.x, term1.y + term2.y + term3.y, term1.z + term2.z + term3.z };
+        };
+
+        CartesianCoordinates Up   = {0.0, 0.0, 1.0};
+        CartesianCoordinates East = {1.0, 0.0, 0.0};
+
+        double latRad = observerLat * M_PI / 180.0;
+        CartesianCoordinates p;
+        bool usedMeasuredPole = false;
+        if (isFakePolarCached) {
+            double poleAz=0.0, poleAlt=0.0;
+            double fakeRA_hours = cachedFakePolarRA / 15.0;
+            if (convertRADECToHorizontal(fakeRA_hours, cachedFakePolarDEC, observerLat, observerLon, poleAz, poleAlt)) {
+                double azRad = poleAz * M_PI / 180.0;
+                double altRad2 = poleAlt * M_PI / 180.0;
+                p.x = sin(azRad) * cos(altRad2);
+                p.y = cos(azRad) * cos(altRad2);
+                p.z = sin(altRad2);
+                usedMeasuredPole = true;
             }
-        } else {
-            guide += "DEC: 已对齐; ";
-            adjustmentDec = "已对齐; ";
         }
-        
-        guide += QString("总偏差: %1 度").arg(totalDeviation, 0, 'f', 2);
-        return guide;
+        if (!usedMeasuredPole) {
+            double altAbs = std::fabs(latRad);
+            double az = (observerLat >= 0.0) ? 0.0 : M_PI;
+            p.x = sin(az) * cos(altAbs);
+            p.y = cos(az) * cos(altAbs) * ((observerLat >= 0.0) ? 1.0 : -1.0);
+            p.z = sin(altAbs);
+        }
+
+        // 2) 切平面基 e_alt_like, e_az_like
+        double dotUpP = dot3(Up, p);
+        CartesianCoordinates t;
+        if (std::fabs(std::fabs(dotUpP) - 1.0) < 1e-6) {
+            double dotEastP = dot3(East, p);
+            t = { East.x - dotEastP * p.x, East.y - dotEastP * p.y, East.z - dotEastP * p.z };
+        } else {
+            t = { Up.x - dotUpP * p.x, Up.y - dotUpP * p.y, Up.z - dotUpP * p.z };
+        }
+        CartesianCoordinates e_alt_like = normalizeVector(t);
+        CartesianCoordinates e_az_like  = crossProduct(p, e_alt_like);
+        e_az_like = normalizeVector(e_az_like);
+
+        // 3) 从切平面有限角旋转得到目标极轴 p_target
+        double u = result.raDeviation * M_PI / 180.0;
+        double v = result.decDeviation * M_PI / 180.0;
+        CartesianCoordinates p1 = rodrigues(e_az_like, u, p);
+        CartesianCoordinates p_target = rodrigues(e_alt_like, v, p1);
+        p_target = normalizeVector(p_target);
+
+        // 4) 由 ENU 分量直接计算当前与目标的 az/alt
+        auto toAzAlt = [](const CartesianCoordinates& q){
+            double alt = asin(std::clamp(q.z, -1.0, 1.0));
+            double az = atan2(q.x, q.y);
+            double azDeg = az * 180.0 / M_PI; if (azDeg < 0) azDeg += 360.0;
+            double altDeg = alt * 180.0 / M_PI;
+            return std::pair<double,double>(azDeg, altDeg);
+        };
+        auto cur = toAzAlt(p);
+        auto tgt = toAzAlt(p_target);
+        auto norm180 = [](double ang){ while (ang > 180.0) ang -= 360.0; while (ang < -180.0) ang += 360.0; return ang; };
+        double azNonlin = norm180(tgt.first  - cur.first);
+        double altNonlin = norm180(tgt.second - cur.second);
+
+        // 平滑融合
+        azimuthAdjustment  = wJac * azJac  + (1.0 - wJac) * azNonlin;
+        altitudeAdjustment = wJac * altJac + (1.0 - wJac) * altNonlin;
+    } else {
+        // 无法获取观测者位置，退化为直接映射
+        azimuthAdjustment = result.raDeviation;
+        altitudeAdjustment = result.decDeviation;
     }
     
-    // 使用地平坐标生成调整指导
-    // 使用正确的极轴校准调整计算方法
-    
-    // 获取观测者位置
-    double observerLat, observerLon, observerElev;
-    if (!getObserverLocation(observerLat, observerLon, observerElev)) {
-        Logger::Log("PolarAlignment: 无法获取观测者位置，使用简化计算", LogLevel::WARNING, DeviceType::MAIN);
-        
-        // 回退到简化的计算（保持原有逻辑作为备用）
-        double raDeviation = result.raDeviation;
-        double decDeviation = result.decDeviation;
-        
-        double azimuthDeviation = raDeviation * cos(currentAltitude * M_PI / 180.0);
-        double altitudeDeviation = decDeviation;
-        
-        // 生成简化的调整指导
-        if (std::abs(azimuthDeviation) > 0.1) {
-            if (azimuthDeviation > 0) {
-                guide += QString("方位角: 向西调整 %1 度; ").arg(std::abs(azimuthDeviation), 0, 'f', 2);
-                adjustmentRa = QString("向西调整 %1 度; ").arg(std::abs(azimuthDeviation), 0, 'f', 2);
-            } else {
-                guide += QString("方位角: 向东调整 %1 度; ").arg(std::abs(azimuthDeviation), 0, 'f', 2);
-                adjustmentRa = QString("向东调整 %1 度; ").arg(std::abs(azimuthDeviation), 0, 'f', 2);
-            }
-        } else {
-            guide += "方位角: 已对齐; ";
-            adjustmentRa = "已对齐; ";
-        }
-        
-        if (std::abs(altitudeDeviation) > 0.1) {
-            if (altitudeDeviation > 0) {
-                guide += QString("高度角: 向上调整 %1 度; ").arg(std::abs(altitudeDeviation), 0, 'f', 2);
-                adjustmentDec = QString("向上调整 %1 度; ").arg(std::abs(altitudeDeviation), 0, 'f', 2);
-            } else {
-                guide += QString("高度角: 向下调整 %1 度; ").arg(std::abs(altitudeDeviation), 0, 'f', 2);
-                adjustmentDec = QString("向下调整 %1 度; ").arg(std::abs(altitudeDeviation), 0, 'f', 2);
-            }
-        } else {
-            guide += "高度角: 已对齐; ";
-            adjustmentDec = "已对齐; ";
-        }
-        
-        double totalDeviation = sqrt(azimuthDeviation * azimuthDeviation + altitudeDeviation * altitudeDeviation);
-        guide += QString("总偏差: %1 度").arg(totalDeviation, 0, 'f', 2);
-        
-        return guide;
-    }
-    
-    // 使用正确的极轴校准调整计算
-    double azimuthAdjustment, altitudeAdjustment;
-    if (!calculatePolarAlignmentAdjustment(result.raDeviation, result.decDeviation,
-                                         observerLat, observerLon,
-                                         azimuthAdjustment, altitudeAdjustment)) {
-        Logger::Log("PolarAlignment: 极轴校准调整计算失败，使用简化计算", LogLevel::WARNING, DeviceType::MAIN);
-        
-        // 回退到简化计算
-        double raDeviation = result.raDeviation;
-        double decDeviation = result.decDeviation;
-        double azimuthDeviation = raDeviation * cos(currentAltitude * M_PI / 180.0);
-        double altitudeDeviation = decDeviation;
-        
-        azimuthAdjustment = azimuthDeviation;
-        altitudeAdjustment = altitudeDeviation;
-    }
-    
-    // 检查数值有效性
+    // 数值健壮性
     if (std::isnan(azimuthAdjustment) || std::isnan(altitudeAdjustment)) {
-        Logger::Log("PolarAlignment: 极轴校准调整量计算为NaN，重置为0", LogLevel::WARNING, DeviceType::MAIN);
+        Logger::Log("PolarAlignment: 检测到NaN值，重置为0", LogLevel::WARNING, DeviceType::MAIN);
         azimuthAdjustment = 0.0;
         altitudeAdjustment = 0.0;
     }
     
-    // 根据方位角调整量生成调整指导
+    // 方位角指导
     if (std::abs(azimuthAdjustment) > 0.1) {
         if (azimuthAdjustment > 0) {
             guide += QString("方位角: 向西调整 %1 度; ").arg(std::abs(azimuthAdjustment), 0, 'f', 2);
@@ -2391,7 +2489,7 @@ QString PolarAlignment::generateAdjustmentGuide(QString &adjustmentRa, QString &
         adjustmentRa = "已对齐; ";
     }
     
-    // 根据高度角调整量生成调整指导
+    // 高度角指导
     if (std::abs(altitudeAdjustment) > 0.1) {
         if (altitudeAdjustment > 0) {
             guide += QString("高度角: 向上调整 %1 度; ").arg(std::abs(altitudeAdjustment), 0, 'f', 2);
@@ -2407,10 +2505,26 @@ QString PolarAlignment::generateAdjustmentGuide(QString &adjustmentRa, QString &
     
     double totalDeviation = sqrt(azimuthAdjustment * azimuthAdjustment + altitudeAdjustment * altitudeAdjustment);
     guide += QString("总偏差: %1 度").arg(totalDeviation, 0, 'f', 2);
+
+    // 记录融合细节，便于观察是否存在突变
+    double devAbsLog = std::hypot(result.raDeviation, result.decDeviation);
+    double wJacLog;
+    if (devAbsLog <= config.smallDeviationThresholdDeg) wJacLog = 1.0;
+    else if (devAbsLog >= config.largeDeviationThresholdDeg) wJacLog = 0.0;
+    else wJacLog = std::clamp((config.largeDeviationThresholdDeg - devAbsLog) /
+                               (config.largeDeviationThresholdDeg - config.smallDeviationThresholdDeg), 0.0, 1.0);
+
+    Logger::Log(
+        "PolarAlignment: 融合详情 - 偏差幅值: " + std::to_string(devAbsLog) +
+        "°, wJac: " + std::to_string(wJacLog) +
+        ", 小阈值: " + std::to_string(config.smallDeviationThresholdDeg) +
+        "°, 大阈值: " + std::to_string(config.largeDeviationThresholdDeg) + "°",
+        LogLevel::INFO, DeviceType::MAIN
+    );
     
-    Logger::Log("PolarAlignment: 生成极轴校准调整指导 - 当前方位角: " + std::to_string(currentAzimuth) + 
-                "°, 当前高度角: " + std::to_string(currentAltitude) + 
-                "°, 方位角调整: " + std::to_string(azimuthAdjustment) + 
+    Logger::Log("PolarAlignment: 生成极轴校准调整指导(解耦) - 当前方位角: " + std::to_string(currentAzimuth) +
+                "°, 当前高度角: " + std::to_string(currentAltitude) +
+                "°, 方位角调整: " + std::to_string(azimuthAdjustment) +
                 "°, 高度角调整: " + std::to_string(altitudeAdjustment) + "°", LogLevel::INFO, DeviceType::MAIN);
     
     return guide;
@@ -3248,56 +3362,103 @@ bool PolarAlignment::calculatePolarAlignmentAdjustment(double raDeviation, doubl
                                                      double observerLat, double observerLon,
                                                      double& azimuthAdjustment, double& altitudeAdjustment)
 {
-    Logger::Log("PolarAlignment: 计算极轴校准机械调整量", LogLevel::INFO, DeviceType::MAIN);
-    
-    // 1. 计算当前极轴在地平坐标系中的方向
-    // 极轴在赤道坐标系中的位置：RA=0, DEC=90度（北天极）
-    double currentPolarAzimuth, currentPolarAltitude;
-    if (!convertRADECToHorizontal(0.0, 90.0, observerLat, observerLon, 
-                                 currentPolarAzimuth, currentPolarAltitude)) {
-        Logger::Log("PolarAlignment: 计算当前极轴地平坐标失败", LogLevel::ERROR, DeviceType::MAIN);
-        return false;
+    Logger::Log("PolarAlignment: 计算极轴校准机械调整量(机械轴雅可比)", LogLevel::INFO, DeviceType::MAIN);
+
+    // 1) 构建本地 ENU 基底
+    const double deg2rad = M_PI / 180.0;
+    const double rad2deg = 180.0 / M_PI;
+    const double latRad = observerLat * deg2rad;
+
+    // 基向量（ENU）
+    CartesianCoordinates Up   = {0.0, 0.0, 1.0};
+    CartesianCoordinates East = {1.0, 0.0, 0.0};
+
+    // 2) 在本地地平系下构造当前"极轴方向" p
+    // 优先使用已测得的假极轴(cachedFakePolarRA/DEC)，否则使用理想化的天极位置：
+    //   北半球: az=0°,  alt=|lat|
+    //   南半球: az=180°, alt=|lat|
+    CartesianCoordinates p;
+    bool usedMeasuredPole = false;
+    if (isFakePolarCached) {
+        double poleAz=0.0, poleAlt=0.0;
+        // convertRADECToHorizontal 需要 RA(小时)，DEC(度)
+        double fakeRA_hours = cachedFakePolarRA / 15.0;
+        if (convertRADECToHorizontal(fakeRA_hours, cachedFakePolarDEC, observerLat, observerLon, poleAz, poleAlt)) {
+            double azRad = poleAz * deg2rad;
+            double altRad = poleAlt * deg2rad;
+            p.x = sin(azRad) * cos(altRad);   // East
+            p.y = cos(azRad) * cos(altRad);   // North
+            p.z = sin(altRad);                // Up
+            usedMeasuredPole = true;
+        }
     }
-    
-    Logger::Log("PolarAlignment: 当前极轴地平坐标 - 方位角: " + std::to_string(currentPolarAzimuth) + 
-                "°, 高度角: " + std::to_string(currentPolarAltitude) + "°", LogLevel::INFO, DeviceType::MAIN);
-    
-    // 2. 计算调整后的极轴方向
-    // 极轴偏差表示极轴需要调整的方向
-    double adjustedPolarRA = raDeviation;
-    double adjustedPolarDEC = 90.0 + decDeviation;
-    
-    // 确保DEC在合理范围内
-    if (adjustedPolarDEC > 90.0) adjustedPolarDEC = 90.0;
-    if (adjustedPolarDEC < -90.0) adjustedPolarDEC = -90.0;
-    
-    double adjustedPolarAzimuth, adjustedPolarAltitude;
-    if (!convertRADECToHorizontal(adjustedPolarRA, adjustedPolarDEC, observerLat, observerLon,
-                                 adjustedPolarAzimuth, adjustedPolarAltitude)) {
-        Logger::Log("PolarAlignment: 计算调整后极轴地平坐标失败", LogLevel::ERROR, DeviceType::MAIN);
-        return false;
+    if (!usedMeasuredPole) {
+        double altAbs = std::fabs(latRad);
+        double az = (observerLat >= 0.0) ? 0.0 : M_PI; // 北半球朝北; 南半球朝南
+        p.x = sin(az) * cos(altAbs);
+        p.y = cos(az) * cos(altAbs) * ((observerLat >= 0.0) ? 1.0 : -1.0); // 等价于 N = sign(lat)*cos(|lat|)
+        p.z = sin(altAbs); // 始终抬升至 |lat|
     }
-    
-    Logger::Log("PolarAlignment: 调整后极轴地平坐标 - 方位角: " + std::to_string(adjustedPolarAzimuth) + 
-                "°, 高度角: " + std::to_string(adjustedPolarAltitude) + "°", LogLevel::INFO, DeviceType::MAIN);
-    
-    // 3. 计算需要的调整量
-    azimuthAdjustment = adjustedPolarAzimuth - currentPolarAzimuth;
-    altitudeAdjustment = adjustedPolarAltitude - currentPolarAltitude;
-    
-    // 4. 处理角度跨越
-    while (azimuthAdjustment > 180.0) azimuthAdjustment -= 360.0;
-    while (azimuthAdjustment < -180.0) azimuthAdjustment += 360.0;
-    
-    // 5. 验证计算结果
+
+    auto dot3 = [](const CartesianCoordinates& a, const CartesianCoordinates& b){ return a.x*b.x + a.y*b.y + a.z*b.z; };
+
+    // 3) 在 p 处建立切平面正交基：e_alt_like（沿仰角方向）、e_az_like（沿绕极方向）
+    double dotUpP = dot3(Up, p);
+    CartesianCoordinates t;
+    // 若 Up 与 p 几乎平行，使用 East 作为备用基以避免奇异
+    if (std::fabs(std::fabs(dotUpP) - 1.0) < 1e-6) {
+        double dotEastP = dot3(East, p);
+        t = { East.x - dotEastP * p.x, East.y - dotEastP * p.y, East.z - dotEastP * p.z };
+    } else {
+        t = { Up.x - dotUpP * p.x, Up.y - dotUpP * p.y, Up.z - dotUpP * p.z };
+    }
+    CartesianCoordinates e_alt_like = normalizeVector(t);
+    CartesianCoordinates e_az_like  = crossProduct(p, e_alt_like); // 已与 p 和 e_alt_like 正交
+
+    // 4) 机械轴的单位小转动在切平面的投影
+    //    - 方位螺栓：绕 Up 旋转 -> delta_p_az = Up × p
+    //    - 高度螺栓：绕 East 旋转 -> delta_p_alt = East × p
+    CartesianCoordinates delta_p_az  = crossProduct(Up, p);
+    CartesianCoordinates delta_p_alt = crossProduct(East, p);
+
+    // 5) 组装 2x2 雅可比：J * [d_az_mech, d_alt_mech]^T = [u, v]^T
+    //    其中 [u,v] 是切平面期望偏差（单位：弧度）；raDeviation->沿 e_az_like，decDeviation->沿 e_alt_like
+    double u = raDeviation * deg2rad;
+    double v = decDeviation * deg2rad;
+
+    double J11 = dot3(delta_p_az,  e_az_like);
+    double J12 = dot3(delta_p_az,  e_alt_like);
+    double J21 = dot3(delta_p_alt, e_az_like);
+    double J22 = dot3(delta_p_alt, e_alt_like);
+
+    double det = J11*J22 - J12*J21;
+    if (std::fabs(det) < 1e-9 || std::isnan(det)) {
+        Logger::Log("PolarAlignment: 雅可比矩阵奇异，退化为直接映射", LogLevel::WARNING, DeviceType::MAIN);
+        azimuthAdjustment = raDeviation;
+        altitudeAdjustment = decDeviation;
+        return true;
+    }
+
+    // 6) 反解机械角（弧度）
+    double invJ11 =  J22 / det;
+    double invJ12 = -J12 / det;
+    double invJ21 = -J21 / det;
+    double invJ22 =  J11 / det;
+
+    double d_az_mech  = invJ11*u + invJ12*v; // 弧度
+    double d_alt_mech = invJ21*u + invJ22*v; // 弧度
+
+    // 7) 输出（度）
+    azimuthAdjustment  = d_az_mech  * rad2deg;
+    altitudeAdjustment = d_alt_mech * rad2deg;
+
     if (std::isnan(azimuthAdjustment) || std::isnan(altitudeAdjustment)) {
-        Logger::Log("PolarAlignment: 调整量计算结果为NaN", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("PolarAlignment: 机械角计算为NaN，返回失败", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
-    
-    Logger::Log("PolarAlignment: 极轴校准调整量 - 方位角调整: " + std::to_string(azimuthAdjustment) + 
+
+    Logger::Log("PolarAlignment: 极轴校准调整量(雅可比) - 方位角调整: " + std::to_string(azimuthAdjustment) +
                 "°, 高度角调整: " + std::to_string(altitudeAdjustment) + "°", LogLevel::INFO, DeviceType::MAIN);
-    
     return true;
 }
 
@@ -3321,8 +3482,7 @@ void PolarAlignment::sendValidAdjustmentGuideData()
                        " - RA: " + std::to_string(data.ra) + "°, DEC: " + std::to_string(data.dec) + "°", 
                        LogLevel::INFO, DeviceType::MAIN);
             
-            emit adjustmentGuideData(data.ra, data.dec, data.maxRa, data.minRa, 
-                                   data.maxDec, data.minDec, data.targetRa, data.targetDec,
+            emit adjustmentGuideData(data.ra, data.dec, data.ra0, data.dec0, data.ra1, data.dec1, data.ra2, data.dec2, data.ra3, data.dec3, data.targetRa, data.targetDec,
                                    data.offsetRa, data.offsetDec, data.adjustmentRa, data.adjustmentDec,
                                    data.fakePolarRA, data.fakePolarDEC, data.realPolarRA, data.realPolarDEC);
             
@@ -3339,8 +3499,7 @@ void PolarAlignment::sendValidAdjustmentGuideData()
                "°, DEC: " + std::to_string(lastData.dec) + "°, 偏移RA: " + std::to_string(lastData.offsetRa) + 
                "°, 偏移DEC: " + std::to_string(lastData.offsetDec) + "°", LogLevel::INFO, DeviceType::MAIN);
     
-    emit adjustmentGuideData(lastData.ra, lastData.dec, lastData.maxRa, lastData.minRa, 
-                           lastData.maxDec, lastData.minDec, lastData.targetRa, lastData.targetDec,
+    emit adjustmentGuideData(lastData.ra, lastData.dec, lastData.ra0, lastData.dec0, lastData.ra1, lastData.dec1, lastData.ra2, lastData.dec2, lastData.ra3, lastData.dec3, lastData.targetRa, lastData.targetDec,
                            lastData.offsetRa, lastData.offsetDec, lastData.adjustmentRa, lastData.adjustmentDec,
                            lastData.fakePolarRA, lastData.fakePolarDEC, lastData.realPolarRA, lastData.realPolarDEC);
     
@@ -3354,8 +3513,10 @@ void PolarAlignment::clearAdjustmentGuideData()
     adjustmentGuideDataHistory.clear();
 }
 
-void PolarAlignment::saveAndEmitAdjustmentGuideData(double ra, double dec, double maxRa, double minRa, 
-                                                   double maxDec, double minDec, double targetRa, double targetDec,
+void PolarAlignment::saveAndEmitAdjustmentGuideData(double ra, double dec,
+                                                   double ra0, double dec0, double ra1, double dec1,
+                                                   double ra2, double dec2, double ra3, double dec3,
+                                                   double targetRa, double targetDec,
                                                    double offsetRa, double offsetDec, QString adjustmentRa, QString adjustmentDec,
                                                    double fakePolarRA, double fakePolarDEC, double realPolarRA, double realPolarDEC)
 {
@@ -3363,10 +3524,10 @@ void PolarAlignment::saveAndEmitAdjustmentGuideData(double ra, double dec, doubl
     AdjustmentGuideData data;
     data.ra = ra;
     data.dec = dec;
-    data.maxRa = maxRa;
-    data.minRa = minRa;
-    data.maxDec = maxDec;
-    data.minDec = minDec;
+    data.ra0 = ra0; data.dec0 = dec0;
+    data.ra1 = ra1; data.dec1 = dec1;
+    data.ra2 = ra2; data.dec2 = dec2;
+    data.ra3 = ra3; data.dec3 = dec3;
     data.targetRa = targetRa;
     data.targetDec = targetDec;
     data.offsetRa = offsetRa;
@@ -3418,9 +3579,11 @@ void PolarAlignment::saveAndEmitAdjustmentGuideData(double ra, double dec, doubl
                    LogLevel::INFO, DeviceType::MAIN);
     }
     
-    // 发送信号
-    emit adjustmentGuideData(ra, dec, maxRa, minRa, maxDec, minDec, targetRa, targetDec,
-                           offsetRa, offsetDec, adjustmentRa, adjustmentDec,
+    // 发送信号（扩展为四角点）
+    emit adjustmentGuideData(ra, dec,
+                           ra0, dec0, ra1, dec1, ra2, dec2, ra3, dec3,
+                           targetRa, targetDec, offsetRa, offsetDec,
+                           adjustmentRa, adjustmentDec,
                            fakePolarRA, fakePolarDEC, realPolarRA, realPolarDEC);
 }
 
@@ -3465,8 +3628,7 @@ void PolarAlignment::resendAllAdjustmentGuideData()
         }
         
         // 发送完整的数据
-        emit adjustmentGuideData(data.ra, data.dec, data.maxRa, data.minRa, 
-                               data.maxDec, data.minDec, data.targetRa, data.targetDec,
+        emit adjustmentGuideData(data.ra, data.dec, data.ra0, data.dec0, data.ra1, data.dec1, data.ra2, data.dec2, data.ra3, data.dec3, data.targetRa, data.targetDec,
                                data.offsetRa, data.offsetDec, data.adjustmentRa, data.adjustmentDec,
                                data.fakePolarRA, data.fakePolarDEC, data.realPolarRA, data.realPolarDEC);
     }

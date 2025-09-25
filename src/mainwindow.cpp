@@ -2305,7 +2305,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_32_09_232.fits";
     //     a = 0;
     // }
-
+    fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat originalImage16;
@@ -11254,32 +11254,43 @@ bool MainWindow::initPolarAlignment()
                 emit this->wsThread->sendMessageToClient("PolarAlignmentState:" + QString::number(static_cast<int>(state)) + ":" + message + ":" + QString::number(percentage));
             });
 
-    connect(polarAlignment, &PolarAlignment::adjustmentGuideData,
-            [this](double ra, double dec, double maxRa, double minRa, double maxDec, double minDec, double targetRa, double targetDec, double offsetRa, double offsetDec, const QString &adjustmentRa, const QString &adjustmentDec, double fakePolarRA, double fakePolarDEC, double realPolarRA, double realPolarDEC)
-            {
-                QString logMsg = QString("PolarAlignmentAdjustmentGuideData:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13:%14:%15:%16")
-                                     .arg(ra)
-                                     .arg(dec)
-                                     .arg(maxRa)
-                                     .arg(minRa)
-                                     .arg(maxDec)
-                                     .arg(minDec)
-                                     .arg(targetRa)
-                                     .arg(targetDec)
-                                     .arg(offsetRa)
-                                     .arg(offsetDec)
-                                     .arg(adjustmentRa)
-                                     .arg(adjustmentDec)
-                                     .arg(fakePolarRA)
-                                     .arg(fakePolarDEC)
-                                     .arg(realPolarRA)
-                                     .arg(realPolarDEC);
-                Logger::Log("目标点: " + std::to_string(targetRa) + ", " + std::to_string(targetDec), LogLevel::INFO, DeviceType::MAIN);
-                Logger::Log("假极轴: " + std::to_string(fakePolarRA) + ", " + std::to_string(fakePolarDEC), LogLevel::INFO, DeviceType::MAIN);
-                Logger::Log("真极轴: " + std::to_string(realPolarRA) + ", " + std::to_string(realPolarDEC), LogLevel::INFO, DeviceType::MAIN);
-                Logger::Log(logMsg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                emit this->wsThread->sendMessageToClient(logMsg);
-            });
+            connect(polarAlignment, &PolarAlignment::adjustmentGuideData,
+                [this](double ra, double dec,
+                       double ra0, double dec0, double ra1, double dec1,
+                       double ra2, double dec2, double ra3, double dec3,
+                       double targetRa, double targetDec,
+                       double offsetRa, double offsetDec,
+                       const QString &adjustmentRa, const QString &adjustmentDec,
+                       double fakePolarRA, double fakePolarDEC,
+                       double realPolarRA, double realPolarDEC)
+                {
+                    QString logMsg = QString("PolarAlignmentAdjustmentGuideData:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13:%14:%15:%16:%17:%18:%19:%20")
+                                         .arg(ra)
+                                         .arg(dec)
+                                         .arg(ra0)
+                                         .arg(dec0)
+                                         .arg(ra1)
+                                         .arg(dec1)
+                                         .arg(ra2)
+                                         .arg(dec2)
+                                         .arg(ra3)
+                                         .arg(dec3)
+                                         .arg(targetRa)
+                                         .arg(targetDec)
+                                         .arg(offsetRa)
+                                         .arg(offsetDec)
+                                         .arg(adjustmentRa)
+                                         .arg(adjustmentDec)
+                                         .arg(fakePolarRA)
+                                         .arg(fakePolarDEC)
+                                         .arg(realPolarRA)
+                                         .arg(realPolarDEC);
+                    Logger::Log("目标点: " + std::to_string(targetRa) + ", " + std::to_string(targetDec), LogLevel::INFO, DeviceType::MAIN);
+                    Logger::Log("假极轴: " + std::to_string(fakePolarRA) + ", " + std::to_string(fakePolarDEC), LogLevel::INFO, DeviceType::MAIN);
+                    Logger::Log("真极轴: " + std::to_string(realPolarRA) + ", " + std::to_string(realPolarDEC), LogLevel::INFO, DeviceType::MAIN);
+                    Logger::Log(logMsg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    emit this->wsThread->sendMessageToClient(logMsg);
+                });
 
     Logger::Log("initPolarAlignment | PolarAlignment initialized successfully", LogLevel::INFO, DeviceType::MAIN);
     return true;

@@ -68,10 +68,12 @@ struct PolarAlignmentResult {
 struct AdjustmentGuideData {
     double ra;              // 当前RA位置
     double dec;             // 当前DEC位置
-    double maxRa;           // 最大RA
-    double minRa;           // 最小RA
-    double maxDec;          // 最大DEC
-    double minDec;          // 最小DEC
+
+    double ra0; double dec0;
+    double ra1; double dec1;
+    double ra2; double dec2;
+    double ra3; double dec3;
+
     double targetRa;        // 目标RA
     double targetDec;       // 目标DEC
     double offsetRa;        // RA偏移
@@ -95,8 +97,9 @@ struct AdjustmentGuideData {
     QString adjustmentAzimuth;  // 方位角调整指导
     QString adjustmentAltitude; // 高度角调整指导
     
-    AdjustmentGuideData() : ra(0.0), dec(0.0), maxRa(0.0), minRa(0.0), 
-                           maxDec(0.0), minDec(0.0), targetRa(0.0), targetDec(0.0),
+    AdjustmentGuideData() : ra(0.0), dec(0.0),
+                           ra0(0.0), dec0(0.0), ra1(0.0), dec1(0.0), ra2(0.0), dec2(0.0), ra3(0.0), dec3(0.0),
+                            targetRa(0.0), targetDec(0.0),
                            offsetRa(0.0), offsetDec(0.0), fakePolarRA(0.0), fakePolarDEC(0.0),
                            realPolarRA(0.0), realPolarDEC(0.0), azimuth(0.0), altitude(0.0),
                            targetAzimuth(0.0), targetAltitude(0.0), azimuthDeviation(0.0),
@@ -121,6 +124,12 @@ struct PolarAlignmentConfig {
     double longitude = 0.0; // 观测地点经度（度）
     double finalVerificationThreshold = 0.5; // 最终验证精度阈值（度）
     double polarPointThreshold = 55.0; // 极点判断阈值（度）- DEC在极点附近多少度内认为在极点附近
+    // 调整建议分段与平滑切换参数
+    double smallDeviationThresholdDeg = 1.0; // 小偏差阈值（度）- 倾向雅可比法
+    double largeDeviationThresholdDeg = 5.0; // 大偏差阈值（度）- 倾向非线性法
+    // 解析模式选择阈值（可调）
+    double solveMode2MaxOffsetDeg = 5.0;  // 模式2：RA/DEC 窗口最大偏移（度）
+    double solveMode1MaxOffsetDeg = 12.0; // 模式1：允许的RA/DEC 偏移（度）
 };
 
 /**
@@ -292,8 +301,10 @@ public:
      * @param realPolarRA 真极轴RA
      * @param realPolarDEC 真极轴DEC
      */
-    void saveAndEmitAdjustmentGuideData(double ra, double dec, double maxRa, double minRa, 
-                                       double maxDec, double minDec, double targetRa, double targetDec,
+    void saveAndEmitAdjustmentGuideData(double ra, double dec,
+                                       double ra0, double dec0, double ra1, double dec1,
+                                       double ra2, double dec2, double ra3, double dec3,
+                                       double targetRa, double targetDec,
                                        double offsetRa, double offsetDec, QString adjustmentRa, QString adjustmentDec,
                                        double fakePolarRA, double fakePolarDEC, double realPolarRA, double realPolarDEC);
     
@@ -345,7 +356,9 @@ signals:
      * @param realPolarRA 真极轴RA
      * @param realPolarDEC 真极轴DEC
      */
-    void adjustmentGuideData(double ra, double dec, double maxRa, double minRa, double maxDec, double minDec,
+    void adjustmentGuideData(double ra, double dec,
+                           double ra0, double dec0, double ra1, double dec1,
+                           double ra2, double dec2, double ra3, double dec3,
                            double targetRa, double targetDec, double offsetRa, double offsetDec,
                            QString adjustmentRa, QString adjustmentDec,
                            double fakePolarRA, double fakePolarDEC, double realPolarRA, double realPolarDEC);
@@ -521,6 +534,22 @@ private:
      * @return 是否成功
      */
     bool captureImage(int exposureTime);
+    
+    /**
+     * @brief 智能选择最佳的解析模式
+     * @return 解析模式 (0=基础模式, 1=视场模式, 2=高精度模式)
+     */
+    int selectOptimalSolveMode();
+    
+    /**
+     * @brief 计算球面两点间的角距离
+     * @param ra1 第一点的赤经（度）
+     * @param dec1 第一点的赤纬（度）
+     * @param ra2 第二点的赤经（度）
+     * @param dec2 第二点的赤纬（度）
+     * @return 角距离（度）
+     */
+    double calculateSphericalDistance(double ra1, double dec1, double ra2, double dec2);
     
     /**
      * @brief 解析图像

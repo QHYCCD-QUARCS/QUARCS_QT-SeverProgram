@@ -141,6 +141,8 @@ struct FieldOfView {
     double height;         // 视场高度(度)
     double calculatedWidth;  // 计算的宽度
     double calculatedHeight; // 计算的高度
+    double imageWidth;       // 图像宽度
+    double imageHeight;      // 图像高度
     double ra_min;         // 最小赤经
     double ra_max;         // 最大赤经
     double dec_min;        // 最小赤纬
@@ -155,6 +157,7 @@ struct SloveResults
 {
   double RA_Degree;
   double DEC_Degree;
+
 
   double RA_0;
   double DEC_0;
@@ -446,12 +449,17 @@ class Tools : public QObject {
   static MinMaxFOV calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height);
   static bool WaitForPlateSolveToComplete();
   static bool isSolveImageFinish();
-  static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK);
+  static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK, int mode = 0, double lastRA = 0.0, double lastDEC = 0.0);
+  // mode: 0=基础模式, 1=包含视场参数, 2=包含视场和位置参数
+  // lastRA: 上次解析的赤经，单位为度 (0-360°)
+  // lastDEC: 上次解析的赤纬，单位为度 (-90° to +90°)
+  // 智能回退: 模式2→1→0, 模式1→0, 根据参数可用性自动选择最优模式
   static SloveResults ReadSolveResult(QString filename, int imageWidth, int imageHeight);
   static WCSParams extractWCSParams(const QString& wcsInfo);
   static FieldOfView extractFieldOfViewFromWcsInfo(const QString& wcsInfo);
   static SphericalCoordinates pixelToRaDec(double x, double y, const WCSParams& wcs);
   static std::vector<SphericalCoordinates> getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight);
+  static SphericalCoordinates xy2rdByExternal(const QString& wcsFile, double x, double y, bool& ok);
 
   static StelObjectSelect getStelObjectSelectName();
 
