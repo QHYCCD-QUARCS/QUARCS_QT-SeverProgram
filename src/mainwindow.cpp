@@ -2305,7 +2305,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_32_09_232.fits";
     //     a = 0;
     // }
-    fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
+    // fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat originalImage16;
