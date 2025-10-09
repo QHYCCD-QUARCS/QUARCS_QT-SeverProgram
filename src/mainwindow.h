@@ -636,6 +636,9 @@ public:
      * @return 选择的星点中心
      */
     QPointF selectStar(QList<FITSImage::Star> stars);
+    // 选择/追踪的星点（全图坐标）及锁定状态
+    bool selectedStarLocked = false;
+    QPointF lockedStarFull = QPointF(-1, -1);
 
     std::map<std::string, double> roiAndFocuserInfo; // ROI 与电调信息共享
     QPointF currentSelectStarPosition;                 // 当前选中星点
@@ -643,6 +646,25 @@ public:
     QVector<QPointF> allAutoFocusStarPositionList;     // 所有拟合星点
     int overSelectStarAutoFocusStep = 0;               // 结束基于选星的对焦
     QVector<bool> isAutoFocusStarPositionList;         // 无星标志序列（左右方向）
+
+    // 是否允许 selectStar 自动更新 ROI 位置（默认关闭用于排查抖动）
+    bool enableAutoRoiCentering = true;
+    // 追踪窗口比例（相对于 ROI 边长），当锁定星点超出该窗口时允许更新 ROI 使其回到中心
+    double trackWindowRatio = 0.05;
+    // 选星防抖动参数：粘滞半径（像素）。若上一帧锁定星在该半径内有匹配，则保持锁定，避免在近邻星之间跳动
+    double starStickRadiusPx = 6.0;
+    // 选星防抖动参数：搜索半径（像素）。若最近星超出该半径，则视为丢失，不切换星点（保持上一帧锁定）
+    double starSeekRadiusPx = 12.0;
+    // ROI 居中防抖：需要连续超阈值的帧数才触发挂起更新
+    int requiredOutFramesForRecentre = 1;
+    int outOfWindowFrames = 0;
+    // 是否使用虚拟测试图像（用于星点追踪测试）
+    bool useVirtualTestImages = true;
+
+    // 待应用的 ROI 更新（用于在本帧显示后再更新 ROI，避免首帧未居中的视觉问题）
+    bool hasPendingRoiUpdate = false;
+    int pendingRoiX = 0;
+    int pendingRoiY = 0;
 
     /**
      * @brief 启动自动对焦流程
