@@ -2302,7 +2302,7 @@ MeridianStatus MainWindow::checkMeridianStatus()
 int a = 0;
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
-    fitsFileName = "/home/quarcs/workspace/QUARCS/star_frames/star_0000.fits";
+    // fitsFileName = "/home/quarcs/workspace/QUARCS/star_frames/star_0000.fits";
     // if (a == 0){
     //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_26_33_299.fits";
     //     a = 1;
