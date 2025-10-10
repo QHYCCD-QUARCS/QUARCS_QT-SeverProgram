@@ -21,7 +21,6 @@
 #include <QSerialPort>
 
 #include <fitsio.h>
-
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
