@@ -1,0 +1,24 @@
+{
+  "input_sig": "1758616065_51348",
+  "param_sig": {
+    "erode_frac": 0.09,
+    "min_keep_ratio": 0.5
+  },
+  "ratios": {
+    "left": 0.01,
+    "right": 0.01,
+    "top": 0.01,
+    "bottom": 0.01,
+    "crop_box_pixels": [
+      4,
+      4,
+      395,
+      395
+    ],
+    "image_size": [
+      400,
+      400
+    ]
+  },
+  "created_at": 1759023927
+}

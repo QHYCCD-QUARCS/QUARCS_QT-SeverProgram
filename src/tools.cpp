@@ -48,8 +48,8 @@ Tools::~Tools() {
 //   if (polerhandle_ != NULL) CloseQHYCCD(polerhandle_);
 //   ReleaseQHYCCDResource();
 }
-// 静态变量存储最后一次检测的FWHM值
-static double g_lastFWHM = 0.0;
+// 静态变量存储最后一次检测的HFR值
+static double g_lastHFR = 0.0;
 
 bool Tools::findStarsByPython_Process(QString filename)
 {
@@ -81,41 +81,41 @@ bool Tools::findStarsByPython_Process(QString filename)
 
     qDebug() << "Output from Python script:" << output;
     
-    // 解析Python脚本输出中的FWHM值
+    // 解析Python脚本输出中的HFR值
     QString outputStr = QString::fromUtf8(output);
     QStringList lines = outputStr.split('\n', Qt::SkipEmptyParts);
     
-    // 查找包含"最终FWHM"的行
+    // 查找包含"最终HFR"的行
     for (const QString& line : lines) {
-        if (line.contains("最终FWHM")) {
-            // 提取FWHM数值
-            QRegExp rx("最终FWHM\\s*=\\s*([0-9.]+)");
+        if (line.contains("最终HFR")) {
+            // 提取HFR数值
+            QRegExp rx("最终HFR\\s*=\\s*([0-9.]+)");
             if (rx.indexIn(line) != -1) {
                 bool ok;
-                g_lastFWHM = rx.cap(1).toDouble(&ok);
+                g_lastHFR = rx.cap(1).toDouble(&ok);
                 if (ok) {
-                    qDebug() << "解析到FWHM值:" << g_lastFWHM;
+                    qDebug() << "解析到HFR值:" << g_lastHFR;
                 } else {
-                    g_lastFWHM = 3.5; // 默认值
+                    g_lastHFR = 100; // 默认值，表示较清晰状态
                 }
             } else {
-                g_lastFWHM = 3.5; // 默认值
+                g_lastHFR = 100; // 默认值，表示较清晰状态
             }
             break;
         }
     }
     
-    // 如果没有找到FWHM值，使用默认值
-    if (g_lastFWHM == 0.0) {
-        g_lastFWHM = 3.5;
+    // 如果没有找到HFR值，使用默认值
+    if (g_lastHFR == 0.0) {
+        g_lastHFR = 100; // 默认值，表示较清晰状态
     }
     
     return true;
 }
 
-double Tools::getLastFWHM()
+double Tools::getLastHFR()
 {
-    return g_lastFWHM;
+    return g_lastHFR;
 }
 void Tools::Initialize() { instance_ = new Tools; }
 
@@ -3562,9 +3562,9 @@ loadFitsResult Tools::loadFits(QString fileName)
   return result;
 }
 
-FWHM_Result Tools::CalculateFWHM(cv::Mat image)
+HFR_Result Tools::CalculateHFR(cv::Mat image)
 {
-  FWHM_Result result;
+  HFR_Result result;
     cv::Mat subimage;
     subimage = Tools::SubBackGround(image).clone();
     int FirstMoment_x, FirstMoment_y;
@@ -3647,7 +3647,7 @@ FWHM_Result Tools::CalculateFWHM(cv::Mat image)
     // return imagePoint;
 
     result.image = imagePoint;
-    result.FWHM = FWHM;
+    result.HFR = FWHM;
 
     return result;
 }
@@ -3724,6 +3724,7 @@ HFR_Result Tools::CalculateHFR(cv::Mat image)
 
     return result;
 }
+
 
 CamBin Tools::mergeImageBasedOnSize(cv::Mat image) {
     // 获取图像尺寸
