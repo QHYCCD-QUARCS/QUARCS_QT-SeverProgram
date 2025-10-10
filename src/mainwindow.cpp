@@ -630,7 +630,6 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         ScheduleTabelData(message);
     }
-
     else if (parts.size() == 4 && parts[0].trimmed() == "MountGoto")
     {
         if (dpMount != NULL)
@@ -1264,7 +1263,6 @@ void MainWindow::onMessageReceived(const QString &message)
             Logger::Log("DSLRCameraInfo failed! Main Camera is NULL", LogLevel::DEBUG, DeviceType::MAIN);
         }
     }
-
     else if (parts.size() == 3 && parts[0].trimmed() == "saveToConfigFile")
     {
         Logger::Log("saveToConfigFile ...", LogLevel::DEBUG, DeviceType::MAIN);
@@ -1916,7 +1914,6 @@ void MainWindow::setGPIOValue(const char *pin, const char *value)
     close(fd);
     Logger::Log("GPIO value set successfully", LogLevel::INFO, DeviceType::MAIN);
 }
-
 int MainWindow::readGPIOValue(const char *pin)
 {
     int fd;
@@ -2320,6 +2317,8 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     //     a = 0;
     // }
     // fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
+    // emit wsThread->sendMessageToClient("addLineData_Point:" + QString::number(1.0e-6) + ":" + QString::number(-0.006) + ":" + QString::number(14));
+
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat originalImage16;
@@ -2549,7 +2548,6 @@ cv::Mat MainWindow::colorImage(cv::Mat img16)
 
     return AWBImg16color;
 }
-
 void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
 {
     Logger::Log("Starting to save guider image as JPG...", LogLevel::INFO, DeviceType::GUIDER);
@@ -4720,23 +4718,44 @@ void MainWindow::FocusingLooping()
             cameraY += 1;
         }
 
-        // 检查计算出的曝光区域是否在相机的有效范围内
-        if (cameraX < glMainCCDSizeX - ROI.width() && cameraY < glMainCCDSizeY - ROI.height())
+        // 使用缩放坐标（乘以 binning）并在缩放空间内裁剪，允许等于边界
+        int scaledX = cameraX * glMainCameraBinning;
+        int scaledY = cameraY * glMainCameraBinning;
+        if (scaledX < 0) scaledX = 0;
+        if (scaledY < 0) scaledY = 0;
+        if (BoxSideLength > glMainCCDSizeX) BoxSideLength = glMainCCDSizeX;
+        if (BoxSideLength > glMainCCDSizeY) BoxSideLength = glMainCCDSizeY;
+        ROI = QSize(BoxSideLength, BoxSideLength);
+        if (scaledX > glMainCCDSizeX - ROI.width()) scaledX = glMainCCDSizeX - ROI.width();
+        if (scaledY > glMainCCDSizeY - ROI.height()) scaledY = glMainCCDSizeY - ROI.height();
+
+        if (scaledX <= glMainCCDSizeX - ROI.width() && scaledY <= glMainCCDSizeY - ROI.height())
         {
             Logger::Log("FocusingLooping | set Camera ROI x:" + std::to_string(cameraX) + ", y:" + std::to_string(cameraY) + ", width:" + std::to_string(BoxSideLength) + ", height:" + std::to_string(BoxSideLength), LogLevel::DEBUG, DeviceType::FOCUSER);
-            indi_Client->setCCDFrameInfo(dpMainCamera, cameraX*glMainCameraBinning, cameraY*glMainCameraBinning, BoxSideLength, BoxSideLength); // 设置相机的曝光区域
+            // 将裁剪后的缩放坐标反馈为未缩放 ROI，保持区域大小不变，仅位置贴边
+            if (glMainCameraBinning > 0) {
+                roiAndFocuserInfo["ROI_x"] = static_cast<double>(scaledX) / glMainCameraBinning;
+                roiAndFocuserInfo["ROI_y"] = static_cast<double>(scaledY) / glMainCameraBinning;
+            }
+            indi_Client->setCCDFrameInfo(dpMainCamera, scaledX, scaledY, BoxSideLength, BoxSideLength); // 设置相机的曝光区域
             indi_Client->takeExposure(dpMainCamera, expTime_sec);                                       // 进行曝光
             Logger::Log("FocusingLooping | takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::DEBUG, DeviceType::FOCUSER);
         }
         else
         {
             Logger::Log("FocusingLooping | Too close to the edge, please reselect the area.", LogLevel::WARNING, DeviceType::FOCUSER); // 如果区域太靠近边缘，记录警告并调整
-            if (cameraX + ROI.width() > glMainCCDSizeX)
-                cameraX = glMainCCDSizeX - ROI.width();
-            if (cameraY + ROI.height() > glMainCCDSizeY)
-                cameraY = glMainCCDSizeY - ROI.height();
+            if (scaledX + ROI.width() > glMainCCDSizeX)
+                scaledX = glMainCCDSizeX - ROI.width();
+            if (scaledY + ROI.height() > glMainCCDSizeY)
+                scaledY = glMainCCDSizeY - ROI.height();
 
-            indi_Client->setCCDFrameInfo(dpMainCamera, cameraX*glMainCameraBinning, cameraY*glMainCameraBinning, ROI.width(), ROI.height()); // 重新设置曝光区域并进行曝光
+            // 将修正后的缩放坐标反馈为未缩放 ROI，区域大小不变，仅位置贴边
+            if (glMainCameraBinning > 0) {
+                roiAndFocuserInfo["ROI_x"] = static_cast<double>(scaledX) / glMainCameraBinning;
+                roiAndFocuserInfo["ROI_y"] = static_cast<double>(scaledY) / glMainCameraBinning;
+            }
+ 
+            indi_Client->setCCDFrameInfo(dpMainCamera, scaledX, scaledY, ROI.width(), ROI.height()); // 重新设置曝光区域并进行曝光
             indi_Client->takeExposure(dpMainCamera, expTime_sec);
         }
     }
@@ -6662,7 +6681,6 @@ void MainWindow::ScheduleTabelData(QString message)
     }
     startSchedule();
 }
-
 void MainWindow::startSchedule()
 {
     createScheduleDirectory();
@@ -7262,22 +7280,6 @@ bool MainWindow::createScheduleDirectory()
     std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
     std::string folderName = basePath + "/" + buffer + " " + QTime::currentTime().toString("hh").toStdString() + "h (" + ScheduleTargetNames.toStdString() + ")";
 
-    // // Check if directory already exists
-    // if (directoryExists(folderName)) {
-    //     std::cout << "Directory already exists: " << folderName << std::endl;
-    //     return true;
-    // }
-
-    // // Create directory
-    // int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-    // if (status == 0) {
-    //     std::cout << "Directory created successfully: " << folderName << std::endl;
-    //     return true;
-    // } else {
-    //     std::cerr << "Failed to create directory: " << folderName << std::endl;
-    //     return false;
-    // }
-
     // 如果目录不存在，则创建
     if (!std::filesystem::exists(folderName))
     {
@@ -7295,7 +7297,6 @@ bool MainWindow::createScheduleDirectory()
         Logger::Log("createScheduleDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
     }
 }
-
 bool MainWindow::createCaptureDirectory()
 {
     Logger::Log("createCaptureDirectory start ...", LogLevel::INFO, DeviceType::MAIN);
@@ -7306,22 +7307,6 @@ bool MainWindow::createCaptureDirectory()
     char buffer[80];
     std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
     std::string folderName = basePath + buffer;
-
-    // // Check if directory already exists
-    // if (directoryExists(folderName)) {
-    //     std::cout << "Directory already exists: " << folderName << std::endl;
-    //     return true;
-    // }
-
-    // // Create directory
-    // int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-    // if (status == 0) {
-    //     std::cout << "Directory created successfully: " << folderName << std::endl;
-    //     return true;
-    // } else {
-    //     std::cerr << "Failed to create directory: " << folderName << std::endl;
-    //     return false;
-    // }
 
     // 如果目录不存在，则创建
     if (!std::filesystem::exists(folderName))
@@ -7340,7 +7325,6 @@ bool MainWindow::createCaptureDirectory()
         Logger::Log("createCaptureDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
     }
 }
-
 bool MainWindow::createsolveFailedImageDirectory()
 {
     Logger::Log("createCaptureDirectory start ...", LogLevel::INFO, DeviceType::MAIN);
@@ -7351,22 +7335,6 @@ bool MainWindow::createsolveFailedImageDirectory()
     char buffer[80];
     std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
     std::string folderName = basePath + buffer;
-
-    // // Check if directory already exists
-    // if (directoryExists(folderName)) {
-    //     std::cout << "Directory already exists: " << folderName << std::endl;
-    //     return true;
-    // }
-
-    // // Create directory
-    // int status = mkdir(folderName.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-    // if (status == 0) {
-    //     std::cout << "Directory created successfully: " << folderName << std::endl;
-    //     return true;
-    // } else {
-    //     std::cerr << "Failed to create directory: " << folderName << std::endl;
-    //     return false;
-    // }
 
     // 如果目录不存在，则创建
     if (!std::filesystem::exists(folderName))
@@ -7429,35 +7397,6 @@ void MainWindow::getClientSettings()
     }
     Logger::Log("getClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
 }
-
-// void MainWindow::getClientSettings() {
-//     Logger::Log("getClientSettings start ...", LogLevel::INFO, DeviceType::MAIN);
-//     std::string fileName = "config/config.ini";
-
-//     std::unordered_map<std::string, std::string> config;
-
-//     Tools::readClientSettings(fileName, config);
-
-//     Logger::Log("getClientSettings | Current Config:", LogLevel::INFO, DeviceType::MAIN);
-//     for (const auto& pair : config) {
-//         Logger::Log("getClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
-//         emit wsThread->sendMessageToClient("ConfigureRecovery:" + QString::fromStdString(pair.first) + ":" + QString::fromStdString(pair.second));
-//         if (pair.first == "Coordinates") {
-//             std::string coordinate = pair.second;
-//             std::stringstream ss(coordinate);
-//             std::string item;
-//             std::vector<std::string> elements;
-//             while (std::getline(ss, item, ',')) {
-//                 elements.push_back(item);
-//             }
-//             if (elements.size() == 2) {
-//                 DEC = std::stod(elements[0]);
-//                 RA = std::stod(elements[1]);
-//             }
-//         }
-//     }
-//     Logger::Log("getClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
-// }
 
 void MainWindow::setClientSettings(QString ConfigName, QString ConfigValue)
 {
@@ -7566,7 +7505,6 @@ void MainWindow::getStagingScheduleData()
 {
     if (isStagingScheduleData)
     {
-        // emit wsThread->sendMessageToClient("RecoveryScheduleData:" + StagingScheduleData);
         emit wsThread->sendMessageToClient(StagingScheduleData);
     }
 }
@@ -7586,7 +7524,7 @@ void MainWindow::getStagingGuiderData()
         }
     }
 }
-// TODO:
+
 int MainWindow::MoveFileToUSB()
 {
     qDebug("MoveFileToUSB");
@@ -7927,7 +7865,6 @@ std::string MainWindow::GetAllFile()
     Logger::Log("GetAllFile finish!", LogLevel::INFO, DeviceType::MAIN);
     return resultString;
 }
-
 void MainWindow::GetImageFiles(std::string ImageFolder)
 {
     Logger::Log("GetImageFiles start ...", LogLevel::INFO, DeviceType::MAIN);
@@ -7979,57 +7916,7 @@ void MainWindow::GetImageFiles(std::string ImageFolder)
     Logger::Log("GetImageFiles finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
-// std::string MainWindow::GetAllFile()
-// {
-//     std::string capturePath = ImageSaveBasePath + "/CaptureImage/";
-//     std::string planPath = ImageSaveBasePath + "/ScheduleImage/";
-//     std::string resultString;
-//     std::string captureString = "CaptureImage{";
-//     std::string planString = "ScheduleImage{";
 
-//     // 读取CaptureImage文件夹中的子文件夹，并进一步读取图像文件
-//     for (const auto &entry : std::filesystem::directory_iterator(capturePath))
-//     {
-//         std::string folderName = entry.path().filename().string(); // 获取文件夹名
-//         if (entry.is_directory()) {
-//             captureString += folderName + "{";
-
-//             // 遍历文件夹中的所有文件（假设都是.fits文件）
-//             for (const auto &imageEntry : std::filesystem::directory_iterator(entry.path()))
-//             {
-//                 std::string imageName = imageEntry.path().filename().string();
-//                 if (imageEntry.is_regular_file()) {
-//                     captureString += imageName + ";"; // 拼接图像文件名
-//                 }
-//             }
-
-//             captureString += "}"; // 结束当前文件夹的图像列表
-//         }
-//     }
-
-//     // 读取ScheduleImage文件夹中的文件夹名，并进一步读取图像文件
-//     for (const auto &entry : std::filesystem::directory_iterator(planPath))
-//     {
-//         std::string folderName = entry.path().filename().string(); // 获取文件夹名
-//         if (entry.is_directory()) {
-//             planString += folderName + "{";
-
-//             // 遍历文件夹中的所有文件（假设都是.fits文件）
-//             for (const auto &imageEntry : std::filesystem::directory_iterator(entry.path()))
-//             {
-//                 std::string imageName = imageEntry.path().filename().string();
-//                 if (imageEntry.is_regular_file()) {
-//                     planString += imageName + ";"; // 拼接图像文件名
-//                 }
-//             }
-
-//             planString += "}"; // 结束当前文件夹的图像列表
-//         }
-//     }
-
-//     resultString = captureString + "}:" + planString + "}";
-//     return resultString;
-// }
 
 // 解析字符串
 QStringList MainWindow::parseString(const std::string &input, const std::string &imgFilePath)
@@ -9041,7 +8928,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[driverCode].Description);
     emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
 }
-
 void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString DeviceType)
 {
     if (DeviceName == "" || DeviceType == "")
@@ -10294,8 +10180,6 @@ void MainWindow::sendRoiInfo()
     emit wsThread->sendMessageToClient("SetVisibleArea:" + QString::number(visibleX) + ":" + QString::number(visibleY) + ":" + QString::number(scale));
     emit wsThread->sendMessageToClient("SetSelectStars:" + QString::number(selectStarX) + ":" + QString::number(selectStarY));
 }
-
-
 void MainWindow::updateCPUInfo()
 {
     // 获取CPU温度和使用率
