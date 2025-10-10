@@ -44,6 +44,7 @@
 #include <chrono>
 #include <cmath>
 #include <math.h>
+#include <QElapsedTimer>
 
 #include <filesystem>
 #include <filesystem>  //（按原文件保留重复包含）
@@ -106,6 +107,20 @@ struct StarMatch
     int vector1_id = -1, vector2_id = -1, vector3_id = -1; // 关联向量编号
     bool isMatch1 = false, isMatch2 = false, isMatch3 = false; // 各向量是否匹配
 };
+
+/**
+ * @brief 翻转事件类型
+ */
+enum class FlipEvent { None, Started, Done, Failed };
+
+/**
+ * @brief 中天翻转状态
+ */
+struct MeridianStatus {
+    FlipEvent event = FlipEvent::None;
+    double etaMinutes = std::numeric_limits<double>::quiet_NaN(); // >0 距中天；<0 已过中天
+};
+
 
 /*
 //*************************************************
@@ -364,6 +379,7 @@ public:
     QVector<QString> INDI_Driver_List;    // INDI 驱动列表缓存
     QVector<ConnectedDevice> ConnectedDevices; // 已连接设备详细列表
 
+
 /**********************  图像采集/处理（FITS/JPG/PNG/伪彩）  **********************/
 public:
     /**
@@ -583,6 +599,12 @@ public:
     void FocuserControlMove(bool isInward);
 
     /**
+     * @brief 控制电调按当前方向移动（持续）
+     * @param isInward true 向内，false 向外
+     */
+    void FocuserControlMoveStep(bool isInward, int steps);
+
+    /**
      * @brief 周期处理电调移动数据（刷新参数）
      */
     void HandleFocuserMovementDataPeriodically();
@@ -601,6 +623,8 @@ public:
      * @brief 检查电调移动命令是否正常
      */
     void CheckFocuserMoveOrder();
+
+
 
     bool isFocusLoopShooting = false; // ROI 循环拍摄使能
 
@@ -621,6 +645,9 @@ public:
      * @return 选择的星点中心
      */
     QPointF selectStar(QList<FITSImage::Star> stars);
+    // 选择/追踪的星点（全图坐标）及锁定状态
+    bool selectedStarLocked = false;
+    QPointF lockedStarFull = QPointF(-1, -1);
 
     std::map<std::string, double> roiAndFocuserInfo; // ROI 与电调信息共享
     QPointF currentSelectStarPosition;                 // 当前选中星点
@@ -628,6 +655,25 @@ public:
     QVector<QPointF> allAutoFocusStarPositionList;     // 所有拟合星点
     int overSelectStarAutoFocusStep = 0;               // 结束基于选星的对焦
     QVector<bool> isAutoFocusStarPositionList;         // 无星标志序列（左右方向）
+
+    // 是否允许 selectStar 自动更新 ROI 位置（默认关闭用于排查抖动）
+    bool enableAutoRoiCentering = true;
+    // 追踪窗口比例（相对于 ROI 边长），当锁定星点超出该窗口时允许更新 ROI 使其回到中心
+    double trackWindowRatio = 0.05;
+    // 选星防抖动参数：粘滞半径（像素）。若上一帧锁定星在该半径内有匹配，则保持锁定，避免在近邻星之间跳动
+    double starStickRadiusPx = 6.0;
+    // 选星防抖动参数：搜索半径（像素）。若最近星超出该半径，则视为丢失，不切换星点（保持上一帧锁定）
+    double starSeekRadiusPx = 12.0;
+    // ROI 居中防抖：需要连续超阈值的帧数才触发挂起更新
+    int requiredOutFramesForRecentre = 1;
+    int outOfWindowFrames = 0;
+    // 是否使用虚拟测试图像（用于星点追踪测试）
+    bool useVirtualTestImages = false;
+
+    // 待应用的 ROI 更新（用于在本帧显示后再更新 ROI，避免首帧未居中的视觉问题）
+    bool hasPendingRoiUpdate = false;
+    int pendingRoiX = 0;
+    int pendingRoiY = 0;
 
     /**
      * @brief 启动自动对焦流程
@@ -747,9 +793,9 @@ public:
 
     /**
      * @brief 获取赤道仪状态
-     * @return MountStatus
+     * @return 状态
      */
-    MountStatus TelescopeControl_Status();
+    QString TelescopeControl_Status();
 
     /**
      * @brief 公园（停机位）
@@ -797,6 +843,12 @@ public:
      * @return 球面坐标
      */
     SphericalCoordinates TelescopeControl_GetRaDec();
+
+    /**
+     * @brief 轮询中天翻转事件
+     * @return 翻转事件类型
+     */
+    MeridianStatus checkMeridianStatus();
 
     /**
      * @brief 单次图像板解
@@ -1277,6 +1329,11 @@ public:
      */
     void getMainCameraParameters();
 
+    /**
+     * @brief 获取赤道仪参数（自动翻转、东边分钟过中天、西边分钟过中天）
+     */
+    void getMountParameters();
+
 /**********************  客户端设置（持久化）  **********************/
 public:
     /**
@@ -1329,9 +1386,16 @@ public:
     QString glMainCameraStatu;            // 主相机状态
     QElapsedTimer glMainCameraCaptureTimer; // 拍摄计时
 
+    bool isAutoFlip = false;                  // 是否自动翻转
+    double EastMinutesPastMeridian = 10;       // 东边分钟过中天
+    double WestMinutesPastMeridian = 10;       // 西边分钟过中天
+
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
-    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/"; // 前端图像目录
+ 
     // std::string vueImagePath = "/var/www/html/img/";
+
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
     std::string PriorROIImage = "NULL";    // 上一帧 ROI 图
     std::string PriorCaptureImage = "NULL";// 上一帧拍摄图

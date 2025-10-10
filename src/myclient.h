@@ -7,13 +7,18 @@
 #include <iostream>
 #include <functional>
 #include <QElapsedTimer>
+#include <QObject>
+#include <QTimer>
 
 #include "Logger.h"
+#include "mountstate.h"
 
 // 回调函数类型定义
 using ImageReceivedCallback = std::function<void(const std::string& filename, const std::string& devname)>;
 
 using MessageReceivedCallback = std::function<void(const std::string& message)>;
+
+
 
 class MyClient : public INDI::BaseClient
 {
@@ -96,6 +101,7 @@ class MyClient : public INDI::BaseClient
         uint32_t getTelescopePark(INDI::BaseDevice *dp,bool &isParked);
         uint32_t setTelescopePark(INDI::BaseDevice *dp,bool isParked);
         uint32_t setTelescopeHomeInit(INDI::BaseDevice *dp,QString command);
+        uint32_t getTelescopeMoving(INDI::BaseDevice *dp);
 
         uint32_t getTelescopeSlewRate(INDI::BaseDevice *dp,int &speed);
         uint32_t setTelescopeSlewRate(INDI::BaseDevice *dp,int speed);
@@ -105,6 +111,8 @@ class MyClient : public INDI::BaseClient
 
 
         uint32_t setAutoFlip(INDI::BaseDevice *dp,bool ON);
+        uint32_t setMinutesPastMeridian(INDI::BaseDevice *dp,double Eastvalue , double Westvalue);
+        uint32_t getMinutesPastMeridian(INDI::BaseDevice *dp,double &Eastvalue, double &Westvalue);
         uint32_t setAUXENCODERS(INDI::BaseDevice *dp);
         uint32_t getTelescopeMoveWE(INDI::BaseDevice *dp,QString &statu) ;
         uint32_t setTelescopeMoveWE(INDI::BaseDevice *dp,QString command);
@@ -123,12 +131,12 @@ class MyClient : public INDI::BaseClient
         uint32_t setTelescopetAZALT(INDI::BaseDevice *dp,double AZ_DEGREE,double ALT_DEGREE);
 
 
-        uint32_t slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,bool EnableTracking,INDI::PropertyNumber &property);
-        uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,INDI::PropertyNumber &property);
+        uint32_t slewTelescopeJNowNonBlock(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree,bool EnableTracking);
+        uint32_t syncTelescopeJNow(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree);
 
-        uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu,QString &error);
+        uint32_t getTelescopeStatus(INDI::BaseDevice *dp,QString &statu);
         
-        bool ismove = false;
+    
 
 
         //--------------------CFW API
@@ -167,6 +175,12 @@ class MyClient : public INDI::BaseClient
         uint32_t getLocation(INDI::BaseDevice *dp,double &latitude_degree, double &longitude_degree, double &elevation);
         uint32_t setAtmosphere(INDI::BaseDevice *dp,double temperature, double pressure, double humidity);
         uint32_t getAtmosphere(INDI::BaseDevice *dp,double &temperature, double &pressure, double &humidity);
+
+        MountState mountState;
+        QTimer MountGotoTimer;
+        double oldRA_Hours = 0;
+        double oldDEC_Degree = 0;
+        void updateMountState(INDI::BaseDevice *dp);
 
     //public slots:
         //void slotUpdateUI(QString filename,QString devname);
@@ -217,6 +231,8 @@ class MyClient : public INDI::BaseClient
         std::vector<INDI::BaseDevice *> deviceList;
         // 存储设备名字的列表
         std::vector<std::string> deviceNames;
+
+
         
 
     ImageReceivedCallback imageReceivedCallback;

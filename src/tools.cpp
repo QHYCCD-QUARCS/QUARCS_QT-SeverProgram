@@ -640,7 +640,6 @@ QStringList Tools::getCameraNumFromSystemDeviceList(const SystemDeviceList& s) {
 
   return cameras;
 }
-
 void Tools::makeConfigFile() {
     std::string directory = "config";  // 要创建的文件夹名
     std::string filename = "config/config.ini";  // 配置文件路径
@@ -973,7 +972,7 @@ void Tools::saveParameter(const QString& deviceCategory, const QString& function
             }
         } else {
             // 如果没有找到结束标记，添加新的参数和结束标记
-            content.insert(pos + sectionHeader.length(), "\n" + functionCategory.toStdString() + "=" + parameterValue.toStdString() + "\n" + endMarker + "\n");
+            content += sectionHeader + "\n" + functionCategory.toStdString() + "=" + parameterValue.toStdString() + "\n" + endMarker + "\n";
         }
     } else {
         // 如果没有找到该部分，添加新的部分
@@ -1282,7 +1281,6 @@ void Tools::saveDSLRsInfo(DSLRsInfo DSLRsInfo)
 
   outfile.close();
 }
-
 DSLRsInfo Tools::readDSLRsInfo(QString Name)
 {
   DSLRsInfo DSLRsInfo;
@@ -1836,7 +1834,6 @@ void Tools::SelectQHYCCDSDKDevice(int systemNumber) {
   // QHYCCDSDK has no Groupd define.
   Tools::driversList().selectedGrounp = -1;
 }
-
 cv::Mat Tools::Capture() {
   double expTime_sec;
   expTime_sec = (double)glMainCameraExpTime_ / 1000 / 1000;
@@ -2399,7 +2396,6 @@ QImage Tools::ShowHistogram(const cv::Mat& image,QLabel *label) {
   #endif
   return ret;
 }
-
 void Tools::PaintHistogram(cv::Mat src,QLabel *label)
 {
     int channelCount = src.channels();
@@ -3033,7 +3029,6 @@ void Tools::CvDebugSave(cv::Mat img, const std::string& name) {
     cv::imwrite(name + ".tiff", img);
   }
 }
-
 double Tools::getDecAngle(const QString &str)
 {
     QRegExp rex("([-+]?)\\s*"                   // [sign] (1)
@@ -3656,6 +3651,79 @@ HFR_Result Tools::CalculateHFR(cv::Mat image)
 
     return result;
 }
+HFR_Result Tools::CalculateHFR(cv::Mat image)
+{
+    HFR_Result result;
+    cv::Rect starRect;
+    // if (!Tools::DetectStar(image, 50.0, 5, starRect)) {
+    //     qDebug() << "No star detected in the image.";
+    //     result.image = image;
+    //     result.HFR = -1.0;
+    //     return result;
+    // }
+
+    // cv::Mat starRegion = image(starRect);
+    cv::Mat subimage = Tools::SubBackGround(image).clone();
+    int FirstMoment_x, FirstMoment_y;
+
+    double scale_up = 10.0;
+    cv::resize(subimage, subimage, cv::Size(), scale_up, scale_up, cv::INTER_LINEAR);
+
+    cv::Mat imageFloat;
+    subimage.convertTo(imageFloat, CV_64F);
+
+    double sum = cv::sum(imageFloat)[0];
+    double xCoordinate = 0.0;
+    double yCoordinate = 0.0;
+
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = imageFloat.at<double>(y, x);
+            xCoordinate += x * pixelValue;
+            yCoordinate += y * pixelValue;
+        }
+    }
+
+    xCoordinate /= sum;
+    yCoordinate /= sum;
+
+    FirstMoment_x = static_cast<int>(xCoordinate);
+    FirstMoment_y = static_cast<int>(yCoordinate);
+
+    double maxBrightness = subimage.at<ushort>(FirstMoment_y, FirstMoment_x);
+    double halfMaxBrightness = maxBrightness / 2.0;
+
+    std::vector<double> distances;
+
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = subimage.at<ushort>(y, x);
+            if (pixelValue >= halfMaxBrightness) {
+                double distance = std::sqrt(std::pow(x - FirstMoment_x, 2) + std::pow(y - FirstMoment_y, 2));
+                distances.push_back(distance);
+            }
+        }
+    }
+
+    double sumDistances = std::accumulate(distances.begin(), distances.end(), 0.0);
+    double HFR = sumDistances / distances.size() / 10.0;
+
+    // 在原图上绘制检测结果
+    cv::Mat imagePoint = image.clone();
+    cv::Point center(starRect.x + FirstMoment_x / 10, starRect.y + FirstMoment_y / 10);
+    cv::rectangle(imagePoint, starRect, cv::Scalar(0, 255, 0), 1); // 绘制外接矩形
+    cv::circle(imagePoint, center, static_cast<int>(HFR), cv::Scalar(0, 0, 255), 1); // 绘制HFR圆
+    cv::circle(imagePoint, center, 1, cv::Scalar(0, 255, 0), -1); // 绘制中心点
+
+    // 在图像上显示HFR数值
+    std::string hfrText = cv::format("%.2f", HFR);
+    cv::putText(imagePoint, hfrText, cv::Point(starRect.x, starRect.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+
+    result.image = imagePoint;
+    result.HFR = HFR;
+
+    return result;
+}
 
 
 CamBin Tools::mergeImageBasedOnSize(cv::Mat image) {
@@ -3682,85 +3750,6 @@ CamBin Tools::mergeImageBasedOnSize(cv::Mat image) {
     
     return CamBin;
 }
-
-// cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG)
-// {
-//     uint32_t width = image.cols;
-//     uint32_t height = image.rows;
-//     uint32_t depth = image.elemSize() * 8;
-//     uint32_t camchannels = image.channels();
-
-//     uint8_t *srcdata = image.data;
-//     image.release();
-
-//     uint32_t outputSize;
-//     if (depth == 8) {
-//         outputSize = (width / camxbin) * (height / camybin);
-//     }
-//     else if (depth == 16) {
-//         outputSize = 2 * (width / camxbin) * (height / camybin);
-//     }
-//     else if (depth == 32) {
-//         outputSize = 4 * (width / camxbin) * (height / camybin);
-//     }
-//     else {
-//         Logger::Log("Unsupported depth!", LogLevel::ERROR, DeviceType::MAIN);
-//         return cv::Mat(); // 返回空Mat
-//     }
-
-//     // 分配输出数据的内存
-//     std::vector<uint8_t> bindata(outputSize, 0);
-
-//     uint32_t result;
-//     if(isAVG) {
-//         result = PixelsDataSoftBin_AVG(srcdata, bindata.data(), width, height, depth, camxbin, camybin);
-//     } else {
-//         result = PixelsDataSoftBin(srcdata, bindata.data(), width, height, camchannels, depth, camxbin, camybin, isColor);
-//     }
-
-//     if (result == QHYCCD_SUCCESS) {
-//         int newWidth = width / camxbin;
-//         int newHeight = height / camybin;
-        
-//         // 创建新的Mat并复制数据
-//         cv::Mat outputImage;
-//         if (depth == 8) {
-//             outputImage = cv::Mat(newHeight, newWidth, CV_8U);
-//             memcpy(outputImage.data, bindata.data(), outputSize);
-//         }
-//         else if (depth == 16) {
-//             outputImage = cv::Mat(newHeight, newWidth, CV_16U);
-//             memcpy(outputImage.data, bindata.data(), outputSize);
-//         }
-//         else if (depth == 32) {
-//             outputImage = cv::Mat(newHeight, newWidth, CV_32S);
-//             memcpy(outputImage.data, bindata.data(), outputSize);
-//         }
-        
-//         // 再次检查处理后的图像尺寸，确保为偶数
-//         int finalWidth = outputImage.cols;
-//         int finalHeight = outputImage.rows;
-        
-//         // 如果图像宽高不是偶数，裁剪一行或一列
-//         if (finalWidth % 2 != 0 || finalHeight % 2 != 0) {
-//             int cropWidth = finalWidth - (finalWidth % 2);
-//             int cropHeight = finalHeight - (finalHeight % 2);
-            
-//             if (cropWidth > 0 && cropHeight > 0) {
-//                 // 使用ROI裁剪图像
-//                 cv::Rect roi(0, 0, cropWidth, cropHeight);
-//                 cv::Mat croppedImage = outputImage(roi).clone();
-//                 outputImage.release(); // 释放原始的输出图像内存
-                
-//                 return croppedImage;
-//             }
-//         }
-        
-//         return outputImage;
-//     }
-    
-//     return cv::Mat(); // 错误时返回空Mat
-// }
 
 cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t camybin, bool isColor, bool isAVG)
 {
@@ -3894,7 +3883,6 @@ cv::Mat Tools::processMatWithBinAvg(cv::Mat &image, uint32_t camxbin, uint32_t c
     
     return outputImage;
 }
-
 // 修改后的 Bayer 阵列处理函数，支持不同的 Bayer 模式
 cv::Mat Tools::PixelsDataSoftBin_Bayer(cv::Mat srcMat, uint32_t camxbin, uint32_t camybin, BayerPattern bayerPattern)
 {
@@ -4239,8 +4227,6 @@ cv::Mat Tools::PixelsDataSoftBin_Bayer(cv::Mat srcMat, uint32_t camxbin, uint32_
   // 因为返回值是一个拷贝，所以不需要担心返回后的内存泄漏
   return newbinMat;
 }
-
-
 uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin)
 {
   uint32_t stride = width;
@@ -4365,182 +4351,6 @@ uint32_t Tools::PixelsDataSoftBin_AVG(uint8_t *srcdata, uint8_t *bindata, uint32
   }
   return QHYCCD_ERROR;
 }
-
-// uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
-// {
-//   if (iscolor)
-//   {
-//     unsigned char *data = NULL;
-//     if (srcdata == bindata)
-//     {
-//       data = new unsigned char[(width * depth / 8 + 3) / 4 * 4 * height];
-//       memcpy(data, srcdata, (width * depth / 8 + 3) / 4 * 4 * height);
-//       srcdata = data;
-//     }
-//     if (depth == 8)
-//     {
-//       memset(bindata, 0, (width / camxbin) * (height / camybin));
-//       for (uint32_t i = 0; i < height / camybin / 2; i++)
-//       {
-//         uint8_t *pd = bindata + width / camxbin * i * 2;
-//         uint8_t *ps = srcdata + width * camxbin * i * 2;
-//         uint8_t *psEnd = ps + width / camxbin * camxbin - 1;
-//         for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
-//         {
-//           for (int yi = 1; yi <= camybin; yi++)
-//           {
-//             for (int xi = 1; xi <= camxbin; xi++)
-//             {
-//               uint32_t y00 = LimitByte(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
-//               uint32_t y01 = LimitByte(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
-//               uint32_t y10 = LimitByte(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
-//               uint32_t y11 = LimitByte(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
-//               pd[0] = y00;
-//               pd[1] = y01;
-//               pd[width / camxbin + 0] = y10;
-//               pd[width / camxbin + 1] = y11;
-//             }
-//           }
-//         }
-//       }
-//       return QHYCCD_SUCCESS;
-//     }
-//     else if (depth == 16)
-//     {
-//       memset(bindata, 0, 2 * (width / camxbin) * (height / camybin));
-//       for (uint32_t i = 0; i < height / camybin / 2; i++)
-//       {
-//         uint16_t *pd = (uint16_t *)bindata + width / camxbin * i * 2;
-//         uint16_t *ps = (uint16_t *)srcdata + width * camxbin * i * 2;
-//         uint16_t *psEnd = ps + width / camxbin * camxbin - 1;
-//         for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
-//         {
-//           for (int yi = 1; yi <= camybin; yi++)
-//           {
-//             for (int xi = 1; xi <= camxbin; xi++)
-//             {
-//               uint32_t y00 = LimitShort(pd[0] + ps[2 * (yi - 1) * width + 2 * (xi - 1)]);
-//               uint32_t y01 = LimitShort(pd[1] + ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1]);
-//               uint32_t y10 = LimitShort(pd[width / camxbin + 0] + ps[width * (2 * yi - 1) + 2 * (xi - 1)]);
-//               uint32_t y11 = LimitShort(pd[width / camxbin + 1] + ps[width * (2 * yi - 1) + 2 * xi - 1]);
-//               pd[0] = y00;
-//               pd[1] = y01;
-//               pd[width / camxbin + 0] = y10;
-//               pd[width / camxbin + 1] = y11;
-//             }
-//           }
-//         }
-//       }
-//       return QHYCCD_SUCCESS;
-//     }
-//     else if (depth == 32)
-//     {
-//       memset(bindata, 0, 4 * (width / camxbin) * (height / camybin));
-//       for (uint32_t i = 0; i < height / camybin / 2; i++)
-//       {
-//         uint32_t *pd = (uint32_t *)bindata + width / camxbin * i * 2;
-//         uint32_t *ps = (uint32_t *)srcdata + width * camxbin * i * 2;
-//         uint32_t *psEnd = ps + width / camxbin * camxbin - 1;
-//         for (; ps < psEnd - 1; ps += camxbin * 2, pd += 2)
-//         {
-//           for (int yi = 1; yi <= camybin; yi++)
-//           {
-//             for (int xi = 1; xi <= camxbin; xi++)
-//             {
-//               pd[0] += ps[2 * (yi - 1) * width + 2 * (xi - 1)];
-//               pd[1] += ps[2 * (yi - 1) * width + 2 * (xi - 1) + 1];
-//               pd[width / camxbin + 0] += ps[width * (2 * yi - 1) + 2 * (xi - 1)];
-//               pd[width / camxbin + 1] += ps[width * (2 * yi - 1) + 2 * xi - 1];
-//             }
-//           }
-//         }
-//       }
-//       return QHYCCD_SUCCESS;
-//     }
-//     if (data != NULL)
-//     {
-//       delete[] data;
-//     }
-//   }
-//   else
-//   {
-//     uint32_t stride = width;
-//     uint32_t newStride = width / camxbin;
-
-//     if (depth == 8)
-//     {
-//       memset(bindata, 0, newStride * (height / camybin));
-//       for (uint32_t i = 0; i < height / camybin; i++)
-//       {
-//         for (uint32_t v = 0; v < camybin; v++)
-//         {
-//           uint8_t *pd = bindata + newStride * i;
-//           uint8_t *ps = srcdata + stride * (i * camybin + v);
-//           for (uint32_t j = 0; j < width / camxbin; j++)
-//           {
-//             for (uint32_t h = 0; h < camxbin; h++)
-//             {
-//               uint32_t y = LimitByte(*pd + *ps);
-//               *pd = y;
-//               ps++;
-//             }
-//             pd++;
-//           }
-//         }
-//       }
-//       return QHYCCD_SUCCESS;
-//     }
-//     else if (depth == 16)
-//     {
-//       memset(bindata, 0, 2 * newStride * (height / camybin));
-//       for (uint32_t i = 0; i < height / camybin; i++)
-//       {
-//         for (uint32_t v = 0; v < camybin; v++)
-//         {
-//           uint16_t *pd = (uint16_t *)bindata + newStride * i;
-//           uint16_t *ps = (uint16_t *)srcdata + stride * (i * camybin + v);
-//           for (uint32_t j = 0; j < width / camxbin; j++)
-//           {
-//             for (uint32_t h = 0; h < camxbin; h++)
-//             {
-//               uint32_t y = LimitShort(*pd + *ps);
-//               *pd = y;
-//               ps++;
-//             }
-//             pd++;
-//           }
-//         }
-//       }
-//       return QHYCCD_SUCCESS;
-//     }
-//     else if (depth == 32)
-//     {
-//       memset(bindata, 0, 4 * newStride * (height / camybin));
-
-//       for (uint32_t i = 0; i < height / camybin; i++)
-//       {
-//         for (uint32_t v = 0; v < camybin; v++)
-//         {
-//           uint32_t *pd = (uint32_t *)bindata + newStride * i;
-//           uint32_t *ps = (uint32_t *)srcdata + stride * (i * camybin + v);
-//           for (uint32_t j = 0; j < width / camxbin; j++)
-//           {
-//             for (uint32_t h = 0; h < camxbin; h++)
-//             {
-//               uint32_t y = *pd + *ps;
-//               *pd = y;
-//               ps++;
-//             }
-//             pd++;
-//           }
-//         }
-//       }
-//       return QHYCCD_SUCCESS;
-//     }
-//   }
-//   return QHYCCD_ERROR;
-// }
-
 uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t width, uint32_t height, uint32_t camchannels, uint32_t depth, uint32_t camxbin, uint32_t camybin, bool iscolor)
 {
   Logger::Log("QHYCCD | QHYBASE.CPP | PixelsDataSoftBin | width = " + std::to_string(width) + " height = " + std::to_string(height) + " camchannels = " + std::to_string(camchannels) + " depth = " + std::to_string(depth) + " camxbin = " + std::to_string(camxbin) + " camybin = " + std::to_string(camybin) + " iscolor = " + std::to_string(iscolor), LogLevel::INFO, DeviceType::MAIN);
@@ -4933,44 +4743,6 @@ void Tools::SaveMatToFITS(const cv::Mat& image) {
     }
 }
 
-// void Tools::SaveMatToFITS(const cv::Mat& image) {
-//     if (image.empty()) {
-//         Logger::Log("输入图像为空！", LogLevel::ERROR, DeviceType::MAIN);
-//         return;
-//     }
-
-//     // 确保图像是灰度图
-//     cv::Mat gray;
-//     if (image.channels() == 3) {
-//         cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-//     } else {
-//         gray = image;
-//     }
-
-//     // FITS文件要求图像数据是二维的
-//     long naxes[2] = {gray.cols, gray.rows};
-//     int bitpix = SHORT_IMG;  // 使用16位整型保存
-
-//     // 创建FITS文件，使用 '!' 来覆盖已存在的文件
-//     fitsfile* fptr;
-//     int status = 0;  // 状态变量必须初始化为0
-//     std::string filename = "!/dev/shm/MatToFITS.fits";  // 加 ! 来覆盖文件
-//     fits_create_file(&fptr, filename.c_str(), &status);
-//     fits_create_img(fptr, bitpix, 2, naxes, &status);
-
-//     // 将图像数据写入FITS文件
-//     fits_write_img(fptr, TSHORT, 1, gray.total(), gray.ptr<short>(), &status);
-
-//     // 关闭FITS文件
-//     fits_close_file(fptr, &status);
-
-//     if (status) {
-//         fits_report_error(stderr, status);  // 输出错误信息
-//     } else {
-//         Logger::Log("成功保存图像到 " + filename, LogLevel::INFO, DeviceType::MAIN);
-//     }
-// }
-
 /*************************************************************************
 ********************************Coordinate Convert*************************
 *************************************************************************/
@@ -5058,7 +4830,6 @@ double Tools::getLST_Degree(QDateTime datetimeUTC, double longitude_radian) {
 
   return LST;
 }
-
 bool Tools::getJDFromDate(double *newjd, const int y, const int m, const int d, const int h, const int min, const float s)
 {
     static const long IGREG2 = 15 + 31L * (10 + 12L * 1582);
@@ -5171,7 +4942,6 @@ void Tools::full_ra_dec_to_alt_az(QDateTime datetimeUTC, double ra_radian,
   ra_dec_to_alt_az(DegreeToRad(HA_Degree), dec_radian, alt_radian, az_radian,
                    latitude_radian);
 }
-
 void Tools::alt_az_to_ra_dec(double alt_radian, double az_radian,
                              double& hr_radian, double& dec_radian,
                              double lat_radian) {
@@ -5646,10 +5416,19 @@ bool Tools::WaitForPlateSolveToComplete() {
 bool Tools::isSolveImageFinish() {
   return isSolveImageFinished;
 }
-
-bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK)
+bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK, int mode, double lastRA, double lastDEC)
 {
-    filename = "/home/quarcs/workspace/testimage/0.fits";
+    // 参数说明：
+    // mode: 0=基础模式, 1=包含视场参数, 2=包含视场和位置参数
+    // lastRA: 上次解析的赤经，单位为度 (0-360°)，注意不是小时制
+    // lastDEC: 上次解析的赤纬，单位为度 (-90° to +90°)
+    // 
+    // 智能回退策略：
+    // - 模式2缺少位置参数但有视场参数 → 回退到模式1
+    // - 模式2缺少视场参数 → 回退到模式0  
+    // - 模式1缺少视场参数 → 回退到模式0
+    
+    // filename = "/home/quarcs/workspace/testimage/0.fits";
     PlateSolveInProgress = true;
     isSolveImageFinished = false;
 
@@ -5695,14 +5474,62 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     QString command_qstr;
     if (!USEQHYCCDSDK)
     {
-      // command_qstr="solve-field " + filename + " --overwrite --cpulimit 5 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --nsigma 8  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-      // command_qstr = "solve-field " + filename + " --overwrite --cpulimit 20 --scale-units degwidth --nsigma 10  --no-plots  --no-remove-lines --uniformize 0 --timestamp";
-      command_qstr = "solve-field " + filename + " --overwrite  --no-plots --uniformize 0 --timestamp  --objs 10 --pixel-error 1.5 --cpulimit 20 --scale-low " + MinFOV + " --scale-high " + MaxFOV;
+        // 根据模式选择不同的命令构建逻辑
+        int actualMode = mode; // 实际使用的模式，可能会根据参数可用性回退
+        
+        if (mode == 1) {
+            // 模式1：加入视场参数，如果视场参数无效则回退到模式0
+            if (FocalLength <= 0 || CameraSize_width <= 0 || CameraSize_height <= 0 || FOV.minFOV <= 0 || FOV.maxFOV <= 0) {
+                Logger::Log("模式1参数不完整，回退到模式0", LogLevel::WARNING, DeviceType::MAIN);
+                actualMode = 0;
+            }
+        } else if (mode == 2) {
+            // 模式2：智能回退逻辑
+            bool hasValidFOV = (FocalLength > 0 && CameraSize_width > 0 && CameraSize_height > 0 && FOV.minFOV > 0 && FOV.maxFOV > 0);
+            bool hasValidPosition = (lastRA != 0.0 && lastDEC != 0.0);
+            
+            if (!hasValidPosition && !hasValidFOV) {
+                // 位置参数和视场参数都无效，回退到模式0
+                Logger::Log("模式2位置和视场参数都不完整，回退到模式0", LogLevel::WARNING, DeviceType::MAIN);
+                actualMode = 0;
+            } else if (!hasValidPosition) {
+                // 位置参数无效但视场参数有效，回退到模式1
+                Logger::Log("模式2位置参数不完整，回退到模式1（保留视场参数）", LogLevel::WARNING, DeviceType::MAIN);
+                actualMode = 1;
+            } else if (!hasValidFOV) {
+                // 视场参数无效但位置参数有效，也回退到模式0（因为模式2需要视场+位置）
+                Logger::Log("模式2视场参数不完整，回退到模式0", LogLevel::WARNING, DeviceType::MAIN);
+                actualMode = 0;
+            }
+            // 如果两个参数都有效，actualMode保持为2
+        }
+        
+        // 根据实际模式构建命令
+        switch (actualMode) {
+            case 1:
+                // 模式1：基础命令 + 视场参数
+                command_qstr = "solve-field " + filename + " --overwrite --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV;
+                Logger::Log("使用模式1解析（包含视场参数）", LogLevel::INFO, DeviceType::MAIN);
+                break;
+            case 2:
+                // 模式2：基础命令 + 视场参数 + RA/DEC参数
+                // --radius 5 表示在指定RA/DEC周围5度半径的圆形区域内搜索
+                // 注意：solve-field的--ra参数接受度制或hh:mm:ss格式，--dec接受度制或[+-]dd:mm:ss格式
+                command_qstr = "solve-field " + filename + " --overwrite --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + QString::number(lastRA, 'f', 6) + " --dec " + QString::number(lastDEC, 'f', 6) + " --radius 5";
+                Logger::Log("使用模式2解析（包含视场和位置参数）", LogLevel::INFO, DeviceType::MAIN);
+                break;
+            case 0:
+            default:
+                // 模式0：默认命令（原有逻辑）
+                command_qstr = "solve-field " + filename + " --overwrite --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20";
+                Logger::Log("使用模式0解析（默认模式）", LogLevel::INFO, DeviceType::MAIN);
+                break;
+        }
     }
     else
     {
         filename = "/dev/shm/SDK_Capture";
-        // Adjust command if needed
+        // TODO: 根据模式调整QHYCCDSDK的命令（如果需要）
     }
     
     Logger::Log("当前解析命令:" + command_qstr.toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -5737,7 +5564,6 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
 
     return true;
 }
-
 SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageHeight) {
   isSolveImageFinished = false;
   sleep(1);
@@ -5785,24 +5611,23 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   double DEC_Degree = str_DEC_Degree.toDouble();
   double Rotation_Degree = str_Rotation.toDouble();
 
-  // 提取WCS参数并计算视场角的四个角的坐标
-  // WCSParams wcs = extractWCSParams(str);
-  // std::vector<SphericalCoordinates> corners = getFOVCorners(wcs, imageWidth, imageHeight);
-  // Logger::Log("FOV Corners (Ra, Dec):", LogLevel::INFO, DeviceType::MAIN);
-  // for (const auto &corner : corners) {
-  //   Logger::Log("Ra: " + std::to_string(corner.ra) + ", Dec: " + std::to_string(corner.dec), LogLevel::INFO, DeviceType::MAIN);
-  // }
+  // 提取视场信息（包含 fieldw/fieldh、ramin/ramax 等）
   FieldOfView fov = extractFieldOfViewFromWcsInfo(str);
 
-  // 存储结果
-  result.RA_0 = fov.ra_min;
-  result.DEC_0 = fov.dec_min;
-  result.RA_1 = fov.ra_max;
-  result.DEC_1 = fov.dec_min;
-  result.RA_2 = fov.ra_max;
-  result.DEC_2 = fov.dec_max;
-  result.RA_3 = fov.ra_min;
-  result.DEC_3 = fov.dec_max;
+
+  bool ok0 = false, ok1 = false, ok2 = false, ok3 = false;
+  QString wcsPath = filename + ".wcs";
+  SphericalCoordinates c0 = xy2rdByExternal(wcsPath, 0, 0, ok0);
+  SphericalCoordinates c1 = xy2rdByExternal(wcsPath, fov.imageWidth, 0, ok1);
+  SphericalCoordinates c2 = xy2rdByExternal(wcsPath, fov.imageWidth, fov.imageHeight, ok2);
+  SphericalCoordinates c3 = xy2rdByExternal(wcsPath, 0, fov.imageHeight, ok3);
+
+
+  // 角点顺序：0(0,0) 1(W,0) 2(W,H) 3(0,H)
+  result.RA_0 = c0.ra; result.DEC_0 = c0.dec;
+  result.RA_1 = c1.ra; result.DEC_1 = c1.dec;
+  result.RA_2 = c2.ra; result.DEC_2 = c2.dec;
+  result.RA_3 = c3.ra; result.DEC_3 = c3.dec;
 
   Logger::Log("RA DEC Rotation(degree) " + std::to_string(RA_Degree) + " " + std::to_string(DEC_Degree) + " " + std::to_string(Rotation_Degree), LogLevel::INFO, DeviceType::MAIN);
   Logger::Log("RA DEC " + QString::number(RA_Degree, 'g', 9).toStdString() + " " + QString::number(DEC_Degree, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -5896,6 +5721,8 @@ FieldOfView Tools::extractFieldOfViewFromWcsInfo(const QString& wcsInfo) {
     double pixelScale = extractValue("pixscale"); // 角秒/像素
     int imageWidth = extractValue("imagew");
     int imageHeight = extractValue("imageh");
+    fov.imageWidth = imageWidth;
+    fov.imageHeight = imageHeight;
     
     fov.calculatedWidth = (imageWidth * pixelScale) / 3600.0; // 转换为度
     fov.calculatedHeight = (imageHeight * pixelScale) / 3600.0;
@@ -5936,6 +5763,56 @@ SphericalCoordinates Tools::pixelToRaDec(double x, double y, const WCSParams& wc
 }
 
 
+SphericalCoordinates Tools::xy2rdByExternal(const QString& wcsFile, double x, double y, bool& ok) {
+    ok = false;
+    QProcess proc;
+    QString cmd = QString("wcs-xy2rd -w %1 -x %2 -y %3").arg(wcsFile).arg(x, 0, 'f', 6).arg(y, 0, 'f', 6);
+    proc.start(cmd);
+    if (!proc.waitForFinished(5000)) {
+        Logger::Log("wcs-xy2rd 执行超时: " + cmd.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        return {0.0, 0.0};
+    }
+    QString out = proc.readAllStandardOutput();
+    QString err = proc.readAllStandardError();
+    if (!err.isEmpty()) {
+        Logger::Log("wcs-xy2rd stderr: " + err.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+    }
+
+    // 1) 优先匹配 "RA,Dec (ra, dec)" 格式
+    {
+        QRegularExpression reRADEC("RA,?\\s*Dec\\s*\\(\\s*([-+]?\\d+(?:\\.\\d+)?)\\s*,\\s*([-+]?\\d+(?:\\.\\d+)?)\\s*\\)",
+                                   QRegularExpression::CaseInsensitiveOption);
+        auto m = reRADEC.match(out);
+        if (m.hasMatch()) {
+            double ra = m.captured(1).toDouble();
+            double dec = m.captured(2).toDouble();
+            ok = true;
+            return {ra, dec};
+        }
+    }
+
+    // 2) 兼容纯两列数字输出（例如："123.45 67.89"），抓取最后两组浮点数
+    {
+        QRegularExpression reFloat("[-+]?\\d+(?:\\.\\d+)?");
+        QRegularExpressionMatchIterator it = reFloat.globalMatch(out);
+        QVector<double> nums;
+        while (it.hasNext()) {
+            auto m = it.next();
+            bool okNum = false;
+            double v = m.captured(0).toDouble(&okNum);
+            if (okNum) nums.push_back(v);
+        }
+        if (nums.size() >= 2) {
+            double ra = nums[nums.size()-2];
+            double dec = nums[nums.size()-1];
+            ok = true;
+            return {ra, dec};
+        }
+    }
+
+    Logger::Log("wcs-xy2rd 输出无法解析: " + out.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+    return {0.0, 0.0};
+}
 
 // 函数：从WCS参数和图像尺寸计算四个角的RaDec值
 std::vector<SphericalCoordinates> Tools::getFOVCorners(const WCSParams& wcs, int imageWidth, int imageHeight) {
@@ -6020,6 +5897,3 @@ double Tools::calculateRSquared(QVector<QPointF> data, float a, float b, float c
     // rSquaredLabel->setText(QString("R²: %1").arg(rSquared));
     return rSquared;
 }
-
-
-        
