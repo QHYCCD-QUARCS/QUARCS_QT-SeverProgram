@@ -29,17 +29,13 @@
 #define LimitByte(v) ((uint8_t)Min2(Max2(v, 0), 0xFF))
 #define LimitShort(v) ((uint16_t)Min2(Max2(v, 0), 0xFFFF))
 
-struct FWHM_Result
+struct HFR_Result
 {
   /* data */
   cv::Mat image;
-  double FWHM;
+  double HFR;
 };
 
-struct HFR_Result {
-    cv::Mat image;
-    double HFR;
-};
 
 
 // three level structure to store the indi list xml structure
@@ -268,8 +264,8 @@ class Tools : public QObject {
     return instance_;
   }
 
-  bool findStarsByPython_Process(QString filename);
-  double getLastFWHM();
+  static bool findStarsByPython_Process(QString filename);
+  static double getLastHFR();
 
   static void Initialize();
   static void Release();
@@ -364,7 +360,6 @@ class Tools : public QObject {
 
   static cv::Mat SubBackGround(cv::Mat image);
   // static bool DetectStar(cv::Mat image, double threshold, int minArea, cv::Rect& starRect);
-  static FWHM_Result CalculateFWHM(cv::Mat image);
   static HFR_Result CalculateHFR(cv::Mat image);
 
   static cv::Mat CalMoments(cv::Mat image);

@@ -98,6 +98,18 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     // 电调控制初始化
     focusMoveTimer = new QTimer(this);
     connect(focusMoveTimer, &QTimer::timeout, this, &MainWindow::HandleFocuserMovementDataPeriodically);
+    
+    // 实时位置更新定时器初始化
+    realtimePositionTimer = new QTimer(this);
+    connect(realtimePositionTimer, &QTimer::timeout, this, [this]() {
+        if (dpFocuser != NULL) {
+            CurrentPosition = FocuserControl_getPosition();
+            if (CurrentPosition != INT_MIN) {
+                emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+            }
+        }
+    });
+    realtimePositionTimer->start(50); // 50毫秒间隔，实现更实时的同步
 
     emit wsThread->sendMessageToClient("ServerInitSuccess");
 
@@ -286,7 +298,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
         // else if(LR == "Target")
         // {
-        //     FocusGotoAndCalFWHM(Steps);
+        //     FocusGotoAndCalHFR(Steps);
         // }
     }
 
@@ -924,7 +936,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "ClearDataPoints")
     {
         Logger::Log("ClearDataPoints ...", LogLevel::DEBUG, DeviceType::MAIN);
-        // FWHM Data
+        // HFR Data
         dataPoints.clear();
         Logger::Log("ClearDataPoints finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
@@ -1661,7 +1673,23 @@ void MainWindow::initINDIClient()
                                 return;
                             }
                         }
+                        
+                        // while (true) {
+                        //     // 正向 1 到 11
+                        //     for (int i = 1; i <= 11; ++i) {
+                        //         QString filePath = QString("/home/quarcs/test_fits/coarse/%1.fits").arg(i);
+                        //         saveFitsAsPNG(filePath, true);
+                        //     }
+
+                        //     // 反向 11 到 1
+                        //     for (int i = 11; i >= 1; --i) {
+                        //         QString filePath = QString("/home/quarcs/test_fits/coarse/%1.fits").arg(i);
+                        //         saveFitsAsPNG(filePath, true);
+                        //     }
+                        // }
+
                         saveFitsAsPNG(QString::fromStdString(filename), true); // "/dev/shm/ccd_simulator.fits"
+
                         // saveFitsAsPNG("/home/quarcs/2025_06_26T08_24_13_544.fits", true);
                         // saveFitsAsPNG("/dev/shm/SOLVETEST.fits", true);
                     }
@@ -1977,12 +2005,12 @@ void MainWindow::onTimeout()
 //     Logger::Log("Star detection completed.", LogLevel::INFO, DeviceType::GUIDER);
 
 //     if(stars.size() != 0){
-//         FWHM = stars[0].HFR;
-//         Logger::Log("FWHM calculated from detected stars.", LogLevel::INFO, DeviceType::GUIDER);
+//         HFR = stars[0].HFR;
+//         Logger::Log("HFR calculated from detected stars.", LogLevel::INFO, DeviceType::GUIDER);
 //     }
 //     else {
-//         FWHM = -1;
-//         Logger::Log("No stars detected, FWHM set to -1.", LogLevel::WARNING, DeviceType::GUIDER);
+//         HFR = -1;
+//         Logger::Log("No stars detected, HFR set to -1.", LogLevel::WARNING, DeviceType::GUIDER);
 //     }
 
 //     if(image16.depth()==8) {
@@ -1994,7 +2022,7 @@ void MainWindow::onTimeout()
 //         Logger::Log("Image converted to 16-bit format.", LogLevel::INFO, DeviceType::GUIDER);
 //     }
 
-//     if(FWHM != -1){
+//     if(HFR != -1){
 //         // 在原图上绘制检测结果
 //         cv::Point center(stars[0].x, stars[0].y);
 //         cv::circle(image16, center, static_cast<int>(FWHM), cv::Scalar(0, 0, 255), 1); // Draw HFR circle
@@ -2131,7 +2159,9 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 
     bool isColor = !(MainCameraCFA == "" || MainCameraCFA == "null");
     Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
-
+    Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
+    cv::medianBlur(originalImage16, originalImage16, 3);
+    Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
     if (ProcessBin && glMainCameraBinning != 1)
     {
         // 使用新的Mat版本的PixelsDataSoftBin_Bayer函数
@@ -2165,7 +2195,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     // cv::Mat srcImage = image16.clone();
     // cv::Mat dstImage;
     // Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
-    // cv::medianBlur(srcImage, dstImage, 3);
+    //  cv::medianBlur(image16, image16, 3);
     // srcImage.release();
     // Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
 
@@ -6083,7 +6113,7 @@ void MainWindow::FocuserControlMove(bool isInward)
         return;
     }
     HandleFocuserMovementDataPeriodically();
-    focusMoveTimer->start(1000);
+    focusMoveTimer->start(100); // 改为100毫秒，实现实时同步
 }
 
 void MainWindow::FocuserControlStop(bool isClickMove)
@@ -6139,7 +6169,7 @@ void MainWindow::FocuserControlStop(bool isClickMove)
         updatePositionTimer = nullptr;
     }
     updatePositionTimer = new QTimer(this);
-    updatePositionTimer->setInterval(1000); // 设置计时器间隔为1000毫秒
+    updatePositionTimer->setInterval(100); // 设置计时器间隔为100毫秒，实现实时同步
     updateCount = 0;                        // 初始化计数器
 
     connect(updatePositionTimer, &QTimer::timeout, [this]()
@@ -6153,12 +6183,9 @@ void MainWindow::FocuserControlStop(bool isClickMove)
         }
         CurrentPosition = FocuserControl_getPosition();
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
-        Logger::Log("focusMoveStop | Current Focuser Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
         updateCount++; });
 
     updatePositionTimer->start(); // 启动计时器
-
-    Logger::Log("focusMoveStop | Current Focuser Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
 }
 
 void MainWindow::CheckFocuserMoveOrder()
@@ -6271,12 +6298,10 @@ int MainWindow::FocuserControl_getSpeed()
 
 int MainWindow::FocuserControl_getPosition()
 {
-    Logger::Log("FocuserControl_getPosition start ...", LogLevel::DEBUG, DeviceType::FOCUSER);
     if (dpFocuser != NULL)
     {
         int value;
         indi_Client->getFocuserAbsolutePosition(dpFocuser, value);
-        Logger::Log("FocuserControl_getPosition | Focuser Position: " + std::to_string(value), LogLevel::DEBUG, DeviceType::FOCUSER);
         return value;
     }
     else
@@ -6284,7 +6309,6 @@ int MainWindow::FocuserControl_getPosition()
         Logger::Log("FocuserControl_getPosition | dpFocuser is NULL", LogLevel::WARNING, DeviceType::FOCUSER);
         return INT_MIN; // 使用 INT_MIN 作为特殊的错误值
     }
-    Logger::Log("FocuserControl_getPosition finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
 }
 
 void MainWindow::TelescopeControl_Goto(double Ra, double Dec)
@@ -9790,8 +9814,9 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         autoFocus->setCaptureComplete(filename);
     }
     image16.release();
-    QTimer::singleShot(200, this, [this]()
-                       { focusLoopShooting(isFocusLoopShooting); });
+    focusLoopShooting(isFocusLoopShooting);
+    // QTimer::singleShot(200, this, [this]()
+    //                    { focusLoopShooting(isFocusLoopShooting); });
 }
 
 // void MainWindow::AutoFocus(QPointF selectStarPosition){
@@ -9925,9 +9950,12 @@ void MainWindow::startAutoFocus()
     }
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
-    autoFocus->setDefaultExposureTime(1000); // 1s曝光
+    autoFocus->setDefaultExposureTime(10); // 1s曝光
     autoFocus->setUseVirtualData(false);      // 使用虚拟数据
-
+   for (int i = 1; i <= 11; i++) {
+    std::string filename = "/home/quarcs/test_fits/coarse/" + std::to_string(i) + ".fits";
+    autoFocus->setCaptureComplete(filename.c_str());
+    }
     connect(autoFocus, &AutoFocus::roiInfoChanged, this, [this](const QRect &roi)
             {
         if (roi.width() == 0 && roi.height() == 0){
@@ -9941,6 +9969,123 @@ void MainWindow::startAutoFocus()
             roiAndFocuserInfo["BoxSideLength"] = roi.width();
             autoFocuserIsROI = true;
         } });
+
+    // 连接二次拟合结果信号
+    connect(autoFocus, &AutoFocus::focusFitUpdated, this, [this](double a, double b, double c, double bestPosition, double minFWHM)
+            {
+        Logger::Log(QString("接收到focusFitUpdated信号: a=%1, b=%2, c=%3, bestPosition=%4, minFWHM=%5")
+                   .arg(a).arg(b).arg(c).arg(bestPosition).arg(minFWHM).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 发送二次曲线数据到前端
+        QString curveData = QString("fitQuadraticCurve:%1:%2:%3:%4:%5")
+                           .arg(a, 0, 'g', 10)  // 使用科学计数法，保留10位有效数字
+                           .arg(b, 0, 'g', 10)
+                           .arg(c, 0, 'g', 10)
+                           .arg(bestPosition, 0, 'f', 2)
+                           .arg(minFWHM, 0, 'f', 3);
+        
+        Logger::Log(QString("发送二次曲线数据: %1").arg(curveData).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(curveData);
+        
+        // 发送最佳位置点数据
+        QString minPointData = QString("fitQuadraticCurve_minPoint:%1:%2")
+                              .arg(bestPosition, 0, 'f', 2)
+                              .arg(minFWHM, 0, 'f', 3);
+        
+        Logger::Log(QString("发送最小点数据: %1").arg(minPointData).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(minPointData);
+        
+        Logger::Log(QString("二次拟合结果发送完成").toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+    });
+
+    // 连接数据点信号
+    connect(autoFocus, &AutoFocus::focusDataPointReady, this, [this](int position, double fwhm, const QString &stage)
+            {
+        Logger::Log(QString("接收到数据点: position=%1, fwhm=%2, stage=%3")
+                   .arg(position).arg(fwhm).arg(stage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 发送数据点到前端
+        QString dataPointMessage = QString("addData_Point:%1:%2")
+                                 .arg(position).arg(fwhm);
+        
+        Logger::Log(QString("发送数据点: %1").arg(dataPointMessage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(dataPointMessage);
+    });
+
+    // 连接启动位置更新定时器信号
+    connect(autoFocus, &AutoFocus::startPositionUpdateTimer, this, [this]()
+            {
+        Logger::Log("启动位置更新定时器", LogLevel::INFO, DeviceType::FOCUSER);
+        if (focusMoveTimer) {
+            focusMoveTimer->start(50); // 改为50毫秒间隔，与实时位置更新保持一致
+        }
+        // 确保实时位置更新定时器也在运行
+        if (realtimePositionTimer) {
+            realtimePositionTimer->start(50);
+        }
+    });
+
+    // 连接自动对焦失败信号
+    connect(autoFocus, &AutoFocus::autofocusFailed, this, [this]()
+            {
+        Logger::Log("自动对焦失败，发送提示消息到前端", LogLevel::ERROR, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FitResult:Failed:拟合结果为水平线，未找到最佳焦点");
+    });
+
+    // 连接星点识别结果信号
+    connect(autoFocus, &AutoFocus::starDetectionResult, this, [this](bool detected, double fwhm)
+            {
+        if (detected) {
+            Logger::Log(QString("识别到星点，FWHM为: %1").arg(fwhm).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient(QString("StarDetectionResult:true:%1").arg(fwhm));
+        } else {
+            Logger::Log("未识别到星点", LogLevel::INFO, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("StarDetectionResult:false:0");
+        }
+    });
+
+    // 连接自动对焦模式变化信号
+    connect(autoFocus, &AutoFocus::autoFocusModeChanged, this, [this](const QString &mode, double fwhm)
+            {
+        Logger::Log(QString("自动对焦模式变化: %1, FWHM: %2").arg(mode).arg(fwhm).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(QString("AutoFocusModeChanged:%1:%2").arg(mode).arg(fwhm));
+    });
+
+    // 连接自动对焦完成信号
+    connect(autoFocus, &AutoFocus::autoFocusCompleted, this, [this](bool success, double bestPosition, double minHFR)
+            {
+        Logger::Log(QString("自动对焦完成: success=%1, bestPosition=%2, minHFR=%3")
+                   .arg(success).arg(bestPosition).arg(minHFR).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 停止自动对焦专用的位置更新定时器
+        if (focusMoveTimer && focusMoveTimer->isActive()) {
+            focusMoveTimer->stop();
+            Logger::Log("停止自动对焦位置更新定时器", LogLevel::INFO, DeviceType::FOCUSER);
+        }
+        
+        // 确保实时位置更新定时器继续运行
+        if (realtimePositionTimer && !realtimePositionTimer->isActive()) {
+            realtimePositionTimer->start(50);
+            Logger::Log("恢复实时位置更新定时器", LogLevel::INFO, DeviceType::FOCUSER);
+        }
+        
+        // 发送自动对焦完成消息到前端
+        QString completeMessage = QString("AutoFocusOver:%1:%2:%3")
+                                .arg(success ? "true" : "false")
+                                .arg(bestPosition, 0, 'f', 2)
+                                .arg(minHFR, 0, 'f', 3);
+        
+        Logger::Log(QString("发送自动对焦完成消息: %1").arg(completeMessage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(completeMessage);
+    });
 
     autoFocus->startAutoFocus();
     isAutoFocus = true;
@@ -10974,6 +11119,7 @@ void MainWindow::focusMoveToMin()
     focusMoveToMaxorMinTimer = new QTimer(this);
     CurrentPosition = FocuserControl_getPosition();
     lastPosition = CurrentPosition;
+    noChangeCount = 0; // 重置连续无变化计数器
     connect(focusMoveToMaxorMinTimer, &QTimer::timeout, this, [this, min]()
             {
         CurrentPosition = FocuserControl_getPosition();
@@ -10985,13 +11131,20 @@ void MainWindow::focusMoveToMin()
             indi_Client->moveFocuserSteps(dpFocuser, steps);
             TargetPosition = CurrentPosition-steps;
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+            noChangeCount = 0; // 重置计数器
             return;
         }
         if (CurrentPosition == lastPosition){
-            indi_Client->abortFocuserMove(dpFocuser);
-            focusMoveToMaxorMinTimer->stop();
-            emit wsThread->sendMessageToClient("focusMoveFailed:check if the focuser is stuck or at the physical limit");
-            return;
+            noChangeCount++;
+            const int maxNoChangeCount = 3; // 连续3次（3秒）无变化才认为卡住
+            if (noChangeCount >= maxNoChangeCount) {
+                indi_Client->abortFocuserMove(dpFocuser);
+                focusMoveToMaxorMinTimer->stop();
+                emit wsThread->sendMessageToClient("focusMoveFailed:check if the focuser is stuck or at the physical limit");
+                return;
+            }
+        } else {
+            noChangeCount = 0; // 位置有变化，重置计数器
         }
 
         lastPosition = CurrentPosition; });
@@ -11036,6 +11189,7 @@ void MainWindow::focusMoveToMax()
     focusMoveToMaxorMinTimer = new QTimer(this);
     CurrentPosition = FocuserControl_getPosition();
     lastPosition = CurrentPosition;
+    noChangeCount = 0; // 重置连续无变化计数器
     connect(focusMoveToMaxorMinTimer, &QTimer::timeout, this, [this, max]()
             {
         CurrentPosition = FocuserControl_getPosition();
@@ -11047,13 +11201,20 @@ void MainWindow::focusMoveToMax()
             indi_Client->moveFocuserSteps(dpFocuser, steps);
             TargetPosition = CurrentPosition+steps;
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+            noChangeCount = 0; // 重置计数器
             return;
         }
         if (CurrentPosition == lastPosition){
-            indi_Client->abortFocuserMove(dpFocuser);
-            focusMoveToMaxorMinTimer->stop();
-            emit wsThread->sendMessageToClient("focusMoveFailed:check if the focuser is stuck or at the physical limit");
-            return;
+            noChangeCount++;
+            const int maxNoChangeCount = 3; // 连续3次（3秒）无变化才认为卡住
+            if (noChangeCount >= maxNoChangeCount) {
+                indi_Client->abortFocuserMove(dpFocuser);
+                focusMoveToMaxorMinTimer->stop();
+                emit wsThread->sendMessageToClient("focusMoveFailed:check if the focuser is stuck or at the physical limit");
+                return;
+            }
+        } else {
+            noChangeCount = 0; // 位置有变化，重置计数器
         }
         lastPosition = CurrentPosition; });
     focusMoveToMaxorMinTimer->start(1000);

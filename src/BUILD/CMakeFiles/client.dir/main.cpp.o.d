@@ -942,6 +942,7 @@ CMakeFiles/client.dir/main.cpp.o: \
  /usr/include/x86_64-linux-gnu/qt5/QtCore/QQueue \
  /usr/include/x86_64-linux-gnu/qt5/QtCore/QEventLoop \
  /home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/autofocus.h \
+ /usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings \
  /home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/starsimulator.h \
  /usr/include/x86_64-linux-gnu/qt5/QtCore/QRandomGenerator \
  /usr/include/x86_64-linux-gnu/qt5/QtCore/QFile \

@@ -700,6 +700,16 @@ CMakeFiles/client.dir/autofocus.cpp.o: ../autofocus.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qmutex.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QString \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qstring.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qsettings.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h \
+  /usr/include/c++/11/variant \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QCoreApplication \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreapplication.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qeventloop.h \
   /usr/local/include/libstellarsolver/stellarsolver.h \
   /usr/local/include/libstellarsolver/structuredefinitions.h \
   /usr/include/c++/11/math.h \
@@ -761,15 +771,12 @@ CMakeFiles/client.dir/autofocus.cpp.o: ../autofocus.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qfiledevice.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qiodevice.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qshareddata.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h \
   /usr/local/include/libstellarsolver/parameters.h \
   /usr/local/include/libstellarsolver/version.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QMap \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QVariant \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h \
-  /usr/include/c++/11/variant \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QPointer \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qpointer.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsharedpointer.h \
@@ -880,7 +887,6 @@ CMakeFiles/client.dir/autofocus.cpp.o: ../autofocus.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qdebug.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qtextstream.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qlocale.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qset.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcontiguouscache.h \
   /usr/include/c++/11/thread \
@@ -941,7 +947,6 @@ CMakeFiles/client.dir/autofocus.cpp.o: ../autofocus.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qglobal.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractanimation.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstracteventdispatcher.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qeventloop.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractitemmodel.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractnativeeventfilter.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractproxymodel.h \
@@ -979,13 +984,11 @@ CMakeFiles/client.dir/autofocus.cpp.o: ../autofocus.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcommandlineoption.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcommandlineparser.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreapplication.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcommandlineoption.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcompilerdetection.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qconcatenatetablesproxymodel.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcontainerfwd.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcontiguouscache.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreapplication.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcryptographichash.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qdatastream.h \
@@ -1090,7 +1093,6 @@ CMakeFiles/client.dir/autofocus.cpp.o: ../autofocus.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsemaphore.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsequentialanimationgroup.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qset.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qsettings.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsharedmemory.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsharedpointer.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsignalmapper.h \
@@ -2693,6 +2695,16 @@ CMakeFiles/client.dir/client_autogen/mocs_compilation.cpp.o: client_autogen/mocs
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qmutex.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QString \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qstring.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qsettings.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h \
+  /usr/include/c++/11/variant \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QCoreApplication \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreapplication.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/qeventloop.h \
   /usr/local/include/libstellarsolver/stellarsolver.h \
   /usr/local/include/libstellarsolver/structuredefinitions.h \
   /usr/include/c++/11/math.h \
@@ -2750,15 +2762,12 @@ CMakeFiles/client.dir/client_autogen/mocs_compilation.cpp.o: client_autogen/mocs
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qfiledevice.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qiodevice.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qshareddata.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qhash.h \
   /usr/local/include/libstellarsolver/parameters.h \
   /usr/local/include/libstellarsolver/version.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QMap \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QVariant \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qmap.h \
-  /usr/include/c++/11/variant \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QPointer \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qpointer.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsharedpointer.h \
@@ -2863,7 +2872,6 @@ CMakeFiles/client.dir/client_autogen/mocs_compilation.cpp.o: client_autogen/mocs
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qdebug.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qtextstream.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qlocale.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qvariant.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qset.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcontiguouscache.h \
   /usr/include/c++/11/thread \
@@ -2924,7 +2932,6 @@ CMakeFiles/client.dir/client_autogen/mocs_compilation.cpp.o: client_autogen/mocs
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qglobal.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractanimation.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstracteventdispatcher.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qeventloop.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractitemmodel.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractnativeeventfilter.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractproxymodel.h \
@@ -2962,13 +2969,11 @@ CMakeFiles/client.dir/client_autogen/mocs_compilation.cpp.o: client_autogen/mocs
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcommandlineoption.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcommandlineparser.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreapplication.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcommandlineoption.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcompilerdetection.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qconcatenatetablesproxymodel.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcontainerfwd.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcontiguouscache.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreapplication.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qcryptographichash.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qdatastream.h \
@@ -3073,7 +3078,6 @@ CMakeFiles/client.dir/client_autogen/mocs_compilation.cpp.o: client_autogen/mocs
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsemaphore.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsequentialanimationgroup.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qset.h \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/qsettings.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsharedmemory.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsharedpointer.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/qsignalmapper.h \
@@ -3388,7 +3392,6 @@ CMakeFiles/client.dir/client_autogen/mocs_compilation.cpp.o: client_autogen/mocs
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QQueue \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QStringList \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QEventLoop \
-  /usr/include/x86_64-linux-gnu/qt5/QtCore/QCoreApplication \
   client_autogen/EWIEGA46WW/moc_mainwindow.cpp \
   ../mainwindow.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QProcess \
@@ -4491,6 +4494,7 @@ CMakeFiles/client.dir/main.cpp.o: ../main.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QQueue \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QEventLoop \
   ../autofocus.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings \
   ../starsimulator.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QRandomGenerator \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QFile \
@@ -5537,6 +5541,7 @@ CMakeFiles/client.dir/mainwindow.cpp.o: ../mainwindow.cpp \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QEventLoop \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QCoreApplication \
   ../autofocus.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings \
   ../starsimulator.h \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QRandomGenerator \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QFile \
@@ -9687,6 +9692,12 @@ client_autogen/EWIEGA46WW/moc_starsimulator.cpp:
 
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qendian.h:
 
+/usr/include/x86_64-linux-gnu/sys/shm.h:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/qdatastream.h:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/qconcatenatetablesproxymodel.h:
+
 /usr/include/c++/11/bits/vector.tcc:
 
 /usr/include/c++/11/bits/stl_bvector.h:
@@ -10331,10 +10342,6 @@ client_autogen/EWIEGA46WW/moc_autopolaralignment.cpp:
 
 /usr/include/x86_64-linux-gnu/bits/atomic_wide_counter.h:
 
-/usr/include/x86_64-linux-gnu/sys/shm.h:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/qdatastream.h:
-
 /usr/include/x86_64-linux-gnu/bits/types.h:
 
 /usr/include/x86_64-linux-gnu/qt5/QtWidgets/qframe.h:
@@ -10516,6 +10523,10 @@ client_autogen/EWIEGA46WW/moc_autopolaralignment.cpp:
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qpair.h:
 
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qgenericatomic.h:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/qdiriterator.h:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/qtimer.h:
 
 /usr/include/c++/11/bits/regex_error.h:
 
@@ -10827,6 +10838,10 @@ client_autogen/EWIEGA46WW/moc_autopolaralignment.cpp:
 
 /usr/include/x86_64-linux-gnu/qt5/QtCore/QMutex:
 
+/usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h:
+
 /usr/include/c++/11/math.h:
 
 /usr/include/c++/11/complex:
@@ -10864,6 +10879,14 @@ client_autogen/EWIEGA46WW/moc_autopolaralignment.cpp:
 client_autogen/EWIEGA46WW/moc_websocketclient.cpp:
 
 /usr/include/c++/11/tr1/hypergeometric.tcc:
+
+/usr/include/x86_64-linux-gnu/bits/floatn.h:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/qcontiguouscache.h:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/qeventloop.h:
+
+/usr/include/x86_64-linux-gnu/qt5/QtCore/QtCore:
 
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qfuturesynchronizer.h:
 
@@ -10979,14 +11002,6 @@ client_autogen/EWIEGA46WW/moc_websocketclient.cpp:
 
 ../tools.h:
 
-/usr/include/x86_64-linux-gnu/bits/floatn.h:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/qcontiguouscache.h:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/QtCore:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/qeventloop.h:
-
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qhistorystate.h:
 
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qabstractitemmodel.h:
@@ -11020,11 +11035,3 @@ client_autogen/EWIEGA46WW/moc_websocketclient.cpp:
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qcborstreamreader.h:
 
 /usr/include/x86_64-linux-gnu/qt5/QtCore/qcommandlineoption.h:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/qcoreevent.h:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/qconcatenatetablesproxymodel.h:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/qtimer.h:
-
-/usr/include/x86_64-linux-gnu/qt5/QtCore/qdiriterator.h:

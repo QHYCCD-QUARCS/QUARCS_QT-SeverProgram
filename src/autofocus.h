@@ -7,6 +7,8 @@
 #include <QPointF>
 #include <QMutex>
 #include <QString>
+#include <QSettings>
+#include <QCoreApplication>
 #include <stellarsolver.h> // 包含FITSImage定义
 #include "myclient.h"
 #include "tools.h"
@@ -31,7 +33,7 @@ enum class AutoFocusState {
 // 对焦数据点结构
 struct FocusDataPoint {
     int focuserPosition;    // 电调位置
-    double hfr;             // HFR值
+    double hfr;             // 这里存HFR值
     QVector<double> measurements; // 多次测量的HFR值（用于精调）
     
     FocusDataPoint() : focuserPosition(0), hfr(0.0) {}
@@ -45,6 +47,16 @@ struct FitResult {
     double minHFR;         // 最小HFR值
     
     FitResult() : a(0.0), b(0.0), c(0.0), bestPosition(0.0), minHFR(0.0) {}
+};
+
+// 空程校准结果结构
+struct BacklashCalibrationResult {
+    int inwardBacklash;     // 向内空程（步数）
+    int outwardBacklash;    // 向外空程（步数）
+    bool isValid;           // 校准结果是否有效
+    QString errorMessage;   // 错误信息
+    
+    BacklashCalibrationResult() : inwardBacklash(0), outwardBacklash(0), isValid(false) {}
 };
 
 class AutoFocus : public QObject
@@ -112,6 +124,18 @@ public:
     // 设置虚拟图像输出路径
     void setVirtualOutputPath(const QString &path);
     QString getVirtualOutputPath() const;
+    
+    // 获取当前测试图片路径
+    QString getCurrentTestImagePath() const;
+    
+    // 空程校准相关接口
+    void startBacklashCalibration();                    // 开始空程校准
+    void stopBacklashCalibration();                     // 停止空程校准
+    bool isBacklashCalibrationRunning() const;          // 检查空程校准是否正在运行
+    BacklashCalibrationResult getBacklashCalibrationResult() const; // 获取空程校准结果
+    void setUseBacklashCompensation(bool use);          // 设置是否使用空程补偿
+    bool isUsingBacklashCompensation() const;           // 检查是否使用空程补偿
+    void setBacklashCompensation(int inward, int outward); // 设置空程补偿值
 
 signals:
     void stateChanged(AutoFocusState newState);
@@ -121,6 +145,16 @@ signals:
     void errorOccurred(const QString &error);
     void captureStatusChanged(bool isComplete, const QString &imagePath); // 拍摄状态变化信号
     void roiInfoChanged(const QRect &roi); // ROI信息变化信号
+    void focusSeriesReset(const QString &stage);                 // 重置当前序列（"coarse"/"fine"）
+void focusDataPointReady(int position, double hfr, const QString &stage); // 新的数据点
+void focusFitUpdated(double a, double b, double c, double bestPosition, double minHFR); // 二次拟合结果
+void startPositionUpdateTimer(); // 启动位置更新定时器
+void focusBestMovePlanned(int bestPosition, const QString &stage); // 计划移动到的最佳位置
+void autofocusFailed(); // 自动对焦失败信号
+void starDetectionResult(bool detected, double hfr); // 星点识别结果信号
+void autoFocusModeChanged(const QString &mode, double hfr); // 自动对焦模式变化信号
+
+
 
 private slots:
     void onTimerTimeout();
@@ -148,8 +182,27 @@ private:
     double m_minLargeRangeStep;     // 最小大范围步长百分比
 
     // 数据收集
-    QVector<FocusDataPoint> m_focusData;
+    QVector<FocusDataPoint> m_focusData;    // 所有数据（粗调+精调）
+    QVector<FocusDataPoint> m_fineFocusData; // 仅精调数据
     FitResult m_lastFitResult;              // 最后一次拟合结果
+    double m_lastHFR;                     // 最近一次由Python得到的HFR
+    // 扫描序列
+    QVector<int> m_coarseScanPositions;    // 粗调扫描位置序列
+    int m_coarseScanIndex;                 // 粗调扫描索引
+    QVector<int> m_fineScanPositions;      // 精调扫描位置序列
+    int m_fineScanIndex;                   // 精调扫描索引
+    int m_coarseStepSpan;                  // 粗调步进（= (max-min)/10）
+    int m_fineStepSpan;                    // 精调步进（= 粗调步进/10）
+    int m_coarseBestPosition;              // 粗调期望位置
+    double m_coarseBestHFR;
+    
+// === 精调方向与反转逻辑（新增） ===
+int  m_fineDirection;       // +1: 向大的方向；-1: 向小的方向
+int  m_fineIncreaseCount;   // 连续"HFR变大"的计数
+bool m_fineReversed;        // 是否已经发生过一次改向
+int  m_fineCenter;          // 精调中心（粗调最优位置）
+               // 粗调最小HFR
+
     int m_currentLargeRangeShots;
     double m_currentLargeRangeStep;
     int m_currentPosition;
@@ -170,6 +223,9 @@ private:
     
     // 星点选择相关
     int m_topStarCount;                     // 选择置信度最高的星点数量
+    
+    // 测试文件循环相关
+    int m_testFileCounter;                  // 测试文件计数器 (1-11)
     
     // ROI拍摄相关
     bool m_useROI;                          // 是否使用ROI拍摄
@@ -220,6 +276,9 @@ private:
     bool waitForCaptureComplete(int timeoutMs = 30000); // 等待拍摄完成
     bool detectStarsInImage();                      // 检测图像中的星点
     double calculateHFR();                          // 计算HFR值
+    bool detectHFRByPython(double &hfr);          // 通过Python脚本识星并返回HFR
+    bool loadFocuserRangeFromIni(const QString &iniPath = QString()); // 从ini读取电调范围
+
     
     // 星点选择方法
     double selectTopStarsAndCalculateHFR();         // 选择置信度最高的星点并计算平均HFR
@@ -262,8 +321,6 @@ private:
     void checkAndReduceStepSize();                  // 检查并减少步长
     
     // 粗调流程
-
-    
     void startCoarseAdjustment();
     void processCoarseAdjustment();
     
@@ -282,9 +339,23 @@ private:
     
     // 拟合算法辅助方法
     QVector<FocusDataPoint> removeOutliers(const QVector<FocusDataPoint>& data); // 去除异常值
+    QVector<FocusDataPoint> removeOutliersByResidual(const QVector<FocusDataPoint>& data); // 基于残差的异常值检测
+    QVector<FocusDataPoint> removeOutliersByIQR(const QVector<FocusDataPoint>& data); // 基于IQR的异常值检测
+    QVector<FocusDataPoint> removeOutliersByPosition(const QVector<FocusDataPoint>& data); // 基于位置的异常值检测
     bool solveLinearSystem(double matrix[3][3], double constants[3], double solution[3]); // 求解线性方程组
     FitResult findBestPositionByInterpolation();    // 插值法找最佳位置
     double calculateRSquared(const QVector<FocusDataPoint>& data, const FitResult& fit, double offset); // 计算R²
+    
+    // 改进的拟合方法
+    FitResult performStandardLeastSquares(const QVector<FocusDataPoint>& data); // 标准最小二乘法
+    FitResult performWeightedLeastSquares(const QVector<FocusDataPoint>& data); // 加权最小二乘法
+    FitResult performSimplifiedQuadraticFit(const QVector<FocusDataPoint>& data); // 简化二次拟合
+    FitResult performRobustFitting(const QVector<FocusDataPoint>& data); // 鲁棒拟合
+    double getDataMinPosition(const QVector<FocusDataPoint>& data); // 获取数据最小位置
+    double getDataMaxPosition(const QVector<FocusDataPoint>& data); // 获取数据最大位置
+    
+    // 最终验证方法
+    void performFinalFocusVerification(); // 最终对焦验证
     
     // 电调移动控制
     void startFocuserMove(int targetPosition);       // 开始电调移动

@@ -389,6 +389,7 @@
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QRandomGenerator \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QRect \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QScopedPointer \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QSharedDataPointer \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QSize \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QSizeF \

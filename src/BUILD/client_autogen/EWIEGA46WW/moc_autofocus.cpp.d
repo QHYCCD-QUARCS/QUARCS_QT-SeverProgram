@@ -343,6 +343,7 @@
   /usr/include/x86_64-linux-gnu/c++/11/bits/time_members.h \
   /usr/include/x86_64-linux-gnu/gnu/stubs-64.h \
   /usr/include/x86_64-linux-gnu/gnu/stubs.h \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QCoreApplication \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QDateTime \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QDeadlineTimer \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QDebug \
@@ -364,6 +365,7 @@
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QRandomGenerator \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QRect \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QScopedPointer \
+  /usr/include/x86_64-linux-gnu/qt5/QtCore/QSettings \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QSharedDataPointer \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QSize \
   /usr/include/x86_64-linux-gnu/qt5/QtCore/QSizeF \
