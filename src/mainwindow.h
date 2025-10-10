@@ -599,6 +599,12 @@ public:
     void FocuserControlMove(bool isInward);
 
     /**
+     * @brief 控制电调按当前方向移动（持续）
+     * @param isInward true 向内，false 向外
+     */
+    void FocuserControlMoveStep(bool isInward, int steps);
+
+    /**
      * @brief 周期处理电调移动数据（刷新参数）
      */
     void HandleFocuserMovementDataPeriodically();
@@ -616,6 +622,8 @@ public:
      * @brief 检查电调移动命令是否正常
      */
     void CheckFocuserMoveOrder();
+
+
 
     bool isFocusLoopShooting = false; // ROI 循环拍摄使能
 

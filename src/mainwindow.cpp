@@ -293,6 +293,12 @@ void MainWindow::onMessageReceived(const QString &message)
         // {
         //     FocusGotoAndCalFWHM(Steps);
         // }
+    }else if (parts.size() == 3 && parts[0].trimmed() == "focusMoveStep")
+    {
+        Logger::Log("focuser to " + parts[1].trimmed().toStdString() + " move " + parts[2].trimmed().toStdString() + " steps", LogLevel::DEBUG, DeviceType::FOCUSER);
+        QString LR = parts[1].trimmed();
+        int Steps = parts[2].trimmed().toInt();
+        FocuserControlMoveStep(LR == "Left", Steps);
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "getFocuserMoveState")
@@ -4228,7 +4234,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         int currentSize = glMainCCDSizeX;
 
         // 逐步增加binning直到像素大小小于等于548
-        while (currentSize > 548 && requiredBinning <= 16)
+        while (currentSize > 1024 && requiredBinning <= 16)
         {
             requiredBinning *= 2;
             currentSize = glMainCCDSizeX / requiredBinning;
@@ -6155,39 +6161,6 @@ void MainWindow::GetPHD2ControlInstruct()
     // Logger::Log("GetPHD2ControlInstruct finish!", LogLevel::DEBUG, DeviceType::MAIN);
 }
 
-// double MainWindow::FocusGotoAndCalFWHM(int steps) {
-//     QEventLoop loop;
-//     double FWHM = 0;
-
-//     // 停止和清理先前的计时器
-//     FWHMTimer.stop();
-//     FWHMTimer.disconnect();
-
-//     FWHMCalOver = false;
-//     FocuserControl_Goto(steps);
-
-//     FWHMTimer.setSingleShot(true);
-
-//     connect(&FWHMTimer, &QTimer::timeout, this, [this, &loop, &FWHM]() {
-//         if (FWHMCalOver)
-//         {
-//             FWHM = this->FWHM;  // 假设 this->FWHM 保存了计算结果
-//             FWHMTimer.stop();
-//             Logger::Log("FocusGotoAndCalFWHM | FWHM Calculation Complete!", LogLevel::INFO, DeviceType::MAIN);
-//             emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-//             loop.quit();
-//         }
-//         else
-//         {
-//             FWHMTimer.start(1000);  // 继续等待
-//         }
-//     });
-
-//     FWHMTimer.start(1000);
-//     loop.exec();  // 等待事件循环直到调用 loop.quit()
-
-//     return FWHM;
-// }
 
 void MainWindow::HandleFocuserMovementDataPeriodically()
 {
@@ -6323,19 +6296,19 @@ void MainWindow::FocuserControlStop(bool isClickMove)
     }
     Logger::Log("focusMoveStop | Stop Focuser Move", LogLevel::INFO, DeviceType::FOCUSER);
     CurrentPosition = FocuserControl_getPosition();
-    if (isClickMove)
-    {
-        int steps = abs(CurrentPosition - startPosition);
-        int time = 1;
-        while (steps < 100 && time < 10)
-        {
-            CurrentPosition = FocuserControl_getPosition();
-            steps = abs(CurrentPosition - startPosition); // 删除int，避免重复声明局部变量
-            time++;
-            usleep(100000); // 修改为0.1秒 (100,000微秒)
-        }
-        Logger::Log("focusMoveStop | Click Move Steps: " + std::to_string(steps), LogLevel::INFO, DeviceType::FOCUSER);
-    }
+    // if (isClickMove)
+    // {
+    //     int steps = abs(CurrentPosition - startPosition);
+    //     int time = 1;
+    //     while (steps < 100 && time < 10)
+    //     {
+    //         CurrentPosition = FocuserControl_getPosition();
+    //         steps = abs(CurrentPosition - startPosition); // 删除int，避免重复声明局部变量
+    //         time++;
+    //         usleep(100000); // 修改为0.1秒 (100,000微秒)
+    //     }
+    //     Logger::Log("focusMoveStop | Click Move Steps: " + std::to_string(steps), LogLevel::INFO, DeviceType::FOCUSER);
+    // }
     if (dpFocuser != NULL)
     {
         indi_Client->abortFocuserMove(dpFocuser);
@@ -6394,81 +6367,93 @@ void MainWindow::CheckFocuserMoveOrder()
     emit wsThread->sendMessageToClient("getFocuserMoveState");
 }
 
-// void MainWindow::FocuserControl_Move(bool isInward, int steps)
-// {
-//     // 记录开始移动焦点器的日志
-//     Logger::Log("FocuserControl_Move start ...", LogLevel::INFO, DeviceType::FOCUSER);
-//     if (dpFocuser != NULL)
-//     {
-//         // 停止并断开焦点器移动的计时器
-//         focusTimer.stop();
-//         focusTimer.disconnect();
+void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
+{
+    // 记录开始移动焦点器的日志
+    Logger::Log("FocuserControlMoveStep start ...", LogLevel::INFO, DeviceType::FOCUSER);
+    if (dpFocuser != NULL)
+    {
+       
+        // 获取当前焦点器的位置
+        CurrentPosition = FocuserControl_getPosition();
 
-//         // 获取当前焦点器的位置
-//         CurrentPosition = FocuserControl_getPosition();
+        // 根据移动方向计算目标位置
+        if(isInward == false)
+        {
+            TargetPosition = CurrentPosition + steps;
+        }
+        else
+        {
+            TargetPosition = CurrentPosition - steps;
+        }
+        // 记录目标位置的日志
+        Logger::Log("FocuserControlMoveStep | Target Position: " + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::FOCUSER);
 
-//         // 根据移动方向计算目标位置
-//         if(isInward == false)
-//         {
-//             TargetPosition = CurrentPosition + steps;
-//         }
-//         else
-//         {
-//             TargetPosition = CurrentPosition - steps;
-//         }
-//         // 记录目标位置的日志
-//         Logger::Log("FocuserControl_Move | Target Position: " + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::FOCUSER);
+        // 设置焦点器的移动方向并执行移动
+        if (TargetPosition > focuserMaxPosition)
+        {
+            TargetPosition = focuserMaxPosition;
+        }
+        else if (TargetPosition < focuserMinPosition)
+        {
+            TargetPosition = focuserMinPosition;
+        }
+        steps = std::abs(TargetPosition - CurrentPosition);
+        if (steps <= 0 && !isInward)
+        {
+            emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+            return;
+        }
+        else if (steps <= 0 && isInward)
+        {
+            emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+            return;
+        }
+        indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
+        indi_Client->moveFocuserSteps(dpFocuser, steps);
 
-//         // 设置焦点器的移动方向并执行移动
-//         indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
-//         indi_Client->moveFocuserSteps(dpFocuser, steps);
+        // 设置计时器为单次触发
+        focusTimer.setSingleShot(true);
 
-//         // 设置计时器为单次触发
-//         focusTimer.setSingleShot(true);
+        // 连接计时器的超时信号到处理函数，用于监控焦点器的移动状态
+        connect(&focusTimer, &QTimer::timeout, [this]() {
+            // 更新当前位置
+            CurrentPosition = FocuserControl_getPosition();
+            // 向客户端发送当前位置和目标位置
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
 
-//         // 连接计时器的超时信号到处理函数，用于监控焦点器的移动状态
-//         connect(&focusTimer, &QTimer::timeout, [this]() {
-//             // 更新当前位置
-//             CurrentPosition = FocuserControl_getPosition();
-//             // 向客户端发送当前位置和目标位置
-//             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+            // 检查焦点器是否已经到达目标位置
+            if (CurrentPosition == TargetPosition)
+            {
+                // 停止计时器
+                focusTimer.stop();
+                // 记录焦点器移动完成的日志
+                Logger::Log("FocuserControlMoveStep | Focuser Move Complete!", LogLevel::INFO, DeviceType::FOCUSER);
+                // 向客户端发送焦点器移动完成的消息
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(CurrentPosition));
+                // 执行焦点循环处理
+                FocusingLooping();
+            }
+            else
+            {
+                // 如果焦点器未到达目标位置，重新启动计时器，继续等待
+                focusTimer.start(100);
+                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(CurrentPosition));
+            }
+        });
 
-//             // 检查焦点器是否已经到达目标位置
-//             if (WaitForFocuserToComplete())
-//             {
-//                 // 停止计时器
-//                 focusTimer.stop();
-//                 // 记录焦点器移动完成的日志
-//                 Logger::Log("FocuserControl_Move | Focuser Move Complete!", LogLevel::INFO, DeviceType::FOCUSER);
-//                 // 向客户端发送焦点器移动完成的消息
-//                 emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-//                 // 执行焦点循环处理
-//                 FocusingLooping();
-//             }
-//             else
-//             {
-//                 // 如果焦点器未到达目标位置，重新启动计时器，继续等待
-//                 // focusTimer.start(100);
-//                 emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FWHM));
-//             }
-//         });
-
-//         // 启动计时器
-//         focusTimer.start(100);
-//     }
-//     else
-//     {
-//         // 如果焦点器对象不存在，记录日志并发送错误消息
-//         Logger::Log("FocuserControl_Move | dpFocuser is NULL", LogLevel::INFO, DeviceType::FOCUSER);
-//         emit wsThread->sendMessageToClient("FocusMoveDone:" + 0);
-//     }
-//     // 记录焦点器移动结束的日志
-//     Logger::Log("FocuserControl_Move finish!", LogLevel::INFO, DeviceType::FOCUSER);
-// }
-
-// bool MainWindow::WaitForFocuserToComplete() {
-//    return(CurrentPosition == TargetPosition);
-// }
+        // 启动计时器
+        focusTimer.start(100);
+    }
+    else
+    {
+        // 如果焦点器对象不存在，记录日志并发送错误消息
+        Logger::Log("FocuserControlMoveStep | dpFocuser is NULL", LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(0));
+    }
+    // 记录焦点器移动结束的日志
+    Logger::Log("FocuserControlMoveStep finish!", LogLevel::INFO, DeviceType::FOCUSER);
+}
 
 int MainWindow::FocuserControl_setSpeed(int speed)
 {
