@@ -9724,8 +9724,8 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     if (useVirtualTestImages && image.cols > 0 && image.rows > 0 &&
         roiAndFocuserInfo.count("ROI_x") && roiAndFocuserInfo.count("ROI_y") && roiAndFocuserInfo.count("BoxSideLength"))
     {
-        int roi_x = static_cast<int>(roiAndFocuserInfo["ROI_x"]);
-        int roi_y = static_cast<int>(roiAndFocuserInfo["ROI_y"]);
+        int roi_x = static_cast<int>(roiAndFocuserInfo["ROI_x"])*glMainCameraBinning;
+        int roi_y = static_cast<int>(roiAndFocuserInfo["ROI_y"])*glMainCameraBinning;
         int box   = static_cast<int>(roiAndFocuserInfo["BoxSideLength"]);
         roi_x = std::max(0, std::min(std::max(0, image.cols - box), roi_x));
         roi_y = std::max(0, std::min(std::max(0, image.rows - box), roi_y));
@@ -9966,16 +9966,16 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
             int boxSideToSend = BoxSideLength;
             if (roiAndFocuserInfo.count("BoxSideLength"))
                 boxSideToSend = static_cast<int>(std::lround(roiAndFocuserInfo["BoxSideLength"]));
-            const int maxX = std::max(0, glMainCCDSizeX - boxSideToSend);
-            const int maxY = std::max(0, glMainCCDSizeY - boxSideToSend);
+            const int maxX = std::max(0, int(glMainCCDSizeX - boxSideToSend)/glMainCameraBinning);
+            const int maxY = std::max(0, int(glMainCCDSizeY - boxSideToSend)/glMainCameraBinning);
             int applyX = std::min(std::max(0, pendingRoiX), maxX);
             int applyY = std::min(std::max(0, pendingRoiY), maxY);
             if (applyX % 2 != 0) applyX += (applyX < maxX ? 1 : -1);
             if (applyY % 2 != 0) applyY += (applyY < maxY ? 1 : -1);
             applyX = std::min(std::max(0, applyX), maxX);
             applyY = std::min(std::max(0, applyY), maxY);
-            roiAndFocuserInfo["ROI_x"] = applyX;
-            roiAndFocuserInfo["ROI_y"] = applyY;
+            roiAndFocuserInfo["ROI_x"] = int(applyX);
+            roiAndFocuserInfo["ROI_y"] = int(applyY);
         }
 
         Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath + ",image size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -10029,8 +10029,8 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
             }
 
             // ROI 相对坐标 -> 全图坐标
-            const double sxFull = roi_x + s.x;
-            const double syFull = roi_y + s.y;
+            const double sxFull = roi_x + int(s.x/glMainCameraBinning); //合并后图像的全图坐标
+            const double syFull = roi_y + int(s.y/glMainCameraBinning); //合并后图像的全图坐标
             const double dx = sxFull - lockedStarFull.x();
             const double dy = syFull - lockedStarFull.y();
             const double d2 = dx*dx + dy*dy;
@@ -10045,8 +10045,8 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
         if (bestIdx != -1)
         {
             const auto &best = stars[bestIdx];
-            const double bestXFull = roi_x + best.x;
-            const double bestYFull = roi_y + best.y;
+            const double bestXFull = roi_x + int(best.x/glMainCameraBinning);
+            const double bestYFull = roi_y + int(best.y/glMainCameraBinning);
             // 存储 ROI 相对坐标
             roiAndFocuserInfo["SelectStarX"] = best.x;
             roiAndFocuserInfo["SelectStarY"] = best.y;
@@ -10055,9 +10055,9 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
             lockedStarFull = QPointF(bestXFull, bestYFull);
             Logger::Log("selectStar | tracking locked star: ROI(" + std::to_string(best.x) + "," + std::to_string(best.y) + ") Full(" + std::to_string(bestXFull) + "," + std::to_string(bestYFull) + ") HFR=" + std::to_string(best.HFR), LogLevel::DEBUG, DeviceType::FOCUSER);
             // 判断是否需要居中（挂起到下一帧应用）
-            const double centerX = roi_x + boxSide / 2.0;
-            const double centerY = roi_y + boxSide / 2.0;
-            const double halfWin = boxSide * trackWindowRatio; // 半窗
+            const double centerX = roi_x + boxSide/glMainCameraBinning / 2.0;
+            const double centerY = roi_y + boxSide/glMainCameraBinning / 2.0;
+            const double halfWin = boxSide/glMainCameraBinning * trackWindowRatio; // 半窗
             const bool outOfWindow = std::abs(bestXFull - centerX) > halfWin || std::abs(bestYFull - centerY) > halfWin;
             if (enableAutoRoiCentering)
             {
@@ -10067,8 +10067,8 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
                     outOfWindowFrames = 0;
                 }
                 if (outOfWindowFrames >= requiredOutFramesForRecentre) {
-                    double newRoiX = bestXFull - boxSide / 2.0;
-                    double newRoiY = bestYFull - boxSide / 2.0;
+                    double newRoiX = bestXFull - boxSide/glMainCameraBinning / 2.0;
+                    double newRoiY = bestYFull - boxSide/glMainCameraBinning / 2.0;
                     const int maxX = std::max(0, glMainCCDSizeX - static_cast<int>(boxSide));
                     const int maxY = std::max(0, glMainCCDSizeY - static_cast<int>(boxSide));
                     newRoiX = std::min<double>(std::max<double>(0, newRoiX), maxX);
@@ -10116,8 +10116,8 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     }
 
     const auto &autoBest = stars[bestIdx];
-    const double bestXFullAuto = roi_x + autoBest.x;
-    const double bestYFullAuto = roi_y + autoBest.y;
+    const double bestXFullAuto = roi_x + autoBest.x/glMainCameraBinning;
+    const double bestYFullAuto = roi_y + autoBest.y/glMainCameraBinning;
     // 存储 ROI 相对坐标
     roiAndFocuserInfo["SelectStarX"] = autoBest.x;
     roiAndFocuserInfo["SelectStarY"] = autoBest.y;

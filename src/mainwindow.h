@@ -668,7 +668,7 @@ public:
     int requiredOutFramesForRecentre = 1;
     int outOfWindowFrames = 0;
     // 是否使用虚拟测试图像（用于星点追踪测试）
-    bool useVirtualTestImages = false;
+    bool useVirtualTestImages = true;
 
     // 待应用的 ROI 更新（用于在本帧显示后再更新 ROI，避免首帧未居中的视觉问题）
     bool hasPendingRoiUpdate = false;
