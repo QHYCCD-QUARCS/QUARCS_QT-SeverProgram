@@ -225,7 +225,7 @@ void StarSimulator::generateStars(const StarImageParams &params)
             fitsStar.flux = star.brightness * 1000.0;
             // 移除不存在的成员变量
             // fitsStar.background = 0.1 + m_normalDist(m_mtGenerator) * 0.05;
-            // fitsStar.HFR = star.hfr;
+            // fitsStar.FWHM = star.hfr * 2.355;
             
             // 计算椭圆参数
             double eccentricity = 0.1 + m_uniformDist(m_mtGenerator) * 0.2;

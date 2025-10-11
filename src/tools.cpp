@@ -48,8 +48,8 @@ Tools::~Tools() {
 //   if (polerhandle_ != NULL) CloseQHYCCD(polerhandle_);
 //   ReleaseQHYCCDResource();
 }
-// 静态变量存储最后一次检测的HFR值
-static double g_lastHFR = 0.0;
+// 静态变量存储最后一次检测的FWHM值
+static double g_lastFWHM = 0.0;
 
 bool Tools::findStarsByPython_Process(QString filename)
 {
@@ -81,41 +81,41 @@ bool Tools::findStarsByPython_Process(QString filename)
 
     qDebug() << "Output from Python script:" << output;
     
-    // 解析Python脚本输出中的HFR值
+    // 解析Python脚本输出中的FWHM值
     QString outputStr = QString::fromUtf8(output);
     QStringList lines = outputStr.split('\n', Qt::SkipEmptyParts);
     
-    // 查找包含"最终HFR"的行
+    // 查找包含"最终FWHM"的行
     for (const QString& line : lines) {
-        if (line.contains("最终HFR")) {
-            // 提取HFR数值
-            QRegExp rx("最终HFR\\s*=\\s*([0-9.]+)");
+        if (line.contains("最终FWHM")) {
+            // 提取FWHM数值
+            QRegExp rx("最终FWHM\\s*=\\s*([0-9.]+)");
             if (rx.indexIn(line) != -1) {
                 bool ok;
-                g_lastHFR = rx.cap(1).toDouble(&ok);
+                g_lastFWHM = rx.cap(1).toDouble(&ok);
                 if (ok) {
-                    qDebug() << "解析到HFR值:" << g_lastHFR;
+                    qDebug() << "解析到FWHM值:" << g_lastFWHM;
                 } else {
-                    g_lastHFR = 100; // 默认值，表示较清晰状态
+                    g_lastFWHM = 3.5; // 默认值
                 }
             } else {
-                g_lastHFR = 100; // 默认值，表示较清晰状态
+                g_lastFWHM = 3.5; // 默认值
             }
             break;
         }
     }
     
-    // 如果没有找到HFR值，使用默认值
-    if (g_lastHFR == 0.0) {
-        g_lastHFR = 100; // 默认值，表示较清晰状态
+    // 如果没有找到FWHM值，使用默认值
+    if (g_lastFWHM == 0.0) {
+        g_lastFWHM = 3.5;
     }
     
     return true;
 }
 
-double Tools::getLastHFR()
+double Tools::getLastFWHM()
 {
-    return g_lastHFR;
+    return g_lastFWHM;
 }
 void Tools::Initialize() { instance_ = new Tools; }
 
@@ -3562,9 +3562,9 @@ loadFitsResult Tools::loadFits(QString fileName)
   return result;
 }
 
-HFR_Result Tools::CalculateHFR(cv::Mat image)
+FWHM_Result Tools::CalculateFWHM(cv::Mat image)
 {
-  HFR_Result result;
+  FWHM_Result result;
     cv::Mat subimage;
     subimage = Tools::SubBackGround(image).clone();
     int FirstMoment_x, FirstMoment_y;
@@ -3647,84 +3647,83 @@ HFR_Result Tools::CalculateHFR(cv::Mat image)
     // return imagePoint;
 
     result.image = imagePoint;
-    result.HFR = FWHM;
+    result.FWHM = FWHM;
 
     return result;
 }
-// HFR_Result Tools::CalculateHFR(cv::Mat image)
-// {
-//     HFR_Result result;
-//     cv::Rect starRect;
-//     // if (!Tools::DetectStar(image, 50.0, 5, starRect)) {
-//     //     qDebug() << "No star detected in the image.";
-//     //     result.image = image;
-//     //     result.HFR = -1.0;
-//     //     return result;
-//     // }
+HFR_Result Tools::CalculateHFR(cv::Mat image)
+{
+    HFR_Result result;
+    cv::Rect starRect;
+    // if (!Tools::DetectStar(image, 50.0, 5, starRect)) {
+    //     qDebug() << "No star detected in the image.";
+    //     result.image = image;
+    //     result.HFR = -1.0;
+    //     return result;
+    // }
 
-//     // cv::Mat starRegion = image(starRect);
-//     cv::Mat subimage = Tools::SubBackGround(image).clone();
-//     int FirstMoment_x, FirstMoment_y;
+    // cv::Mat starRegion = image(starRect);
+    cv::Mat subimage = Tools::SubBackGround(image).clone();
+    int FirstMoment_x, FirstMoment_y;
 
-//     double scale_up = 10.0;
-//     cv::resize(subimage, subimage, cv::Size(), scale_up, scale_up, cv::INTER_LINEAR);
+    double scale_up = 10.0;
+    cv::resize(subimage, subimage, cv::Size(), scale_up, scale_up, cv::INTER_LINEAR);
 
-//     cv::Mat imageFloat;
-//     subimage.convertTo(imageFloat, CV_64F);
+    cv::Mat imageFloat;
+    subimage.convertTo(imageFloat, CV_64F);
 
-//     double sum = cv::sum(imageFloat)[0];
-//     double xCoordinate = 0.0;
-//     double yCoordinate = 0.0;
+    double sum = cv::sum(imageFloat)[0];
+    double xCoordinate = 0.0;
+    double yCoordinate = 0.0;
 
-//     for (int y = 0; y < subimage.rows; ++y) {
-//         for (int x = 0; x < subimage.cols; ++x) {
-//             double pixelValue = imageFloat.at<double>(y, x);
-//             xCoordinate += x * pixelValue;
-//             yCoordinate += y * pixelValue;
-//         }
-//     }
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = imageFloat.at<double>(y, x);
+            xCoordinate += x * pixelValue;
+            yCoordinate += y * pixelValue;
+        }
+    }
 
-//     xCoordinate /= sum;
-//     yCoordinate /= sum;
+    xCoordinate /= sum;
+    yCoordinate /= sum;
 
-//     FirstMoment_x = static_cast<int>(xCoordinate);
-//     FirstMoment_y = static_cast<int>(yCoordinate);
+    FirstMoment_x = static_cast<int>(xCoordinate);
+    FirstMoment_y = static_cast<int>(yCoordinate);
 
-//     double maxBrightness = subimage.at<ushort>(FirstMoment_y, FirstMoment_x);
-//     double halfMaxBrightness = maxBrightness / 2.0;
+    double maxBrightness = subimage.at<ushort>(FirstMoment_y, FirstMoment_x);
+    double halfMaxBrightness = maxBrightness / 2.0;
 
-//     std::vector<double> distances;
+    std::vector<double> distances;
 
-//     for (int y = 0; y < subimage.rows; ++y) {
-//         for (int x = 0; x < subimage.cols; ++x) {
-//             double pixelValue = subimage.at<ushort>(y, x);
-//             if (pixelValue >= halfMaxBrightness) {
-//                 double distance = std::sqrt(std::pow(x - FirstMoment_x, 2) + std::pow(y - FirstMoment_y, 2));
-//                 distances.push_back(distance);
-//             }
-//         }
-//     }
+    for (int y = 0; y < subimage.rows; ++y) {
+        for (int x = 0; x < subimage.cols; ++x) {
+            double pixelValue = subimage.at<ushort>(y, x);
+            if (pixelValue >= halfMaxBrightness) {
+                double distance = std::sqrt(std::pow(x - FirstMoment_x, 2) + std::pow(y - FirstMoment_y, 2));
+                distances.push_back(distance);
+            }
+        }
+    }
 
-//     double sumDistances = std::accumulate(distances.begin(), distances.end(), 0.0);
-//     double HFR = sumDistances / distances.size() / 10.0;
+    double sumDistances = std::accumulate(distances.begin(), distances.end(), 0.0);
+    double HFR = sumDistances / distances.size() / 10.0;
 
-//     // 在原图上绘制检测结果
-//     cv::Mat imagePoint = image.clone();
-//     cv::Point center(starRect.x + FirstMoment_x / 10, starRect.y + FirstMoment_y / 10);
-//     cv::rectangle(imagePoint, starRect, cv::Scalar(0, 255, 0), 1); // 绘制外接矩形
-//     cv::circle(imagePoint, center, static_cast<int>(HFR), cv::Scalar(0, 0, 255), 1); // 绘制HFR圆
-//     cv::circle(imagePoint, center, 1, cv::Scalar(0, 255, 0), -1); // 绘制中心点
+    // 在原图上绘制检测结果
+    cv::Mat imagePoint = image.clone();
+    cv::Point center(starRect.x + FirstMoment_x / 10, starRect.y + FirstMoment_y / 10);
+    cv::rectangle(imagePoint, starRect, cv::Scalar(0, 255, 0), 1); // 绘制外接矩形
+    cv::circle(imagePoint, center, static_cast<int>(HFR), cv::Scalar(0, 0, 255), 1); // 绘制HFR圆
+    cv::circle(imagePoint, center, 1, cv::Scalar(0, 255, 0), -1); // 绘制中心点
 
-//     // 在图像上显示HFR数值
-//     std::string hfrText = cv::format("%.2f", HFR);
-//     cv::putText(imagePoint, hfrText, cv::Point(starRect.x, starRect.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
+    // 在图像上显示HFR数值
+    std::string hfrText = cv::format("%.2f", HFR);
+    cv::putText(imagePoint, hfrText, cv::Point(starRect.x, starRect.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 0, 255), 1);
 
-//     result.image = imagePoint;
-//     result.HFR = HFR;
+    result.image = imagePoint;
+    result.HFR = HFR;
 
-//     return result;
-// }
-
+    return result;
+}
 
 CamBin Tools::mergeImageBasedOnSize(cv::Mat image) {
     // 获取图像尺寸

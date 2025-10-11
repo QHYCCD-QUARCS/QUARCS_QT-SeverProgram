@@ -583,7 +583,7 @@ public:
     int TargetPosition = 0;        // 目标位置
     bool MoveInward = true;        // 方向（true 向内）
     int AutoMovePosition = 0;      // 自动移动目标
-    bool HFRCalOver = false;      // HFR 计算结束
+    bool FWHMCalOver = false;      // FWHM 计算结束
     float minPoint_X = 0.0f;       // 曲线最小点 X（可用于记录）
     bool currentDirection = true;  // 当前方向
     double focusMoveEndTime = 0;   // 结束命令超时控制
@@ -616,7 +616,6 @@ public:
     void FocuserControlStop(bool isClickMove = false);
 
     QTimer *updatePositionTimer = nullptr; // 停止时用于刷新位置的定时器
-    QTimer *realtimePositionTimer = nullptr; // 实时位置更新定时器
     int updateCount = 0;                   // 更新计数器
 
     /**
@@ -668,7 +667,7 @@ public:
     int requiredOutFramesForRecentre = 1;
     int outOfWindowFrames = 0;
     // 是否使用虚拟测试图像（用于星点追踪测试）
-    bool useVirtualTestImages = true;
+    bool useVirtualTestImages = false;
 
     // 待应用的 ROI 更新（用于在本帧显示后再更新 ROI，避免首帧未居中的视觉问题）
     bool hasPendingRoiUpdate = false;
@@ -705,15 +704,14 @@ public:
     void focusSetTravelRange();
 
     int lastPosition = 0;                        // 上一次位置
-    int noChangeCount = 0;                       // 连续无变化计数器
     QTimer *focusMoveToMaxorMinTimer = nullptr;  // 往返移动控制定时器
 
-    QTimer HFRTimer;          // HFR 计算/采样定时器
+    QTimer FWHMTimer;          // FWHM 计算/采样定时器
     QString MainCameraCFA;     // 主相机 CFA
     double ImageGainR = 1.0;   // 显示增益 R
     double ImageGainB = 1.0;   // 显示增益 B
     double ImageOffset = 0.0;  // 显示偏移
-    QVector<QPointF> dataPoints; // HFR 数据点
+    QVector<QPointF> dataPoints; // FWHM 数据点
     double R2 = 0;             // 拟合优度
     bool isAutoFocus = false;  // 自动对焦开关
     bool StopAutoFocus = false;// 停止自动对焦

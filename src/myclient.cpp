@@ -2618,7 +2618,7 @@ uint32_t MyClient::getFocuserAbsolutePosition(INDI::BaseDevice *dp, int &positio
 
     // sendNewProperty(property);
 
-    // Logger::Log("indi_client | getFocuserAbsolutePosition: " + std::to_string(position), LogLevel::DEBUG, DeviceType::FOCUSER);
+    Logger::Log("indi_client | getFocuserAbsolutePosition: " + std::to_string(position), LogLevel::DEBUG, DeviceType::FOCUSER);
     return QHYCCD_SUCCESS;
 }
 
