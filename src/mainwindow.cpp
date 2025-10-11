@@ -99,17 +99,6 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     focusMoveTimer = new QTimer(this);
     connect(focusMoveTimer, &QTimer::timeout, this, &MainWindow::HandleFocuserMovementDataPeriodically);
     
-    // 实时位置更新定时器初始化
-    realtimePositionTimer = new QTimer(this);
-    connect(realtimePositionTimer, &QTimer::timeout, this, [this]() {
-        if (dpFocuser != NULL) {
-            CurrentPosition = FocuserControl_getPosition();
-            if (CurrentPosition != INT_MIN) {
-                emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
-            }
-        }
-    });
-    realtimePositionTimer->start(50); // 50毫秒间隔，实现更实时的同步
 
     emit wsThread->sendMessageToClient("ServerInitSuccess");
 
