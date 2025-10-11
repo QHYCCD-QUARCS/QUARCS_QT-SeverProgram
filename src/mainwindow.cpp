@@ -99,17 +99,17 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     focusMoveTimer = new QTimer(this);
     connect(focusMoveTimer, &QTimer::timeout, this, &MainWindow::HandleFocuserMovementDataPeriodically);
     
-    // 实时位置更新定时器初始化
-    realtimePositionTimer = new QTimer(this);
-    connect(realtimePositionTimer, &QTimer::timeout, this, [this]() {
-        if (dpFocuser != NULL) {
-            CurrentPosition = FocuserControl_getPosition();
-            if (CurrentPosition != INT_MIN) {
-                emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
-            }
-        }
-    });
-    realtimePositionTimer->start(50); // 50毫秒间隔，实现更实时的同步
+    // // 实时位置更新定时器初始化
+    // realtimePositionTimer = new QTimer(this);
+    // connect(realtimePositionTimer, &QTimer::timeout, this, [this]() {
+    //     if (dpFocuser != NULL) {
+    //         CurrentPosition = FocuserControl_getPosition();
+    //         if (CurrentPosition != INT_MIN) {
+    //             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+    //         }
+    //     }
+    // });
+    // realtimePositionTimer->start(50); // 50毫秒间隔，实现更实时的同步
 
     emit wsThread->sendMessageToClient("ServerInitSuccess");
 
@@ -11068,7 +11068,7 @@ void MainWindow::focusMoveToMin()
         }
         if (CurrentPosition == lastPosition){
             noChangeCount++;
-            const int maxNoChangeCount = 3; // 连续3次（3秒）无变化才认为卡住
+            const int maxNoChangeCount = 10; // 连续3次（3秒）无变化才认为卡住
             if (noChangeCount >= maxNoChangeCount) {
                 indi_Client->abortFocuserMove(dpFocuser);
                 focusMoveToMaxorMinTimer->stop();
@@ -11138,7 +11138,7 @@ void MainWindow::focusMoveToMax()
         }
         if (CurrentPosition == lastPosition){
             noChangeCount++;
-            const int maxNoChangeCount = 3; // 连续3次（3秒）无变化才认为卡住
+            const int maxNoChangeCount = 10; // 连续3次（3秒）无变化才认为卡住
             if (noChangeCount >= maxNoChangeCount) {
                 indi_Client->abortFocuserMove(dpFocuser);
                 focusMoveToMaxorMinTimer->stop();
