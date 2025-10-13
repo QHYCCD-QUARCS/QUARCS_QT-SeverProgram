@@ -889,6 +889,73 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 **                                  Mount API
 ***************************************************************************************/
 
+uint32_t MyClient::getMountInfo(INDI::BaseDevice *dp, QString &version)
+{
+    INDI::PropertyText mountInfo = dp->getProperty("DRIVER_INFO");
+    if (!mountInfo.isValid() || mountInfo->ntp <= 0)
+    {
+        Logger::Log("indi_client | getMountInfo | Error: unable to find DRIVER_INFO or empty", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+
+    int chosenIdx = -1; // 用于提取版本项
+    // 附加字段：便于注释式打印
+    std::string drvName, drvExec, drvVersion, drvInterface;
+    for (int i = 0; i < mountInfo->ntp; i++)
+    {
+        const char* name = mountInfo->tp[i].name;
+        const char* text = mountInfo->tp[i].text;
+
+        // std::ostringstream oss;
+        // oss << "indi_client | getMountInfo | DRIVER_INFO"
+        //     << " | tp[" << i << "]"
+        //     << " name:" << (name ? name : "")
+        //     << " text:" << (text ? text : "")
+        //     << " label:" << (mountInfo->label ? mountInfo->label : "")
+        //     << " group:" << (mountInfo->group ? mountInfo->group : "")
+        //     << " perm:" << static_cast<int>(mountInfo->p)
+        //     << " state:" << static_cast<int>(mountInfo->s)
+        //     << " ntp:" << mountInfo->ntp;
+        // Logger::Log(oss.str(), LogLevel::INFO, DeviceType::MOUNT);
+
+        if (chosenIdx == -1 && name)
+        {
+            std::string nm(name);
+            if (nm.find("VERSION") != std::string::npos)
+                chosenIdx = i;
+        }
+
+        // 抽取常见字段
+        if (name)
+        {
+            std::string nm(name);
+            if (nm == "DRIVER_NAME") drvName = text ? text : "";
+            else if (nm == "DRIVER_EXEC") drvExec = text ? text : "";
+            else if (nm == "DRIVER_VERSION") drvVersion = text ? text : "";
+            else if (nm == "DRIVER_INTERFACE") drvInterface = text ? text : "";
+        }
+    }
+
+    if (chosenIdx >= 0)
+        version = QString::fromUtf8(mountInfo->tp[chosenIdx].text ? mountInfo->tp[chosenIdx].text : "");
+    else
+        version.clear();
+
+    // 注释式汇总打印，清晰展示关键值
+    // {
+    //     std::ostringstream sum;
+    //     sum << "indi_client | getMountInfo | Summary"
+    //         << " | DriverName:" << drvName
+    //         << " | Exec:" << drvExec
+    //         << " | Version:" << (!drvVersion.empty() ? drvVersion : version.toStdString())
+    //         << " | Interface:" << drvInterface;
+    //     Logger::Log(sum.str(), LogLevel::INFO, DeviceType::MOUNT);
+    // }
+
+    return QHYCCD_SUCCESS;
+}
+
+
 uint32_t MyClient::setAutoFlip(INDI::BaseDevice *dp, bool ON)
 {
     INDI::PropertySwitch flip = dp->getProperty("AutoFlip");
@@ -2381,6 +2448,49 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu)
 /**************************************************************************************
 **                                  Focus API
 ***************************************************************************************/
+
+uint32_t MyClient::getFocuserSDKVersion(INDI::BaseDevice *dp, QString &version)
+{
+    INDI::PropertyNumber focuserSDKVersion = dp->getProperty("FOCUS_VERSION");
+    if (!focuserSDKVersion.isValid() || focuserSDKVersion->nnp <= 0)
+    {
+        Logger::Log("indi_client | getFocuserSDKVersion | Error: unable to find  FOCUS_VERSION property...", LogLevel::WARNING, DeviceType::FOCUSER);
+        return QHYCCD_ERROR;
+    }
+
+    // 选择条目：优先 name 含 "VERSION" 的项，否则使用第 0 项
+    int idx = 0;
+    for (int i = 0; i < focuserSDKVersion->nnp; i++)
+    {
+        const char* nm = focuserSDKVersion->np[i].name;
+        if (nm && std::string(nm).find("VERSION") != std::string::npos)
+        {
+            idx = i; break;
+        }
+    }
+
+    // 将浮点安全地转换为整数版本号（如 20231207）
+    double v = focuserSDKVersion->np[idx].value;
+    uint64_t ver = static_cast<uint64_t>(std::llround(v));
+    version = QString::number(static_cast<qulonglong>(ver));
+
+    // 记录一次规范化日志（禁用科学计数法）
+    // std::ostringstream oss;
+    // oss << std::fixed << std::setprecision(0);
+    // oss << "indi_client | getFocuserSDKVersion | FOCUS_VERSION"
+    //     << " | choose idx:" << idx
+    //     << " name:" << (focuserSDKVersion->np[idx].name ? focuserSDKVersion->np[idx].name : "")
+    //     << " value_raw:" << v
+    //     << " value_norm:" << ver
+    //     << " label:" << (focuserSDKVersion->label ? focuserSDKVersion->label : "")
+    //     << " group:" << (focuserSDKVersion->group ? focuserSDKVersion->group : "")
+    //     << " perm:" << static_cast<int>(focuserSDKVersion->p)
+    //     << " state:" << static_cast<int>(focuserSDKVersion->s)
+    //     << " nnp:" << focuserSDKVersion->nnp;
+    // Logger::Log(oss.str(), LogLevel::INFO, DeviceType::FOCUSER);
+    return QHYCCD_SUCCESS;
+}
+
 uint32_t MyClient::getFocuserSpeed(INDI::BaseDevice *dp, int &value, int &min, int &max, int &step)
 {
     INDI::PropertyNumber property = dp->getProperty("FOCUS_SPEED");

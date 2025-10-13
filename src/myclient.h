@@ -110,6 +110,7 @@ class MyClient : public INDI::BaseClient
         uint32_t setTelescopeMaxSlewRateOptions(INDI::BaseDevice *dp,int value);
 
 
+        uint32_t getMountInfo(INDI::BaseDevice *dp,QString &version);
         uint32_t setAutoFlip(INDI::BaseDevice *dp,bool ON);
         uint32_t setMinutesPastMeridian(INDI::BaseDevice *dp,double Eastvalue , double Westvalue);
         uint32_t getMinutesPastMeridian(INDI::BaseDevice *dp,double &Eastvalue, double &Westvalue);
@@ -147,6 +148,7 @@ class MyClient : public INDI::BaseClient
 
 
         //Focuser API
+        uint32_t getFocuserSDKVersion(INDI::BaseDevice *dp,QString &version);
         uint32_t getFocuserSpeed(INDI::BaseDevice *dp,int &value ,int &min,int &max,int &step);
         uint32_t setFocuserSpeed(INDI::BaseDevice *dp,int  value);
         uint32_t getFocuserMoveDiretion(INDI::BaseDevice *dp,bool & isDirectionIn);

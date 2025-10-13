@@ -1630,6 +1630,26 @@ void MainWindow::onMessageReceived(const QString &message)
                 polarAlignment->sendValidAdjustmentGuideData();
             }
         }
+    }else if (parts[0].trimmed() == "CheckBoxSpace")
+    {
+        Logger::Log("CheckBoxSpace ...", LogLevel::DEBUG, DeviceType::MAIN);
+        getCheckBoxSpace();
+        Logger::Log("CheckBoxSpace finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if (parts[0].trimmed() == "ClearLogs")
+    {
+        Logger::Log("ClearLogs ...", LogLevel::DEBUG, DeviceType::MAIN);
+        clearLogs();
+        Logger::Log("ClearLogs finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if (parts[0].trimmed() == "ClearBoxCache")
+    {
+        Logger::Log("ClearBoxCache ...", LogLevel::DEBUG, DeviceType::MAIN);
+        clearBoxCache();
+        Logger::Log("ClearBoxCache finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if (parts[0].trimmed() == "loadSDKVersionAndUSBSerialPath")
+    {
+        Logger::Log("loadSDKVersionAndUSBSerialPath ...", LogLevel::DEBUG, DeviceType::MAIN);
+        loadSDKVersionAndUSBSerialPath();
+        Logger::Log("loadSDKVersionAndUSBSerialPath finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
     else
     {
@@ -1891,7 +1911,6 @@ void MainWindow::setGPIODirection(const char *pin, const char *direction)
     close(fd);
     Logger::Log("GPIO direction set successfully", LogLevel::INFO, DeviceType::MAIN);
 }
-
 void MainWindow::setGPIOValue(const char *pin, const char *value)
 {
     int fd;
@@ -1984,7 +2003,7 @@ void MainWindow::onTimeout()
                     + QString::number(CurrentRA_Degree) 
                     + ":" + QString::number(CurrentDEC_Degree));
 
-                Logger::Log("当前指向:RA:" + std::to_string(RA_HOURS) + " 小时,DEC:" + std::to_string(CurrentDEC_Degree) + " 度", LogLevel::INFO, DeviceType::MAIN);
+                // Logger::Log("当前指向:RA:" + std::to_string(RA_HOURS) + " 小时,DEC:" + std::to_string(CurrentDEC_Degree) + " 度", LogLevel::INFO, DeviceType::MAIN);
 
                 // 直接每次执行原"慢速"查询内容
                 bool isParked = false;
@@ -2498,7 +2517,6 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     }
 
 }
-
 cv::Mat MainWindow::colorImage(cv::Mat img16)
 {
     Logger::Log("Starting color image processing...", LogLevel::INFO, DeviceType::MAIN);
@@ -3765,125 +3783,6 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     indi_Client->PrintDevices();
 }
 
-// void MainWindow::DeviceConnect()
-// {
-//     int SelectedDevicesNum = Tools::getTotalDeviceFromSystemDeviceList(systemdevicelist);
-//     if (SelectedDevicesNum == 0)
-//     {
-//         qWarning() << "System Connect | Error: no device in system device list";
-//         emit wsThread->sendMessageToClient("ConnectFailed:no device in system device list.");
-//         return;
-//     }
-
-//     Tools::cleanSystemDeviceListConnect(systemdevicelist);
-//     Tools::printSystemDeviceList(systemdevicelist);
-//     disconnectIndiServer(indi_Client);
-//     Tools::stopIndiDriverAll(drivers_list);
-
-//     QString driverName;
-//     QVector<QString> nameCheck;
-
-//     for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-//     {
-//         driverName = systemdevicelist.system_devices[i].DriverIndiName;
-//         if (driverName != "")
-//         {
-//             bool isFound = false;
-//             for (auto item : nameCheck)
-//             {
-//                 if (item == driverName)
-//                 {
-//                     isFound = true;
-//                     qWarning() << "System Connect | found one duplite driver,do not start it again" << driverName;
-//                     break;
-//                 }
-//             }
-
-//             if (isFound == false)
-//             {
-//                 Tools::startIndiDriver(driverName);
-//                 nameCheck.push_back(driverName);
-//             }
-//         }
-//     }
-
-//     sleep(1);
-
-//     connectIndiServer(indi_Client);
-
-//     if (indi_Client->isServerConnected() == false)
-//     {
-//         qDebug() << "System Connect | ERROR:can not find server";
-//         return;
-//     }
-
-//     if (indi_Client->GetDeviceCount() == 0)
-//     {
-//         qDebug() << "System Connect | Error:No device found";
-//         emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
-//         return;
-//     }
-
-//     uint32_t ret;
-//     int index;
-//     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-//     {
-//         qDebug() << "Start connecting devices:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
-//         ret = Tools::getIndexFromSystemDeviceListByName(systemdevicelist, QString::fromStdString(indi_Client->GetDeviceNameFromList(i)), index);
-//         if (ret == QHYCCD_SUCCESS)
-//         {
-//             systemdevicelist.system_devices[index].dp = indi_Client->GetDeviceFromList(i);
-
-//             if (index == 1)
-//             {
-//                 call_phd_whichCamera(systemdevicelist.system_devices[index].dp->getDeviceName());  // PHD2 Guider Connect
-//             }
-//             else
-//             {
-//                 indi_Client->connectDevice(systemdevicelist.system_devices[index].dp->getDeviceName());
-//             }
-//         }
-//     }
-
-//     sleep(3);
-
-//     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-//     {
-//         ret = Tools::getIndexFromSystemDeviceListByName(systemdevicelist, QString::fromStdString(indi_Client->GetDeviceNameFromList(i)), index);
-//         if (ret == QHYCCD_SUCCESS)
-//         {
-//             if (systemdevicelist.system_devices[index].dp->isConnected() == true)
-//             {
-//                 systemdevicelist.system_devices[index].isConnect = true;
-
-//                 if(systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE) {
-//                     qDebug() << "\033[1;32m We received a CCD!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-//                 } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE) {
-//                     qDebug() << "\033[1;32m We received a FILTER!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-//                 } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE) {
-//                     qDebug() << "\033[1;32m We received a TELESCOPE!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-//                 } else if (systemdevicelist.system_devices[index].dp->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE) {
-//                     qDebug() << "\033[1;32m We received a FOCUSER!\033[0m" << systemdevicelist.system_devices[index].dp->getDriverExec();
-//                 }
-//             }
-
-//             if (index == 1)
-//             {
-//                 if (indi_Client->GetDeviceNameFromList(i).find("Simulator") != std::string::npos)
-//                 {
-//                     systemdevicelist.system_devices[index].isConnect = true;
-//                 }
-//             }
-//         }
-//         else
-//         {
-//             qDebug() << "System Connect |Warn:" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i)) << "is found in the client list but not in pre-select system list" << i;
-//         }
-//     }
-
-//     AfterDeviceConnect();
-// }
-
 void MainWindow::AfterDeviceConnect()
 {
     Logger::Log("Starting AfterDeviceConnect process.", LogLevel::INFO, DeviceType::MAIN);
@@ -3892,7 +3791,7 @@ void MainWindow::AfterDeviceConnect()
     {
         indi_Client->GetAllPropertyName(dpMainCamera);
         Logger::Log("MainCamera connected after Device(" + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
+
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
 
         systemdevicelist.system_devices[20].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
@@ -3903,6 +3802,7 @@ void MainWindow::AfterDeviceConnect()
 
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
+        emit wsThread->sendMessageToClient("getSDKVersion:MainCamera:" + SDKVERSION);
         Logger::Log("MainCamera SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
@@ -3983,12 +3883,13 @@ void MainWindow::AfterDeviceConnect()
             Logger::Log("CFW connected successfully.", LogLevel::INFO, DeviceType::MAIN);
         }
         Logger::Log("MainCamera connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
     }
 
     if (dpMount != NULL)
     {
         Logger::Log("Mount connected after Device(" + QString::fromUtf8(dpMount->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMount->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()) + ":" + QString::fromUtf8(dpMount->getDriverExec()));
+        
         ConnectedDevices.push_back({"Mount", QString::fromUtf8(dpMount->getDeviceName())});
 
         systemdevicelist.system_devices[0].DeviceIndiName = QString::fromUtf8(dpMount->getDeviceName());
@@ -3997,6 +3898,7 @@ void MainWindow::AfterDeviceConnect()
         indi_Client->GetAllPropertyName(dpMount);
         QString DevicePort;
         indi_Client->getDevicePort(dpMount, DevicePort);
+        emit wsThread->sendMessageToClient("getDevicePort:Mount:" + DevicePort);
         Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         getClientSettings();
@@ -4068,12 +3970,13 @@ void MainWindow::AfterDeviceConnect()
         // indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
         indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
         indi_Client->mountState.printCurrentState();
+        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()) + ":" + QString::fromUtf8(dpMount->getDriverExec()));
     }
 
     if (dpFocuser != NULL)
     {
         Logger::Log("Focuser connected after Device(" + QString::fromUtf8(dpFocuser->getDeviceName()).toStdString() + ") Connect: " + dpFocuser->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()) + ":" + QString::fromUtf8(dpFocuser->getDriverExec()));
+        
         ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
 
         systemdevicelist.system_devices[22].DeviceIndiName = QString::fromUtf8(dpFocuser->getDeviceName());
@@ -4089,6 +3992,16 @@ void MainWindow::AfterDeviceConnect()
         // Logger::Log("Focuser Range - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Value: " + std::to_string(value) + ", Step: " + std::to_string(step), LogLevel::INFO, DeviceType::MAIN);
         // focuserMaxPosition = std::min(max, focuserMaxPosition);
         // focuserMinPosition = std::max(min, focuserMinPosition);
+        QString SDKVERSION = "null";
+        indi_Client->getFocuserSDKVersion(dpFocuser, SDKVERSION);
+        emit wsThread->sendMessageToClient("getSDKVersion:Focuser:" + SDKVERSION);
+        Logger::Log("Focuser SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+        QString DevicePort;
+        indi_Client->getDevicePort(dpFocuser, DevicePort);
+        emit wsThread->sendMessageToClient("getDevicePort:Focuser:" + DevicePort);
+        Logger::Log("Device port for Focuser: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
         if (focuserMaxPosition == -1 && focuserMinPosition == -1)
         {
             focuserMaxPosition = max;
@@ -4101,12 +4014,13 @@ void MainWindow::AfterDeviceConnect()
         Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         Logger::Log("Focuser connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()) + ":" + QString::fromUtf8(dpFocuser->getDriverExec()));
     }
 
     if (dpCFW != NULL)
     {
         Logger::Log("CFW connected after Device(" + QString::fromUtf8(dpCFW->getDeviceName()).toStdString() + ") Connect: " + dpCFW->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
+        
         ConnectedDevices.push_back({"CFW", QString::fromUtf8(dpCFW->getDeviceName())});
 
         systemdevicelist.system_devices[21].DeviceIndiName = QString::fromUtf8(dpCFW->getDeviceName());
@@ -4122,17 +4036,23 @@ void MainWindow::AfterDeviceConnect()
         {
             emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));
         }
+        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
     }
 
     if (dpGuider != NULL)
     {
         Logger::Log("Guider connected after Device(" + QString::fromUtf8(dpGuider->getDeviceName()).toStdString() + ") Connect: " + dpGuider->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
+        
         ConnectedDevices.push_back({"Guider", QString::fromUtf8(dpGuider->getDeviceName())});
         Logger::Log("Guider connected successfully.", LogLevel::INFO, DeviceType::MAIN);
 
         systemdevicelist.system_devices[1].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
         systemdevicelist.system_devices[1].isBind = true;
+        QString SDKVERSION;
+        indi_Client->getCCDSDKVersion(dpGuider, SDKVERSION);
+        emit wsThread->sendMessageToClient("getSDKVersion:Guider:" + SDKVERSION);
+        Logger::Log("Guider SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
     }
     Logger::Log("All devices connected after successfully.", LogLevel::INFO, DeviceType::MAIN);
 }
@@ -4143,7 +4063,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         sleep(1); // 给与初始化数据更新时间
         indi_Client->GetAllPropertyName(dpMainCamera);
         Logger::Log("MainCamera connected after Device(" + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
+        
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
 
         systemdevicelist.system_devices[20].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
@@ -4154,6 +4074,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
+        emit wsThread->sendMessageToClient("getSDKVersion:MainCamera:" + SDKVERSION);
         Logger::Log("MainCamera SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
@@ -4266,12 +4187,13 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
         }
         Logger::Log("MainCamera connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
     }
 
     if (dpMount == dp)
     {
         Logger::Log("Mount connected after Device(" + QString::fromUtf8(dpMount->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMount->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()) + ":" + QString::fromUtf8(dpMount->getDriverExec()));
+        
         ConnectedDevices.push_back({"Mount", QString::fromUtf8(dpMount->getDeviceName())});
 
         systemdevicelist.system_devices[0].DeviceIndiName = QString::fromUtf8(dpMount->getDeviceName());
@@ -4296,7 +4218,14 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         indi_Client->setAUXENCODERS(dpMount);
 
+        // 获取驱动版本号
+        QString MountSDKVersion = "null";
+        indi_Client->getMountInfo(dpMount, MountSDKVersion);
+        emit wsThread->sendMessageToClient("getMountInfo:Mount:" + MountSDKVersion);
+        Logger::Log("Mount Info: " + MountSDKVersion.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
         indi_Client->getDevicePort(dpMount, DevicePort);
+        emit wsThread->sendMessageToClient("getDevicePort:Mount:" + DevicePort);
         Logger::Log("Device port for Mount: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         // double glLongitude_radian, glLatitude_radian;
@@ -4363,13 +4292,14 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         // indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
         indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
         indi_Client->mountState.printCurrentState();
+        emit wsThread->sendMessageToClient("ConnectSuccess:Mount:" + QString::fromUtf8(dpMount->getDeviceName()) + ":" + QString::fromUtf8(dpMount->getDriverExec()));
         
     }
 
     if (dpFocuser == dp)
     {
         Logger::Log("Focuser connected after Device(" + QString::fromUtf8(dpFocuser->getDeviceName()).toStdString() + ") Connect: " + dpFocuser->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()) + ":" + QString::fromUtf8(dpFocuser->getDriverExec()));
+        
         ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
 
         systemdevicelist.system_devices[22].DeviceIndiName = QString::fromUtf8(dpFocuser->getDeviceName());
@@ -4386,16 +4316,28 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
             emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
         }
+
+        QString SDKVERSION = "null";
+        indi_Client->getFocuserSDKVersion(dpFocuser, SDKVERSION);
+        emit wsThread->sendMessageToClient("getSDKVersion:Focuser:" + SDKVERSION);
+        Logger::Log("Focuser SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+        QString DevicePort = "null";
+        indi_Client->getDevicePort(dpFocuser, DevicePort);
+        emit wsThread->sendMessageToClient("getDevicePort:Focuser:" + DevicePort);
+        Logger::Log("Device port for Focuser: " + DevicePort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
         CurrentPosition = FocuserControl_getPosition();
         Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         Logger::Log("Focuser connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + QString::fromUtf8(dpFocuser->getDeviceName()) + ":" + QString::fromUtf8(dpFocuser->getDriverExec()));
     }
 
     if (dpCFW == dp)
     {
         Logger::Log("CFW connected after Device(" + QString::fromUtf8(dpCFW->getDeviceName()).toStdString() + ") Connect: " + dpCFW->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
+        
         ConnectedDevices.push_back({"CFW", QString::fromUtf8(dpCFW->getDeviceName())});
 
         systemdevicelist.system_devices[21].DeviceIndiName = QString::fromUtf8(dpCFW->getDeviceName());
@@ -4410,39 +4352,46 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));
         }
         Logger::Log("CFW connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
     }
 
     if (dpGuider == dp)
     {
         Logger::Log("Guider connected after Device(" + QString::fromUtf8(dpGuider->getDeviceName()).toStdString() + ") Connect: " + dpGuider->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
+        
         ConnectedDevices.push_back({"Guider", QString::fromUtf8(dpGuider->getDeviceName())});
         Logger::Log("Guider connected successfully.", LogLevel::INFO, DeviceType::MAIN);
         systemdevicelist.system_devices[1].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
         systemdevicelist.system_devices[1].isBind = true;
+        QString SDKVERSION;
+        indi_Client->getCCDSDKVersion(dpGuider, SDKVERSION);
+        emit wsThread->sendMessageToClient("getSDKVersion:Guider:" + SDKVERSION);
+        Logger::Log("Guider SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+        emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
     }
 
-    Tools::saveSystemDeviceList(systemdevicelist);
-    qDebug() << "*** ***  当前系统列表 *** ***";
-    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-    {
-        if (systemdevicelist.system_devices[i].Description != "")
-        {
-            qDebug() << "设备类型：" << systemdevicelist.system_devices[i].Description;
-            qDebug() << "设备名称：" << systemdevicelist.system_devices[i].DeviceIndiName;
-            qDebug() << "是否绑定：" << systemdevicelist.system_devices[i].isBind;
-            qDebug() << "驱动名称：" << systemdevicelist.system_devices[i].DriverIndiName;
-            qDebug() << " *** *** *** *** *** *** ";
-        }
-    }
-    qDebug() << "*** ***  当前设备列表 *** ***";
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-    {
-        qDebug() << "设备名称：" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
-        qDebug() << "驱动名称：" << QString::fromStdString(indi_Client->GetDeviceFromList(i)->getDriverExec());
-        qDebug() << "是否连接：" << QString::fromStdString(std::to_string(indi_Client->GetDeviceFromList(i)->isConnected()));
-        qDebug() << " *** *** *** *** *** *** ";
-    }
+    // Tools::saveSystemDeviceList(systemdevicelist);
+    // qDebug() << "*** ***  当前系统列表 *** ***";
+    // for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
+    // {
+    //     if (systemdevicelist.system_devices[i].Description != "")
+    //     {
+    //         qDebug() << "设备类型：" << systemdevicelist.system_devices[i].Description;
+    //         qDebug() << "设备名称：" << systemdevicelist.system_devices[i].DeviceIndiName;
+    //         qDebug() << "是否绑定：" << systemdevicelist.system_devices[i].isBind;
+    //         qDebug() << "驱动名称：" << systemdevicelist.system_devices[i].DriverIndiName;
+    //         qDebug() << " *** *** *** *** *** *** ";
+    //     }
+    // }
+    // qDebug() << "*** ***  当前设备列表 *** ***";
+    // for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+    // {
+    //     qDebug() << "设备名称：" << QString::fromStdString(indi_Client->GetDeviceNameFromList(i));
+    //     qDebug() << "驱动名称：" << QString::fromStdString(indi_Client->GetDeviceFromList(i)->getDriverExec());
+    //     qDebug() << "是否连接：" << QString::fromStdString(std::to_string(indi_Client->GetDeviceFromList(i)->isConnected()));
+    //     qDebug() << " *** *** *** *** *** *** ";
+    // }
 }
 
 
@@ -4914,58 +4863,6 @@ void MainWindow::InitPHD2()
 
     Logger::Log("InitPHD2 finished.", LogLevel::INFO, DeviceType::MAIN);
 }
-
-// void MainWindow::InitPHD2()
-// {
-//     Logger::Log("InitPHD2 start ...", LogLevel::INFO, DeviceType::MAIN);
-//     isGuideCapture = true;
-
-//     cmdPHD2 = new QProcess();
-//     cmdPHD2->start("pkill phd2");
-//     cmdPHD2->waitForStarted();
-//     cmdPHD2->waitForFinished();
-
-//     key_phd = ftok("../", 2015);
-//     key_phd = 0x90;
-
-//     if (key_phd == -1)
-//     {
-//         Logger::Log("InitPHD2 | ftok_phd", LogLevel::WARNING, DeviceType::MAIN);
-//     }
-
-//     // build the shared memory
-//     system("ipcs -m"); // 查看共享内存
-//     shmid_phd = shmget(key_phd, BUFSZ_PHD, IPC_CREAT | 0666);
-//     if (shmid_phd < 0)
-//     {
-//         Logger::Log("InitPHD2 | shared memory phd shmget ERROR", LogLevel::ERROR, DeviceType::MAIN);
-//         exit(-1);
-//     }
-
-//     // 映射
-//     sharedmemory_phd = (char *)shmat(shmid_phd, NULL, 0);
-//     if (sharedmemory_phd == NULL)
-//     {
-//         Logger::Log("InitPHD2 | shared memory phd map ERROR", LogLevel::ERROR, DeviceType::MAIN);
-//         exit(-1);
-//     }
-
-//     // 读共享内存区数据
-//     Logger::Log("InitPHD2 | data_phd = [" + std::string(sharedmemory_phd) + "]", LogLevel::INFO, DeviceType::MAIN);
-
-//     cmdPHD2->start("phd2");
-
-//     QElapsedTimer t;
-//     t.start();
-//     while (t.elapsed() < 10000)
-//     {
-//         usleep(10000);
-//         qApp->processEvents();
-//         if (connectPHD() == true)
-//             break;
-//     }
-//     Logger::Log("InitPHD2 finished.", LogLevel::INFO, DeviceType::MAIN);
-// }
 
 bool MainWindow::connectPHD(void)
 {
@@ -7968,7 +7865,6 @@ long long MainWindow::getUSBSpace(const QString &usb_mount_point)
         return -1;
     }
 }
-
 long long MainWindow::getTotalSize(const QStringList &filePaths)
 {
     long long totalSize = 0;
@@ -9275,6 +9171,50 @@ void MainWindow::loadBindDeviceList(MyClient *client)
     Logger::Log("LoadBindDeviceList | Bind Device List:" + order.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     emit wsThread->sendMessageToClient(order);
 }
+
+void MainWindow::loadSDKVersionAndUSBSerialPath()
+{
+    QString order = "SDKVersionAndUSBSerialPath";
+    if (dpMainCamera != NULL)
+    {
+        QString sdkVersion = "null";
+        indi_Client->getCCDSDKVersion(dpMainCamera, sdkVersion);
+        order += ":MainCamera:" + sdkVersion + ":null";
+    }
+    if (dpGuider != NULL)
+    {
+        QString sdkVersion = "null";
+        indi_Client->getCCDSDKVersion(dpGuider, sdkVersion);
+        order += ":Guider:" + sdkVersion + ":null";
+    }
+    if (dpFocuser != NULL)
+    {
+        QString sdkVersion = "null";
+        indi_Client->getFocuserSDKVersion(dpFocuser, sdkVersion);
+        QString DevicePort = "null";
+        indi_Client->getDevicePort(dpFocuser, DevicePort);
+        order += ":Focuser:" + sdkVersion + ":" + DevicePort;
+    }
+    // if (dpCFW != NULL)
+    // {
+    //     QString sdkVersion;
+    //     indi_Client->getSDKVersion(dpCFW, sdkVersion);
+    //     QString usbSerialPath;
+    //     indi_Client->getUSBSerialPath(dpCFW, usbSerialPath);
+    //     order += ":CFW:" + sdkVersion + ":" + usbSerialPath;
+    // }
+    if (dpMount != NULL)
+    {
+        QString sdkVersion;
+        indi_Client->getMountInfo(dpMount, sdkVersion);
+        QString usbSerialPath;
+        indi_Client->getDevicePort(dpMount, usbSerialPath);
+        order += ":Mount:" + sdkVersion + ":" + usbSerialPath;
+    }
+    emit wsThread->sendMessageToClient(order);
+    Logger::Log("LoadSDKVersionAndUSBSerialPath | SDKVersionAndUSBSerialPath:" + order.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+}
+
 // 串口通信列表
 QStringList MainWindow::getConnectedSerialPorts()
 {
@@ -9367,20 +9307,7 @@ void MainWindow::disconnectDevice(const QString &deviceName, const QString &desc
             indi_Client->disconnectDevice(deviceName.toStdString().c_str());
             int num = 0;
             bool disconnectSuccess = true;
-            // while (indi_Client->GetDeviceFromList(i)->isConnected()) {
-            //     Logger::Log("Waiting for " + deviceName.toStdString() + " to disconnect...", LogLevel::INFO, DeviceType::MAIN);
-            //     sleep(1);
-            //     if (++num > 5) {
-            //         Logger::Log("Failed to disconnect " + deviceName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            //         disconnectSuccess = false;
-            //         break;
-            //     }
-            // }
-            // if (disconnectSuccess) {
-            //     Logger::Log(deviceName.toStdString() + " disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
-            //     emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
-            //     emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
-            // }
+  
             Logger::Log(deviceName.toStdString() + " disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
             emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
@@ -9595,41 +9522,6 @@ int MainWindow::process_fixed()
     return 0;
 }
 
-// int main(int argc, char* argv[]) {
-//     if (argc != 3) {
-//         printf("用法: %s 输入文件.fits 输出文件.fits\n", argv[0]);
-//         return 1;
-//     }
-
-//     fitsfile *infptr, *outfptr;
-//     int status = 0;
-//     int hdunum = 0, hdutype = 0;
-
-//     fits_open_file(&infptr, argv[1], READONLY, &status);
-//     fits_create_file(&outfptr, argv[2], &status);
-
-//     fits_get_num_hdus(infptr, &hdunum, &status);
-
-//     for (int i = 1; i <= hdunum; i++) {
-//         fits_movabs_hdu(infptr, i, &hdutype, &status);
-//         if (hdutype == IMAGE_HDU) {
-//             process_hdu(infptr, outfptr, i, &status);
-//         } else {
-//             fits_copy_hdu(infptr, outfptr, 0, &status); // 非图像HDU直接复制
-//         }
-//     }
-
-//     fits_close_file(infptr, &status);
-//     fits_close_file(outfptr, &status);
-
-//     if (status) {
-//         fits_report_error(stderr, status);
-//         return status;
-//     }
-
-//     printf("处理完成，输出文件：%s\n", argv[2]);
-//     return 0;
-// }
 
 void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 {
@@ -10654,4 +10546,115 @@ void MainWindow::focusSetTravelRange()
     emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
     Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
     Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
+}
+
+void MainWindow::getCheckBoxSpace()
+{
+    // 计算应用所在分区的可用空间，避免与实际存储分区不一致
+    QString path = QCoreApplication::applicationDirPath();
+#ifdef Q_OS_WIN
+    path = QDir::rootPath();
+#endif
+    QFileInfo fi(path);
+    quint64 freeBytes = 0;
+    if (fi.exists())
+    {
+        QStorageInfo storage(path);
+        freeBytes = static_cast<quint64>(storage.bytesAvailable());
+    }
+    // 发送到前端：Box_Space:<bytes>
+    if (wsThread)
+    {
+        emit wsThread->sendMessageToClient("Box_Space:" + QString::number(freeBytes));
+    }
+}
+
+void MainWindow::clearLogs()
+{
+    // 按 Logger::Initialize 约定：运行目录下 logs/MAIN.log 等
+    const QString logDirPath = QDir::currentPath() + "/logs";
+    QDir logDir(logDirPath);
+    if (logDir.exists())
+    {
+        QFileInfoList entries = logDir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
+        for (const QFileInfo &fi : entries)
+        {
+            // 清空内容而不删除文件
+            QFile f(fi.absoluteFilePath());
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            {
+                f.close();
+            }
+        }
+    }
+    if (wsThread) emit wsThread->sendMessageToClient("ClearLogs:Success");
+}
+
+void MainWindow::clearBoxCache()
+{
+    auto clearDirContents = [](const QString &dirPath)
+    {
+        if (dirPath.isEmpty()) return;
+        QDir dir(dirPath);
+        if (!dir.exists()) return;
+        // 删除目录下的所有条目（文件/链接/目录），保留顶层目录本身
+        QFileInfoList entries = dir.entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries | QDir::Hidden);
+        for (const QFileInfo &fi : entries)
+        {
+            if (fi.isSymLink() || fi.isFile())
+            {
+                QFile::remove(fi.absoluteFilePath());
+            }
+            else if (fi.isDir())
+            {
+                QDir sub(fi.absoluteFilePath());
+                sub.removeRecursively();
+            }
+        }
+    };
+
+    // 系统默认缓存 + 应用缓存 + 临时目录 + 常见垃圾箱目录
+    QStringList caches;
+    // 用户主目录缓存根（比单纯的 CacheLocation 更全面）
+    caches << (QDir::homePath() + "/.cache");
+    caches << QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
+           << QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+           << QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    // XDG 垃圾箱（当前用户）常规路径与 XDG_DATA_HOME 路径
+    const QString trashBase = QDir::homePath() + "/.local/share/Trash";
+    caches << (trashBase + "/files") << (trashBase + "/info");
+    const QString xdgDataHome = qEnvironmentVariableIsSet("XDG_DATA_HOME")
+                                ? QString::fromLocal8Bit(qgetenv("XDG_DATA_HOME"))
+                                : (QDir::homePath() + "/.local/share");
+    caches << (xdgDataHome + "/Trash/files") << (xdgDataHome + "/Trash/info");
+    // 常见桌面环境的垃圾箱路径（可能存在）
+    caches << (QDir::homePath() + "/.Trash")
+           << (QDir::homePath() + "/.Trash-1000/files")
+           << (QDir::homePath() + "/.Trash-1000/info");
+
+    for (const QString &p : caches) clearDirContents(p);
+
+    // 尝试调用 gio 清空垃圾箱（若环境支持）
+    QProcess::execute("gio", QStringList() << "trash" << "--empty");
+
+    // 清空可移动介质等可能挂载点的垃圾箱（.Trash-UID 或 .Trash）
+    QString uidStr = QString::number(getuid());
+    QStringList mountRoots;
+    mountRoots << "/mnt" << "/media" << "/run/media";
+    for (const QString &root : mountRoots)
+    {
+        QDir rootDir(root);
+        if (!rootDir.exists()) continue;
+        QFileInfoList subs = rootDir.entryInfoList(QDir::NoDotAndDotDot | QDir::Dirs);
+        for (const QFileInfo &fi : subs)
+        {
+            const QString base = fi.absoluteFilePath();
+            clearDirContents(base + "/.Trash-" + uidStr + "/files");
+            clearDirContents(base + "/.Trash-" + uidStr + "/info");
+            clearDirContents(base + "/.Trash/files");
+            clearDirContents(base + "/.Trash/info");
+        }
+    }
+
+    if (wsThread) emit wsThread->sendMessageToClient("ClearBoxCache:Success");
 }

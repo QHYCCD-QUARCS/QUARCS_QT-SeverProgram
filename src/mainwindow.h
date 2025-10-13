@@ -164,6 +164,21 @@ public:
      */
     void getHostAddress();
 
+    /**
+     * @brief 获取盒子空间
+     */
+    void getCheckBoxSpace();
+
+    /**
+     * @brief 清除日志
+     */
+    void clearLogs();
+
+    /**
+     * @brief 清除盒子缓存
+     */
+    void clearBoxCache();
+
 /**********************  INDI 客户端/服务端 初始化与设备管理  **********************/
 public:
     /**
@@ -342,6 +357,12 @@ public:
      * @param client 客户端
      */
     void loadBindDeviceList(MyClient *client);
+
+
+    /**
+     * @brief 读取 SDK 版本和 USB 序列号路径
+     */
+    void loadSDKVersionAndUSBSerialPath();
 
     /**
      * @brief 读取绑定设备类型列表
