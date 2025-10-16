@@ -2096,12 +2096,12 @@ int Tools::CFW() {
 
   ret = IsQHYCCDCFWPlugged(camhandle_);  // 检查滤镜轮连接状态
   if (ret == QHYCCD_SUCCESS) {
-    qDebug("CFW is plugged.");
+    // qDebug("CFW is plugged.");
     max = GetQHYCCDParam(camhandle_,
                          CONTROL_CFWSLOTSNUM);  // 获取滤镜轮孔数
     return max;
   } else {
-    qDebug("CFW is NULL.");
+    // qDebug("CFW is NULL.");
     return 0;
   }
 }
@@ -2118,7 +2118,7 @@ void Tools::SetCFW(int cfw) {
                               CONTROL_CFWPORT);  // 获取当前位置
       // sleep(500);//延时 500ms
       QThread::msleep(500);
-      qDebug() << "current location:" << status;
+      // qDebug() << "current location:" << status;
     }
   }
 }
@@ -5602,7 +5602,7 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
     return result;
   }
 
-  Logger::Log("wcsinfo: " + str.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+  // Logger::Log("wcsinfo: " + str.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
   // 查找关键信息的位置
   int pos1 = str.indexOf("ra_center");
@@ -5687,14 +5687,14 @@ WCSParams Tools::extractWCSParams(const QString& wcsInfo) {
     wcs.cd21 = wcsInfo.mid(pos7 + 5, wcsInfo.indexOf("\n", pos7) - pos7 - 5).toDouble();
     wcs.cd22 = wcsInfo.mid(pos8 + 5, wcsInfo.indexOf("\n", pos8) - pos8 - 5).toDouble();
 
-    Logger::Log("crpix0: " + QString::number(wcs.crpix0, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("crpix1: " + QString::number(wcs.crpix1, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("crval0: " + QString::number(wcs.crval0, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("crval1: " + QString::number(wcs.crval1, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("cd11: " + QString::number(wcs.cd11, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("cd12: " + QString::number(wcs.cd12, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("cd21: " + QString::number(wcs.cd21, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("cd22: " + QString::number(wcs.cd22, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("crpix0: " + QString::number(wcs.crpix0, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("crpix1: " + QString::number(wcs.crpix1, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("crval0: " + QString::number(wcs.crval0, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("crval1: " + QString::number(wcs.crval1, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("cd11: " + QString::number(wcs.cd11, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("cd12: " + QString::number(wcs.cd12, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("cd21: " + QString::number(wcs.cd21, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("cd22: " + QString::number(wcs.cd22, 'g', 9).toStdString(), LogLevel::INFO, DeviceType::MAIN);
     
     return wcs;
 }
@@ -5744,25 +5744,25 @@ FieldOfView Tools::extractFieldOfViewFromWcsInfo(const QString& wcsInfo) {
     fov.calculatedHeight = (imageHeight * pixelScale) / 3600.0;
     
     // 记录提取的视场信息
-    Logger::Log("提取的视场信息:", LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("中心位置: RA=" + QString::number(fov.ra_center, 'g', 9).toStdString() + 
-              ", Dec=" + QString::number(fov.dec_center, 'g', 9).toStdString(), 
-              LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("视场大小: " + QString::number(fov.width, 'g', 6).toStdString() + 
-              "° × " + QString::number(fov.height, 'g', 6).toStdString() + "°", 
-              LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("计算大小: " + QString::number(fov.calculatedWidth, 'g', 6).toStdString() + 
-              "° × " + QString::number(fov.calculatedHeight, 'g', 6).toStdString() + "°", 
-              LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("视场范围: RA " + QString::number(fov.ra_min, 'g', 6).toStdString() + 
-              "° 到 " + QString::number(fov.ra_max, 'g', 6).toStdString() + 
-              "°, Dec " + QString::number(fov.dec_min, 'g', 6).toStdString() + 
-              "° 到 " + QString::number(fov.dec_max, 'g', 6).toStdString() + "°", 
-              LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("视场面积: " + QString::number(fov.area, 'g', 6).toStdString() + 
-              " 平方度", LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("方向角: " + QString::number(fov.orientation, 'g', 6).toStdString() + 
-              "°", LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("提取的视场信息:", LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("中心位置: RA=" + QString::number(fov.ra_center, 'g', 9).toStdString() + 
+    //           ", Dec=" + QString::number(fov.dec_center, 'g', 9).toStdString(), 
+    //           LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("视场大小: " + QString::number(fov.width, 'g', 6).toStdString() + 
+    //           "° × " + QString::number(fov.height, 'g', 6).toStdString() + "°", 
+    //           LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("计算大小: " + QString::number(fov.calculatedWidth, 'g', 6).toStdString() + 
+    //           "° × " + QString::number(fov.calculatedHeight, 'g', 6).toStdString() + "°", 
+    //           LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("视场范围: RA " + QString::number(fov.ra_min, 'g', 6).toStdString() + 
+    //           "° 到 " + QString::number(fov.ra_max, 'g', 6).toStdString() + 
+    //           "°, Dec " + QString::number(fov.dec_min, 'g', 6).toStdString() + 
+    //           "° 到 " + QString::number(fov.dec_max, 'g', 6).toStdString() + "°", 
+    //           LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("视场面积: " + QString::number(fov.area, 'g', 6).toStdString() + 
+    //           " 平方度", LogLevel::INFO, DeviceType::MAIN);
+    // Logger::Log("方向角: " + QString::number(fov.orientation, 'g', 6).toStdString() + 
+    //           "°", LogLevel::INFO, DeviceType::MAIN);
     
     return fov;
 }
