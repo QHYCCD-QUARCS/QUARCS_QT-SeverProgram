@@ -6,12 +6,14 @@
 #include <QTimeZone>
 #include <cmath>
 #include <algorithm>
+#include <string>
 #include <ctime>
 
 #include <cmath>
 #include <algorithm>
 #include <limits>
-#include <string>
+
+
 
 namespace {
 constexpr double kDeg2Rad = M_PI / 180.0;
@@ -290,8 +292,9 @@ PolarAlignment::PolarAlignment(MyClient* indiServer, INDI::BaseDevice* dpMount, 
     
     // 连接定时器信号到对应的槽函数
     connect(&stateTimer, &QTimer::timeout, this, &PolarAlignment::onStateTimerTimeout);
-    connect(&captureAndAnalysisTimer, &QTimer::timeout, this, &PolarAlignment::onCaptureAndAnalysisTimerTimeout);
-    // connect(&movementTimer, &QTimer::timeout, this, &PolarAlignment::onMovementTimerTimeout);
+    // 捕获/解析阶段的超时由各自等待函数管理，避免双通道竞争
+    // connect(&captureAndAnalysisTimer, &QTimer::timeout, this, &PolarAlignment::onCaptureAndAnalysisTimerTimeout);
+    // 移动超时改为在 WAITING_* 中基于无位移轮询判断，不再单独用 movementTimer
     
     // 初始化result结构体，避免NaN问题
     result.isSuccessful = false;
@@ -312,7 +315,6 @@ PolarAlignment::~PolarAlignment()
 
 bool PolarAlignment::startPolarAlignment()
 {
-    QMutexLocker locker(&stateMutex);
     if (isRunningFlag) {
         Logger::Log("PolarAlignment: 校准流程已在运行中", LogLevel::WARNING, DeviceType::MAIN);
         return false;
@@ -380,7 +382,6 @@ bool PolarAlignment::startPolarAlignment()
 
 void PolarAlignment::stopPolarAlignment()
 {
-    QMutexLocker locker(&stateMutex);
     if (!isRunningFlag) return;
     
     // 停止所有定时器
@@ -401,7 +402,6 @@ void PolarAlignment::stopPolarAlignment()
 
 void PolarAlignment::pausePolarAlignment()
 {
-    QMutexLocker locker(&stateMutex);
     if (!isRunningFlag || isPausedFlag) return;
     
     isPausedFlag = true;
@@ -417,7 +417,6 @@ void PolarAlignment::pausePolarAlignment()
 
 void PolarAlignment::resumePolarAlignment()
 {
-    QMutexLocker locker(&stateMutex);
     if (!isRunningFlag || !isPausedFlag) return;
     
     isPausedFlag = false;
@@ -431,7 +430,6 @@ void PolarAlignment::resumePolarAlignment()
 
 void PolarAlignment::userConfirmAdjustment()
 {
-    QMutexLocker locker(&stateMutex);
     if (currentState == PolarAlignmentState::GUIDING_ADJUSTMENT) {
         Logger::Log("PolarAlignment: 用户确认调整完成", LogLevel::INFO, DeviceType::MAIN);
         userAdjustmentConfirmed = true;
@@ -443,7 +441,6 @@ void PolarAlignment::userConfirmAdjustment()
 
 void PolarAlignment::userCancelAlignment()
 {
-    QMutexLocker locker(&stateMutex);
     if (currentState == PolarAlignmentState::GUIDING_ADJUSTMENT) {
         Logger::Log("PolarAlignment: 用户取消校准", LogLevel::INFO, DeviceType::MAIN);
         result.isSuccessful = false;
@@ -455,43 +452,36 @@ void PolarAlignment::userCancelAlignment()
 
 PolarAlignmentState PolarAlignment::getCurrentState() const
 {
-    QMutexLocker locker(&stateMutex);
     return currentState;
 }
 
 QString PolarAlignment::getCurrentStatusMessage() const
 {
-    QMutexLocker locker(&stateMutex);
     return currentStatusMessage;
 }
 
 int PolarAlignment::getProgressPercentage() const
 {
-    QMutexLocker locker(&stateMutex);
     return progressPercentage;
 }
 
 bool PolarAlignment::isRunning() const
 {
-    QMutexLocker locker(&stateMutex);
     return isRunningFlag && !isPausedFlag;
 }
 
 bool PolarAlignment::isCompleted() const
 {
-    QMutexLocker locker(&stateMutex);
     return currentState == PolarAlignmentState::COMPLETED;
 }
 
 bool PolarAlignment::isFailed() const
 {
-    QMutexLocker locker(&stateMutex);
     return currentState == PolarAlignmentState::FAILED || currentState == PolarAlignmentState::USER_INTERVENTION;
 }
 
 PolarAlignmentResult PolarAlignment::getResult() const
 {
-    QMutexLocker locker(&resultMutex);
     return result;
 }
 
@@ -519,15 +509,17 @@ void PolarAlignment::onCaptureAndAnalysisTimerTimeout()
 
 void PolarAlignment::onMovementTimerTimeout()
 {
-    Logger::Log("PolarAlignment: 望远镜移动超时", LogLevel::WARNING, DeviceType::MAIN);
+    // 已不再使用 movementTimer，保留函数以兼容调用
+    Logger::Log("PolarAlignment: 望远镜移动超时(无位移判定)", LogLevel::WARNING, DeviceType::MAIN);
     setState(PolarAlignmentState::FAILED);
+    stateTimer.stop();
+    captureAndAnalysisTimer.stop();
 }
 
 
 
 void PolarAlignment::setState(PolarAlignmentState newState)
 {
-    QMutexLocker locker(&stateMutex);
     if (currentState == newState) return;
     
     currentState = newState;
@@ -725,9 +717,18 @@ void PolarAlignment::setState(PolarAlignmentState newState)
         emit stateChanged(currentState, currentStatusMessage, progressPercentage);
     }
     
-    // 如果正在运行且未暂停，启动状态定时器
-    if (isRunningFlag && !isPausedFlag) {
-        stateTimer.start(100);
+    // 终态：停止所有定时器
+    if (newState == PolarAlignmentState::COMPLETED ||
+        newState == PolarAlignmentState::FAILED ||
+        newState == PolarAlignmentState::USER_INTERVENTION) {
+        stateTimer.stop();
+        captureAndAnalysisTimer.stop();
+        movementTimer.stop();
+    } else {
+        // 中间态：继续驱动状态机
+        if (isRunningFlag && !isPausedFlag) {
+            stateTimer.start(100);
+        }
     }
 }
 
@@ -1202,26 +1203,16 @@ bool PolarAlignment::moveDecAxisForObstacleAvoidance()
     
     Logger::Log("PolarAlignment: 当前位置 - RA: " + std::to_string(currentRA) + "°, DEC: " + std::to_string(currentDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
     
-    // DEC轴避障移动：移动到相反位置（以极点为对称中心）
-    double targetDEC;
-    if (isNorthernHemisphere()) {
-        // 北半球：从当前DEC移动到相反位置（以90°为对称中心）
-        // 如果当前DEC是85°，则移动到95°（但DEC不能超过90°，所以移动到85°）
-        // 实际上是以90°为对称中心，移动到对称位置
-        targetDEC = 90.0 - (currentDEC - 90.0); // 以90°为对称中心
-        if (targetDEC > 90.0) targetDEC = 90.0; // 确保不超出范围
-        if (targetDEC < 0) targetDEC = 0; // 确保不超出范围
-    } else {
-        // 南半球：从当前DEC移动到相反位置（以-90°为对称中心）
-        targetDEC = -90.0 - (currentDEC - (-90.0)); // 以-90°为对称中心
-        if (targetDEC < -90.0) targetDEC = -90.0; // 确保不超出范围
-        if (targetDEC > 0) targetDEC = 0; // 确保不超出范围
-    }
+    // DEC轴避障移动：基于极点对称，将 RA 翻转 180°，DEC 保持不变
+    double targetRA = currentRA + 180.0;
+    if (targetRA >= 360.0) targetRA -= 360.0; // 归一化到 [0,360)
+    double targetDEC = currentDEC;
     
-    Logger::Log("PolarAlignment: DEC轴避障移动到相反位置DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("PolarAlignment: DEC轴避障移动到相反位置 RA: " + std::to_string(targetRA) +
+                "°, DEC: " + std::to_string(targetDEC) + "°", LogLevel::INFO, DeviceType::MAIN);
     
     // 直接移动到目标位置
-    bool success = moveTelescopeToAbsolutePosition(currentRA, targetDEC);
+    bool success = moveTelescopeToAbsolutePosition(targetRA, targetDEC);
     return success;
 }
 
@@ -1952,28 +1943,28 @@ bool PolarAlignment::waitForCaptureComplete()
     
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
-            if (false) {
-                // if (currentState == PolarAlignmentState::CHECKING_POLAR_POINT) {
-                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/1.fits");
-                // }
+            if (true) {
+                if (currentState == PolarAlignmentState::CHECKING_POLAR_POINT) {
+                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/1.fits");
+                }
                 if (currentState == PolarAlignmentState::FIRST_CAPTURE) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
                 }
                 else if (currentState == PolarAlignmentState::SECOND_CAPTURE) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/3.fits");
                 }
-                // else if (currentState == PolarAlignmentState::THIRD_CAPTURE) {
-                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
-                // }else {
-                //     if (testimage > 8) {
-                //         testimage = 5;
-                //     }
-                //     if (testimage < 1) {
-                //         testimage = 1;
-                //     }
-                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/%1.fits").arg(testimage);
-                //     testimage++;
-                // }
+                else if (currentState == PolarAlignmentState::THIRD_CAPTURE) {
+                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
+                }else {
+                    if (testimage > 8) {
+                        testimage = 5;
+                    }
+                    if (testimage < 1) {
+                        testimage = 1;
+                    }
+                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/%1.fits").arg(testimage);
+                    testimage++;
+                }
             }
             else {
                 lastCapturedImage = QString("/dev/shm/ccd_simulator.fits");

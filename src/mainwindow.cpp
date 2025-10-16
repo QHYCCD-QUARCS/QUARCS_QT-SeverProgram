@@ -1569,7 +1569,7 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("StopAutoPolarAlignment ...", LogLevel::DEBUG, DeviceType::MAIN);
         if (polarAlignment != nullptr)
         {
-            polarAlignment->pausePolarAlignment();
+            polarAlignment->stopPolarAlignment();
             Logger::Log("StopAutoPolarAlignment: Stopped successfully", LogLevel::INFO, DeviceType::MAIN);
         }
         else
@@ -1578,15 +1578,7 @@ void MainWindow::onMessageReceived(const QString &message)
         }
         Logger::Log("StopAutoPolarAlignment finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    else if (parts[0].trimmed() == "RestoreAutoPolarAlignment")
-    {
-        Logger::Log("RestoreAutoPolarAlignment ...", LogLevel::DEBUG, DeviceType::MAIN);
-        if (polarAlignment != nullptr)
-        {
-            polarAlignment->resumePolarAlignment();
-            Logger::Log("RestoreAutoPolarAlignment: Restore successfully", LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
+
     else if (parts[0].trimmed() == "focusMoveToMin")
     {
         Logger::Log("focusMoveToMin ...", LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -1624,7 +1616,11 @@ void MainWindow::onMessageReceived(const QString &message)
                 QString currentStatusMessage = polarAlignment->getCurrentStatusMessage();
                 // 3.获取当前进度
                 int progressPercentage = polarAlignment->getProgressPercentage();
-                emit wsThread->sendMessageToClient("PolarAlignmentState:" + QString::number(static_cast<int>(currentState)) + ":" + currentStatusMessage + ":" + QString::number(progressPercentage));
+                emit wsThread->sendMessageToClient(QString("PolarAlignmentState:") +
+                                                        (polarAlignment->isRunning() ? "true" : "false") + ":" +
+                                                        QString::number(static_cast<int>(currentState)) + ":" +
+                                                        currentStatusMessage + ":" +
+                                                        QString::number(progressPercentage));
 
                 // 4.获取当前所有可控数据
                 polarAlignment->sendValidAdjustmentGuideData();
@@ -3967,6 +3963,13 @@ void MainWindow::AfterDeviceConnect()
         Logger::Log("Telescope Pier Side: " + side.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
         Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+
+        // 获取驱动版本号
+        QString MountSDKVersion = "null";
+        indi_Client->getMountInfo(dpMount, MountSDKVersion);
+        emit wsThread->sendMessageToClient("getMountInfo:Mount:" + MountSDKVersion);
+        Logger::Log("Mount Info: " + MountSDKVersion.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
         // indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
         indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
         indi_Client->mountState.printCurrentState();
@@ -4218,11 +4221,6 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         indi_Client->setAUXENCODERS(dpMount);
 
-        // 获取驱动版本号
-        QString MountSDKVersion = "null";
-        indi_Client->getMountInfo(dpMount, MountSDKVersion);
-        emit wsThread->sendMessageToClient("getMountInfo:Mount:" + MountSDKVersion);
-        Logger::Log("Mount Info: " + MountSDKVersion.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         indi_Client->getDevicePort(dpMount, DevicePort);
         emit wsThread->sendMessageToClient("getDevicePort:Mount:" + DevicePort);
@@ -4287,6 +4285,12 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         Logger::Log("Telescope Pier Side: " + side.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("TelescopePierSide:" + side);
         Logger::Log("Mount connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+
+        // 获取驱动版本号
+        QString MountSDKVersion = "null";
+        indi_Client->getMountInfo(dpMount, MountSDKVersion);
+        emit wsThread->sendMessageToClient("getMountInfo:Mount:" + MountSDKVersion);
+        Logger::Log("Mount Info: " + MountSDKVersion.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         // 设置home位置
         // indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
@@ -4371,7 +4375,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
     }
 
-    // Tools::saveSystemDeviceList(systemdevicelist);
+    Tools::saveSystemDeviceList(systemdevicelist);
     // qDebug() << "*** ***  当前系统列表 *** ***";
     // for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
     // {
@@ -10365,7 +10369,11 @@ bool MainWindow::initPolarAlignment()
             [this](PolarAlignmentState state, QString message, int percentage)
             {
                 qDebug() << "状态改变:" << static_cast<int>(state) << " 消息:" << message << " 进度:" << percentage;
-                emit this->wsThread->sendMessageToClient("PolarAlignmentState:" + QString::number(static_cast<int>(state)) + ":" + message + ":" + QString::number(percentage));
+                emit this->wsThread->sendMessageToClient(QString("PolarAlignmentState:") +
+                                                        (polarAlignment->isRunning() ? "true" : "false") + ":" +
+                                                        QString::number(static_cast<int>(state)) + ":" +
+                                                        message + ":" +
+                                                        QString::number(percentage));
             });
 
             connect(polarAlignment, &PolarAlignment::adjustmentGuideData,

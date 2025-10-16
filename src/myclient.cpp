@@ -1453,7 +1453,7 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
         }
         
 
-        mountState.isHoming = true;
+        
         mountState.updateHomeRAHours(mountState.Latitude_Degree, mountState.Longitude_Degree);
         if (mountState.isTracking)
         {
@@ -1477,6 +1477,7 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
                 return QHYCCD_ERROR;
             }
         }
+        mountState.isHoming = true;
         Logger::Log("indi_client | setTelescopeHomeInit | Fallback: RETURN_HOME by RA/DEC goto",
                     LogLevel::INFO, DeviceType::MOUNT);
         return QHYCCD_SUCCESS;
@@ -2227,6 +2228,10 @@ uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp, double RA_Hours, doub
     setTelescopeActionAfterPositionSet(dp, action);
 
     setTelescopeRADECJNOW(dp, RA_Hours, DEC_Degree);
+
+    action = "SLEW";
+    setTelescopeActionAfterPositionSet(dp, action);
+
     Logger::Log("indi_client | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::CAMERA);
 }
 

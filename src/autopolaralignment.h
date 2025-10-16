@@ -114,7 +114,7 @@ struct PolarAlignmentConfig {
     double decRotationAngle = 10.0;    // DEC轴旋转角度（度）- DEC轴从极点移开的角度
     int maxRetryAttempts = 3;          // 最大重试次数 - 分析失败时的最大重试次数
     int captureAndAnalysisTimeout = 30000; // 拍摄和分析超时时间（毫秒）
-    int movementTimeout = 15000;       // 移动超时时间（毫秒）- 望远镜移动的最大等待时间
+    int movementTimeout = 120000;       // 移动超时时间（毫秒）- 望远镜移动的最大等待时间
     int maxAdjustmentAttempts = 5;     // 最大调整尝试次数 - 向内调整的最大次数
     double adjustmentAngleReduction = 0.5; // 调整角度缩减比例 - 每次调整后角度减半
     double cameraWidth = 0; // 相机传感器宽度（毫米）

@@ -1398,19 +1398,30 @@ void Tools::saveClientSettings(const std::string& fileName, const std::unordered
   inputFile.close();
 
   std::string content = fileContents.str();
-  std::string section = "[ClientSettings]\n";
-  size_t sectionPos = content.find(section);
+  // 确保文件末尾有换行，避免追加时粘连
+  if (!content.empty() && content.back() != '\n') content.push_back('\n');
+
+  const std::string sectionHeader = "[ClientSettings]";
+  // 兼容查找：允许后面有或没有换行
+  size_t sectionPos = content.find(sectionHeader);
 
   if (sectionPos == std::string::npos)
   {
-    // 如果没有找到 [ClientSettings] 部分，则需要添加该部分
-    content += "\n" + section + "\n";
-    sectionPos = content.size() - 1; // 设定新的位置
+    // 如果没有找到 [ClientSettings] 部分，则添加段头并写入全部键值
+    content += "\n" + sectionHeader + "\n";
+    for (const auto &pair : config)
+    {
+      content += pair.first + " = " + pair.second + "\n";
+      Logger::Log("addClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
+    }
   }
   else
   {
     // 找到 [ClientSettings] 部分后，定位到此部分结束的位置
-    size_t sectionEnd = content.find("\n[", sectionPos + section.size());
+    // 跳过段头本行
+    size_t headerLineEnd = content.find('\n', sectionPos);
+    if (headerLineEnd == std::string::npos) headerLineEnd = content.size();
+    size_t sectionEnd = content.find("\n[", headerLineEnd);
     if (sectionEnd == std::string::npos)
     {
       sectionEnd = content.size();
@@ -1427,13 +1438,15 @@ void Tools::saveClientSettings(const std::string& fileName, const std::unordered
       if (pos != std::string::npos)
       {
         // 找到了该项，更新其值
-        size_t endPos = clientSettingsSection.find("\n", pos);
+        size_t endPos = clientSettingsSection.find('\n', pos);
+        if (endPos == std::string::npos) endPos = clientSettingsSection.size();
         clientSettingsSection.replace(pos + pair.first.size() + 3, endPos - pos - pair.first.size() - 3, pair.second);
         Logger::Log("updateClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
       }
       else
       {
         // 没有找到该项，添加新的配置项
+        if (!clientSettingsSection.empty() && clientSettingsSection.back() != '\n') clientSettingsSection.push_back('\n');
         clientSettingsSection += pair.first + " = " + pair.second + "\n";
         Logger::Log("addClientSettings | " + pair.first + " = " + pair.second, LogLevel::INFO, DeviceType::MAIN);
       }
@@ -1445,6 +1458,8 @@ void Tools::saveClientSettings(const std::string& fileName, const std::unordered
 
   // 将更新后的内容写回到文件
   std::ofstream outputFile(fileName);
+  // 最终保证文件末尾换行
+  if (!content.empty() && content.back() != '\n') content.push_back('\n');
   outputFile << content;
   outputFile.close();
 }
@@ -5503,6 +5518,8 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
             // 如果两个参数都有效，actualMode保持为2
         }
         
+        actualMode = 0;
+
         // 根据实际模式构建命令
         switch (actualMode) {
             case 1:
