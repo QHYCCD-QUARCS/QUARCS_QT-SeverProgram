@@ -356,9 +356,9 @@ bool PolarAlignment::startPolarAlignment()
     firstCaptureAvoidanceCount = 0;
     secondCaptureAvoidanceCount = 0;
     thirdCaptureAvoidanceCount = 0;
-    decMovedToAvoidObstacle = false;
     decMovedAtStart = false;
     secondCaptureAvoided = false;
+    thirdCaptureAvoided = false;
     captureAttemptCount = 0;
     
     // 重置目标位置缓存，每次校准都重新计算
@@ -940,7 +940,6 @@ void PolarAlignment::processCurrentState()
                     // 进行RA轴避障
                     Logger::Log("PolarAlignment: 第二次拍摄长曝光重试也失败，进行RA轴避障", LogLevel::WARNING, DeviceType::MAIN);
                     secondCaptureAvoidanceCount++;
-                    secondCaptureAvoided = true; // 标记进行了第二次拍摄避障
                     setState(PolarAlignmentState::SECOND_CAPTURE_RA_AVOIDANCE);
                 }
             }
@@ -1312,8 +1311,6 @@ bool PolarAlignment::captureAndAnalyze(int attempt)
             firstCaptureAvoidanceCount = 0; // 重置第一次拍摄避障计数
             secondCaptureAvoidanceCount = 0; // 重置第二次拍摄避障计数
             thirdCaptureAvoidanceCount = 0; // 重置第三次拍摄避障计数
-            decMovedToAvoidObstacle = false; // 重置DEC移动标志
-            secondCaptureAvoided = false; // 重置第二次拍摄避障标志
             captureAttemptCount = 0; // 重置拍摄尝试计数
             Logger::Log("PolarAlignment: 拍摄和分析成功，测量次数 " + std::to_string(currentMeasurementIndex), LogLevel::INFO, DeviceType::MAIN);
             
@@ -1950,21 +1947,25 @@ bool PolarAlignment::waitForCaptureComplete()
                 if (currentState == PolarAlignmentState::FIRST_CAPTURE) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
                 }
-                else if (currentState == PolarAlignmentState::SECOND_CAPTURE) {
+                if (currentState == PolarAlignmentState::SECOND_CAPTURE && secondCaptureAvoided) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/3.fits");
                 }
-                else if (currentState == PolarAlignmentState::THIRD_CAPTURE) {
+                
+                if (currentState == PolarAlignmentState::THIRD_CAPTURE && thirdCaptureAvoided) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
-                }else {
-                    if (testimage > 8) {
-                        testimage = 5;
-                    }
-                    if (testimage < 1) {
-                        testimage = 1;
-                    }
-                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/%1.fits").arg(testimage);
-                    testimage++;
                 }
+                // if (currentState == PolarAlignmentState::THIRD_CAPTURE) {
+                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
+                // }else {
+                //     if (testimage > 8) {
+                //         testimage = 5;
+                //     }
+                //     if (testimage < 1) {
+                //         testimage = 1;
+                //     }
+                //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/%1.fits").arg(testimage);
+                //     testimage++;
+                // }
             }
             else {
                 lastCapturedImage = QString("/dev/shm/ccd_simulator.fits");
@@ -3658,6 +3659,8 @@ bool PolarAlignment::moveToAvoidObstacleRA1()
     if (success) {
         Logger::Log("PolarAlignment: 第一次RA轴避障移动命令发送成功", LogLevel::INFO, DeviceType::MAIN);
     }
+    // 第二次避障标志
+    secondCaptureAvoided = true;
     return success;
 }
 
@@ -3701,5 +3704,7 @@ bool PolarAlignment::moveToAvoidObstacleRA2()
     if (success) {
         Logger::Log("PolarAlignment: 第二次RA轴避障移动命令发送成功", LogLevel::INFO, DeviceType::MAIN);
     }
+    // 第三次避障标志
+    thirdCaptureAvoided = true;
     return success;
 }

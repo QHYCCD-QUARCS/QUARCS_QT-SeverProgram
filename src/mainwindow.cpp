@@ -71,6 +71,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     Tools::InitSystemDeviceList();
     Tools::initSystemDeviceList(systemdevicelist);
     Tools::makeConfigFile();
+    // 取消：不再读取/保存中天翻转持久化状态（统一使用几何法 needsFlip）
     Tools::makeImageFolder();
     connect(Tools::getInstance(), &Tools::parseInfoEmitted, this, &MainWindow::onParseInfoEmitted);
 
@@ -1625,6 +1626,8 @@ void MainWindow::onMessageReceived(const QString &message)
                 // 4.获取当前所有可控数据
                 polarAlignment->sendValidAdjustmentGuideData();
             }
+        }else{
+            emit wsThread->sendMessageToClient(QString("PolarAlignmentState:false:未启动:未启动:0"));
         }
     }else if (parts[0].trimmed() == "CheckBoxSpace")
     {
@@ -2029,7 +2032,7 @@ void MainWindow::onTimeout()
 
                 mountDisplayCounter = 0;
 
-                const MeridianStatus ms = checkMeridianStatus();
+                const MeridianStatus ms = checkMeridianStatus(); // 这个计算当前距离中天的时间
                 switch (ms.event) {
                   case FlipEvent::Started: emit wsThread->sendMessageToClient("MeridianFlip:STARTED"); break;
                   case FlipEvent::Done:    emit wsThread->sendMessageToClient("MeridianFlip:DONE");    break;
@@ -2038,16 +2041,20 @@ void MainWindow::onTimeout()
                 }
 
                 if (!std::isnan(ms.etaMinutes)) {
-                    const int totalSeconds = static_cast<int>(std::llround(ms.etaMinutes * 60.0));
+                    const bool isNeg = (ms.etaMinutes < 0.0);
+                    const double absMinutes = std::fabs(ms.etaMinutes);
+                    const int totalSeconds = static_cast<int>(std::llround(absMinutes * 60.0));
                     const int hours = totalSeconds / 3600;
                     const int mins  = (totalSeconds % 3600) / 60;
                     const int secs  = totalSeconds % 60;
 
-                    const QString hms = QString("%1:%2:%3")
+                    const QString hms = QString("%1%2:%3:%4")
+                                            .arg(isNeg ? "-" : "")
                                             .arg(hours, 2, 10, QLatin1Char('0'))
                                             .arg(mins,  2, 10, QLatin1Char('0'))
                                             .arg(secs,  2, 10, QLatin1Char('0'));
                     emit wsThread->sendMessageToClient("MeridianETA_hms:" + hms);
+                    Logger::Log("MeridianETA_hms:" + hms.toStdString() + "side:" + TelescopePierSide.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                 }
             }
         }
@@ -2079,55 +2086,9 @@ MeridianStatus MainWindow::checkMeridianStatus()
     if (!dpMount || !dpMount->isConnected())
         return out;
 
-    // -------- 翻转检测（极简状态机，静态局部持久化）--------
-    constexpr int kDebounceMs = 800;
-    constexpr int kTimeoutMs  = 180000;
-
-    static bool initialized = false;
-    static QString lastPier = "UNKNOWN";
-    static bool flipping = false;
-    static QElapsedTimer pierStableTimer;
-    static QElapsedTimer flipTimer;
-
-    // 读 PierSide（你已有的接口）
+    // 读 PierSide（设备上报的方向侧）
     QString pier = "UNKNOWN";
     indi_Client->getTelescopePierSide(dpMount, pier); // "EAST"/"WEST"/"UNKNOWN"
-
-    // 读 Slew/Track（若你没有 mountState，就把两行改成通过设备属性判断）
-    const bool isSlewing  = indi_Client->mountState.isSlewing;
-    const bool isTracking = indi_Client->mountState.isTracking;
-
-    if (!initialized) {
-        lastPier = pier;
-        pierStableTimer.start();
-        initialized = true;
-    } else {
-        if (pier != lastPier && pier != "UNKNOWN") {
-            lastPier = pier;
-            pierStableTimer.restart();
-
-            if (!flipping) {
-                flipping = true;
-                flipTimer.restart();
-                out.event = FlipEvent::Started;
-            }
-        }
-
-        if (flipping) {
-            // 完成：停止 Slew 且 PierSide 已稳定一段时间
-            if (!isSlewing && (isTracking || true)) {
-                if (pierStableTimer.isValid() && pierStableTimer.elapsed() >= kDebounceMs) {
-                    flipping = false;
-                    out.event = FlipEvent::Done;
-                }
-            }
-            // 超时
-            if (flipTimer.isValid() && flipTimer.elapsed() > kTimeoutMs) {
-                flipping = false;
-                out.event = FlipEvent::Failed;
-            }
-        }
-    }
 
     // -------- 过中天 ETA（分钟）--------
     // 1) 当前赤经（小时）
@@ -2174,15 +2135,47 @@ MeridianStatus MainWindow::checkMeridianStatus()
     }
 
     if (!std::isnan(lstH)) {
-        auto wrap12 = [](double h){ while(h<=-12) h+=24; while(h>12) h-=24; return h; };
-        const double HA = wrap12(lstH - raH); // 小时；<0 东侧，>0 西侧
-        out.etaMinutes = (-HA) * 60.0;        // >0 距中天；<0 已过中天
-        constexpr double kSiderealDayMin = 86164.0905 / 60.0; // ≈ 1436.068175 分
-        if (!std::isnan(out.etaMinutes)) {
-            // 归一化到 [0, 恒星日) 区间
-            out.etaMinutes = std::fmod(out.etaMinutes, kSiderealDayMin);
-            if (out.etaMinutes < 0) out.etaMinutes += kSiderealDayMin;
+        // 采用半开区间 [-12, 12) 规范时角，避免边界抖动
+        auto wrap12 = [](double h){ while (h < -12.0) h += 24.0; while (h >= 12.0) h -= 24.0; return h; };
+        const double haPrincipal = wrap12(lstH - raH); // 小时；<0 东侧，>0 西侧
+        // 连续时角（避免在下中天处从 -12h 跳到 +12h 导致符号翻转）
+        static bool hasContHA = false;
+        static double contHA = 0.0;
+        static double lastHAPrincipal = 0.0;
+        if (!hasContHA) {
+            contHA = haPrincipal;
+            lastHAPrincipal = haPrincipal;
+            hasContHA = true;
+        } else {
+            double delta = haPrincipal - lastHAPrincipal;
+            if (delta > 12.0) delta -= 24.0;
+            else if (delta < -12.0) delta += 24.0;
+            contHA += delta;
+            lastHAPrincipal = haPrincipal;
         }
+        const bool isPastUpper = (haPrincipal > 0.0);
+
+        // HOME 位也参与翻转判断（不特殊抑制）
+
+        // 基于 |HA|=6h 分割（注意：这里的 6h 是时角 HA，不是 RA）：
+        // - 上中天半周区间 |HA| < 6h：  HA ≥ 0 → EAST，HA < 0 → WEST
+        // - 下中天半周区间 |HA| ≥ 6h：  映射取反（对称关系）
+        constexpr double kHalfCycleHAHours = 6.0;
+        constexpr double kBoundaryTolH = 0.02; // ≈1.2 分钟容差
+        const bool isLowerRegion = (std::fabs(haPrincipal) >= (kHalfCycleHAHours - kBoundaryTolH));
+        bool eastMapping = (haPrincipal >= 0.0);
+        if (isLowerRegion) eastMapping = !eastMapping;
+        QString theoreticalPier = eastMapping ? "WEST" : "EAST";
+        if (pier == "UNKNOWN") {
+            out.needsFlip = false; // 无法判断或靠近极区：不触发翻转
+        } else {
+            out.needsFlip = (pier != theoreticalPier);
+        }
+
+        // ETA：严格按连续时角符号（未过为正，已过为负），避免下中天跳变
+        out.etaMinutes = (-contHA) * 60.0;
+
+        // 注意：needsFlip 已在上面根据 nearPole 与理论 Pier 计算完毕
     }
 
     return out;
@@ -3900,15 +3893,16 @@ void MainWindow::AfterDeviceConnect()
         getClientSettings();
         getMountParameters();
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
-        uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
-        if (success == QHYCCD_SUCCESS)
-        {
-            emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
-            indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
-            emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
-            emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
-            // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
-        }
+        indi_Client->setAutoFlip(dpMount, false);
+        // uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
+        // if (success == QHYCCD_SUCCESS)
+        // {
+        //     emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
+        //     indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
+        //     emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
+        //     emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
+        //     // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
+        // }
         indi_Client->setAUXENCODERS(dpMount);
 
         QDateTime datetime = QDateTime::currentDateTime();
@@ -4209,15 +4203,16 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         getMountParameters();
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
         Logger::Log("Mount location set to Latitude: " + QString::number(observatorylatitude).toStdString() + ", Longitude: " + QString::number(observatorylongitude).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
-        if (success == QHYCCD_SUCCESS)
-        {
-            emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
-            indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
-            emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
-            emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
-            // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
-        }
+        indi_Client->setAutoFlip(dpMount, false);
+        // uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
+        // if (success == QHYCCD_SUCCESS)
+        // {
+        //     emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
+        //     indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
+        //     emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
+        //     emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
+        //     // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
+        // }
 
         indi_Client->setAUXENCODERS(dpMount);
 
@@ -8986,7 +8981,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         // Tools::initSystemDeviceList(systemdevicelist);
         getLastSelectDevice();
         Tools::printSystemDeviceList(systemdevicelist);
-        emit wsThread->sendMessageToClient("DisconnectDriverSuccess:all");
+        if (wsThread != nullptr) emit wsThread->sendMessageToClient("DisconnectDriverSuccess:all");
         return;
     }
 
@@ -9003,24 +8998,6 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 thisDriverhasDevice++;
             }
         }
-        // if ( systemdevicelist.system_devices[i].isConnect == false && systemdevicelist.system_devices[i].DeviceIndiName != DeviceName && systemdevicelist.system_devices[i].DeviceIndiName != "")
-        // {
-        //     Logger::Log("DisconnectDevice | Get new device(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + "),try to connect it", LogLevel::INFO, DeviceType::MAIN);
-        //     client->connectDevice(client->GetDeviceFromList(i)->getDeviceName());
-        //     while (!client->GetDeviceFromList(i)->isConnected())
-        //     {
-        //         Logger::Log("DisconnectDevice | Waiting for connect finish...", LogLevel::INFO, DeviceType::MAIN);
-        //         sleep(1);
-        //     }
-        //     if (client->GetDeviceFromList(i)->isConnected())
-        //     {
-        //         Logger::Log("DisconnectDevice | Connect Device(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + ") success.", LogLevel::INFO, DeviceType::MAIN);
-        //     }
-        //     else
-        //     {
-        //         Logger::Log("DisconnectDevice | Connect Device(" + systemdevicelist.system_devices[i].DeviceIndiName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
-        //     }
-        // }
     }
     num = 0;
     if (thisDriverhasDevice >= 1 && client->GetDeviceFromListWithName(DeviceName.toStdString())->isConnected() == false)
@@ -10138,6 +10115,8 @@ void MainWindow::getMountParameters()
     {
         Logger::Log("getMountParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         if (it.key() == "AutoFlip"){
+            // TODO：需要判断是否是手动翻转，当前弃用自动翻转
+            continue;
             if (dpMount == nullptr)continue;
             
             INDI::PropertySwitch autoFlip = dpMount->getProperty("AutoFlip");
@@ -10148,6 +10127,8 @@ void MainWindow::getMountParameters()
             continue;
         }
         if (it.key() == "EastMinutesPastMeridian"){
+            // TODO：需要判断是否是手动翻转，当前弃用自动翻转
+            continue;
             if (dpMount == nullptr)continue;
             INDI::PropertyNumber mpm = dpMount->getProperty("Minutes Past Meridian");
             if (mpm.isValid()){
@@ -10157,6 +10138,8 @@ void MainWindow::getMountParameters()
             continue;
         }
         if (it.key() == "WestMinutesPastMeridian"){
+            // TODO：需要判断是否是手动翻转，当前弃用自动翻转
+            continue;
             if (dpMount == nullptr)continue;
             INDI::PropertyNumber mpm = dpMount->getProperty("Minutes Past Meridian");
             if (mpm.isValid()){

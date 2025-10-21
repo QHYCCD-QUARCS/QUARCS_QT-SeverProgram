@@ -112,6 +112,7 @@ class MyClient : public INDI::BaseClient
 
         uint32_t getMountInfo(INDI::BaseDevice *dp,QString &version);
         uint32_t setAutoFlip(INDI::BaseDevice *dp,bool ON);
+        uint32_t startFlip(INDI::BaseDevice *dp);
         uint32_t setMinutesPastMeridian(INDI::BaseDevice *dp,double Eastvalue , double Westvalue);
         uint32_t getMinutesPastMeridian(INDI::BaseDevice *dp,double &Eastvalue, double &Westvalue);
         uint32_t setAUXENCODERS(INDI::BaseDevice *dp);

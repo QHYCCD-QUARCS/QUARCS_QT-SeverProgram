@@ -1012,6 +1012,22 @@ uint32_t MyClient::setAutoFlip(INDI::BaseDevice *dp, bool ON)
     return QHYCCD_SUCCESS;
 }
 
+uint32_t MyClient::startFlip(INDI::BaseDevice *dp)
+{
+    // 开始中天翻转
+    double RA,DEC;
+    getTelescopeRADECJNOW(dp,RA,DEC);
+
+    // 执行goto
+    uint32_t result = slewTelescopeJNowNonBlock(dp,RA,DEC,true);
+    if (result != QHYCCD_SUCCESS)
+    {
+        Logger::Log("indi_client | startFlip | Error: unable to slew telescope...", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+    return QHYCCD_SUCCESS;
+}
+
 uint32_t MyClient::setMinutesPastMeridian(INDI::BaseDevice *dp, double Eastvalue , double Westvalue)
 {
     INDI::PropertyNumber mpm = dp->getProperty("Minutes Past Meridian");
@@ -1723,6 +1739,7 @@ uint32_t MyClient::setTelescopeAbortMotion(INDI::BaseDevice *dp)
     mountState.isSlewing = false;
     mountState.isHoming = false;
     mountState.isGuiding = false;
+    mountState.isMoving = false;
     if(MountGotoTimer.isActive())
     {
         MountGotoTimer.stop();

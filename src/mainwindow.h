@@ -119,7 +119,11 @@ enum class FlipEvent { None, Started, Done, Failed };
 struct MeridianStatus {
     FlipEvent event = FlipEvent::None;
     double etaMinutes = std::numeric_limits<double>::quiet_NaN(); // >0 距中天；<0 已过中天
+    // 基于观测时间、地点、RA/DEC 推导的理论方向侧 与 设备上报 PierSide 的比较结果
+    // true: 需要翻转；false: 无需翻转；当 PierSide 或 LST/RA 无法获得时，保持默认 false
+    bool needsFlip = false;
 };
+
 
 
 /*
@@ -868,6 +872,8 @@ public:
      * @return 翻转事件类型
      */
     MeridianStatus checkMeridianStatus();
+
+    // 不再持久化/保存历史翻转状态（使用即时几何判断 needsFlip）
 
     /**
      * @brief 单次图像板解

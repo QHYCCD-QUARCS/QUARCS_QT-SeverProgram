@@ -1003,6 +1003,7 @@ private:
     bool decMovedToAvoidObstacle; // 是否已经移动DEC轴避开遮挡
     bool decMovedAtStart;         // 是否在开始时移动了DEC轴脱离极点
     bool secondCaptureAvoided;    // 是否进行了第二次拍摄避障
+    bool thirdCaptureAvoided;    // 是否进行了第三次拍摄避障
     int captureAttemptCount;     // 遮挡检测时的拍摄尝试次数
 
     // 调整指导数据容器
