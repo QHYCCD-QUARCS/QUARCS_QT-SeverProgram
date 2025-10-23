@@ -8611,13 +8611,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             for (int j = 0; j < connectedPorts.size(); j++)
                             {
                                 Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                if (connectedPorts[j].contains("ttyACM"))
+                                if (connectedPorts[j].contains("ttyUSB"))
                                 {
-                                    Logger::Log("ConnectDriver | Found ttyACM device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                    Logger::Log("ConnectDriver | Found ttyUSB device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                                 }
                                 else
                                 {
-                                    Logger::Log("ConnectDriver | Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
+                                    Logger::Log("ConnectDriver | Not found ttyUSB device", LogLevel::INFO, DeviceType::MAIN);
                                     continue;
                                 }
                                 QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
