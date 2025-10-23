@@ -15,6 +15,12 @@ struct MountState{
     bool isMoving = false;  // 移动中(可能是翻转，也可能是移动)
     bool isNS_Moving = false;
     bool isWE_Moving = false;
+    bool isFlipBacking = false;   // 是否正在进行中天翻转回退操作
+    bool isFlipping = false;   // 是否正在进行中天翻转操作
+
+    double Flip_RA_Hours = 0.0;
+    double Flip_DEC_Degree = 0.0;
+
 
     double Home_RA_Hours = 6.0;
     double Home_DEC_Degree = 90.0;
@@ -82,13 +88,13 @@ struct MountState{
         summary += (isSlewing ? "指向中 " : "");
         summary += (isTracking ? "跟踪中 " : "");
         summary += (isGuiding ? "导星中 " : "");
-        if (!isSlewing && !isTracking && !isGuiding && !isHoming && !isNS_Moving && !isWE_Moving) {
+        if (!isSlewing && !isTracking && !isGuiding && !isHoming && !isNS_Moving && !isWE_Moving && !isFlipping && !isFlipBacking) {
             summary += "空闲";
         }
         return summary;
     }
 
     bool isMovingNow() const {
-        return isSlewing || isHoming || isNS_Moving || isWE_Moving || isMoving;
+        return isSlewing || isHoming || isNS_Moving || isWE_Moving || isMoving || isFlipping || isFlipBacking;
     }
 };

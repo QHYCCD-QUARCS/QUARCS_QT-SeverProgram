@@ -102,17 +102,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
 
     emit wsThread->sendMessageToClient("ServerInitSuccess");
 
-    QMap<QString, QString> parameters = Tools::readParameters("Focuser");
-    if (parameters.contains("focuserMaxPosition") && parameters.contains("focuserMinPosition"))
-    {
-        focuserMaxPosition = parameters["focuserMaxPosition"].toInt();
-        focuserMinPosition = parameters["focuserMinPosition"].toInt();
-    }
-    else
-    {
-        focuserMaxPosition = -1;
-        focuserMinPosition = -1;
-    }
+    
 }
 
 MainWindow::~MainWindow()
@@ -333,7 +323,36 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         }
     }
-
+    else if (parts.size() == 2 && parts[0].trimmed() == "MinLimit")
+    {
+        Logger::Log("MinLimit:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        int MinLimit = parts[1].trimmed().toInt();
+        if (dpFocuser != NULL)
+        {
+            Tools::saveParameter("Focuser", "focuserMinPosition", parts[1].trimmed());
+            focuserMinPosition = MinLimit;
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "MaxLimit")
+    {
+        Logger::Log("MaxLimit:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        int MaxLimit = parts[1].trimmed().toInt();
+        if (dpFocuser != NULL)
+        {
+            Tools::saveParameter("Focuser", "focuserMaxPosition", parts[1].trimmed());
+            focuserMaxPosition = MaxLimit;
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "Backlash")
+    {
+        Logger::Log("Backlash:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        int Backlash = parts[1].trimmed().toInt();
+        if (dpFocuser != NULL)
+        {
+            Tools::saveParameter("Focuser", "Backlash", parts[1].trimmed());
+            autofocusBacklashCompensation = Backlash;
+        }
+    }
     else if (parts.size() == 3 && parts[0].trimmed() == "setROIPosition")
     {
         Logger::Log("setROIPosition:" + parts[1].trimmed().toStdString() + "*" + parts[2].trimmed().toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -349,20 +368,38 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("RedBoxSizeChange:" + std::to_string(BoxSideLength), LogLevel::DEBUG, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
     }
-    else if (message == "AutoFocus")
+
+    else if (message.startsWith("AutoFocusConfirm:Yes")) // [AUTO_FOCUS_UI_ENHANCEMENT]
     {
-        // Logger::Log("AutoFocus", LogLevel::INFO, DeviceType::MAIN);
+        // 发送自动对焦开始事件到前端
+        if (isAutoFocus) {
+            Logger::Log("AutoFocus already started", LogLevel::INFO, DeviceType::MAIN);
+            return;
+        }
+        emit wsThread->sendMessageToClient("AutoFocusStarted:自动对焦已开始");
         startAutoFocus();
         isAutoFocus = true;
         autoFocusStep = 0;
     }
+    else if (message == "AutoFocusConfirm:No") // [AUTO_FOCUS_UI_ENHANCEMENT]
+    {
+        Logger::Log("用户取消自动对焦", LogLevel::INFO, DeviceType::MAIN);
+        // 发送取消确认到前端
+        emit wsThread->sendMessageToClient("AutoFocusCancelled:用户已取消自动对焦");
+    }
     else if (message == "StopAutoFocus")
     {
+        if (!isAutoFocus) {
+            Logger::Log("AutoFocus not started, stopAutoFocus failed", LogLevel::INFO, DeviceType::MAIN);
+            return;
+        }
         Logger::Log("StopAutoFocus", LogLevel::DEBUG, DeviceType::MAIN);
         isAutoFocus = false;
         autoFocus->stopAutoFocus();
         autoFocus->deleteLater();
+        cleanupAutoFocusConnections();
         autoFocus = nullptr;
+        emit wsThread->sendMessageToClient("AutoFocusEnded:自动对焦已结束");
     }
     else if (message == "abortExposure")
     {
@@ -553,31 +590,8 @@ void MainWindow::onMessageReceived(const QString &message)
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "AutoFlip")
     {
-        if (parts[1].trimmed() == "true")
-        {
-            if (dpMount != NULL)
-            {
-                uint32_t success = indi_Client->setAutoFlip(dpMount, true);
-                if (success == QHYCCD_SUCCESS)
-                {
-                    isAutoFlip = false;
-                    Tools::saveParameter("Mount", "AutoFlip", parts[1].trimmed());
-                }
-            }
-            isAutoFlip = true;
-            Tools::saveParameter("Mount", "AutoFlip", parts[1].trimmed());
-        }else{
-            if (dpMount != NULL)
-            {
-                uint32_t success = indi_Client->setAutoFlip(dpMount, false);
-                if (success == QHYCCD_SUCCESS)
-                {
-                    isAutoFlip = false;
-                    Tools::saveParameter("Mount", "AutoFlip", parts[1].trimmed());
-                }
-            }
-
-        }
+        isAutoFlip = parts[1].trimmed() == "true" ? true : false;
+        Tools::saveParameter("Mount", "AutoFlip", parts[1].trimmed());
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "EastMinutesPastMeridian")
     {
@@ -1601,7 +1615,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts[0].trimmed() == "getFocuserParameters")
     {
         Logger::Log("getFocuserParameters ...", LogLevel::DEBUG, DeviceType::FOCUSER);
-        emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
+        getFocuserParameters();
         Logger::Log("getFocuserParameters finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
     }
     else if (parts[0].trimmed() == "getPolarAlignmentState")
@@ -1649,6 +1663,12 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("loadSDKVersionAndUSBSerialPath ...", LogLevel::DEBUG, DeviceType::MAIN);
         loadSDKVersionAndUSBSerialPath();
         Logger::Log("loadSDKVersionAndUSBSerialPath finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if (parts[0].trimmed() == "getFocuserState")
+    {
+        Logger::Log("getFocuserState ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        getFocuserState();
+
+        Logger::Log("getFocuserState finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
     }
     else
     {
@@ -1991,7 +2011,7 @@ void MainWindow::onTimeout()
     {
         if (dpMount->isConnected())
         {
-            if (mountDisplayCounter >= 100)
+            if (mountDisplayCounter >= 200)
             {
                 double RA_HOURS, DEC_DEGREE;
                 indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
@@ -2009,9 +2029,18 @@ void MainWindow::onTimeout()
                 indi_Client->getTelescopePark(dpMount, isParked);
                 emit wsThread->sendMessageToClient(
                     isParked ? "TelescopePark:ON" : "TelescopePark:OFF");
-
-                indi_Client->getTelescopePierSide(dpMount, TelescopePierSide);
-                emit wsThread->sendMessageToClient("TelescopePierSide:" + TelescopePierSide);
+                
+                QString NewTelescopePierSide;
+                indi_Client->getTelescopePierSide(dpMount, NewTelescopePierSide);
+                if (NewTelescopePierSide != TelescopePierSide)
+                {
+                    // 出现方向侧变化,此时意味着进行了中天翻转,判断是否完成翻转
+                    if (indi_Client->mountState.isMovingNow() == false) {
+                        emit wsThread->sendMessageToClient("FlipStatus:success");
+                        TelescopePierSide = NewTelescopePierSide;
+                    }
+                }
+                emit wsThread->sendMessageToClient("TelescopePierSide:" + NewTelescopePierSide);
 
                 indi_Client->getTelescopeMoving(dpMount);
 
@@ -2041,7 +2070,8 @@ void MainWindow::onTimeout()
                 }
 
                 if (!std::isnan(ms.etaMinutes)) {
-                    const bool isNeg = (ms.etaMinutes < 0.0);
+                    // 显示规则：与翻转需求绑定 —— 需要翻转显示负号，不需要显示正号
+                    const bool showNeg = ms.needsFlip;
                     const double absMinutes = std::fabs(ms.etaMinutes);
                     const int totalSeconds = static_cast<int>(std::llround(absMinutes * 60.0));
                     const int hours = totalSeconds / 3600;
@@ -2049,13 +2079,33 @@ void MainWindow::onTimeout()
                     const int secs  = totalSeconds % 60;
 
                     const QString hms = QString("%1%2:%3:%4")
-                                            .arg(isNeg ? "-" : "")
+                                            .arg(showNeg ? "-" : "")
                                             .arg(hours, 2, 10, QLatin1Char('0'))
                                             .arg(mins,  2, 10, QLatin1Char('0'))
                                             .arg(secs,  2, 10, QLatin1Char('0'));
                     emit wsThread->sendMessageToClient("MeridianETA_hms:" + hms);
-                    Logger::Log("MeridianETA_hms:" + hms.toStdString() + "side:" + TelescopePierSide.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    Logger::Log("MeridianETA_hms:" + hms.toStdString() + " side:" + TelescopePierSide.toStdString() + " needflip:" + (ms.needsFlip ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
                 }
+
+                //TODO:当前判断方式存在问题,需要重新修改判断
+                // 加入判断,当此时需要执行自动中天翻转,且设备设置为自动中天翻转,则执行自动中天翻转
+                // if (ms.needsFlip && isAutoFlip && indi_Client->mountState.isFlipping == false && indi_Client->mountState.isFlipBacking == false) {
+                //     // 预备翻转
+                //     if (flipPrepareTime >= 0) {
+                //         flipPrepareTime-=2;
+                //         emit wsThread->sendMessageToClient("FlipStatus:FlipPrepareTime," + QString::number(flipPrepareTime));
+                //     }
+                //     else {
+                //         emit wsThread->sendMessageToClient("FlipStatus:start");
+                //         indi_Client->startFlip(dpMount);
+                //     }
+                // }else{
+                //     flipPrepareTime = flipPrepareTimeDefault;
+                // }
+                // if (indi_Client->mountState.isFlipping == true || indi_Client->mountState.isFlipBacking == true) {
+                //     emit wsThread->sendMessageToClient("FlipStatus:start");
+                // }
+
             }
         }
     }
@@ -2097,13 +2147,25 @@ MeridianStatus MainWindow::checkMeridianStatus()
 
     // 2) LST 小时（优先 TIME_LST；否则 UTC+经度估算）
     auto norm24 = [](double h){ h=fmod(h,24.0); if(h<0) h+=24.0; return h; };
+    // 将可能的度/秒等单位推断并统一为小时，再规范到 [0,24)
+    auto toHours = [&](double v)->double {
+        if (std::isnan(v)) return v;
+        double x = v;
+        // 若为秒（0..86400），转换为小时
+        if (std::fabs(x) > 24.0 && std::fabs(x) <= 86400.0) x /= 3600.0;
+        // 若为度（0..360），转换为小时
+        if (std::fabs(x) > 24.0 && std::fabs(x) <= 360.0)  x /= 15.0;
+        // 若超过一圈（>360 度等），先按度归一后转小时
+        if (std::fabs(x) > 360.0) x = fmod(x, 360.0) / 15.0;
+        return norm24(x);
+    };
     double lstH = std::numeric_limits<double>::quiet_NaN();
 
     // 2.1 用 INDI::PropertyNumber 读取 TIME_LST（避免 p->np 报错）
     if (true) {
         INDI::PropertyNumber lst = dpMount->getNumber("TIME_LST");
         if (lst.isValid() && lst.size() > 0) {
-            lstH = lst[0].getValue();   // 部分驱动名字也可能是 "LST"
+            lstH = toHours(lst[0].getValue());   // 统一为小时
         }
     }
 
@@ -2133,6 +2195,9 @@ MeridianStatus MainWindow::checkMeridianStatus()
             lstH = norm24(GMST + lonDeg/15.0);
         }
     }
+
+    // 清洗 RA 单位并规范到小时
+    raH = toHours(raH);
 
     if (!std::isnan(lstH)) {
         // 采用半开区间 [-12, 12) 规范时角，避免边界抖动
@@ -2165,7 +2230,7 @@ MeridianStatus MainWindow::checkMeridianStatus()
         const bool isLowerRegion = (std::fabs(haPrincipal) >= (kHalfCycleHAHours - kBoundaryTolH));
         bool eastMapping = (haPrincipal >= 0.0);
         if (isLowerRegion) eastMapping = !eastMapping;
-        QString theoreticalPier = eastMapping ? "WEST" : "EAST";
+        QString theoreticalPier = eastMapping ? "EAST" : "WEST";
         if (pier == "UNKNOWN") {
             out.needsFlip = false; // 无法判断或靠近极区：不触发翻转
         } else {
@@ -3894,15 +3959,8 @@ void MainWindow::AfterDeviceConnect()
         getMountParameters();
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
         indi_Client->setAutoFlip(dpMount, false);
-        // uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
-        // if (success == QHYCCD_SUCCESS)
-        // {
-        //     emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
-        //     indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
-        //     emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
-        //     emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
-        //     // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
-        // }
+        indi_Client->setMinutesPastMeridian(dpMount, 1, -1);
+
         indi_Client->setAUXENCODERS(dpMount);
 
         QDateTime datetime = QDateTime::currentDateTime();
@@ -3989,6 +4047,7 @@ void MainWindow::AfterDeviceConnect()
         // Logger::Log("Focuser Range - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Value: " + std::to_string(value) + ", Step: " + std::to_string(step), LogLevel::INFO, DeviceType::MAIN);
         // focuserMaxPosition = std::min(max, focuserMaxPosition);
         // focuserMinPosition = std::max(min, focuserMinPosition);
+        getFocuserParameters();
         QString SDKVERSION = "null";
         indi_Client->getFocuserSDKVersion(dpFocuser, SDKVERSION);
         emit wsThread->sendMessageToClient("getSDKVersion:Focuser:" + SDKVERSION);
@@ -4005,8 +4064,8 @@ void MainWindow::AfterDeviceConnect()
             focuserMinPosition = min;
             Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
             Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
-            emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
         }
+        emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
         Logger::Log("Focuser Max Position: " + std::to_string(focuserMaxPosition) + ", Min Position: " + std::to_string(focuserMinPosition), LogLevel::INFO, DeviceType::MAIN);
         Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
@@ -4204,15 +4263,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
         Logger::Log("Mount location set to Latitude: " + QString::number(observatorylatitude).toStdString() + ", Longitude: " + QString::number(observatorylongitude).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         indi_Client->setAutoFlip(dpMount, false);
-        // uint32_t success = indi_Client->setAutoFlip(dpMount, isAutoFlip);
-        // if (success == QHYCCD_SUCCESS)
-        // {
-        //     emit wsThread->sendMessageToClient("AutoFlip:" + QString::number(isAutoFlip));
-        //     indi_Client->setMinutesPastMeridian(dpMount, EastMinutesPastMeridian, WestMinutesPastMeridian);
-        //     emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + QString::number(EastMinutesPastMeridian));
-        //     emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + QString::number(WestMinutesPastMeridian));
-        //     // emit wsThread->sendMessageToClient("MinutesPastMeridian:" + QString::number(EastMinutesPastMeridian) + ":" + QString::number(WestMinutesPastMeridian));
-        // }
+        indi_Client->setMinutesPastMeridian(dpMount, 1, -1);
+
 
         indi_Client->setAUXENCODERS(dpMount);
 
@@ -4305,6 +4357,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         systemdevicelist.system_devices[22].isBind = true;
         indi_Client->GetAllPropertyName(dpFocuser);
         // indi_Client->syncFocuserPosition(dpFocuser, 0);
+        getFocuserParameters();
+
         int min, max, step, value;
         indi_Client->getFocuserRange(dpFocuser, min, max, step, value);
         if (focuserMaxPosition == -1 && focuserMinPosition == -1)
@@ -4313,9 +4367,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             focuserMinPosition = min;
             Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
             Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
-            emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
         }
-
+        emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
         QString SDKVERSION = "null";
         indi_Client->getFocuserSDKVersion(dpFocuser, SDKVERSION);
         emit wsThread->sendMessageToClient("getSDKVersion:Focuser:" + SDKVERSION);
@@ -7273,22 +7326,6 @@ void MainWindow::getClientSettings()
                 observatorylatitude = coordinates[0].toDouble();
             }
         }
-        if (pair.first == "AutoFlip")
-        {
-            isAutoFlip = pair.second == "true";
-        }
-        if (pair.first == "EastMinutesPastMeridian")
-        {
-            EastMinutesPastMeridian = std::stod(pair.second);
-        }
-        if (pair.first == "WestMinutesPastMeridian")
-        {
-            WestMinutesPastMeridian = std::stod(pair.second);
-        }
-        if (pair.first == "GotoThenSolve")
-        {
-            GotoThenSolve = pair.second == "true";
-        }
 
     }
     Logger::Log("getClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
@@ -9968,8 +10005,6 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     // 旧分支与重复逻辑清理完毕
 }
 
-
-
 void MainWindow::startAutoFocus()
 {
     if (dpFocuser == NULL || dpMainCamera == NULL)
@@ -9979,23 +10014,43 @@ void MainWindow::startAutoFocus()
         emit wsThread->sendMessageToClient("AutoFocusOver:false");
         return;
     }
+    // 预处理：统一清理自动对焦相关定时器与信号连接，避免残留或重复
+    cleanupAutoFocusConnections();
+
+
+
     if (autoFocus == nullptr)
     {
-        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, this);
+        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, wsThread,this);
     }
     else
     {
+        // 停止旧对象并清理信号连接
         autoFocus->stopAutoFocus();
+        cleanupAutoFocusConnections();
         autoFocus->deleteLater();
         autoFocus = nullptr;
-        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, this);
+        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, wsThread,this);
     }
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
     autoFocus->setDefaultExposureTime(1000); // 1s曝光
     autoFocus->setUseVirtualData(false);      // 使用虚拟数据
-
-    connect(autoFocus, &AutoFocus::roiInfoChanged, this, [this](const QRect &roi)
+    
+    // 设置空程补偿
+    if (autofocusBacklashCompensation > 0) {
+        autoFocus->setBacklashCompensation(autofocusBacklashCompensation, autofocusBacklashCompensation);
+        autoFocus->setUseBacklashCompensation(true);
+        Logger::Log(QString("设置自动对焦空程补偿: %1步").arg(autofocusBacklashCompensation).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+    } else {
+        autoFocus->setUseBacklashCompensation(false);
+        Logger::Log("自动对焦不使用空程补偿", LogLevel::INFO, DeviceType::FOCUSER);
+    }
+   for (int i = 1; i <= 11; i++) {
+    std::string filename = "/home/quarcs/test_fits/coarse/" + std::to_string(i) + ".fits";
+    autoFocus->setCaptureComplete(filename.c_str());
+    }
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::roiInfoChanged, this, [this](const QRect &roi)
             {
         if (roi.width() == 0 && roi.height() == 0){
             roiAndFocuserInfo["ROI_x"] = 0;
@@ -10007,13 +10062,152 @@ void MainWindow::startAutoFocus()
             roiAndFocuserInfo["ROI_y"] = roi.y();
             roiAndFocuserInfo["BoxSideLength"] = roi.width();
             autoFocuserIsROI = true;
-        } });
+        } }));
+
+    // 连接二次拟合结果信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::focusFitUpdated, this, [this](double a, double b, double c, double bestPosition, double minFWHM)
+            {
+        Logger::Log(QString("接收到focusFitUpdated信号: a=%1, b=%2, c=%3, bestPosition=%4, minFWHM=%5")
+                   .arg(a).arg(b).arg(c).arg(bestPosition).arg(minFWHM).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 发送二次曲线数据到前端
+        QString curveData = QString("fitQuadraticCurve:%1:%2:%3:%4:%5")
+                           .arg(a, 0, 'g', 15)  // 使用科学计数法，保留15位有效数字，确保小系数不被截断
+                           .arg(b, 0, 'g', 15)
+                           .arg(c, 0, 'g', 15)
+                           .arg(bestPosition, 0, 'f', 2)
+                           .arg(minFWHM, 0, 'f', 3);
+        
+        Logger::Log(QString("发送二次曲线数据: %1").arg(curveData).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(curveData);
+        
+        // 发送最佳位置点数据
+        QString minPointData = QString("fitQuadraticCurve_minPoint:%1:%2")
+                              .arg(bestPosition, 0, 'f', 2)
+                              .arg(minFWHM, 0, 'f', 3);
+        
+        Logger::Log(QString("发送最小点数据: %1").arg(minPointData).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(minPointData);
+        
+        Logger::Log(QString("二次拟合结果发送完成").toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+    }));
+
+    // 连接数据点信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::focusDataPointReady, this, [this](int position, double fwhm, const QString &stage)
+            {
+        Logger::Log(QString("接收到数据点: position=%1, fwhm=%2, stage=%3")
+                   .arg(position).arg(fwhm).arg(stage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 发送数据点到前端
+        QString dataPointMessage = QString("FocusMoveDone:%1:%2")
+                                 .arg(position).arg(fwhm);
+        
+        Logger::Log(QString("发送数据点: %1").arg(dataPointMessage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(dataPointMessage);
+    }));
+
+    // 连接启动位置更新定时器信号
+    // connect(autoFocus, &AutoFocus::startPositionUpdateTimer, this, [this]()
+    //         {
+    //     Logger::Log("启动位置更新定时器", LogLevel::INFO, DeviceType::FOCUSER);
+    //     if (focusMoveTimer) {
+    //         focusMoveTimer->start(50); // 改为50毫秒间隔，与实时位置更新保持一致
+    //     }
+    //     // 确保实时位置更新定时器也在运行
+    //     if (realtimePositionTimer) {
+    //         realtimePositionTimer->start(50);
+    //     }
+    // });
+
+    // 连接自动对焦失败信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autofocusFailed, this, [this]()
+            {
+        Logger::Log("自动对焦失败，发送提示消息到前端", LogLevel::ERROR, DeviceType::FOCUSER);
+        isAutoFocus = false;
+        emit wsThread->sendMessageToClient("FitResult:Failed:拟合结果为水平线，未找到最佳焦点");
+    }));
+
+    // 连接星点识别结果信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::starDetectionResult, this, [this](bool detected, double fwhm)
+            {
+        if (detected) {
+            Logger::Log(QString("识别到星点，FWHM为: %1").arg(fwhm).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient(QString("StarDetectionResult:true:%1").arg(fwhm));
+        } else {
+            Logger::Log("未识别到星点", LogLevel::INFO, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("StarDetectionResult:false:0");
+        }
+    }));
+
+    // 连接自动对焦模式变化信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autoFocusModeChanged, this, [this](const QString &mode, double fwhm)
+            {
+        Logger::Log(QString("自动对焦模式变化: %1, FWHM: %2").arg(mode).arg(fwhm).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(QString("AutoFocusModeChanged:%1:%2").arg(mode).arg(fwhm));
+    }));
+
+    // 连接自动对焦步骤变化信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autoFocusStepChanged, this, [this](int step, const QString &description)
+            {
+        Logger::Log(QString("自动对焦步骤变化: 步骤%1 - %2").arg(step).arg(description).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(QString("AutoFocusStepChanged:%1:%2").arg(step).arg(description));
+    }));
+
+    // 连接自动对焦完成信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autoFocusCompleted, this, [this](bool success, double bestPosition, double minHFR)
+            {
+        Logger::Log(QString("自动对焦完成: success=%1, bestPosition=%2, minHFR=%3")
+                   .arg(success).arg(bestPosition).arg(minHFR).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 结束阶段：统一清理自动对焦相关定时器与信号连接
+        cleanupAutoFocusConnections();
+        
+        // 确保实时位置更新定时器继续运行
+        // if (realtimePositionTimer && !realtimePositionTimer->isActive()) {
+        //     realtimePositionTimer->start(50);
+        //     Logger::Log("恢复实时位置更新定时器", LogLevel::INFO, DeviceType::FOCUSER);
+        // }
+        
+        // 发送自动对焦完成消息到前端
+        QString completeMessage = QString("AutoFocusOver:%1:%2:%3")
+                                .arg(success ? "true" : "false")
+                                .arg(bestPosition, 0, 'f', 2)
+                                .arg(minHFR, 0, 'f', 3);
+        
+        Logger::Log(QString("发送自动对焦完成消息: %1").arg(completeMessage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(completeMessage);
+        isAutoFocus = false;
+        
+        // 发送自动对焦结束事件到前端 - [AUTO_FOCUS_UI_ENHANCEMENT]
+        emit wsThread->sendMessageToClient("AutoFocusEnded:自动对焦已结束");
+    }));
 
     autoFocus->startAutoFocus();
     isAutoFocus = true;
     autoFocusStep = 0;
 }
 
+void MainWindow::cleanupAutoFocusConnections()
+{
+    if (autoFocus) {
+        // 逐个断开并清空记录的连接，覆盖所有已登记连接
+        for (const QMetaObject::Connection &c : autoFocusConnections) {
+            QObject::disconnect(c);
+        }
+        autoFocusConnections.clear();
+        // 保险起见再断开双方所有连接
+        disconnect(autoFocus, nullptr, this, nullptr);
+        disconnect(this, nullptr, autoFocus, nullptr);
+    }
+}
 
 
 void MainWindow::getFocuserLoopingState()
@@ -10115,37 +10309,8 @@ void MainWindow::getMountParameters()
     {
         Logger::Log("getMountParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         if (it.key() == "AutoFlip"){
-            // TODO：需要判断是否是手动翻转，当前弃用自动翻转
-            continue;
-            if (dpMount == nullptr)continue;
-            
-            INDI::PropertySwitch autoFlip = dpMount->getProperty("AutoFlip");
-            if (autoFlip.isValid()){
-                emit wsThread->sendMessageToClient("AutoFlip:" + it.value());
-                isAutoFlip = it.value() == "true";
-            }
-            continue;
-        }
-        if (it.key() == "EastMinutesPastMeridian"){
-            // TODO：需要判断是否是手动翻转，当前弃用自动翻转
-            continue;
-            if (dpMount == nullptr)continue;
-            INDI::PropertyNumber mpm = dpMount->getProperty("Minutes Past Meridian");
-            if (mpm.isValid()){
-                emit wsThread->sendMessageToClient("EastMinutesPastMeridian:" + it.value());
-                EastMinutesPastMeridian = it.value().toDouble();
-            }
-            continue;
-        }
-        if (it.key() == "WestMinutesPastMeridian"){
-            // TODO：需要判断是否是手动翻转，当前弃用自动翻转
-            continue;
-            if (dpMount == nullptr)continue;
-            INDI::PropertyNumber mpm = dpMount->getProperty("Minutes Past Meridian");
-            if (mpm.isValid()){
-                emit wsThread->sendMessageToClient("WestMinutesPastMeridian:" + it.value());
-                WestMinutesPastMeridian = it.value().toDouble();
-            }
+            emit wsThread->sendMessageToClient("AutoFlip:" + it.value());
+            isAutoFlip = it.value() == "true";
             continue;
         }
         if (it.key() == "GotoThenSolve"){
@@ -10534,7 +10699,7 @@ void MainWindow::focusSetTravelRange()
     CurrentPosition = FocuserControl_getPosition();
     focuserMaxPosition = CurrentPosition;
     emit wsThread->sendMessageToClient("focusSetTravelRangeSuccess");
-    emit wsThread->sendMessageToClient("FocuserMinLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
+    emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
     Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
     Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
 }
@@ -10648,4 +10813,48 @@ void MainWindow::clearBoxCache()
     }
 
     if (wsThread) emit wsThread->sendMessageToClient("ClearBoxCache:Success");
+}
+
+void MainWindow::getFocuserParameters()
+{
+    QMap<QString, QString> parameters = Tools::readParameters("Focuser");
+    if (parameters.contains("focuserMaxPosition") && parameters.contains("focuserMinPosition"))
+    {
+        focuserMaxPosition = parameters["focuserMaxPosition"].toInt();
+        focuserMinPosition = parameters["focuserMinPosition"].toInt();
+    }
+    else
+    {
+        focuserMaxPosition = -1;
+        focuserMinPosition = -1;
+    }
+    emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
+    Logger::Log("Focuser Max Position: " + std::to_string(focuserMaxPosition) + ", Min Position: " + std::to_string(focuserMinPosition), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
+
+    // 空程
+    int emptyStep = parameters.contains("Backlash") ? parameters["Backlash"].toInt() : 0;
+    autofocusBacklashCompensation = emptyStep;
+    emit wsThread->sendMessageToClient("Backlash:" + QString::number(emptyStep));
+
+}
+
+void MainWindow::getFocuserState()
+{
+
+    QString state = isAutoFocus ? "true" : "false";
+    emit wsThread->sendMessageToClient("updateAutoFocuserState:" + state); // 状态更新
+
+    // 获取当前步骤
+    if (isAutoFocus && autoFocus != nullptr)
+    {
+        emit wsThread->sendMessageToClient("AutoFocusStarted:自动对焦已开始");
+        autoFocus->getAutoFocusStep();
+    }
+
+    // 获取当前点和线数据
+    if (isAutoFocus && autoFocus != nullptr)
+    {
+        autoFocus->getAutoFocusData();
+    }
 }

@@ -384,6 +384,41 @@ void PolarAlignment::stopPolarAlignment()
 {
     if (!isRunningFlag) return;
     
+    // 如果在指导调整阶段手动停止：使用当前解算结果直接计算并输出精度，无需重新拍摄
+    if (currentState == PolarAlignmentState::GUIDING_ADJUSTMENT) {
+        if (isTargetPositionCached) {
+            const double currentRA  = currentSolveResult.RA_Degree;
+            const double currentDEC = currentSolveResult.DEC_Degree;
+            SingleShotGuide guide = delta_to_fixed_target(currentRA, currentDEC, targetRA, targetDEC);
+            double east_deg  = guide.east_arcmin  / 60.0;
+            double north_deg = guide.north_arcmin / 60.0;
+            double total_deg = guide.distance_arcmin / 60.0;
+
+            Logger::Log(
+                "PolarAlignment: 手动停止 - 当前偏差: 东 " + std::to_string(guide.east_arcmin) + "′, 北 " +
+                std::to_string(guide.north_arcmin) + "′, 距离 " + std::to_string(guide.distance_arcmin) +
+                "′, 方位(自北顺时针) " + std::to_string(guide.bearing_deg_from_north) + "°",
+                LogLevel::INFO, DeviceType::MAIN
+            );
+            Logger::Log(
+                "PolarAlignment: 手动停止 - 当前精度(度): 总偏差 " + std::to_string(total_deg) +
+                ", 东偏差 " + std::to_string(east_deg) + ", 北偏差 " + std::to_string(north_deg),
+                LogLevel::INFO, DeviceType::MAIN
+            );
+
+            // 更新结果并发送
+            result.raDeviation  = east_deg;
+            result.decDeviation = north_deg;
+            result.totalDeviation = total_deg;
+            result.isSuccessful = true; // 手动结束并返回当前测得精度
+            result.errorMessage = "";
+            result.measurements = measurements;
+            emit resultReady(result);
+        } else {
+            Logger::Log("PolarAlignment: 手动停止 - 目标未锁定，无法计算当前精度", LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+    
     // 停止所有定时器
     stateTimer.stop();
     captureAndAnalysisTimer.stop();
@@ -396,8 +431,7 @@ void PolarAlignment::stopPolarAlignment()
     
     Logger::Log("PolarAlignment: 极轴校准已停止", LogLevel::INFO, DeviceType::MAIN);
     emit stateChanged(currentState, "极轴校准已停止",-1);
-    // emit statusUpdated("极轴校准已停止");
-    // emit progressUpdated(0);
+
 }
 
 void PolarAlignment::pausePolarAlignment()
@@ -1653,22 +1687,22 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         realPolarRA, realPolarDEC
     );
 
-    // 达标判断用球面距离
-    double precisionThreshold = config.finalVerificationThreshold; // 仍然"度"
-    if (total_deg < precisionThreshold) {
-        Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
-                    std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
-        result.raDeviation  = east_deg;
-        result.decDeviation = north_deg;
-        result.totalDeviation = total_deg;
-        adjustmentAttempts = 0;
-        setState(PolarAlignmentState::FINAL_VERIFICATION);
-    } else {
-        Logger::Log("PolarAlignment: 精度未达标，继续调整",
-                    LogLevel::WARNING, DeviceType::MAIN);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(3000);
-    }
-
+    // // 达标判断用球面距离
+    // double precisionThreshold = config.finalVerificationThreshold; // 仍然"度"
+    // if (total_deg < precisionThreshold) {
+    //     Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
+    //                 std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
+    //     result.raDeviation  = east_deg;
+    //     result.decDeviation = north_deg;
+    //     result.totalDeviation = total_deg;
+    //     adjustmentAttempts = 0;
+    //     setState(PolarAlignmentState::FINAL_VERIFICATION);
+    // } else {
+    //     Logger::Log("PolarAlignment: 精度未达标，继续调整",
+    //                 LogLevel::WARNING, DeviceType::MAIN);
+    //     if (isRunningFlag && !isPausedFlag) stateTimer.start(3000);
+    // }
+    if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
     return true;
 }
 
@@ -1940,7 +1974,7 @@ bool PolarAlignment::waitForCaptureComplete()
     
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
-            if (true) {
+            if (false) {
                 if (currentState == PolarAlignmentState::CHECKING_POLAR_POINT) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/1.fits");
                 }

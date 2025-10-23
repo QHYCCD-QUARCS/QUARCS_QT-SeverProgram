@@ -1014,17 +1014,99 @@ uint32_t MyClient::setAutoFlip(INDI::BaseDevice *dp, bool ON)
 
 uint32_t MyClient::startFlip(INDI::BaseDevice *dp)
 {
-    // 开始中天翻转
-    double RA,DEC;
-    getTelescopeRADECJNOW(dp,RA,DEC);
-
-    // 执行goto
-    uint32_t result = slewTelescopeJNowNonBlock(dp,RA,DEC,true);
-    if (result != QHYCCD_SUCCESS)
+    if (mountState.isMovingNow()) {
+        setTelescopeAbortMotion(dp);
+        sleep(2);
+    };
+    // 目标：若接近/触发物理边界，先在当前 PierSide 方向“回退”一点，再执行 goto 触发自动路径规划的翻转
+    double raHours = 0.0, decDeg = 0.0;
+    if (getTelescopeRADECJNOW(dp, raHours, decDeg) != QHYCCD_SUCCESS)
     {
-        Logger::Log("indi_client | startFlip | Error: unable to slew telescope...", LogLevel::WARNING, DeviceType::MOUNT);
+        Logger::Log("indi_client | startFlip | Error: cannot read RA/DEC", LogLevel::WARNING, DeviceType::MOUNT);
         return QHYCCD_ERROR;
     }
+
+    mountState.Flip_RA_Hours = raHours;
+    mountState.Flip_DEC_Degree = decDeg;
+
+    // 先执行回退，回退到目标RA/DEC的1度范围内
+    if (flipBack(dp, raHours, decDeg) != QHYCCD_SUCCESS)
+    {
+        Logger::Log("indi_client | startFlip | Error: flip back failed", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+
+    return QHYCCD_SUCCESS;
+}
+
+// 中天翻转回退
+uint32_t MyClient::flipBack(INDI::BaseDevice *dp, double raHours, double decDeg)
+{
+    mountState.isFlipBacking = true;
+    QString pierSide = "UNKNOWN";
+    getTelescopePierSide(dp, pierSide); // "EAST" / "WEST" / "UNKNOWN"
+
+    // 回退角度（RA）：2°（≈0.1333h），足以脱离 ±1 分钟的子午线限制
+    constexpr double kBackoffDeg = 2.0;
+    constexpr double kBackoffH   = kBackoffDeg / 15.0; // 小时
+
+    auto norm24 = [](double h){ h = fmod(h, 24.0); if (h < 0) h += 24.0; return h; };
+
+    // 默认回退策略：
+    // - WEST 侧：RA += backoff（HA 通常为负，增加 RA 令 HA 更负，远离中天）
+    // - EAST  侧：RA -= backoff（HA 通常为正，减少 RA 令 HA 更正，远离中天）
+    // - UNKNOWN：若可读 TIME_LST，则按 HA 符号回退；否则保守采用 EAST 策略
+    double raBackoff = raHours;
+    if (pierSide == "WEST")
+    {
+        raBackoff = norm24(raHours + kBackoffH);
+    }
+    else if (pierSide == "EAST")
+    {
+        raBackoff = norm24(raHours - kBackoffH);
+    }
+    else
+    {
+        // UNKNOWN：尝试读取 TIME_LST 来判定 HA 符号
+        auto toHours = [&](double v)->double {
+            if (std::isnan(v)) return v;
+            double x = v;
+            if (std::fabs(x) > 24.0 && std::fabs(x) <= 86400.0) x /= 3600.0; // 秒→小时
+            if (std::fabs(x) > 24.0 && std::fabs(x) <= 360.0)  x /= 15.0;    // 度→小时
+            if (std::fabs(x) > 360.0) x = fmod(x, 360.0) / 15.0;
+            return norm24(x);
+        };
+        INDI::PropertyNumber lst = dp->getProperty("TIME_LST");
+        double lstH = std::numeric_limits<double>::quiet_NaN();
+        if (lst.isValid() && lst.size() > 0) lstH = toHours(lst[0].getValue());
+        if (!std::isnan(lstH))
+        {
+            auto wrap12 = [](double h){ while (h < -12.0) h += 24.0; while (h >= 12.0) h -= 24.0; return h; };
+            const double ha = wrap12(lstH - raHours);
+            const double sign = (ha >= 0.0) ? +1.0 : -1.0; // 令 |HA| 变大
+            raBackoff = norm24(raHours - sign * kBackoffH);
+        }
+        else
+        {
+            // 兜底按 EAST 策略
+            raBackoff = norm24(raHours - kBackoffH);
+        }
+    }
+
+    // 可选：提升到最高速以尽快回退（忽略失败）
+    int totalRates = 0;
+    if (getTelescopeTotalSlewRate(dp, totalRates) == QHYCCD_SUCCESS && totalRates > 0)
+    {
+        setTelescopeSlewRate(dp, totalRates);
+    }
+
+    // 1) 回退到 raBackoff/decDeg（不强制追踪）
+    if (slewTelescopeJNowNonBlock(dp, raBackoff, decDeg, false) != QHYCCD_SUCCESS)
+    {
+        Logger::Log("indi_client | startFlip | Error: backoff slew failed", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+
     return QHYCCD_SUCCESS;
 }
 
@@ -1740,6 +1822,8 @@ uint32_t MyClient::setTelescopeAbortMotion(INDI::BaseDevice *dp)
     mountState.isHoming = false;
     mountState.isGuiding = false;
     mountState.isMoving = false;
+    mountState.isFlipping = false;
+    mountState.isFlipBacking = false;
     if(MountGotoTimer.isActive())
     {
         MountGotoTimer.stop();
@@ -2115,8 +2199,13 @@ uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp, double RA_Hours, 
     property->np[1].value = DEC_Degree;
     sendNewProperty(property);
 
+    if (mountState.isSlewing) {
+        Logger::Log("indi_client | setTelescopeRADECJNOW | Error: telescope is slewing", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+
     // 若不是回零过程，标记为正在转动
-    if (!mountState.isHoming)
+    if (!mountState.isHoming && !mountState.isFlipping && !mountState.isFlipBacking)
         mountState.isSlewing = true;
 
     // ---------------- 判定参数（可按需调整） ----------------
@@ -2151,11 +2240,36 @@ uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp, double RA_Hours, 
             if (eq.getState() == IPS_OK || eq.getState() == IPS_IDLE){
                 MountGotoTimer.stop();
                 QObject::disconnect(&MountGotoTimer, &QTimer::timeout, nullptr, nullptr);
-                if (mountState.isHoming) mountState.isHoming = false;
-                else                     mountState.isSlewing = false;
-                Logger::Log("indi_client | setTelescopeRADECJNOW | Mount Goto Completed",
-                            LogLevel::INFO, DeviceType::MOUNT);
-                return;
+                if (mountState.isHoming) {
+                    mountState.isHoming = false;
+                    Logger::Log("indi_client | setTelescopeRADECJNOW | Homing Completed!", LogLevel::INFO, DeviceType::MOUNT);
+                    return;
+                }
+                else if(mountState.isSlewing) {
+                    mountState.isSlewing = false;
+                    Logger::Log("indi_client | setTelescopeRADECJNOW | Slew Completed!", LogLevel::INFO, DeviceType::MOUNT);
+                    return;
+                }
+                else if(mountState.isFlipping) {
+                    mountState.isFlipping = false;
+                    mountState.isFlipBacking = false;
+                    Logger::Log("indi_client | setTelescopeRADECJNOW | Flip Completed!", LogLevel::INFO, DeviceType::MOUNT);
+                    return;
+                }else if(mountState.isFlipBacking) {
+                    mountState.isFlipBacking = false;
+                    mountState.isFlipping = true;
+                    if (slewTelescopeJNowNonBlock(dp, mountState.Flip_RA_Hours, mountState.Flip_DEC_Degree, true) == QHYCCD_SUCCESS)
+                    {
+                        Logger::Log("indi_client | setTelescopeRADECJNOW | Flip Back Completed,start flip!", LogLevel::INFO, DeviceType::MOUNT);
+                        return;
+                    }else{
+                        Logger::Log("indi_client | setTelescopeRADECJNOW | Flip Back Completed,but start flip failed!", LogLevel::WARNING, DeviceType::MOUNT);
+                        return;
+                    }
+                }else{
+                    Logger::Log("indi_client | setTelescopeRADECJNOW | Unknown state completed!", LogLevel::WARNING, DeviceType::MOUNT);
+                    return;
+                }
             }
         }else{
             Logger::Log("indi_client | setTelescopeRADECJNOW | EQUATORIAL_EOD_COORD not found",
@@ -2223,9 +2337,11 @@ uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp, double RA_Hou
         action = "TRACK";
     else
         action = "SLEW";
-    
-    if (mountState.isMovingNow()) return QHYCCD_ERROR;
-    if (mountState.isParked) return QHYCCD_ERROR;
+
+    if (mountState.isParked) {
+        Logger::Log("indi_client | slewTelescopeJNowNonBlock | Error: telescope is parked", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
 
     uint32_t result1 = setTelescopeActionAfterPositionSet(dp, action);
     uint32_t result2 = setTelescopeRADECJNOW(dp, RA_Hours, DEC_Degree);

@@ -616,6 +616,7 @@ public:
     bool isFocusMoveDone = false;  // 是否移动完成
     int focuserMaxPosition = -1;   // 行程上限
     int focuserMinPosition = -1;   // 行程下限
+    int autofocusBacklashCompensation = 0; // 自动对焦空程补偿值
 
     /**
      * @brief 控制电调按当前方向移动（持续）
@@ -707,6 +708,24 @@ public:
     AutoFocus *autoFocus = nullptr; // 自动对焦对象
     int  autoFocusStep = 0;         // 自动对焦步数
     bool autoFocuserIsROI = false;  // 是否使用 ROI 对焦
+    
+
+    /**
+     * @brief 获取焦距器参数
+     */
+    void getFocuserParameters();
+    /**
+     * @brief 清理与 AutoFocus 对象之间的所有信号槽连接，避免重复连接
+     */
+    void cleanupAutoFocusConnections();
+
+    // 自动对焦相关信号连接集合，用于统一释放避免重复连接
+    QVector<QMetaObject::Connection> autoFocusConnections;
+
+    /**
+     * @brief 获取焦距器状态
+     */
+    void getFocuserState();
 
     /**
      * @brief 发送 ROI 信息到前端
@@ -1412,6 +1431,8 @@ public:
     QElapsedTimer glMainCameraCaptureTimer; // 拍摄计时
 
     bool isAutoFlip = false;                  // 是否自动翻转
+    int flipPrepareTimeDefault = 10;          // 预备翻转时间默认值
+    int flipPrepareTime = flipPrepareTimeDefault;                 // 预备翻转时间（秒）,当为0时开始翻转
     double EastMinutesPastMeridian = 10;       // 东边分钟过中天
     double WestMinutesPastMeridian = 10;       // 西边分钟过中天
 

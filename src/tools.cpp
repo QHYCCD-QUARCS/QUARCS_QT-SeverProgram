@@ -49,13 +49,13 @@ Tools::~Tools() {
 //   ReleaseQHYCCDResource();
 }
 // 静态变量存储最后一次检测的FWHM值
-static double g_lastFWHM = 0.0;
+static double g_lastHFR = 0.0;
 
 bool Tools::findStarsByPython_Process(QString filename)
 {
     QString program = "python3";
     QStringList arguments;
-    arguments << "../2.py" << filename;
+    arguments << "../findstars.py" << filename;
 
     QProcess process;
     process.start(program, arguments);
@@ -81,41 +81,42 @@ bool Tools::findStarsByPython_Process(QString filename)
 
     qDebug() << "Output from Python script:" << output;
     
-    // 解析Python脚本输出中的FWHM值
+    // 解析Python脚本输出中的HFR值
     QString outputStr = QString::fromUtf8(output);
     QStringList lines = outputStr.split('\n', Qt::SkipEmptyParts);
     
-    // 查找包含"最终FWHM"的行
+    // 查找包含"最终HFR"的行
     for (const QString& line : lines) {
-        if (line.contains("最终FWHM")) {
-            // 提取FWHM数值
-            QRegExp rx("最终FWHM\\s*=\\s*([0-9.]+)");
+        if (line.contains("最终HFR")) {
+            // 提取HFR数值
+            QRegExp rx("最终HFR\\s*=\\s*([0-9.]+)");
             if (rx.indexIn(line) != -1) {
                 bool ok;
-                g_lastFWHM = rx.cap(1).toDouble(&ok);
+                g_lastHFR = rx.cap(1).toDouble(&ok);
                 if (ok) {
-                    qDebug() << "解析到FWHM值:" << g_lastFWHM;
+                    qDebug() << "解析到HFR值:" << g_lastHFR;
                 } else {
-                    g_lastFWHM = 3.5; // 默认值
+                    g_lastHFR = 100; // 默认值，表示较清晰状态
                 }
             } else {
-                g_lastFWHM = 3.5; // 默认值
+                g_lastHFR = 100; // 默认值，表示较清晰状态
             }
             break;
         }
     }
     
-    // 如果没有找到FWHM值，使用默认值
-    if (g_lastFWHM == 0.0) {
-        g_lastFWHM = 3.5;
+    // 如果没有找到HFR值，使用默认值
+    if (g_lastHFR == 0.0) {
+        g_lastHFR = 100; // 默认值，表示较清晰状态
     }
     
     return true;
 }
 
-double Tools::getLastFWHM()
+
+double Tools::getLastHFR()
 {
-    return g_lastFWHM;
+    return g_lastHFR;
 }
 void Tools::Initialize() { instance_ = new Tools; }
 
@@ -5445,6 +5446,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     // filename = "/home/quarcs/workspace/testimage/0.fits";
     PlateSolveInProgress = true;
     isSolveImageFinished = false;
+    mode = 1; // TODO:测试模式,使用模式1
 
     MinMaxFOV FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
 
@@ -5518,8 +5520,6 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
             // 如果两个参数都有效，actualMode保持为2
         }
         
-        actualMode = 0;
-
         // 根据实际模式构建命令
         switch (actualMode) {
             case 1:

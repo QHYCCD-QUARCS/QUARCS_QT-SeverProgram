@@ -265,8 +265,7 @@ class Tools : public QObject {
     return instance_;
   }
 
-  bool findStarsByPython_Process(QString filename);
-  double getLastFWHM();
+
 
   static void Initialize();
   static void Release();
@@ -367,6 +366,9 @@ class Tools : public QObject {
   static cv::Mat CalMoments(cv::Mat image);
 
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
+
+  static bool findStarsByPython_Process(QString filename);
+  static double getLastHFR();
 
   static loadFitsResult loadFits(QString fileName);
 
@@ -485,6 +487,8 @@ signals:
   ~Tools();
 
   QList<FITSImage::Star> FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR);
+
+
 };
 
 #endif  // TOOLS_HPP
