@@ -3134,62 +3134,41 @@ void MainWindow::continueConnectAllDeviceOnce()
                 QStringList connectedPorts = getConnectedSerialPorts();
                 for (int j = 0; j < connectedPorts.size(); j++)
                 {
-
                     Logger::Log("Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    if (connectedPorts[j].contains("ttyACM"))
-                    {
-                        Logger::Log("Found ttyACM device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    }
-                    else
-                    {
-                        Logger::Log("Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
-                        continue;
-                    }
-                    QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                    // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
+                    QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
                     QString link = "";
-                    if (links.isEmpty())
+                    if (!byIdLinks.isEmpty())
                     {
-                        Logger::Log("No link found for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        link = selectBestByIdLink(byIdLinks, "Focuser");
                     }
-                    else
+                    // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
+                    if (link == "")
                     {
-                        for (int k = 0; k < links.size(); k++)
+                        if (connectedPorts[j].contains("ttyACM"))
                         {
-                            if (areFilesInSameDirectory(links[k], DevicePort))
-                            {
-                                if (link == "")
-                                {
-                                    link = links[k];
-                                }
-                                else
-                                {
-                                    Logger::Log("No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                    link = "";
-                                    break;
-                                }
-                            }
+                            link = "/dev/" + connectedPorts[j];
                         }
-                        if (link == "")
+                        else
                         {
-                            Logger::Log("No Found link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            Logger::Log("Skip non-ACM port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                             continue;
                         }
-                        Logger::Log("Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                        DevicePort = link;
-                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                        indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-                        indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                        waitTime = 0;
-                        while (waitTime < 5)
+                    }
+                    Logger::Log("Selected link for Focuser: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    DevicePort = link;
+                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                    waitTime = 0;
+                    while (waitTime < 5)
+                    {
+                        Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+                        QThread::msleep(1000); // 等待1秒
+                        waitTime++;
+                        if (indi_Client->GetDeviceFromList(i)->isConnected())
                         {
-                            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
-
-                            QThread::msleep(1000); // 等待1秒
-                            waitTime++;
-                            if (indi_Client->GetDeviceFromList(i)->isConnected())
-                            {
-                                break;
-                            }
+                            break;
                         }
                     }
                 }
@@ -3208,62 +3187,41 @@ void MainWindow::continueConnectAllDeviceOnce()
                 QStringList connectedPorts = getConnectedSerialPorts();
                 for (int j = 0; j < connectedPorts.size(); j++)
                 {
-
                     Logger::Log("Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    if (connectedPorts[j].contains("ttyUSB"))
-                    {
-                        Logger::Log("Found ttyUSB device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    }
-                    else
-                    {
-                        Logger::Log("Not found ttyUSB device", LogLevel::INFO, DeviceType::MAIN);
-                        continue;
-                    }
-                    QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                    // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
+                    QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
                     QString link = "";
-                    if (links.isEmpty())
+                    if (!byIdLinks.isEmpty())
                     {
-                        Logger::Log("No link found for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        link = selectBestByIdLink(byIdLinks, "Mount");
                     }
-                    else
+                    // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
+                    if (link == "")
                     {
-                        for (int k = 0; k < links.size(); k++)
+                        if (connectedPorts[j].contains("ttyUSB"))
                         {
-                            if (areFilesInSameDirectory(links[k], DevicePort))
-                            {
-                                if (link == "")
-                                {
-                                    link = links[k];
-                                }
-                                else
-                                {
-                                    Logger::Log("No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                    link = "";
-                                    break;
-                                }
-                            }
+                            link = "/dev/" + connectedPorts[j];
                         }
-                        if (link == "")
+                        else
                         {
-                            Logger::Log("No Found link for " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            Logger::Log("Skip non-USB port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                             continue;
                         }
-                        Logger::Log("Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                        DevicePort = link;
-                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                        indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-                        indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                        waitTime = 0;
-                        while (waitTime < 5)
+                    }
+                    Logger::Log("Selected link for Mount: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    DevicePort = link;
+                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                    waitTime = 0;
+                    while (waitTime < 5)
+                    {
+                        Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+                        QThread::msleep(1000); // 等待1秒
+                        waitTime++;
+                        if (indi_Client->GetDeviceFromList(i)->isConnected())
                         {
-                            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
-
-                            QThread::msleep(1000); // 等待1秒
-                            waitTime++;
-                            if (indi_Client->GetDeviceFromList(i)->isConnected())
-                            {
-                                break;
-                            }
+                            break;
                         }
                     }
                 }
@@ -8533,46 +8491,28 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             for (int j = 0; j < connectedPorts.size(); j++)
                             {
                                 Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                if (connectedPorts[j].contains("ttyACM"))
-                                {
-                                    Logger::Log("ConnectDriver | Found ttyACM device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                }
-                                else
-                                {
-                                    Logger::Log("ConnectDriver | Not found ttyACM device", LogLevel::INFO, DeviceType::MAIN);
-                                    continue;
-                                }
-                                QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                                // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
+                                QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
                                 QString link = "";
-                                if (links.isEmpty())
+                                if (!byIdLinks.isEmpty())
                                 {
-                                    Logger::Log("ConnectDriver | No link found for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                    link = selectBestByIdLink(byIdLinks, "Focuser");
                                 }
-                                else
+                                // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
+                                if (link == "")
                                 {
-                                    for (int k = 0; k < links.size(); k++)
+                                    if (connectedPorts[j].contains("ttyACM"))
                                     {
-                                        if (areFilesInSameDirectory(links[k], DevicePort))
-                                        {
-                                            if (link == "")
-                                            {
-                                                link = links[k];
-                                            }
-                                            else
-                                            {
-                                                Logger::Log("ConnectDriver | No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-                                                link = "";
-                                                break;
-                                            }
-                                        }
+                                        link = "/dev/" + connectedPorts[j];
                                     }
-                                    if (link == "")
+                                    else
                                     {
-                                        Logger::Log("ConnectDriver | No Found link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                        Logger::Log("ConnectDriver | Skip non-ACM port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                                         continue;
                                     }
-                                    Logger::Log("ConnectDriver | Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                    DevicePort = link;
+                                }
+                                Logger::Log("ConnectDriver | Selected link for Focuser: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                DevicePort = link;
                                     indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
                                     indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
                                     indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
@@ -8596,7 +8536,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 }
                             }
                         }
-                    }
+                    
                     else if (DriverType == "Mount")
                     {
                         QString DevicePort;
@@ -8611,46 +8551,28 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             for (int j = 0; j < connectedPorts.size(); j++)
                             {
                                 Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                if (connectedPorts[j].contains("ttyUSB"))
-                                {
-                                    Logger::Log("ConnectDriver | Found ttyUSB device:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                }
-                                else
-                                {
-                                    Logger::Log("ConnectDriver | Not found ttyUSB device", LogLevel::INFO, DeviceType::MAIN);
-                                    continue;
-                                }
-                                QStringList links = findLinkToTtyDevice("/dev", connectedPorts[j]);
+                                // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
+                                QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
                                 QString link = "";
-                                if (links.isEmpty())
+                                if (!byIdLinks.isEmpty())
                                 {
-                                    Logger::Log("ConnectDriver | No link found for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                    link = selectBestByIdLink(byIdLinks, "Mount");
                                 }
-                                else
+                                // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
+                                if (link == "")
                                 {
-                                    for (int k = 0; k < links.size(); k++)
+                                    if (connectedPorts[j].contains("ttyUSB"))
                                     {
-                                        if (areFilesInSameDirectory(links[k], DevicePort))
-                                        {
-                                            if (link == "")
-                                            {
-                                                link = links[k];
-                                            }
-                                            else
-                                            {
-                                                Logger::Log("ConnectDriver | No Found only one link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-                                                link = "";
-                                                break;
-                                            }
-                                        }
+                                        link = "/dev/" + connectedPorts[j];
                                     }
-                                    if (link == "")
+                                    else
                                     {
-                                        Logger::Log("ConnectDriver | No Found link for " + connectedPorts[j].toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                        Logger::Log("ConnectDriver | Skip non-USB port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                                         continue;
                                     }
-                                    Logger::Log("ConnectDriver | Link found for " + connectedPorts[j].toStdString() + ": " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                    DevicePort = link;
+                                }
+                                Logger::Log("ConnectDriver | Selected link for Mount: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                DevicePort = link;
                                     indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
                                     indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
                                     indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
@@ -8674,7 +8596,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 }
                             }
                         }
-                    }
+                    
                     else
                     {
                         emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
@@ -9309,6 +9231,87 @@ bool MainWindow::areFilesInSameDirectory(const QString &path1, const QString &pa
 
     // 比较目录路径是否相同
     return (dir1 == dir2);
+}
+
+QStringList MainWindow::getByIdLinksForTty(const QString &ttyDevice)
+{
+    QStringList results;
+    QString baseDir = "/dev/serial/by-id";
+    QDir dir(baseDir);
+    if (!dir.exists())
+    {
+        return results;
+    }
+
+    QFileInfoList entryList = dir.entryInfoList(QDir::Files | QDir::System | QDir::NoDotAndDotDot);
+    QString targetDevice = "/dev/" + ttyDevice;
+    for (const QFileInfo &entry : entryList)
+    {
+        if (!entry.isSymLink())
+        {
+            continue;
+        }
+        QString target = entry.symLinkTarget();
+        if (QDir::isRelativePath(target))
+        {
+            // 归一化相对路径为绝对路径
+            target = entry.absoluteDir().absoluteFilePath(target);
+        }
+        QString normalizedTarget = QDir::cleanPath(target);
+        if (normalizedTarget == targetDevice)
+        {
+            results.append(entry.absoluteFilePath());
+            Logger::Log("getByIdLinksForTty | found by-id link:" + entry.absoluteFilePath().toStdString() + " -> " + normalizedTarget.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        }
+    }
+    return results;
+}
+
+static int scoreByIdLinkForType(const QString &fileNameLower, const QString &driverType)
+{
+    // 简单关键字打分，匹配越多分越高
+    int score = 0;
+    if (driverType == "Focuser")
+    {
+        if (fileNameLower.contains("gigadevice")) score += 2;
+        if (fileNameLower.contains("gd32")) score += 2;
+        if (fileNameLower.contains("cdc_acm")) score += 1;
+        if (fileNameLower.contains("acm")) score += 1;
+    }
+    else if (driverType == "Mount")
+    {
+        if (fileNameLower.contains("1a86")) score += 2;          // WCH/CH34x VID
+        if (fileNameLower.contains("usb_serial")) score += 2;    // CH34x 常见 by-id
+        if (fileNameLower.contains("ch34")) score += 2;
+        if (fileNameLower.contains("wch")) score += 1;
+        if (fileNameLower.contains("ttyusb")) score += 1;        // 兜底弱信号
+    }
+    return score;
+}
+
+bool MainWindow::isByIdLinkForDriverType(const QString &symlinkPath, const QString &driverType)
+{
+    QFileInfo fi(symlinkPath);
+    QString nameLower = fi.fileName().toLower();
+    return scoreByIdLinkForType(nameLower, driverType) > 0;
+}
+
+QString MainWindow::selectBestByIdLink(const QStringList &links, const QString &driverType)
+{
+    int bestScore = -1;
+    QString best;
+    for (const QString &link : links)
+    {
+        QFileInfo fi(link);
+        QString nameLower = fi.fileName().toLower();
+        int s = scoreByIdLinkForType(nameLower, driverType);
+        if (s > bestScore)
+        {
+            bestScore = s;
+            best = link;
+        }
+    }
+    return best;
 }
 
 void MainWindow::onParseInfoEmitted(const QString &message)

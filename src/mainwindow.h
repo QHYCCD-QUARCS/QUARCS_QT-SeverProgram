@@ -1336,6 +1336,29 @@ public:
      */
     bool areFilesInSameDirectory(const QString &path1, const QString &path2);
 
+    /**
+     * @brief 获取指向指定 tty 设备的 /dev/serial/by-id 符号链接
+     * @param ttyDevice 目标 tty 设备名（如 ttyUSB0/ttyACM0）
+     * @return by-id 符号链接列表
+     */
+    QStringList getByIdLinksForTty(const QString &ttyDevice);
+
+    /**
+     * @brief 判断 by-id 链接是否匹配指定驱动类型（Focuser/Mount）
+     * @param symlinkPath by-id 符号链接完整路径
+     * @param driverType 驱动类型（"Focuser"/"Mount"）
+     * @return 匹配返回 true
+     */
+    bool isByIdLinkForDriverType(const QString &symlinkPath, const QString &driverType);
+
+    /**
+     * @brief 在一组 by-id 链接中为指定驱动类型选择最优项
+     * @param links 候选链接
+     * @param driverType 驱动类型（"Focuser"/"Mount"）
+     * @return 选中的链接；若无合适项则返回空字符串
+     */
+    QString selectBestByIdLink(const QStringList &links, const QString &driverType);
+
 /**********************  调试/日志 & 前端交互  **********************/
 public:
     /**
