@@ -3145,13 +3145,16 @@ void MainWindow::continueConnectAllDeviceOnce()
                     // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
                     if (link == "")
                     {
-                        if (connectedPorts[j].contains("ttyACM"))
+                        if (connectedPorts[j].contains("ttyACM")
+                            || connectedPorts[j].contains("ttyUSB")
+                            || connectedPorts[j].contains("ttyAMA")
+                            || connectedPorts[j].contains("ttyS"))
                         {
                             link = "/dev/" + connectedPorts[j];
                         }
                         else
                         {
-                            Logger::Log("Skip non-ACM port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            Logger::Log("Skip unsupported serial port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                             continue;
                         }
                     }
@@ -3198,13 +3201,16 @@ void MainWindow::continueConnectAllDeviceOnce()
                     // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
                     if (link == "")
                     {
-                        if (connectedPorts[j].contains("ttyUSB"))
+                        if (connectedPorts[j].contains("ttyUSB")
+                            || connectedPorts[j].contains("ttyACM")
+                            || connectedPorts[j].contains("ttyAMA")
+                            || connectedPorts[j].contains("ttyS"))
                         {
                             link = "/dev/" + connectedPorts[j];
                         }
                         else
                         {
-                            Logger::Log("Skip non-USB port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            Logger::Log("Skip unsupported serial port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                             continue;
                         }
                     }
@@ -8501,13 +8507,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
                                 if (link == "")
                                 {
-                                    if (connectedPorts[j].contains("ttyACM"))
+                                    if (connectedPorts[j].contains("ttyACM")
+                                        || connectedPorts[j].contains("ttyUSB")
+                                        || connectedPorts[j].contains("ttyAMA")
+                                        || connectedPorts[j].contains("ttyS"))
                                     {
                                         link = "/dev/" + connectedPorts[j];
                                     }
                                     else
                                     {
-                                        Logger::Log("ConnectDriver | Skip non-ACM port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                        Logger::Log("ConnectDriver | Skip unsupported serial port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                                         continue;
                                     }
                                 }
@@ -8561,13 +8570,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
                                 if (link == "")
                                 {
-                                    if (connectedPorts[j].contains("ttyUSB"))
+                                    if (connectedPorts[j].contains("ttyUSB")
+                                        || connectedPorts[j].contains("ttyACM")
+                                        || connectedPorts[j].contains("ttyAMA")
+                                        || connectedPorts[j].contains("ttyS"))
                                     {
                                         link = "/dev/" + connectedPorts[j];
                                     }
                                     else
                                     {
-                                        Logger::Log("ConnectDriver | Skip non-USB port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                                        Logger::Log("ConnectDriver | Skip unsupported serial port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
                                         continue;
                                     }
                                 }
