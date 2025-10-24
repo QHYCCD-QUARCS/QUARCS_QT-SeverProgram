@@ -6118,9 +6118,9 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
         if (CurrentPosition == TargetPosition)
         {
             int steps = CurrentPosition - focuserMinPosition;
-            if (steps > focuserMaxPosition)
+            if (steps > 60000)  // 特殊定义,单次移动距离不得大于60000步
             {
-                steps = focuserMaxPosition;
+                steps = 60000;
                 TargetPosition = CurrentPosition - steps;
             }
             else
@@ -6150,9 +6150,9 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
         if (TargetPosition == CurrentPosition)
         {
             int steps = focuserMaxPosition - CurrentPosition;
-            if (steps > focuserMaxPosition)
+            if (steps > 60000)  // 特殊定义,单次移动距离不得大于60000步
             {
-                steps = focuserMaxPosition;
+                steps = 60000;
                 TargetPosition = CurrentPosition + steps;
             }
             else
