@@ -58,7 +58,7 @@ namespace fs = std::filesystem;
 #include "Logger.h"
 #include "autopolaralignment.h"
 #include "autofocus.h"
-
+#include "SerialDeviceDetector.h"
 #include <stellarsolver.h>
 
 /**********************  宏与常量定义  **********************/
@@ -1307,6 +1307,8 @@ public:
 
 /**********************  串口/设备路径  **********************/
 public:
+    SerialDeviceDetector detector; // 串口设备检测器
+
     /**
      * @brief 获取当前连接的串口列表
      * @return 串口名列表
@@ -1358,6 +1360,16 @@ public:
      * @return 选中的链接；若无合适项则返回空字符串
      */
     QString selectBestByIdLink(const QStringList &links, const QString &driverType);
+
+    /**
+     * @brief 根据 tty 名称对设备类型打分（Focuser/Mount）
+     */
+    int scoreTtyNameForType(const QString &ttyDevice, const QString &driverType);
+
+    /**
+     * @brief 综合 by-id 与 tty 名称对端口进行打分
+     */
+    int scorePortForType(const QString &ttyDevice, const QStringList &byIdLinks, const QString &driverType);
 
 /**********************  调试/日志 & 前端交互  **********************/
 public:

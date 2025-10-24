@@ -37,6 +37,7 @@ add_executable(client
   autofocus.h autofocus.cpp
   starsimulator.h starsimulator.cpp
   mountstate.h
+  SerialDeviceDetector.h SerialDeviceDetector.cpp
 )
 
 target_link_libraries(client PRIVATE

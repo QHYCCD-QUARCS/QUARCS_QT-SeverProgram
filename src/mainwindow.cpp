@@ -412,12 +412,6 @@ void MainWindow::onMessageReceived(const QString &message)
         // DeviceConnect();
         ConnectAllDeviceOnce();
     }
-    else if (message == "autoConnectAllDevice")
-    {
-        Logger::Log("autoConnectAllDevice", LogLevel::DEBUG, DeviceType::MAIN);
-        // DeviceConnect();
-        // AutoConnectAllDevice();
-    }
     else if (message == "CS")
     {
         // QString Dev = connectIndiServer();
@@ -3111,6 +3105,56 @@ void MainWindow::continueConnectAllDeviceOnce()
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
         Logger::Log("Start connecting devices:" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+        // 特殊处理(电调和赤道仪)
+        if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE || indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE){
+            QString DevicePort;
+            indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+            QString DeviceType = detector.detectDeviceTypeForPort(DevicePort);
+
+            // 获取设备类型
+            QString DriverType = "";
+            for(int j = 0; j < systemdevicelist.system_devices.size(); j++)
+            {
+                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec())
+                {
+                    DriverType = systemdevicelist.system_devices[j].Description;
+                }
+            }
+            // 处理电调和赤道仪的连接
+            if (DeviceType != "Focuser" && DriverType == "Focuser")
+            {
+                // 识别到当前设备是电调，但是设备的串口不是电调的串口,需更新
+                // 正确的串口是detector.getFocuserPort()
+                QString realFocuserPort = detector.getFocuserPort();
+                if (!realFocuserPort.isEmpty())
+                {
+                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
+                    Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                }
+                else
+                {
+                    Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                    continue;
+                }
+            }else if (DeviceType != "Mount" && DriverType == "Mount")
+            {
+                // 识别到当前设备是赤道仪，但是设备的串口不是赤道仪的串口,需更新
+                // 正确的串口是detector.getMountPort()
+                QString realMountPort = detector.getMountPort();
+                if (!realMountPort.isEmpty())
+                {
+                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
+                    Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                }
+                else
+                {
+                    Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                    continue;
+                }
+            }else{
+                Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
+            }
+        }
         indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
         indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
 
@@ -3121,120 +3165,9 @@ void MainWindow::continueConnectAllDeviceOnce()
             QThread::msleep(1000); // 等待1秒
             waitTime++;
         }
-        if (!indi_Client->GetDeviceFromList(i)->isConnected() && indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE)
-        {
-            QString DevicePort;
-            indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-            // 检查指定的端口是否在/dev/serial/by-id目录下存在
-            QFile portFile(DevicePort);
-            if (!portFile.exists())
-            {
-                Logger::Log("Port " + DevicePort.toStdString() + " does not exist.", LogLevel::ERROR, DeviceType::MAIN);
-                // 获取所有连接的串口
-                QStringList connectedPorts = getConnectedSerialPorts();
-                for (int j = 0; j < connectedPorts.size(); j++)
-                {
-                    Logger::Log("Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
-                    QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
-                    QString link = "";
-                    if (!byIdLinks.isEmpty())
-                    {
-                        link = selectBestByIdLink(byIdLinks, "Focuser");
-                    }
-                    // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
-                    if (link == "")
-                    {
-                        if (connectedPorts[j].contains("ttyACM")
-                            || connectedPorts[j].contains("ttyUSB")
-                            || connectedPorts[j].contains("ttyAMA")
-                            || connectedPorts[j].contains("ttyS"))
-                        {
-                            link = "/dev/" + connectedPorts[j];
-                        }
-                        else
-                        {
-                            Logger::Log("Skip unsupported serial port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                            continue;
-                        }
-                    }
-                    Logger::Log("Selected link for Focuser: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    DevicePort = link;
-                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                    waitTime = 0;
-                    while (waitTime < 5)
-                    {
-                        Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
-                        QThread::msleep(1000); // 等待1秒
-                        waitTime++;
-                        if (indi_Client->GetDeviceFromList(i)->isConnected())
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        else if (!indi_Client->GetDeviceFromList(i)->isConnected() && indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE)
-        {
-            QString DevicePort;
-            indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-            // 检查指定的端口是否在/dev/serial/by-id目录下存在
-            QFile portFile(DevicePort);
-            if (!portFile.exists())
-            {
-                Logger::Log("Port " + DevicePort.toStdString() + " does not exist.", LogLevel::ERROR, DeviceType::MAIN);
-                // 获取所有连接的串口
-                QStringList connectedPorts = getConnectedSerialPorts();
-                for (int j = 0; j < connectedPorts.size(); j++)
-                {
-                    Logger::Log("Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
-                    QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
-                    QString link = "";
-                    if (!byIdLinks.isEmpty())
-                    {
-                        link = selectBestByIdLink(byIdLinks, "Mount");
-                    }
-                    // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
-                    if (link == "")
-                    {
-                        if (connectedPorts[j].contains("ttyUSB")
-                            || connectedPorts[j].contains("ttyACM")
-                            || connectedPorts[j].contains("ttyAMA")
-                            || connectedPorts[j].contains("ttyS"))
-                        {
-                            link = "/dev/" + connectedPorts[j];
-                        }
-                        else
-                        {
-                            Logger::Log("Skip unsupported serial port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                            continue;
-                        }
-                    }
-                    Logger::Log("Selected link for Mount: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    DevicePort = link;
-                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                    waitTime = 0;
-                    while (waitTime < 5)
-                    {
-                        Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
-                        QThread::msleep(1000); // 等待1秒
-                        waitTime++;
-                        if (indi_Client->GetDeviceFromList(i)->isConnected())
-                        {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        
     }
-    // sleep(10);
+
 
     ConnectedCCDList.clear();
     ConnectedTELESCOPEList.clear();
@@ -3405,213 +3338,6 @@ void MainWindow::continueConnectAllDeviceOnce()
     {
         emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
     }
-}
-
-void MainWindow::AutoConnectAllDevice()
-{
-    dpMount = nullptr;
-    dpGuider = nullptr;
-    dpPoleScope = nullptr;
-    dpMainCamera = nullptr;
-    dpFocuser = nullptr;
-    dpCFW = nullptr;
-
-    SystemDeviceList newSystemdevicelist = Tools::readSystemDeviceList();
-    if (newSystemdevicelist.system_devices.size() != systemdevicelist.system_devices.size())
-    {
-        Logger::Log("No historical connection records found", LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectFailed:No historical connection records found.");
-        return;
-    }
-    systemdevicelist = newSystemdevicelist;
-
-    int SelectedDriverNum = Tools::getDriverNumFromSystemDeviceList(systemdevicelist);
-    if (SelectedDriverNum == 0)
-    {
-        Logger::Log("No driver in system device list", LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectFailed:No driver in system device list.");
-        return;
-    }
-
-    // NumberOfTimesConnectDevice = 0;
-
-    Tools::cleanSystemDeviceListConnect(systemdevicelist);
-    disconnectIndiServer(indi_Client);
-    Tools::stopIndiDriverAll(drivers_list);
-
-    QString driverName;
-    QString deviceType;
-    QVector<QString> nameCheck;
-
-    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-    {
-        driverName = systemdevicelist.system_devices[i].DriverIndiName;
-        deviceType = systemdevicelist.system_devices[i].Description;
-        // if (deviceType != ""){
-        //     emit wsThread->sendMessageToClient("AddDeviceType:" + deviceType);
-        // }
-
-        if (driverName != "")
-        {
-            bool isFound = false;
-            for (auto item : nameCheck)
-            {
-                if ((item == driverName) || (item == "indi_qhy_ccd" && driverName == "indi_qhy_ccd2") || (item == "indi_qhy_ccd2" && driverName == "indi_qhy_ccd"))
-                {
-                    isFound = true;
-                    Logger::Log("found one duplite driver,do not start it again" + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    break;
-                }
-            }
-
-            if (isFound == false)
-            {
-                Logger::Log("Start Connect INDI Driver:" + driverName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                Tools::startIndiDriver(driverName);
-                nameCheck.push_back(driverName);
-                sleep(1);
-            }
-            // Tools::startIndiDriver(driverName);
-        }
-    }
-
-    sleep(1);
-
-    if (indi_Client->isServerConnected() == false)
-    {
-        Logger::Log("can not find server", LogLevel::ERROR, DeviceType::MAIN);
-        connectIndiServer(indi_Client);
-        sleep(1);
-    }
-
-    QTimer *timer = new QTimer(this);
-    timer->setInterval(1000); // 设置定时器间隔为1000毫秒
-    int time = 0;
-    connect(timer, &QTimer::timeout, this, [this, timer, &time]()
-            {
-        if (indi_Client->GetDeviceCount() > 0 || time >= 10) {
-            timer->stop();
-            timer->deleteLater();
-            sleep(2);
-            continueAutoConnectAllDevice(); // 继续执行设备连接的剩余部分
-        } else {
-            Logger::Log("Waiting for devices...", LogLevel::INFO, DeviceType::MAIN);
-            time++;
-        } });
-    timer->start();
-}
-
-void MainWindow::continueAutoConnectAllDevice()
-{
-    if (indi_Client->GetDeviceCount() == 0)
-    {
-        Logger::Log("Driver start success but no device found", LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectFailed:No device found.");
-        Tools::stopIndiDriverAll(drivers_list);
-        ConnectDriverList.clear();
-        return;
-    }
-
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-    {
-        Logger::Log("Start connecting devices:" + QString::fromStdString(indi_Client->GetDeviceNameFromList(i)).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-        indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-
-        int waitTime = 0;
-        while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5)
-        {
-            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
-            QThread::msleep(1000); // 等待1秒
-            waitTime++;
-        }
-    }
-
-    // sleep(5);
-    Tools::printSystemDeviceList(systemdevicelist);
-
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++) //  indi_Client->GetDeviceFromList(i)
-    {
-        if (indi_Client->GetDeviceFromList(i)->isConnected())
-        {
-            int index;
-            uint32_t ret;
-            ret = Tools::getIndexFromSystemDeviceListByName(systemdevicelist, QString::fromStdString(indi_Client->GetDeviceFromList(i)->getDeviceName()), index);
-            if (ret == QHYCCD_SUCCESS)
-            {
-                systemdevicelist.system_devices[index].dp = indi_Client->GetDeviceFromList(i);
-                systemdevicelist.system_devices[index].isConnect = true;
-
-                if (index == 1)
-                {
-                    indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(i)->getDeviceName());
-                    sleep(1);
-                    call_phd_whichCamera(systemdevicelist.system_devices[index].dp->getDeviceName()); // PHD2 Guider Connect
-                }
-            }
-        }
-        else
-        {
-            QString DeviceName = indi_Client->GetDeviceFromList(i)->getDeviceName();
-            Logger::Log("Connect failed device:" + DeviceName.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("ConnectFailed:Connect device failed:" + DeviceName);
-        }
-    }
-
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-    {
-        if (indi_Client->GetDeviceFromList(i)->isConnected())
-        {
-            for (int j = 0; j < systemdevicelist.system_devices.size(); j++)
-            {
-                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec())
-                {
-                    emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[j].Description);
-                }
-            }
-        }
-    }
-
-    Tools::printSystemDeviceList(systemdevicelist);
-
-    if (systemdevicelist.system_devices[0].dp != NULL)
-    {
-        Logger::Log("Find dpMount", LogLevel::INFO, DeviceType::MAIN);
-        dpMount = systemdevicelist.system_devices[0].dp;
-    }
-    if (systemdevicelist.system_devices[1].dp != NULL)
-    {
-        Logger::Log("Find dpGuider", LogLevel::INFO, DeviceType::MAIN);
-        dpGuider = systemdevicelist.system_devices[1].dp;
-    }
-    if (systemdevicelist.system_devices[2].dp != NULL)
-    {
-        Logger::Log("Find dpPoleScope", LogLevel::INFO, DeviceType::MAIN);
-        dpPoleScope = systemdevicelist.system_devices[2].dp;
-    }
-    if (systemdevicelist.system_devices[20].dp != NULL)
-    {
-        Logger::Log("Find dpMainCamera", LogLevel::INFO, DeviceType::MAIN);
-        dpMainCamera = systemdevicelist.system_devices[20].dp;
-    }
-    if (systemdevicelist.system_devices[21].dp != NULL)
-    {
-        Logger::Log("Find dpCFW", LogLevel::INFO, DeviceType::MAIN);
-        dpCFW = systemdevicelist.system_devices[21].dp;
-    }
-    if (systemdevicelist.system_devices[22].dp != NULL)
-    {
-        Logger::Log("Find dpFocuser", LogLevel::INFO, DeviceType::MAIN);
-        dpFocuser = systemdevicelist.system_devices[22].dp;
-    }
-
-    if (dpFocuser == nullptr && dpMount == nullptr && dpMainCamera == nullptr && dpGuider == nullptr && dpPoleScope == nullptr && dpCFW == nullptr)
-    {
-        Logger::Log("all device connect failed", LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectFailed:all device connect failed.");
-        return;
-    }
-    AfterDeviceConnect();
 }
 
 void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
@@ -8462,6 +8188,57 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             else
             {
                 Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is connecting...", LogLevel::INFO, DeviceType::MAIN);
+                // 特殊处理电调和赤道仪的连接
+                if (DriverType == "Focuser")
+                {
+                    // 电调当前的串口
+                    QString DevicePort;
+                    indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                    if (detector.detectDeviceTypeForPort(DevicePort) != "Focuser")
+                    {
+                        // 识别到当前设备的串口不是电调的串口,需更新
+                        // 正确的串口是detector.getFocuserPort()
+                        QString realFocuserPort = detector.getFocuserPort();
+                        if (!realFocuserPort.isEmpty())
+                        {
+                            indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
+                            Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                            continue;
+                        }
+                    }else{
+                        Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is correct.", LogLevel::INFO, DeviceType::MAIN);
+                    }
+                }
+                else if (DriverType == "Mount")
+                {
+                    // 赤道仪当前的串口
+                    QString DevicePort;
+                    indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                    if (detector.detectDeviceTypeForPort(DevicePort) != "Mount")
+                    {
+                        // 识别到当前设备的串口不是赤道仪的串口,需更新
+                        // 正确的串口是detector.getMountPort()
+                        QString realMountPort = detector.getMountPort();
+                        if (!realMountPort.isEmpty())
+                        {
+                            indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
+                            Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                            continue;
+                        }
+                    }else{
+                        Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is correct.", LogLevel::INFO, DeviceType::MAIN);
+                    }
+                }else{
+                    Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
+                }
                 indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
                 indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                 int waitTime = 0;
@@ -8480,143 +8257,12 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 if (connectState)
                 {
                     connectedDeviceIdList.push_back(i);
-                }
-                else
-                {
-                    if (DriverType == "Focuser")
-                    {
-                        QString DevicePort;
-                        indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                        // 检查指定的端口是否在/dev/serial/by-id目录下存在
-                        QFile portFile(DevicePort);
-                        if (!portFile.exists())
-                        {
-                            Logger::Log("ConnectDriver | Port " + DevicePort.toStdString() + " does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-                            // 获取所有连接的串口
-                            QStringList connectedPorts = getConnectedSerialPorts();
-                            for (int j = 0; j < connectedPorts.size(); j++)
-                            {
-                                Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
-                                QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
-                                QString link = "";
-                                if (!byIdLinks.isEmpty())
-                                {
-                                    link = selectBestByIdLink(byIdLinks, "Focuser");
-                                }
-                                // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
-                                if (link == "")
-                                {
-                                    if (connectedPorts[j].contains("ttyACM")
-                                        || connectedPorts[j].contains("ttyUSB")
-                                        || connectedPorts[j].contains("ttyAMA")
-                                        || connectedPorts[j].contains("ttyS"))
-                                    {
-                                        link = "/dev/" + connectedPorts[j];
-                                    }
-                                    else
-                                    {
-                                        Logger::Log("ConnectDriver | Skip unsupported serial port for Focuser: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                        continue;
-                                    }
-                                }
-                                Logger::Log("ConnectDriver | Selected link for Focuser: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                DevicePort = link;
-                                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-                                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                                    waitTime = 0;
-                                    connectState = false;
-                                    while (waitTime < 30)
-                                    {
-                                        Logger::Log("ConnectDriver | Wait for Connect" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
-                                        QThread::msleep(1000); // 等待1秒
-                                        waitTime++;
-                                        if (indi_Client->GetDeviceFromList(i)->isConnected())
-                                        {
-                                            connectState = true;
-                                            break;
-                                        }
-                                    }
-                                    if (connectState)
-                                    {
-                                        connectedDeviceIdList.push_back(i);
-                                    }
-                                }
-                            }
-                        }
-                    
-                    else if (DriverType == "Mount")
-                    {
-                        QString DevicePort;
-                        indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                        // 检查指定的端口是否在/dev/serial/by-id目录下存在
-                        QFile portFile(DevicePort);
-                        if (!portFile.exists())
-                        {
-                            Logger::Log("ConnectDriver | Port " + DevicePort.toStdString() + " does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-                            // 获取所有连接的串口
-                            QStringList connectedPorts = getConnectedSerialPorts();
-                            for (int j = 0; j < connectedPorts.size(); j++)
-                            {
-                                Logger::Log("ConnectDriver | Connected Ports:" + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                // 优先使用 /dev/serial/by-id 下的稳定链接进行识别
-                                QStringList byIdLinks = getByIdLinksForTty(connectedPorts[j]);
-                                QString link = "";
-                                if (!byIdLinks.isEmpty())
-                                {
-                                    link = selectBestByIdLink(byIdLinks, "Mount");
-                                }
-                                // 兜底：若 by-id 不存在，则使用 /dev/tty* 路径，但仅当端口命名符合期望
-                                if (link == "")
-                                {
-                                    if (connectedPorts[j].contains("ttyUSB")
-                                        || connectedPorts[j].contains("ttyACM")
-                                        || connectedPorts[j].contains("ttyAMA")
-                                        || connectedPorts[j].contains("ttyS"))
-                                    {
-                                        link = "/dev/" + connectedPorts[j];
-                                    }
-                                    else
-                                    {
-                                        Logger::Log("ConnectDriver | Skip unsupported serial port for Mount: " + connectedPorts[j].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                        continue;
-                                    }
-                                }
-                                Logger::Log("ConnectDriver | Selected link for Mount: " + link.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                                DevicePort = link;
-                                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-                                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                                    waitTime = 0;
-                                    connectState = false;
-                                    while (waitTime < 30)
-                                    {
-                                        Logger::Log("ConnectDriver | Wait for Connect" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
-                                        QThread::msleep(1000); // 等待1秒
-                                        waitTime++;
-                                        if (indi_Client->GetDeviceFromList(i)->isConnected())
-                                        {
-                                            connectState = true;
-                                            break;
-                                        }
-                                    }
-                                    if (connectState)
-                                    {
-                                        connectedDeviceIdList.push_back(i);
-                                    }
-                                }
-                            }
-                        }
-                    
-                    else
-                    {
-                        emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
-                        indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                        Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
-                        indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                    }
-                }
+                }else{
+                    emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
+                    indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                    Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
+                    indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                }   
             }
         }
     }
