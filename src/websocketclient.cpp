@@ -2,6 +2,7 @@
 #include <QDebug>
 #include <QSslError>
 #include <QSslConfiguration>
+#include <QMetaObject>
 
 
 WebSocketClient::WebSocketClient(const QUrl &httpUrl, const QUrl &httpsUrl, QObject *parent) :
@@ -23,6 +24,7 @@ WebSocketClient::WebSocketClient(const QUrl &httpUrl, const QUrl &httpsUrl, QObj
         connect(&httpsWebSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error),
                 this, &WebSocketClient::onError);
         connect(&httpsWebSocket, &QWebSocket::sslErrors, this, &WebSocketClient::onSslErrors);
+        connect(&httpsWebSocket, &QWebSocket::pong, this, &WebSocketClient::onPongReceived);
         
         httpsWebSocket.open(httpsUrl);
     }
@@ -32,16 +34,22 @@ WebSocketClient::WebSocketClient(const QUrl &httpUrl, const QUrl &httpsUrl, QObj
         connect(&httpWebSocket, &QWebSocket::disconnected, this, &WebSocketClient::onHttpDisconnected);
         connect(&httpWebSocket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error),
                 this, &WebSocketClient::onError);
+        connect(&httpWebSocket, &QWebSocket::pong, this, &WebSocketClient::onPongReceived);
         httpWebSocket.open(httpUrl);
     }
 
-    // 初始化自动重连定时器
-    reconnectTimer.setInterval(1000);
+    // 初始化自动重连定时器（指数退避）
+    reconnectTimer.setInterval(currentReconnectIntervalMs);
     connect(&reconnectTimer, &QTimer::timeout, this, &WebSocketClient::reconnect);
 
     // 连接网络状态变化信号槽
     connect(&networkManager, &QNetworkConfigurationManager::onlineStateChanged, this, &WebSocketClient::onNetworkStateChanged);
     
+    // 心跳定时器
+    connect(&heartbeatTimer, &QTimer::timeout, this, &WebSocketClient::onHeartbeatTimeout);
+    heartbeatTimer.start(heartbeatIntervalMs);
+    lastPongTimer.start();
+
     qInfo() << "WebSocketClient initialized with network state:" << (isNetworkConnected ? "ONLINE" : "OFFLINE");
 }
 
@@ -60,6 +68,10 @@ void WebSocketClient::onHttpsConnected()
     if (isHttpsConnected && (httpUrl.isEmpty() || isHttpConnected)) {
         qInfo() << "All required websockets are connected";
         reconnectTimer.stop();
+        reconnectAttempts = 0;
+        currentReconnectIntervalMs = 1000;
+        missedPongs = 0;
+        lastPongTimer.restart();
     } else {
         qWarning() << "Waiting for other connections...";
     }
@@ -101,6 +113,10 @@ void WebSocketClient::onHttpConnected()
     if (isHttpConnected && (httpsUrl.isEmpty() || isHttpsConnected)) {
         qInfo() << "All required websockets are connected";
         reconnectTimer.stop();
+        reconnectAttempts = 0;
+        currentReconnectIntervalMs = 1000;
+        missedPongs = 0;
+        lastPongTimer.restart();
     } else {
         qWarning() << "Waiting for other connections...";
     }
@@ -292,7 +308,18 @@ void WebSocketClient::reconnect()
         (!httpUrl.isValid() || isHttpConnected)) {
         qInfo() << "All connections established, stopping reconnect timer";
         reconnectTimer.stop();
+        reconnectAttempts = 0;
+        currentReconnectIntervalMs = 1000;
+        missedPongs = 0;
+        lastPongTimer.restart();
+        flushPending();
+        return;
     }
+
+    // 增加退避并更新重连频率
+    reconnectAttempts++;
+    currentReconnectIntervalMs = qMin(currentReconnectIntervalMs * 2, maxReconnectIntervalMs);
+    reconnectTimer.setInterval(currentReconnectIntervalMs);
 }
 
 void WebSocketClient::onNetworkStateChanged(bool isOnline)
@@ -367,8 +394,6 @@ void WebSocketClient::onTextMessageReceived(QString message)
     {
         qDebug() << "Message received is undefined type:" << messageObj["type"].toString() << " " << messageObj["message"].toString();
     }
-
-    emit closed();
 }
 
 void WebSocketClient::sendAcknowledgment(QString messageID)
@@ -379,16 +404,14 @@ void WebSocketClient::sendAcknowledgment(QString messageID)
 
     messageObj["type"] = "QT_Confirm";
     messageObj["msgid"] = utf8Message;
-
-    // 然后使用WebSocket发送消息
-    if (isHttpsConnected)
-    {
-        httpsWebSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
+    QByteArray payload = QJsonDocument(messageObj).toJson();
+    if (!isHttpsConnected && !isHttpConnected) {
+        if (pendingMessages.size() >= maxPendingMessages) pendingMessages.dequeue();
+        pendingMessages.enqueue(payload);
+        return;
     }
-    if (isHttpConnected)
-    {
-        httpWebSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
-    }
+    if (isHttpsConnected) httpsWebSocket.sendTextMessage(QString::fromUtf8(payload));
+    if (isHttpConnected) httpWebSocket.sendTextMessage(QString::fromUtf8(payload));
 }
 
 void WebSocketClient::sendProcessCommandReturn(QString message)
@@ -398,14 +421,14 @@ void WebSocketClient::sendProcessCommandReturn(QString message)
     QJsonObject messageObj;
     messageObj["type"] = "Process_Command_Return";
     messageObj["message"] = utf8Message;
-    if (isHttpsConnected)
-    {
-        httpsWebSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
+    QByteArray payload = QJsonDocument(messageObj).toJson();
+    if (!isHttpsConnected && !isHttpConnected) {
+        if (pendingMessages.size() >= maxPendingMessages) pendingMessages.dequeue();
+        pendingMessages.enqueue(payload);
+        return;
     }
-    if (isHttpConnected)
-    {
-        httpWebSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
-    }
+    if (isHttpsConnected) httpsWebSocket.sendTextMessage(QString::fromUtf8(payload));
+    if (isHttpConnected) httpWebSocket.sendTextMessage(QString::fromUtf8(payload));
 }
 
 void WebSocketClient::messageSend(QString message)
@@ -416,14 +439,64 @@ void WebSocketClient::messageSend(QString message)
 
     messageObj["message"] = utf8Message;
     messageObj["type"] = "QT_Return";
+    QByteArray payload = QJsonDocument(messageObj).toJson();
+    if (!isHttpsConnected && !isHttpConnected) {
+        if (pendingMessages.size() >= maxPendingMessages) pendingMessages.dequeue();
+        pendingMessages.enqueue(payload);
+        return;
+    }
+    if (isHttpsConnected) httpsWebSocket.sendTextMessage(QString::fromUtf8(payload));
+    if (isHttpConnected) httpWebSocket.sendTextMessage(QString::fromUtf8(payload));
+}
 
-    // 然后使用WebSocket发送消息
-    if (isHttpsConnected)
-    {
-        httpsWebSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
+void WebSocketClient::onHeartbeatTimeout()
+{
+    // 仅在至少一个连接可用时发送 ping
+    bool anyConnected = (isHttpsConnected && httpsWebSocket.state() == QAbstractSocket::ConnectedState) ||
+                        (isHttpConnected && httpWebSocket.state() == QAbstractSocket::ConnectedState);
+    if (anyConnected) {
+        if (isHttpsConnected) httpsWebSocket.ping("h");
+        if (isHttpConnected) httpWebSocket.ping("h");
+
+        // 判定是否长时间未收到PONG
+        if (lastPongTimer.isValid() && lastPongTimer.elapsed() > heartbeatIntervalMs * pongTimeoutMultiplier) {
+            missedPongs++;
+            qWarning() << "Missed pong #" << missedPongs << ", forcing reconnect if threshold exceeded";
+            if (missedPongs >= 2) {
+                // 强制重连
+                if (isHttpsConnected) httpsWebSocket.close();
+                if (isHttpConnected) httpWebSocket.close();
+                if (!reconnectTimer.isActive()) reconnectTimer.start();
+            }
+        }
     }
-    if (isHttpConnected)
-    {
-        httpWebSocket.sendTextMessage(QJsonDocument(messageObj).toJson());
+}
+
+void WebSocketClient::onPongReceived(quint64 /*elapsedTime*/, const QByteArray &/*payload*/)
+{
+    missedPongs = 0;
+    lastPongTimer.restart();
+}
+
+void WebSocketClient::flushPending()
+{
+    if (pendingMessages.isEmpty()) return;
+    if (!isHttpsConnected && !isHttpConnected) return;
+    int count = pendingMessages.size();
+    while (!pendingMessages.isEmpty()) {
+        const QByteArray payload = pendingMessages.dequeue();
+        if (isHttpsConnected) httpsWebSocket.sendTextMessage(QString::fromUtf8(payload));
+        if (isHttpConnected) httpWebSocket.sendTextMessage(QString::fromUtf8(payload));
     }
+    qInfo() << "Flushed pending websocket messages:" << count;
+}
+
+void WebSocketClient::stop()
+{
+    if (reconnectTimer.isActive()) reconnectTimer.stop();
+    if (heartbeatTimer.isActive()) heartbeatTimer.stop();
+    disconnect(&httpsWebSocket, nullptr, this, nullptr);
+    disconnect(&httpWebSocket, nullptr, this, nullptr);
+    if (httpsWebSocket.state() != QAbstractSocket::UnconnectedState) httpsWebSocket.close();
+    if (httpWebSocket.state() != QAbstractSocket::UnconnectedState) httpWebSocket.close();
 }

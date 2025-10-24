@@ -7,6 +7,8 @@
 #include <QJsonObject>
 #include <QTimer>
 #include <QNetworkConfigurationManager>
+#include <QQueue>
+#include <QElapsedTimer>
 
 class WebSocketClient : public QObject
 {
@@ -18,6 +20,7 @@ public:
     void sendProcessCommandReturn(QString message);
     void reconnect();
     void onNetworkStateChanged(bool isOnline);
+    void stop();
 
 signals:
     void closed();
@@ -33,6 +36,8 @@ private slots:
     void onTextMessageReceived(QString message);
     void onError(QAbstractSocket::SocketError error);
     void onSslErrors(const QList<QSslError> &errors);
+    void onHeartbeatTimeout();
+    void onPongReceived(quint64 elapsedTime, const QByteArray &payload);
 
 private:
     QWebSocket httpWebSocket;
@@ -47,6 +52,19 @@ private:
     bool isNetworkConnected = true; // 记录网络连接状态
 
     bool isReconnecting = false; // 添加一个标志来表示是否正在重连
+    int reconnectAttempts = 0;
+    int currentReconnectIntervalMs = 1000;
+    const int maxReconnectIntervalMs = 15000;
+
+    QTimer heartbeatTimer; // 心跳定时器
+    QElapsedTimer lastPongTimer;
+    int missedPongs = 0;
+    const int heartbeatIntervalMs = 10000;
+    const int pongTimeoutMultiplier = 2; // 超过2个心跳周期未收到Pong则判定超时
+
+    QQueue<QByteArray> pendingMessages; // 断线期间排队发送
+    const int maxPendingMessages = 2000;
+    void flushPending();
     
     QString getErrorString(QAbstractSocket::SocketError error);
 };

@@ -618,6 +618,11 @@ public:
     int focuserMinPosition = -1;   // 行程下限
     int autofocusBacklashCompensation = 0; // 自动对焦空程补偿值
 
+    // 固定步数移动状态与看门狗
+    bool isStepMoving = false;         // 是否正在执行一次固定步数移动
+    int stepMoveOutTime = 0;            // 本次固定步数移动超时时间
+
+
     /**
      * @brief 控制电调按当前方向移动（持续）
      * @param isInward true 向内，false 向外
@@ -629,6 +634,7 @@ public:
      * @param isInward true 向内，false 向外
      */
     void FocuserControlMoveStep(bool isInward, int steps);
+    void cancelStepMoveIfAny();
 
     /**
      * @brief 周期处理电调移动数据（刷新参数）

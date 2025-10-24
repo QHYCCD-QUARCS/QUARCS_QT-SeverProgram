@@ -412,11 +412,6 @@ void MainWindow::onMessageReceived(const QString &message)
         // DeviceConnect();
         ConnectAllDeviceOnce();
     }
-    else if (message == "CS")
-    {
-        // QString Dev = connectIndiServer();
-        // websocket->messageSend("AddDevice:"+Dev);
-    }
     else if (message == "disconnectAllDevice")
     {
         Logger::Log("disconnectAllDevice ...", LogLevel::DEBUG, DeviceType::MAIN);
@@ -1060,34 +1055,7 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("ReadImageFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // else if (parts.size() == 2 && parts[0].trimmed() == "SolveImage")
-    // {
-    //     Logger::Log("SolveImage ...", LogLevel::DEBUG, DeviceType::CAMERA);
-    //     glFocalLength = parts[1].trimmed().toInt();
 
-    //     if(glFocalLength == 0) {
-    //         emit wsThread->sendMessageToClient("FocalLengthError");
-    //         Logger::Log("SolveImage FocalLengthError", LogLevel::DEBUG, DeviceType::CAMERA);
-    //     } else {
-    //         EndCaptureAndSolve = false;
-    //         CaptureAndSolve(glExpTime, false);
-    //         Logger::Log("SolveImage finish!", LogLevel::DEBUG, DeviceType::CAMERA);
-    //     }
-    // }
-    // else if (parts.size() == 2 && parts[0].trimmed() == "startLoopSolveImage") {
-    //     Logger::Log("startLoopSolveImage ...", LogLevel::DEBUG, DeviceType::CAMERA);
-    //     glFocalLength = parts[1].trimmed().toInt();
-
-    //     if(glFocalLength == 0) {
-    //         emit wsThread->sendMessageToClient("FocalLengthError");
-    //         Logger::Log("startLoopSolveImage FocalLengthError", LogLevel::DEBUG, DeviceType::CAMERA);
-    //     } else {
-    //         isLoopSolveImage = true;
-    //         EndCaptureAndSolve = false;
-    //         CaptureAndSolve(glExpTime, true);
-    //         Logger::Log("startLoopSolveImage finish!", LogLevel::DEBUG, DeviceType::CAMERA);
-    //     }
-    // }
 
     else if (message == "stopLoopSolveImage")
     {
@@ -2055,31 +2023,31 @@ void MainWindow::onTimeout()
 
                 mountDisplayCounter = 0;
 
-                const MeridianStatus ms = checkMeridianStatus(); // 这个计算当前距离中天的时间
-                switch (ms.event) {
-                  case FlipEvent::Started: emit wsThread->sendMessageToClient("MeridianFlip:STARTED"); break;
-                  case FlipEvent::Done:    emit wsThread->sendMessageToClient("MeridianFlip:DONE");    break;
-                  case FlipEvent::Failed:  emit wsThread->sendMessageToClient("MeridianFlip:FAILED");  break;
-                  default: break;
-                }
+                // const MeridianStatus ms = checkMeridianStatus(); // 这个计算当前距离中天的时间
+                // switch (ms.event) {
+                //   case FlipEvent::Started: emit wsThread->sendMessageToClient("MeridianFlip:STARTED"); break;
+                //   case FlipEvent::Done:    emit wsThread->sendMessageToClient("MeridianFlip:DONE");    break;
+                //   case FlipEvent::Failed:  emit wsThread->sendMessageToClient("MeridianFlip:FAILED");  break;
+                //   default: break;
+                // }
 
-                if (!std::isnan(ms.etaMinutes)) {
-                    // 显示规则：与翻转需求绑定 —— 需要翻转显示负号，不需要显示正号
-                    const bool showNeg = ms.needsFlip;
-                    const double absMinutes = std::fabs(ms.etaMinutes);
-                    const int totalSeconds = static_cast<int>(std::llround(absMinutes * 60.0));
-                    const int hours = totalSeconds / 3600;
-                    const int mins  = (totalSeconds % 3600) / 60;
-                    const int secs  = totalSeconds % 60;
+                // if (!std::isnan(ms.etaMinutes)) {
+                //     // 显示规则：与翻转需求绑定 —— 需要翻转显示负号，不需要显示正号
+                //     const bool showNeg = ms.needsFlip;
+                //     const double absMinutes = std::fabs(ms.etaMinutes);
+                //     const int totalSeconds = static_cast<int>(std::llround(absMinutes * 60.0));
+                //     const int hours = totalSeconds / 3600;
+                //     const int mins  = (totalSeconds % 3600) / 60;
+                //     const int secs  = totalSeconds % 60;
 
-                    const QString hms = QString("%1%2:%3:%4")
-                                            .arg(showNeg ? "-" : "")
-                                            .arg(hours, 2, 10, QLatin1Char('0'))
-                                            .arg(mins,  2, 10, QLatin1Char('0'))
-                                            .arg(secs,  2, 10, QLatin1Char('0'));
-                    emit wsThread->sendMessageToClient("MeridianETA_hms:" + hms);
-                    Logger::Log("MeridianETA_hms:" + hms.toStdString() + " side:" + TelescopePierSide.toStdString() + " needflip:" + (ms.needsFlip ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
-                }
+                //     const QString hms = QString("%1%2:%3:%4")
+                //                             .arg(showNeg ? "-" : "")
+                //                             .arg(hours, 2, 10, QLatin1Char('0'))
+                //                             .arg(mins,  2, 10, QLatin1Char('0'))
+                //                             .arg(secs,  2, 10, QLatin1Char('0'));
+                //     emit wsThread->sendMessageToClient("MeridianETA_hms:" + hms);
+                //     Logger::Log("MeridianETA_hms:" + hms.toStdString() + " side:" + TelescopePierSide.toStdString() + " needflip:" + (ms.needsFlip ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
+                // }
 
                 //TODO:当前判断方式存在问题,需要重新修改判断
                 // 加入判断,当此时需要执行自动中天翻转,且设备设置为自动中天翻转,则执行自动中天翻转
@@ -6029,9 +5997,16 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
 {
     // 记录开始移动焦点器的日志
     Logger::Log("FocuserControlMoveStep start ...", LogLevel::INFO, DeviceType::FOCUSER);
+    if (isStepMoving)
+    {
+        Logger::Log("FocuserControlMoveStep | isStepMoving is true, return", LogLevel::INFO, DeviceType::FOCUSER);
+        return;
+    }
     if (dpFocuser != NULL)
     {
-       
+        // 防重入：已有一次步进移动在进行中时，先取消上一次，避免重复连接与计时器叠加
+        cancelStepMoveIfAny();
+
         // 获取当前焦点器的位置
         CurrentPosition = FocuserControl_getPosition();
 
@@ -6067,41 +6042,33 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
             emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
             return;
         }
+        // 标记占用，防止后续点击累加
+        isStepMoving = true;
+        stepMoveOutTime = 10;
         indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
         indi_Client->moveFocuserSteps(dpFocuser, steps);
 
         // 设置计时器为单次触发
         focusTimer.setSingleShot(true);
 
-        // 连接计时器的超时信号到处理函数，用于监控焦点器的移动状态
-        connect(&focusTimer, &QTimer::timeout, [this]() {
-            // 更新当前位置
-            CurrentPosition = FocuserControl_getPosition();
-            // 向客户端发送当前位置和目标位置
-            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(TargetPosition));
+        // 已在下发命令前记录占用与目标
 
-            // 检查焦点器是否已经到达目标位置
-            if (CurrentPosition == TargetPosition)
-            {
-                // 停止计时器
+        // 唯一连接定时回调，检查到位与刷位置
+        connect(&focusTimer, &QTimer::timeout, this, [this]() {
+            stepMoveOutTime--;
+            CurrentPosition = FocuserControl_getPosition();
+            emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+            if (CurrentPosition <= focuserMinPosition || CurrentPosition >= focuserMaxPosition || stepMoveOutTime <= 0) {
                 focusTimer.stop();
-                // 记录焦点器移动完成的日志
+                isStepMoving = false;
                 Logger::Log("FocuserControlMoveStep | Focuser Move Complete!", LogLevel::INFO, DeviceType::FOCUSER);
-                // 向客户端发送焦点器移动完成的消息
                 emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(CurrentPosition));
-                // 执行焦点循环处理
-                FocusingLooping();
-            }
-            else
-            {
-                // 如果焦点器未到达目标位置，重新启动计时器，继续等待
+                // FocusingLooping();
+            } else {
                 focusTimer.start(100);
-                emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(CurrentPosition));
             }
         });
 
-        // 启动计时器
-        focusTimer.start(100);
     }
     else
     {
@@ -6111,6 +6078,13 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
     }
     // 记录焦点器移动结束的日志
     Logger::Log("FocuserControlMoveStep finish!", LogLevel::INFO, DeviceType::FOCUSER);
+}
+
+void MainWindow::cancelStepMoveIfAny()
+{
+    // 清理可能残留的计时器与状态，避免重复连接/循环
+    if (focusTimer.isActive()) focusTimer.stop();
+    isStepMoving = false;
 }
 
 int MainWindow::FocuserControl_setSpeed(int speed)
@@ -7099,7 +7073,7 @@ void MainWindow::clearConnectedDevices()
 
 void MainWindow::getStagingImage()
 {
-    if (isStagingImage && SavedImage != "" && isFileExists(QString::fromStdString(vueImagePath + SavedImage)))
+    if (isStagingImage && SavedImage != "" && isFileExists(QString::fromStdString(vueImagePath + SavedImage)) && isFocusLoopShooting)
     {
         Logger::Log("getStagingImage | ready to upload image: " + SavedImage, LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("SaveBinSuccess:" + QString::fromStdString(SavedImage));
