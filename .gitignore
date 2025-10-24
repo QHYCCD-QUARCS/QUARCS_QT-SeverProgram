@@ -27,3 +27,72 @@ build/CMakeFiles/client_autogen.dir/AutogenInfo.json
 .vscode/settings.json
 src/build/*
 src/BUILD/*
+
+# ---------------- Qt/CMake build artifacts ----------------
+# build dirs (root and variants)
+build/
+build-*/
+cmake-build-*/
+
+# CMake outputs (anywhere)
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+*.ninja
+.ninja_deps
+.ninja_log
+
+# Object/binaries/libs
+*.o
+*.o.d
+*.obj
+*.a
+*.la
+*.lo
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Qt generated (moc/uic/rcc/autogen)
+*.moc
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+ui_*.h
+qrc_*.cpp
+*_autogen/
+*.autogen/
+mocs_compilation.cpp
+
+# Qt/qmake project user files
+*.pro.user
+*.pro.user.*
+*.qbs.user
+*.qbs.user.*
+*.qmake.stash
+*.creator
+*.creator.user*
+*.directory
+
+# IDE/editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs
+logs/
+*.log
+
+# Python cache (findstars.py)
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
