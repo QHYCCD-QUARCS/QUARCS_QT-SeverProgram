@@ -1473,9 +1473,9 @@ public:
 
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
  
-    std::string vueImagePath = "/var/www/html/img/";
+    // std::string vueImagePath = "/var/www/html/img/";
 
-    // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
 
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
     std::string PriorROIImage = "NULL";    // 上一帧 ROI 图
