@@ -88,6 +88,12 @@ struct MountState{
         summary += (isSlewing ? "指向中 " : "");
         summary += (isTracking ? "跟踪中 " : "");
         summary += (isGuiding ? "导星中 " : "");
+        summary += (isHoming ? "回零中 " : "");
+        summary += (isMoving ? "移动中 " : "");
+        summary += (isNS_Moving ? "NS移动中 " : "");
+        summary += (isWE_Moving ? "WE移动中 " : "");
+        summary += (isFlipping ? "翻转中 " : "");
+        summary += (isFlipBacking ? "翻转回退中 " : "");
         if (!isSlewing && !isTracking && !isGuiding && !isHoming && !isNS_Moving && !isWE_Moving && !isFlipping && !isFlipBacking) {
             summary += "空闲";
         }

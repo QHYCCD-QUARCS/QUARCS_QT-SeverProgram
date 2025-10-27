@@ -52,6 +52,12 @@ private:
     // 核心选择逻辑（不含任何兜底）
     QString pickByRule(const SerialMatchRule& rule, const QString& deviceType) const;
 
+    // 评分：基于 VID:PID、by-id 名称、厂商/产品字符串、端口名和握手计算分值
+    int scorePortForType(const QString& portPath,
+                         const SerialMatchRule& rule,
+                         const SerialMatchRule& otherRule,
+                         const QString& deviceType) const;
+
     // 成员
     DevicePorts cached_;
     SerialMatchRule mountRule_;

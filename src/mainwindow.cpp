@@ -3073,56 +3073,7 @@ void MainWindow::continueConnectAllDeviceOnce()
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
         Logger::Log("Start connecting devices:" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
-        // 特殊处理(电调和赤道仪)
-        if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE || indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE){
-            QString DevicePort;
-            indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-            QString DeviceType = detector.detectDeviceTypeForPort(DevicePort);
 
-            // 获取设备类型
-            QString DriverType = "";
-            for(int j = 0; j < systemdevicelist.system_devices.size(); j++)
-            {
-                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec())
-                {
-                    DriverType = systemdevicelist.system_devices[j].Description;
-                }
-            }
-            // 处理电调和赤道仪的连接
-            if (DeviceType != "Focuser" && DriverType == "Focuser")
-            {
-                // 识别到当前设备是电调，但是设备的串口不是电调的串口,需更新
-                // 正确的串口是detector.getFocuserPort()
-                QString realFocuserPort = detector.getFocuserPort();
-                if (!realFocuserPort.isEmpty())
-                {
-                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
-                    Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                }
-                else
-                {
-                    Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
-                    continue;
-                }
-            }else if (DeviceType != "Mount" && DriverType == "Mount")
-            {
-                // 识别到当前设备是赤道仪，但是设备的串口不是赤道仪的串口,需更新
-                // 正确的串口是detector.getMountPort()
-                QString realMountPort = detector.getMountPort();
-                if (!realMountPort.isEmpty())
-                {
-                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
-                    Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                }
-                else
-                {
-                    Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
-                    continue;
-                }
-            }else{
-                Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
-            }
-        }
         indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
         indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
 
@@ -3133,7 +3084,71 @@ void MainWindow::continueConnectAllDeviceOnce()
             QThread::msleep(1000); // 等待1秒
             waitTime++;
         }
-        
+
+        if (!indi_Client->GetDeviceFromList(i)->isConnected())
+        {
+            Logger::Log("ConnectDriver | Device (" + indi_Client->GetDeviceNameFromList(i) + ") is not connected,try to update port", LogLevel::WARNING, DeviceType::MAIN);
+            // 特殊处理(电调和赤道仪)
+            if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE || indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE){
+                QString DevicePort;
+                indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                QString DeviceType = detector.detectDeviceTypeForPort(DevicePort);
+
+                // 获取设备类型
+                QString DriverType = "";
+                for(int j = 0; j < systemdevicelist.system_devices.size(); j++)
+                {
+                    if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec())
+                    {
+                        DriverType = systemdevicelist.system_devices[j].Description;
+                    }
+                }
+                // 处理电调和赤道仪的连接
+                if (DeviceType != "Focuser" && DriverType == "Focuser")
+                {
+                    // 识别到当前设备是电调，但是设备的串口不是电调的串口,需更新
+                    // 正确的串口是detector.getFocuserPort()
+                    QString realFocuserPort = detector.getFocuserPort();
+                    if (!realFocuserPort.isEmpty())
+                    {
+                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
+                        Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    }
+                    else
+                    {
+                        Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                        continue;
+                    }
+                }else if (DeviceType != "Mount" && DriverType == "Mount")
+                {
+                    // 识别到当前设备是赤道仪，但是设备的串口不是赤道仪的串口,需更新
+                    // 正确的串口是detector.getMountPort()
+                    QString realMountPort = detector.getMountPort();
+                    if (!realMountPort.isEmpty())
+                    {
+                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
+                        Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    }
+                    else
+                    {
+                        Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                        continue;
+                    }
+                }else{
+                    Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
+                }
+            }
+            indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+            indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+    
+            int waitTime = 0;
+            while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5)
+            {
+                Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+                QThread::msleep(1000); // 等待1秒
+                waitTime++;
+            }
+        }
     }
 
 
@@ -8162,57 +8177,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             else
             {
                 Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is connecting...", LogLevel::INFO, DeviceType::MAIN);
-                // 特殊处理电调和赤道仪的连接
-                if (DriverType == "Focuser")
-                {
-                    // 电调当前的串口
-                    QString DevicePort;
-                    indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                    if (detector.detectDeviceTypeForPort(DevicePort) != "Focuser")
-                    {
-                        // 识别到当前设备的串口不是电调的串口,需更新
-                        // 正确的串口是detector.getFocuserPort()
-                        QString realFocuserPort = detector.getFocuserPort();
-                        if (!realFocuserPort.isEmpty())
-                        {
-                            indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
-                            Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                        }
-                        else
-                        {
-                            Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
-                            continue;
-                        }
-                    }else{
-                        Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is correct.", LogLevel::INFO, DeviceType::MAIN);
-                    }
-                }
-                else if (DriverType == "Mount")
-                {
-                    // 赤道仪当前的串口
-                    QString DevicePort;
-                    indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
-                    if (detector.detectDeviceTypeForPort(DevicePort) != "Mount")
-                    {
-                        // 识别到当前设备的串口不是赤道仪的串口,需更新
-                        // 正确的串口是detector.getMountPort()
-                        QString realMountPort = detector.getMountPort();
-                        if (!realMountPort.isEmpty())
-                        {
-                            indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
-                            Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                        }
-                        else
-                        {
-                            Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
-                            continue;
-                        }
-                    }else{
-                        Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is correct.", LogLevel::INFO, DeviceType::MAIN);
-                    }
-                }else{
-                    Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
-                }
+
                 indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
                 indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                 int waitTime = 0;
@@ -8232,10 +8197,93 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 {
                     connectedDeviceIdList.push_back(i);
                 }else{
-                    emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
-                    indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-                    Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
-                    indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                    Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is not connected,try to update port", LogLevel::WARNING, DeviceType::MAIN);
+                    // 特殊处理电调和赤道仪的连接
+                    if (DriverType == "Focuser")
+                    {
+                        // 电调当前的串口
+                        QString DevicePort;
+                        indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                        if (detector.detectDeviceTypeForPort(DevicePort) != "Focuser")
+                        {
+                            // 识别到当前设备的串口不是电调的串口,需更新
+                            // 正确的串口是detector.getFocuserPort()
+                            QString realFocuserPort = detector.getFocuserPort();
+                            if (!realFocuserPort.isEmpty())
+                            {
+                                indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
+                                Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            }
+                            else
+                            {
+                                Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                                continue;
+                            }
+                        }else{
+                            Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is correct.", LogLevel::INFO, DeviceType::MAIN);
+                        }
+                    }
+                    else if (DriverType == "Mount")
+                    {
+                        // 赤道仪当前的串口
+                        QString DevicePort;
+                        indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                        if (detector.detectDeviceTypeForPort(DevicePort) != "Mount")
+                        {
+                            // 识别到当前设备的串口不是赤道仪的串口,需更新
+                            // 正确的串口是detector.getMountPort()
+                            QString realMountPort = detector.getMountPort();
+                            if (!realMountPort.isEmpty())
+                            {
+                                indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
+                                Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                            }
+                            else
+                            {
+                                Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                                continue;
+                            }
+                        }else{
+                            Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is correct.", LogLevel::INFO, DeviceType::MAIN);
+                        }
+                    }else{
+                        Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
+                        emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
+                        indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
+                        indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        continue;
+                    }
+                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                    indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                    int waitTime = 0;
+                    bool connectState = false;
+                    while (waitTime < 10)
+                    {
+                        Logger::Log("ConnectDriver | Wait for Connect " + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
+                        QThread::msleep(1000); // 等待1秒
+                        waitTime++;
+                        if (indi_Client->GetDeviceFromList(i)->isConnected())
+                        {
+                            connectState = true;
+                            break;
+                        }
+                    }
+                    if (connectState)
+                    {
+                        connectedDeviceIdList.push_back(i);
+                    }else{
+                        Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not connected,try to update port", LogLevel::WARNING, DeviceType::MAIN);
+                        emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
+                        indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
+                        indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                        continue;
+                    }
+                    // emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
+                    // indi_Client->disconnectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+                    // Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not exist", LogLevel::WARNING, DeviceType::MAIN);
+                    // indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                 }   
             }
         }
