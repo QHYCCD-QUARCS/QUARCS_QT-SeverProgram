@@ -301,9 +301,38 @@ QString SerialDeviceDetector::getFocuserPort() {
     return cached_.focuserPort;
 }
 
-QString SerialDeviceDetector::detectDeviceTypeForPort(const QString& portPath) const {
-    // 允许传入 /dev/ttyXXX 或者 /dev/serial/by-id/... 链接
-    // 判定优先级：1) 直接读取设备的 VID:PID；2) by-id 文件名匹配；3) 其他返回未知
+static QString resolveByIdAbsoluteToReal(const QString& byIdPathAbs)
+{
+    QFileInfo fi(byIdPathAbs);
+    if (!fi.exists()) return {};                    // by-id 项本身不存在
+    const QString real = fi.canonicalFilePath();    // 跟随符号链接
+    if (real.isEmpty()) return {};
+    return real;
+}
+
+// 端口存在性与可见性校验：文件系统 + QSerialPortInfo 双重确认
+static bool portNodeIsPresent(const QString& absPortPath)
+{
+    // 1) 文件系统节点存在（允许字符设备）
+    QFileInfo fi(absPortPath);
+    const bool fsOk = fi.exists() && fi.isReadable();
+
+    // 2) 在 QSerialPortInfo 列表里能找到（系统认的串口）
+    bool infoOk = false;
+    const auto ports = QSerialPortInfo::availablePorts();
+    for (const QSerialPortInfo& p : ports) {
+        if (p.systemLocation() == absPortPath) {
+            infoOk = true;
+            break;
+        }
+    }
+
+    // 两者其一为真即可认为“存在”（部分设备权限问题会导致 isReadable=false）
+    return fsOk || infoOk;
+}
+
+QString SerialDeviceDetector::detectDeviceTypeForPort(const QString& portPath) const
+{
     if (portPath.isEmpty()) return {};
 
     auto matchByList = [&](const QString& name, const QStringList& keywords, const QStringList& vidpid)->bool {
@@ -317,46 +346,57 @@ QString SerialDeviceDetector::detectDeviceTypeForPort(const QString& portPath) c
         return false;
     };
 
-    QFileInfo fi(portPath);
-    QString baseName = fi.fileName();
-
-    // 先通过 QSerialPortInfo 获取真实设备的 VID:PID（最可靠），并基于评分判定
-    QString realPort = portPath;
-    if (portPath.startsWith("/dev/serial/by-id/")) {
-        const QString resolved = resolveByIdToReal(baseName);
-        if (!resolved.isEmpty()) realPort = resolved;
+    // —— 第一步：规范化成“绝对路径 & 真实节点” ——
+    QString absInput = portPath;
+    if (!absInput.startsWith('/')) {
+        // 传进来如果是个 by-id 基名，补全成绝对路径
+        if (QFileInfo(QStringLiteral("/dev/serial/by-id/%1").arg(portPath)).exists())
+            absInput = QStringLiteral("/dev/serial/by-id/%1").arg(portPath);
+        else if (QFileInfo(QStringLiteral("/dev/%1").arg(portPath)).exists())
+            absInput = QStringLiteral("/dev/%1").arg(portPath);
     }
+
+    QString realPort = absInput;
+    if (absInput.startsWith("/dev/serial/by-id/")) {
+        const QString real = resolveByIdAbsoluteToReal(absInput);
+        if (!real.isEmpty()) realPort = real;
+    }
+
+    // —— 第二步：存在性校验（关键补充） ——
+    if (!portNodeIsPresent(realPort)) {
+        qWarning() << "[SerialDeviceDetector] Port not present or not visible:" << realPort
+                   << "(from" << portPath << ")";
+        return {}; // 不存在/不可见，直接放弃，避免误判
+    }
+
+    // —— 第三步：VID:PID 打分判定（你原有逻辑） ——
+    QFileInfo fi(absInput);
+    const QString baseName = fi.fileName();
+
     const int scMount   = scorePortForType(realPort, mountRule_,   focuserRule_, "Mount");
     const int scFocuser = scorePortForType(realPort, focuserRule_, mountRule_,   "Focuser");
-    if (scMount <= 0 && scFocuser <= 0) {
-        // 两者都不可靠，继续按 by-id 名称尝试
-    } else {
-        if (scMount > scFocuser) return "Mount";
-        if (scFocuser > scMount) return "Focuser";
-        // 分数相等时保持未知，避免误判
+    if (scMount > 0 || scFocuser > 0) {
+        if (scMount > scFocuser)   return "Mount";
+        if (scFocuser > scMount)   return "Focuser";
+        return {}; // 分数相等保持未知，避免误判
+    }
+
+    // —— 第四步：by-id 文件名兜底匹配 ——
+    if (absInput.startsWith("/dev/serial/by-id/")) {
+        if (matchByList(baseName, mountRule_.nameKeywords, mountRule_.vidpidList))   return "Mount";
+        if (matchByList(baseName, focuserRule_.nameKeywords, focuserRule_.vidpidList)) return "Focuser";
         return {};
     }
 
-    // 如果是 by-id 链接，退回用文件名匹配
-    if (portPath.startsWith("/dev/serial/by-id/")) {
-        if (matchByList(baseName, mountRule_.nameKeywords, mountRule_.vidpidList))
-            return "Mount";
-        if (matchByList(baseName, focuserRule_.nameKeywords, focuserRule_.vidpidList))
-            return "Focuser";
-        return {};
-    }
-
-    // 如果是 /dev/tty*，先尝试通过 by-id 反查匹配（更可靠）
-    if (portPath.startsWith("/dev/tty")) {
-        const QStringList entries = listByIdEntries();
+    // —— 第五步：从 /dev/tty* 反查 by-id ——
+    if (absInput.startsWith("/dev/tty")) {
+        const QStringList entries = listByIdEntries(); // 你已有
         for (const auto& e : entries) {
-            const QString real = resolveByIdToReal(e);
-            if (real == portPath) {
-                // 命中 by-id 的文件名进行匹配
-                if (matchByList(e, mountRule_.nameKeywords, mountRule_.vidpidList))
-                    return "Mount";
-                if (matchByList(e, focuserRule_.nameKeywords, focuserRule_.vidpidList))
-                    return "Focuser";
+            const QString byIdAbs = QStringLiteral("/dev/serial/by-id/%1").arg(e);
+            const QString real = resolveByIdAbsoluteToReal(byIdAbs);
+            if (real == absInput) {
+                if (matchByList(e, mountRule_.nameKeywords, mountRule_.vidpidList))   return "Mount";
+                if (matchByList(e, focuserRule_.nameKeywords, focuserRule_.vidpidList)) return "Focuser";
             }
         }
     }
