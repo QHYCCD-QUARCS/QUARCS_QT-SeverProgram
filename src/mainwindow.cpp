@@ -2360,7 +2360,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     // }
     // fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
     // emit wsThread->sendMessageToClient("addLineData_Point:" + QString::number(1.0e-6) + ":" + QString::number(-0.006) + ":" + QString::number(14));
-    fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_36_54_070/2025_03_20T13_36_54_070.fits";
+    // fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_36_54_070/2025_03_20T13_36_54_070.fits";
 
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
