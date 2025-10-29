@@ -872,6 +872,13 @@ public:
      */
     void TelescopeControl_SolveSYNC();
 
+    /**
+     * @brief 解算当前位置
+     */
+    void solveCurrentPosition();
+
+    QTimer solveCurrentPositionTimer; // 解算当前位置定时器
+
     bool isSolveSYNC = false; // 是否处于解算同步流程
 
     /**

@@ -317,10 +317,14 @@ bool PolarAlignment::startPolarAlignment()
 {
     if (isRunningFlag) {
         Logger::Log("PolarAlignment: 校准流程已在运行中", LogLevel::WARNING, DeviceType::MAIN);
+        result.isSuccessful = false;
+        result.errorMessage = "校准流程已在运行中";
         return false;
     }
     if (!indiServer || !dpMount || !dpMainCamera) {
         Logger::Log("PolarAlignment: 设备不可用，无法启动校准", LogLevel::ERROR, DeviceType::MAIN);
+        result.isSuccessful = false;
+        result.errorMessage = "设备不可用，无法启动校准";
         return false;
     }
     

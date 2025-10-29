@@ -1534,6 +1534,7 @@ void MainWindow::onMessageReceived(const QString &message)
             else
             {
                 Logger::Log("StartAutoPolarAlignment: Failed to start polar alignment", LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment");
             }
         }
         else
@@ -1631,6 +1632,12 @@ void MainWindow::onMessageReceived(const QString &message)
         getFocuserState();
 
         Logger::Log("getFocuserState finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+    }
+    else if (parts[0].trimmed() == "SolveCurrentPosition")
+    {
+        Logger::Log("SolveCurrentPosition ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        solveCurrentPosition();
+        Logger::Log("SolveCurrentPosition finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
     }
     else
     {
@@ -2353,6 +2360,7 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     // }
     // fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
     // emit wsThread->sendMessageToClient("addLineData_Point:" + QString::number(1.0e-6) + ":" + QString::number(-0.006) + ":" + QString::number(14));
+    fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_36_54_070/2025_03_20T13_36_54_070.fits";
 
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
@@ -7142,6 +7150,61 @@ int MainWindow::MoveFileToUSB()
     qDebug("MoveFileToUSB");
 }
 
+void MainWindow::solveCurrentPosition()
+{
+    if (solveCurrentPositionTimer.isActive())
+    {
+        Logger::Log("solveCurrentPosition | SolveCurrentPosition is already running...", LogLevel::INFO, DeviceType::MAIN);
+        return;
+    }
+    // 停止之前的定时器
+    solveCurrentPositionTimer.stop();
+    disconnect(&solveCurrentPositionTimer, &QTimer::timeout, nullptr, nullptr);
+    // 判断解析图像路径下是否有图片
+    if (isFileExists(QString::fromStdString(SolveImageFileName.toStdString())))
+    {
+        // 设置定时器为单次触发
+        solveCurrentPositionTimer.setSingleShot(true);
+        // 开始解析图像
+        Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
+        // 连接解析完成信号到处理函数，处理解析完成后的逻辑
+        connect(&solveCurrentPositionTimer, &QTimer::timeout, [this]()
+        {
+            if (Tools::isSolveImageFinish())  // 检查图像解析是否完成
+            {
+                SloveResults result = Tools::ReadSolveResult(SolveImageFileName, glMainCCDSizeX, glMainCCDSizeY);  // 读取解析结果
+                if (result.RA_Degree == -1 && result.DEC_Degree == -1)
+                {
+                    Logger::Log("solveCurrentPosition | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("SolveCurrentPosition:failed");
+                    solveCurrentPositionTimer.stop();
+                    disconnect(&solveCurrentPositionTimer, &QTimer::timeout, nullptr, nullptr);
+                    return;
+                }
+                else
+                {
+                    emit wsThread->sendMessageToClient("SolveCurrentPosition:succeeded:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree)+":"+QString::number(result.RA_0)+":"+QString::number(result.DEC_0)+":"+QString::number(result.RA_1)+":"+QString::number(result.DEC_1)+":"+QString::number(result.RA_2)+":"+QString::number(result.DEC_2)+":"+QString::number(result.RA_3)+":"+QString::number(result.DEC_3));
+                    solveCurrentPositionTimer.stop();
+                    disconnect(&solveCurrentPositionTimer, &QTimer::timeout, nullptr, nullptr);
+                    return;
+                }
+            }
+            else
+            {
+                solveCurrentPositionTimer.start(1000);
+            }
+        });
+        solveCurrentPositionTimer.start(1000);
+    }
+    else
+    {
+        Logger::Log("solveCurrentPosition | SolveImageFileName: " + SolveImageFileName.toStdString() + " does not exist.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("SolveCurrentPosition:failed");
+        solveCurrentPositionTimer.stop();
+        return;
+    }
+}
+
 void MainWindow::TelescopeControl_SolveSYNC()
 {
     // 在函数开始时断开之前的连接
@@ -10120,11 +10183,13 @@ bool MainWindow::initPolarAlignment()
     if (dpMount == nullptr || dpMainCamera == nullptr)
     {
         Logger::Log("initPolarAlignment | dpMount or dpMainCamera is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,dpMount or dpMainCamera is nullptr");
         return false;
     }
     if (indi_Client == nullptr)
     {
         Logger::Log("initPolarAlignment | indi_Client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,indi_Client is nullptr");
         return false;
     }
     if (glFocalLength == 0)
@@ -10140,6 +10205,7 @@ bool MainWindow::initPolarAlignment()
         else
         {
             Logger::Log("initPolarAlignment | focal length is not set, please set it in the config file", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,focal length is not set");
             return false;
         }
     }
@@ -10162,6 +10228,7 @@ bool MainWindow::initPolarAlignment()
         if (glCameraSize_width <= 0 || glCameraSize_height <= 0)
         {
             Logger::Log("initPolarAlignment | Camera size parameters are invalid", LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,Camera size parameters are invalid");
             return false;
         }
     }
@@ -10171,6 +10238,7 @@ bool MainWindow::initPolarAlignment()
     if (polarAlignment == nullptr)
     {
         Logger::Log("initPolarAlignment | Failed to create PolarAlignment object", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,Failed to create PolarAlignment object");
         return false;
     }
 
