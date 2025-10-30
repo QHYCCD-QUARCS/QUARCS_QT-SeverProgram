@@ -4,6 +4,9 @@
 #include <QtMath>
 #include <QDateTime>
 #include <QFileInfo>
+#include <QEventLoop>
+#include <QCoreApplication>
+#include <QPointer>
 #include <string>
 #include <limits>
 #include <cmath>
@@ -96,6 +99,8 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_wsThread(wsThread)                           // 网络线程
     , m_currentState(AutoFocusState::IDLE)           // 初始状态为空闲
     , m_timer(new QTimer(this))                      // 创建定时器用于状态处理
+    , m_moveCheckTimer(new QTimer(this))             // 创建移动检查定时器
+    , m_captureCheckTimer(new QTimer(this))          // 创建拍摄检查定时器
     , m_isRunning(false)                             // 初始未运行
     // 使用配置参数替代硬编码值
     , m_hfrThreshold(g_autoFocusConfig.hfrThreshold)
@@ -113,6 +118,9 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_isCaptureEnd(true)                         // 拍摄结束状态
     , m_lastCapturedImage("")                      // 最后拍摄图像路径
     , m_defaultExposureTime(g_autoFocusConfig.defaultExposureTime) // 默认曝光时间
+    , m_captureCheckPending(false)                 // 初始不在等待拍摄检查
+    , m_captureCheckResult(false)                   // 拍摄检查结果
+    , m_captureCheckTimeout(30000)                  // 拍摄检查超时时间（默认30秒）
     , m_topStarCount(g_autoFocusConfig.topStarCount) // 选择置信度最高的星点数量
     , m_testFileCounter(1)                         // 测试文件计数器，从1开始
     , m_focuserMinPosition(0)                      // 电调最小位置
@@ -130,6 +138,12 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_moveWaitStartTime(0)                       // 移动等待开始时间
     , m_moveWaitCount(0)                           // 移动等待计数
     , m_moveLastPosition(0)                        // 移动等待期间的最后位置
+    , m_moveCheckResult(false)                     // 移动检查结果
+    , m_moveCheckPending(false)                    // 初始不在等待移动检查
+    , m_moveCheckTimeout(0)                         // 移动检查超时时间
+    , m_moveCheckStuckTimeout(0)                   // 移动检查卡住超时时间
+    , m_moveCheckTargetPosition(0)                 // 移动检查目标位置
+    , m_moveCheckTolerance(5)                      // 移动检查容差
     , m_lastFitResult()                            // 初始化拟合结果
     , m_useVirtualData(false)                      // 默认不使用虚拟数据
     , m_starSimulator(nullptr)                     // 星图模拟器指针
@@ -164,6 +178,14 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     
     // 连接定时器信号到状态处理槽函数
     connect(m_timer, &QTimer::timeout, this, &AutoFocus::onTimerTimeout);
+    // 连接移动检查定时器信号
+    connect(m_moveCheckTimer, &QTimer::timeout, this, &AutoFocus::onMoveCheckTimerTimeout);
+    // 设置移动检查定时器间隔为100ms
+    m_moveCheckTimer->setInterval(100);
+    // 连接拍摄检查定时器信号
+    connect(m_captureCheckTimer, &QTimer::timeout, this, &AutoFocus::onCaptureCheckTimerTimeout);
+    // 设置拍摄检查定时器间隔为100ms
+    m_captureCheckTimer->setInterval(100);
 }
 
 // ==================== 新增的优化方法实现 ====================
@@ -433,10 +455,10 @@ void AutoFocus::stopAutoFocus()
         log("开始停止自动对焦");
     
         
-        if (!m_isRunning) {
-            log("自动对焦未在运行，无需停止");
-            return;
-        }
+        // if (!m_isRunning) {
+        //     log("自动对焦未在运行，无需停止");
+        //     return;
+        // }
 
         // 立即重置运行状态，防止定时器继续调用processCurrentState
         m_isRunning = false;
@@ -447,6 +469,50 @@ void AutoFocus::stopAutoFocus()
             m_timer->stop();
             log("定时器已停止");
         }
+        
+        // 停止移动检查定时器
+        if (m_moveCheckTimer) {
+            m_moveCheckTimer->stop();
+            log("移动检查定时器已停止");
+        }
+        
+        // 停止拍摄检查定时器
+        if (m_captureCheckTimer) {
+            m_captureCheckTimer->stop();
+            log("拍摄检查定时器已停止");
+        }
+        
+        // 重置移动检查状态
+        m_moveCheckPending = false;
+        
+        // 重置拍摄检查状态
+        m_captureCheckPending = false;
+        
+        // 强制断开所有定时器连接，防止回调继续执行
+        if (m_moveCheckTimer) {
+            m_moveCheckTimer->disconnect();
+        }
+        if (m_captureCheckTimer) {
+            m_captureCheckTimer->disconnect();
+        }
+        
+        // 强制设置所有等待状态为完成，确保事件循环能立即退出
+        m_moveCheckPending = false;
+        m_captureCheckPending = false;
+        m_moveCheckResult = false;
+        m_captureCheckResult = false;
+        
+        // 发送强制停止信号，确保所有等待循环立即退出
+        QMetaObject::invokeMethod(this, "forceStopAllWaiting", Qt::QueuedConnection);
+        
+        // 立即处理所有待处理的事件，确保停止信号被处理
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+        
+        // 强制等待一小段时间，确保所有异步操作完成
+        QThread::msleep(50);
+        
+        // 再次强制处理事件，确保所有停止操作完成
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         
         // 立即停止电调移动
         if (m_dpFocuser && m_isFocuserMoving) {
@@ -627,6 +693,202 @@ void AutoFocus::onTimerTimeout()
         log(QString("处理状态时发生未知异常"));
         stopAutoFocus();
     }
+}
+
+/**
+ * @brief 电调移动检查定时器回调
+ * 
+ * 每100ms检查一次电调移动状态，避免阻塞主线程
+ */
+void AutoFocus::onMoveCheckTimerTimeout()
+{
+    // 首先检查对象是否仍然有效
+    if (!this) {
+        return;
+    }
+    
+    // 立即检查停止状态，如果已停止则立即退出
+    if (!m_isRunning) {
+        m_moveCheckPending = false;
+        m_moveCheckResult = false;
+        if (m_moveCheckTimer) {
+            m_moveCheckTimer->stop();
+        }
+        return;
+    }
+    
+    if (!m_moveCheckPending) {
+        if (m_moveCheckTimer) {
+            m_moveCheckTimer->stop();
+        }
+        return;
+    }
+    
+    // 获取当前位置
+    int currentPos = getCurrentFocuserPosition();
+    m_moveWaitCount++;
+    
+    log(QString("等待电调移动 [%1/%2]: 当前位置=%3, 目标位置=%4")
+        .arg(m_moveWaitCount / 10.0, 0, 'f', 1).arg(m_moveCheckTimeout).arg(currentPos).arg(m_moveCheckTargetPosition));
+    
+    // 使用统一的位置检查函数
+    if (isPositionReached(currentPos, m_moveCheckTargetPosition, m_moveCheckTolerance)) {
+        log(QString("电调移动完成: 当前位置=%1, 目标位置=%2, 误差=%3")
+            .arg(currentPos).arg(m_moveCheckTargetPosition).arg(qAbs(currentPos - m_moveCheckTargetPosition)));
+        // 发送电调位置同步信号
+        emit m_wsThread->sendMessageToClient("FocusPosition:" + QString::number(currentPos) + ":" + QString::number(currentPos));
+        
+        // 设置结果并停止定时器
+        m_moveCheckResult = true;
+        m_moveCheckPending = false;
+        if (m_moveCheckTimer) {
+            m_moveCheckTimer->stop();
+        }
+        return;
+    }
+    
+    // 检查是否卡住
+    if (currentPos == m_moveLastPosition && m_moveWaitCount > m_moveCheckStuckTimeout * 10) {
+        log(QString("电调可能卡住: 位置%1秒未变化").arg(m_moveCheckStuckTimeout));
+        m_moveCheckResult = false;
+        m_moveCheckPending = false;
+        if (m_moveCheckTimer) {
+            m_moveCheckTimer->stop();
+        }
+        return;
+    }
+    
+    // 更新位置记录
+    if (currentPos != m_moveLastPosition) {
+        m_moveLastPosition = currentPos;
+    }
+    
+    // 检查总超时
+    if (m_moveWaitCount >= m_moveCheckTimeout * 10) {
+        log(QString("电调移动超时: 等待%1秒后仍未到达目标位置").arg(m_moveCheckTimeout));
+        m_moveCheckResult = false;
+        m_moveCheckPending = false;
+        if (m_moveCheckTimer) {
+            m_moveCheckTimer->stop();
+        }
+        return;
+    }
+}
+
+/**
+ * @brief 强制停止所有等待状态
+ * 
+ * 用于在停止自动对焦时强制退出所有等待循环
+ */
+void AutoFocus::forceStopAllWaiting()
+{
+    // 强制设置所有等待状态为完成
+    m_moveCheckPending = false;
+    m_captureCheckPending = false;
+    m_moveCheckResult = false;
+    m_captureCheckResult = false;
+    
+    // 停止所有定时器
+    if (m_moveCheckTimer) {
+        m_moveCheckTimer->stop();
+        m_moveCheckTimer->disconnect(); // 断开所有连接
+    }
+    if (m_captureCheckTimer) {
+        m_captureCheckTimer->stop();
+        m_captureCheckTimer->disconnect(); // 断开所有连接
+    }
+    
+    // 强制处理所有待处理的事件
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    
+    // 再次强制处理事件，确保所有停止操作完成
+    QThread::msleep(10);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    
+    log("强制停止所有等待状态");
+}
+
+/**
+ * @brief 拍摄完成检查定时器回调
+ * 
+ * 每100ms检查一次拍摄完成状态，避免阻塞主线程
+ */
+void AutoFocus::onCaptureCheckTimerTimeout()
+{
+    // 首先检查对象是否仍然有效
+    if (!this) {
+        return;
+    }
+    
+    // 立即检查停止状态，如果已停止则立即退出
+    if (!m_isRunning) {
+        m_captureCheckPending = false;
+        m_captureCheckResult = false;
+        if (m_captureCheckTimer) {
+            m_captureCheckTimer->stop();
+        }
+        return;
+    }
+    
+    if (!m_captureCheckPending) {
+        if (m_captureCheckTimer) {
+            m_captureCheckTimer->stop();
+        }
+        return;
+    }
+    
+    // 检查是否已停止
+    if (!m_isRunning) {
+        log("自动对焦已停止，中断拍摄等待");
+        m_captureCheckResult = false;
+        m_captureCheckPending = false;
+        if (m_captureCheckTimer) {
+            m_captureCheckTimer->stop();
+        }
+        return;
+    }
+    
+    // 检查拍摄是否完成
+    if (m_isCaptureEnd) {
+        log(QString("拍摄完成，图像路径: %1").arg(m_lastCapturedImage));
+        
+        // 如果使用虚拟数据模式，在拍摄完成后替换图像
+        if (m_useVirtualData && m_starSimulator) {
+            log("虚拟数据模式：生成模拟星图替换真实图像");
+            QString originalPath = m_lastCapturedImage;
+            
+            // 检查原始图像文件
+            QFileInfo originalFileInfo(originalPath);
+            log(QString("原始图像文件: %1, 存在=%2, 大小=%3")
+                .arg(originalPath).arg(originalFileInfo.exists()).arg(originalFileInfo.size()));
+            
+            // 生成虚拟图像
+            bool success = generateVirtualImage(m_defaultExposureTime, m_useROI);
+            if (success) {
+                // 验证新生成的虚拟图像
+                QFileInfo virtualFileInfo(m_lastCapturedImage);
+                log(QString("虚拟图像生成成功，替换原图像: %1 -> %2")
+                    .arg(originalPath).arg(m_lastCapturedImage));
+                log(QString("虚拟图像文件: 存在=%1, 大小=%2")
+                    .arg(virtualFileInfo.exists()).arg(virtualFileInfo.size()));
+            } else {
+                log("虚拟图像生成失败，使用原图像");
+                m_lastCapturedImage = originalPath;
+            }
+        }
+        
+        // 设置结果并停止定时器
+        m_captureCheckResult = true;
+        m_captureCheckPending = false;
+        if (m_captureCheckTimer) {
+            m_captureCheckTimer->stop();
+        }
+        return;
+    }
+    
+    // 检查超时（通过已用时间判断）
+    // 这里我们依靠事件循环中的超时定时器来处理超时
+    // 如果在定时器回调中需要检查超时，可以通过记录开始时间来计算
 }
 
 /**
@@ -2000,6 +2262,11 @@ bool AutoFocus::captureROIImage()
  */
 bool AutoFocus::captureImage(int exposureTime, bool useROI)
 {
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过拍摄");
+        return false;
+    }
+    
     log(QString("拍摄图像，曝光时间 %1ms，使用ROI: %2").arg(exposureTime).arg(useROI ? "是" : "否"));
     
     // 检查相机设备对象是否有效
@@ -2069,51 +2336,134 @@ bool AutoFocus::waitForCaptureComplete(int timeoutMs)
 {
     log(QString("等待拍摄完成，超时时间: %1ms").arg(timeoutMs));
     
-    int elapsed = 0;
-    while (!m_isCaptureEnd && elapsed < timeoutMs) {
-        // 检查是否已停止
-        if (!m_isRunning) {
-            log("自动对焦已停止，中断拍摄等待");
-            return false;
-        }
-        
-        QThread::msleep(100);  // 等待100ms
-        elapsed += 100;
+    // 如果已经完成，直接返回
+    if (m_isCaptureEnd) {
+        log(QString("拍摄已完成，图像路径: %1").arg(m_lastCapturedImage));
+        return true;
     }
     
-    if (m_isCaptureEnd) {
-        log(QString("拍摄完成，图像路径: %1").arg(m_lastCapturedImage));
+    // 使用定时器替代 while 循环，避免阻塞
+    // 设置拍摄检查参数
+    m_captureCheckTimeout = timeoutMs;
+    m_captureCheckPending = true;
+    m_captureCheckResult = false;
+    
+    // 检查是否已经停止，避免在停止状态下进入等待
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过拍摄等待");
+        return false;
+    }
+    
+    // 创建超时定时器
+    QTimer timeoutTimer;
+    timeoutTimer.setSingleShot(true);
+    timeoutTimer.setInterval(timeoutMs);
+    
+    // 使用事件循环等待结果，避免阻塞主线程
+    QEventLoop eventLoop;
+    
+    // 使用 QPointer 来安全地管理定时器
+    QPointer<QTimer> captureTimerPtr = m_captureCheckTimer;
+    
+    // 连接超时信号，当定时器超时或拍摄检查完成时退出事件循环
+    QObject::connect(&timeoutTimer, &QTimer::timeout, &eventLoop, [this, &eventLoop, captureTimerPtr]() {
+        if (m_captureCheckPending) {
+            log(QString("拍摄超时"));
+            m_captureCheckPending = false;
+            if (captureTimerPtr && captureTimerPtr->isActive()) {
+                captureTimerPtr->stop();
+            }
+        }
+        eventLoop.quit();
+    });
+    
+    // 创建一个辅助定时器来定期检查拍摄状态
+    QTimer checkTimer;
+    checkTimer.setInterval(50); // 每50ms检查一次 pending 状态
+    QObject::connect(&checkTimer, &QTimer::timeout, &eventLoop, [this, &checkTimer, &eventLoop, captureTimerPtr]() {
+        if (!m_captureCheckPending) {
+            // 拍摄检查已完成，退出事件循环
+            checkTimer.stop();
+            eventLoop.quit();
+        }
+    });
+    
+    // 启动所有定时器
+    if (m_captureCheckTimer) {
+        m_captureCheckTimer->start();
+    }
+    timeoutTimer.start();
+    checkTimer.start();
+    
+    // 进入事件循环等待，直到拍摄完成或超时
+    // 添加定期检查，确保在 stopAutoFocus 被调用时能及时退出
+    QTimer stopCheckTimer;
+    stopCheckTimer.setInterval(25); // 每25ms检查一次停止状态，提高响应速度
+    QObject::connect(&stopCheckTimer, &QTimer::timeout, &eventLoop, [this, &eventLoop, &stopCheckTimer]() {
+        if (!m_isRunning || !m_captureCheckPending) {
+            stopCheckTimer.stop();
+            eventLoop.quit();
+        }
+    });
+    stopCheckTimer.start();
+    
+    // 设置事件循环超时，防止无限等待
+    QTimer maxWaitTimer;
+    maxWaitTimer.setSingleShot(true);
+    maxWaitTimer.setInterval(timeoutMs + 1000); // 比拍摄超时多1秒
+    QObject::connect(&maxWaitTimer, &QTimer::timeout, &eventLoop, [&eventLoop]() {
+        eventLoop.quit();
+    });
+    maxWaitTimer.start();
+    
+    // 使用 QEventLoop::ProcessEvents 模式，确保能及时响应停止信号
+    int maxIterations = (timeoutMs + 1000) / 10; // 最大迭代次数
+    int iteration = 0;
+    while (m_captureCheckPending && m_isRunning && maxWaitTimer.isActive() && iteration < maxIterations) {
+        eventLoop.processEvents(QEventLoop::AllEvents, 50);
+        QThread::msleep(10); // 短暂等待，避免CPU占用过高
+        iteration++;
         
-        // 如果使用虚拟数据模式，在拍摄完成后替换图像
-        if (m_useVirtualData && m_starSimulator) {
-            log("虚拟数据模式：生成模拟星图替换真实图像");
-            QString originalPath = m_lastCapturedImage;
-            
-            // 检查原始图像文件
-            QFileInfo originalFileInfo(originalPath);
-            log(QString("原始图像文件: %1, 存在=%2, 大小=%3")
-                .arg(originalPath).arg(originalFileInfo.exists()).arg(originalFileInfo.size()));
-            
-            // 生成虚拟图像
-            bool success = generateVirtualImage(m_defaultExposureTime, m_useROI);
-            if (success) {
-                // 验证新生成的虚拟图像
-                QFileInfo virtualFileInfo(m_lastCapturedImage);
-                log(QString("虚拟图像生成成功，替换原图像: %1 -> %2")
-                    .arg(originalPath).arg(m_lastCapturedImage));
-                log(QString("虚拟图像文件: 存在=%1, 大小=%2")
-                    .arg(virtualFileInfo.exists()).arg(virtualFileInfo.size()));
-            } else {
-                log("虚拟图像生成失败，使用原图像");
-                m_lastCapturedImage = originalPath;
+        // 每50次迭代检查一次，防止无限循环
+        if (iteration % 50 == 0) {
+            if (!m_isRunning) {
+                log("检测到停止信号，立即退出拍摄等待循环");
+                break; // 如果已停止，立即退出
             }
         }
         
-        return true;
-    } else {
-        log(QString("拍摄超时"));
-        return false;
+        // 每200次迭代强制检查一次状态
+        if (iteration % 200 == 0) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+        }
     }
+    
+    // 如果循环结束但仍在等待，强制退出
+    if (m_captureCheckPending) {
+        log("强制退出拍摄等待循环");
+        m_captureCheckPending = false;
+        m_captureCheckResult = false;
+        
+        // 强制处理事件，确保状态更新生效
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    }
+    
+    // 停止最大等待定时器
+    maxWaitTimer.stop();
+    
+    // 停止所有定时器
+    stopCheckTimer.stop();
+    if (m_captureCheckTimer) {
+        m_captureCheckTimer->stop();
+    }
+    timeoutTimer.stop();
+    checkTimer.stop();
+    
+    // 返回结果
+    bool result = m_captureCheckResult;
+    m_captureCheckPending = false;
+    
+    return result;
 }
 
 /**
@@ -3476,39 +3826,133 @@ bool AutoFocus::waitForFocuserMoveComplete(int targetPosition, int tolerance, in
         return true; // 认为移动已完成
     }
     
-    while (m_isRunning && m_moveWaitCount < dynamicTimeout * 10) { // 每100ms检查一次
-        int currentPos = getCurrentFocuserPosition();
-        m_moveWaitCount++;
-        
-        log(QString("等待电调移动 [%1/%2]: 当前位置=%3, 目标位置=%4")
-            .arg(m_moveWaitCount / 10.0, 0, 'f', 1).arg(dynamicTimeout).arg(currentPos).arg(targetPosition));
-        
-        // 使用统一的位置检查函数
-        if (isPositionReached(currentPos, targetPosition, tolerance)) {
-            log(QString("电调移动完成: 当前位置=%1, 目标位置=%2, 误差=%3")
-                .arg(currentPos).arg(targetPosition).arg(qAbs(currentPos - targetPosition)));
-            // 发送电调位置同步信号
-            emit m_wsThread->sendMessageToClient("FocusPosition:" + QString::number(currentPos) + ":" + QString::number(currentPos));
-            return true;
-        }
-        
-        // 检查是否卡住
-        if (currentPos == m_moveLastPosition && m_moveWaitCount > dynamicStuckTimeout * 10) {
-            log(QString("电调可能卡住: 位置%1秒未变化").arg(dynamicStuckTimeout));
-            return false;
-        }
-        
-        // 更新位置记录
-        if (currentPos != m_moveLastPosition) {
-            m_moveLastPosition = currentPos;
-        }
-        
-        // 等待100ms
-        QThread::msleep(100);
+    // 使用定时器替代 while 循环，避免阻塞
+    // 设置移动检查参数
+    m_moveCheckTargetPosition = targetPosition;
+    m_moveCheckTolerance = tolerance;
+    m_moveCheckTimeout = dynamicTimeout;
+    m_moveCheckStuckTimeout = dynamicStuckTimeout;
+    m_moveCheckPending = true;
+    m_moveCheckResult = false;
+    m_moveWaitCount = 0;
+    m_moveLastPosition = initialPosition;
+    
+    // 检查是否已经停止，避免在停止状态下进入等待
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过电调移动等待");
+        return false;
     }
     
-    log(QString("电调移动超时: 等待%1秒后仍未到达目标位置").arg(dynamicTimeout));
-    return false;
+    // 创建超时定时器
+    QTimer timeoutTimer;
+    timeoutTimer.setSingleShot(true);
+    timeoutTimer.setInterval(dynamicTimeout * 1000); // 设置总超时时间
+    
+    // 使用事件循环等待结果，避免阻塞主线程
+    QEventLoop eventLoop;
+    
+    // 使用 QPointer 来安全地管理定时器
+    QPointer<QTimer> moveTimerPtr = m_moveCheckTimer;
+    
+    // 连接超时信号，当定时器超时或移动检查完成时退出事件循环
+    QObject::connect(&timeoutTimer, &QTimer::timeout, &eventLoop, [this, dynamicTimeout, &eventLoop, moveTimerPtr]() {
+        if (m_moveCheckPending) {
+            log(QString("电调移动超时: 等待%1秒后仍未到达目标位置").arg(dynamicTimeout));
+            m_moveCheckPending = false;
+            if (moveTimerPtr && moveTimerPtr->isActive()) {
+                moveTimerPtr->stop();
+            }
+        }
+        eventLoop.quit();
+    });
+    
+    // 创建一个辅助定时器来定期检查移动状态
+    QTimer checkTimer;
+    checkTimer.setInterval(50); // 每50ms检查一次 pending 状态
+    QObject::connect(&checkTimer, &QTimer::timeout, &eventLoop, [this, &checkTimer, &eventLoop, moveTimerPtr]() {
+        if (!m_moveCheckPending) {
+            // 移动检查已完成，退出事件循环
+            checkTimer.stop();
+            eventLoop.quit();
+        }
+    });
+    
+    // 启动所有定时器
+    if (m_moveCheckTimer) {
+        m_moveCheckTimer->start();
+    }
+    timeoutTimer.start();
+    checkTimer.start();
+    
+    // 进入事件循环等待，直到移动完成或超时
+    // 添加定期检查，确保在 stopAutoFocus 被调用时能及时退出
+    QTimer stopCheckTimer;
+    stopCheckTimer.setInterval(25); // 每25ms检查一次停止状态，提高响应速度
+    QObject::connect(&stopCheckTimer, &QTimer::timeout, &eventLoop, [this, &eventLoop, &stopCheckTimer]() {
+        if (!m_isRunning || !m_moveCheckPending) {
+            stopCheckTimer.stop();
+            eventLoop.quit();
+        }
+    });
+    stopCheckTimer.start();
+    
+    // 设置事件循环超时，防止无限等待
+    QTimer maxWaitTimer;
+    maxWaitTimer.setSingleShot(true);
+    maxWaitTimer.setInterval((dynamicTimeout + 5) * 1000); // 比移动超时多5秒
+    QObject::connect(&maxWaitTimer, &QTimer::timeout, &eventLoop, [&eventLoop]() {
+        eventLoop.quit();
+    });
+    maxWaitTimer.start();
+    
+    // 使用 QEventLoop::ProcessEvents 模式，确保能及时响应停止信号
+    int maxIterations = ((dynamicTimeout + 5) * 1000) / 10; // 最大迭代次数
+    int iteration = 0;
+    while (m_moveCheckPending && m_isRunning && maxWaitTimer.isActive() && iteration < maxIterations) {
+        eventLoop.processEvents(QEventLoop::AllEvents, 50);
+        QThread::msleep(10); // 短暂等待，避免CPU占用过高
+        iteration++;
+        
+        // 每50次迭代检查一次，防止无限循环
+        if (iteration % 50 == 0) {
+            if (!m_isRunning) {
+                log("检测到停止信号，立即退出移动等待循环");
+                break; // 如果已停止，立即退出
+            }
+        }
+        
+        // 每200次迭代强制检查一次状态
+        if (iteration % 200 == 0) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+        }
+    }
+    
+    // 如果循环结束但仍在等待，强制退出
+    if (m_moveCheckPending) {
+        log("强制退出移动等待循环");
+        m_moveCheckPending = false;
+        m_moveCheckResult = false;
+        
+        // 强制处理事件，确保状态更新生效
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    }
+    
+    // 停止最大等待定时器
+    maxWaitTimer.stop();
+    
+    // 停止所有定时器
+    stopCheckTimer.stop();
+    if (m_moveCheckTimer) {
+        m_moveCheckTimer->stop();
+    }
+    timeoutTimer.stop();
+    checkTimer.stop();
+    
+    // 返回结果
+    bool result = m_moveCheckResult;
+    m_moveCheckPending = false;
+    
+    return result;
 }
 
 void AutoFocus::initializeVirtualData()

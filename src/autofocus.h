@@ -164,6 +164,9 @@ signals:
 
 private slots:
     void onTimerTimeout();
+    void onMoveCheckTimerTimeout();         // 电调移动检查定时器回调
+    void onCaptureCheckTimerTimeout();      // 拍摄完成检查定时器回调
+    void forceStopAllWaiting();             // 强制停止所有等待状态
 
 private:
     // 硬件设备对象
@@ -174,6 +177,8 @@ private:
     // 状态管理
     AutoFocusState m_currentState;
     QTimer *m_timer;
+    QTimer *m_moveCheckTimer;         // 电调移动检查定时器
+    QTimer *m_captureCheckTimer;     // 拍摄完成检查定时器
     QMutex m_mutex;
     bool m_isRunning;
 
@@ -221,11 +226,20 @@ int  m_fineCenter;          // 精调中心（粗调最优位置）
     int m_moveWaitStartTime;                // 移动等待开始时间
     int m_moveWaitCount;                    // 移动等待计数
     int m_moveLastPosition;                 // 移动等待期间的最后位置
+    bool m_moveCheckResult;                 // 移动检查结果
+    bool m_moveCheckPending;                // 是否正在等待移动检查完成
+    int m_moveCheckTimeout;                 // 移动检查超时时间（秒）
+    int m_moveCheckStuckTimeout;            // 移动检查卡住超时时间（秒）
+    int m_moveCheckTargetPosition;         // 移动检查目标位置
+    int m_moveCheckTolerance;               // 移动检查容差
     
     // 拍摄相关
     bool m_isCaptureEnd;                    // 拍摄是否结束
     QString m_lastCapturedImage;            // 最后拍摄的图像路径
     int m_defaultExposureTime;              // 默认曝光时间（毫秒）
+    bool m_captureCheckPending;             // 是否正在等待拍摄检查完成
+    bool m_captureCheckResult;              // 拍摄检查结果
+    int m_captureCheckTimeout;              // 拍摄检查超时时间（毫秒）
     
     // 星点选择相关
     int m_topStarCount;                     // 选择置信度最高的星点数量
