@@ -1,5 +1,42 @@
 #include "mainwindow.h"
 
+#include <cstdint>
+#include <cstddef>
+#include <cstring>
+#include <memory>
+#include <algorithm>
+#include <cmath>
+
+// ===== 你的 BUFSZ 定义（保持不变）=====
+#define BUFSZ 16590848 // 原始约 16 MB
+
+// ===== 共享内存固定偏移常量（与写端一致）=====
+static constexpr size_t kHeaderOff  = 1024;  // 你原来图像头：X/Y/bitDepth 的存放起点
+static constexpr size_t kFlagOff    = 2047;  // 帧状态标志
+static constexpr size_t kPayloadOff = 2048;  // 像素数据起点
+
+// ===== 新增 V2 头（放在 0..1023，不影响旧逻辑）=====
+#pragma pack(push,1)
+struct ShmHdrV2 {
+    uint32_t magic;       // 'PHD2' = 0x32444850
+    uint16_t version;     // 0x0002
+    uint16_t coding;      // 0=RAW, 1=RLE, 2=NEAREST
+    uint32_t payloadSize; // 像素区实际写入字节数（用于安全 memcpy/解码）
+
+    uint32_t origW;       // 原图宽
+    uint32_t origH;       // 原图高
+    uint32_t outW;        // 实际写入帧宽（RAW/RLE 与 orig 相同；NEAREST 为缩后）
+    uint32_t outH;        // 实际写入帧高
+    uint16_t bitDepth;    // 8 or 16
+    uint16_t scale;       // NEAREST 时为 s；RAW/RLE=1
+    uint32_t reserved[8]; // 预留
+};
+#pragma pack(pop)
+
+static constexpr uint32_t SHM_MAGIC = 0x32444850; // 'PHD2'
+static constexpr uint16_t SHM_VER   = 0x0002;
+enum : uint16_t { CODING_RAW=0, CODING_RLE=1, CODING_NEAREST=2 };
+
 INDI::BaseDevice *dpMount = nullptr, *dpGuider = nullptr, *dpPoleScope = nullptr;
 INDI::BaseDevice *dpMainCamera = nullptr, *dpFocuser = nullptr, *dpCFW = nullptr;
 
@@ -5371,309 +5408,668 @@ uint32_t MainWindow::call_phd_DecAggression(int Aggression)
     }
 }
 
+// ===================== 读取端：共享内存像素解码（完整实现） =====================
+// 说明：
+// 1) 保持你原有的共享内存布局不变：
+//    - [0 .. 1023]  : 预留区（新增 V2 头 ShmHdrV2 放在这里，兼容旧读端）
+//    - [1024 ..]    : 你原有的头/状态/导星数据（currentPHDSizeX/Y、bitDepth、各项 guide 数据等）
+//    - [2047]       : 帧完成标志位（0x01=写入中，0x02=完成，0x00=已读）
+//    - [2048 .. end]: 像素数据（RAW / RLE 压缩 / NEAREST 缩放）
+// 2) 本实现自动识别新头（若存在），按 coding 解码；若无新头，则回退旧逻辑。
+// 3) 不改变你已有的“读取的内容”（导星/状态字段），仅在像素拷贝前做安全边界检查与解码。
+
+
+// ===== RLE 解压（速度优先的简单实现）=====
+static bool rle_decompress_8(const uint8_t* src, size_t n, uint8_t* dst, size_t outPixels) {
+    size_t si=0, di=0;
+    while (si+1 <= n && di < outPixels) {
+        if (si + 1 > n) return false;
+        uint8_t v = src[si++];
+        if (si >= n) return false;
+        uint8_t run = src[si++];
+        if ((size_t)di + run > outPixels) return false;
+        std::memset(dst + di, v, run);
+        di += run;
+    }
+    return di == outPixels;
+}
+
+static bool rle_decompress_16(const uint8_t* src, size_t n, uint16_t* dst, size_t outPixels) {
+    size_t si=0, di=0;
+    while (si+4 <= n && di < outPixels) {
+        uint16_t v, run;
+        std::memcpy(&v,   src+si, 2); si += 2;
+        std::memcpy(&run, src+si, 2); si += 2;
+        if ((size_t)di + run > outPixels) return false;
+        for (uint16_t k=0;k<run;++k) dst[di++] = v;
+    }
+    return di == outPixels;
+}
+
+// ====== 完整的读取函数（在你的 MainWindow 类内）=====
 void MainWindow::ShowPHDdata()
 {
-    // Logger::Log("ShowPHDdata start ...", LogLevel::DEBUG, DeviceType::MAIN);
+    // 早退：共享内存可用且帧完成
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("ShowPHDdata | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return;
+    }
+    if (sharedmemory_phd[kFlagOff] != 0x02) {
+        // 没有新帧
+        return;
+    }
+
+    // ---------- 读图像原始头（与旧协议完全一致） ----------
     unsigned int currentPHDSizeX = 1;
     unsigned int currentPHDSizeY = 1;
-    unsigned int bitDepth = 1;
+    unsigned int bitDepth        = 8;
 
-    unsigned char guideDataIndicator;
-    unsigned int guideDataIndicatorAddress;
-    double dRa, dDec, SNR, MASS, RMSErrorX, RMSErrorY, RMSErrorTotal, PixelRatio;
-    int RADUR, DECDUR;
-    char RADIR, DECDIR;
-    unsigned char LossAlert;
+    unsigned int mem_offset = kHeaderOff;
+    const size_t total_size = (size_t)BUFSZ;
 
-    double StarX;
-    double StarY;
-    bool isSelected;
+    auto ensure = [&](size_t need) -> bool {
+        // 头部区域必须在 payload 前结束
+        return (mem_offset + need <= kPayloadOff && mem_offset + need <= total_size);
+    };
 
-    bool showLockedCross;
-    double LockedPositionX;
-    double LockedPositionY;
+    if (!ensure(sizeof(unsigned int))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&currentPHDSizeX, sharedmemory_phd + mem_offset, sizeof(unsigned int));
+    mem_offset += sizeof(unsigned int);
 
-    unsigned char MultiStarNumber;
-    unsigned short MultiStarX[32];
-    unsigned short MultiStarY[32];
+    if (!ensure(sizeof(unsigned int))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&currentPHDSizeY, sharedmemory_phd + mem_offset, sizeof(unsigned int));
+    mem_offset += sizeof(unsigned int);
 
-    unsigned int mem_offset;
-    int sdk_direction = 0;
-    int sdk_duration = 0;
-    int sdk_num;
-    int zero = 0;
+    if (!ensure(sizeof(unsigned char))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&bitDepth, sharedmemory_phd + mem_offset, sizeof(unsigned char));
+    mem_offset += sizeof(unsigned char);
 
-    bool StarLostAlert = false;
-
-    if (sharedmemory_phd[2047] != 0x02)
-    {
-        // Logger::Log("ShowPHDdata | no image comes", LogLevel::DEBUG, DeviceType::MAIN);
-        // sleep(1); // 如果没有图像，等待1秒
-        return; // if there is no image comes, return
+    if (!(bitDepth == 8 || bitDepth == 16)) {
+        Logger::Log("ShowPHDdata | invalid bitDepth: " + std::to_string(bitDepth), LogLevel::WARNING, DeviceType::GUIDER);
+        sharedmemory_phd[kFlagOff] = 0x00;
+        return;
     }
 
-    mem_offset = 1024;
-    // guide image dimention data
-    memcpy(&currentPHDSizeX, sharedmemory_phd + mem_offset, sizeof(unsigned int));
-    // Logger::Log("ShowPHDdata | get currentPHDSizeX:" + std::to_string(currentPHDSizeX), LogLevel::DEBUG, DeviceType::MAIN);
-    mem_offset = mem_offset + sizeof(unsigned int);
-    memcpy(&currentPHDSizeY, sharedmemory_phd + mem_offset, sizeof(unsigned int));
-    // Logger::Log("ShowPHDdata | get currentPHDSizeY:" + std::to_string(currentPHDSizeY), LogLevel::DEBUG, DeviceType::MAIN);
-    mem_offset = mem_offset + sizeof(unsigned int);
-    memcpy(&bitDepth, sharedmemory_phd + mem_offset, sizeof(unsigned char));
-    // Logger::Log("ShowPHDdata | get bitDepth:" + std::to_string(bitDepth), LogLevel::DEBUG, DeviceType::MAIN);
-    mem_offset = mem_offset + sizeof(unsigned char);
+    /* ------------------------------  新增：先读 V2 头，决定本帧尺寸  ------------------------------ */
+    ShmHdrV2 v2{}; 
+    bool hasV2 = false;
+    if (total_size >= sizeof(ShmHdrV2)) {
+        std::memcpy(&v2, sharedmemory_phd, sizeof(ShmHdrV2));
+        hasV2 = (v2.magic == SHM_MAGIC && v2.version == SHM_VER);
+    }
 
-    mem_offset = mem_offset + sizeof(int); // &sdk_num
-    mem_offset = mem_offset + sizeof(int); // &sdk_direction
-    mem_offset = mem_offset + sizeof(int); // &sdk_duration
+    // 本帧用于 UI/WS 的“实际尺寸/位深”
+    uint32_t dispW = hasV2 ? v2.outW : currentPHDSizeX;
+    uint32_t dispH = hasV2 ? v2.outH : currentPHDSizeY;
+    uint16_t useDepth = hasV2 ? v2.bitDepth : (uint16_t)bitDepth;
 
-    guideDataIndicatorAddress = mem_offset;
+    // 合法性兜底
+    if (dispW == 0 || dispH == 0 || !(useDepth==8 || useDepth==16)) {
+        // 回退到旧头
+        hasV2 = false;
+        dispW = currentPHDSizeX;
+        dispH = currentPHDSizeY;
+        useDepth = (uint16_t)bitDepth;
+    }
 
-    // guide error data
-    guideDataIndicator = sharedmemory_phd[guideDataIndicatorAddress];
-    // Logger::Log("ShowPHDdata | get guideDataIndicator:" + std::to_string(guideDataIndicator), LogLevel::DEBUG, DeviceType::GUIDER);
+    // ---------- 跳过你原有的 3 个 int 字段（sdk_*） ----------
+    if (!ensure(sizeof(int))) { sharedmemory_phd[kFlagOff]=0x00; return; }  mem_offset += sizeof(int);
+    if (!ensure(sizeof(int))) { sharedmemory_phd[kFlagOff]=0x00; return; }  mem_offset += sizeof(int);
+    if (!ensure(sizeof(int))) { sharedmemory_phd[kFlagOff]=0x00; return; }  mem_offset += sizeof(int);
 
-    mem_offset = mem_offset + sizeof(unsigned char);
-    memcpy(&dRa, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get dRa:" + std::to_string(dRa), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&dDec, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&SNR, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get SNR:" + std::to_string(SNR), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&MASS, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get MASS:" + std::to_string(MASS), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
+    // ---------- 读取导星/状态数据（保持不变，不缺少） ----------
+    unsigned int guideDataIndicatorAddress = (unsigned int)mem_offset;
+    if (!ensure(sizeof(unsigned char))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    unsigned char guideDataIndicator = *(unsigned char*)(sharedmemory_phd + mem_offset);
+    mem_offset += sizeof(unsigned char);
 
-    memcpy(&RADUR, sharedmemory_phd + mem_offset, sizeof(int));
-    // Logger::Log("ShowPHDdata | get RADUR:" + std::to_string(RADUR), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(int);
-    memcpy(&DECDUR, sharedmemory_phd + mem_offset, sizeof(int));
-    // Logger::Log("ShowPHDdata | get DECDUR:" + std::to_string(DECDUR), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(int);
+    double dRa=0, dDec=0, SNR=0, MASS=0, RMSErrorX=0, RMSErrorY=0, RMSErrorTotal=0, PixelRatio=1;
+    int RADUR=0, DECDUR=0; char RADIR=0, DECDIR=0; bool StarLostAlert=false, InGuiding=false;
 
-    memcpy(&RADIR, sharedmemory_phd + mem_offset, sizeof(char));
-    // Logger::Log("ShowPHDdata | get RADIR:" + std::to_string(RADIR), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(char);
-    memcpy(&DECDIR, sharedmemory_phd + mem_offset, sizeof(char));
-    // Logger::Log("ShowPHDdata | get DECDIR:" + std::to_string(DECDIR), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(char);
+    auto safe_copy = [&](void* dst, size_t n) -> bool {
+        if (!ensure(n)) { sharedmemory_phd[kFlagOff]=0x00; return false; }
+        std::memcpy(dst, sharedmemory_phd + mem_offset, n);
+        mem_offset += n;
+        return true;
+    };
 
-    memcpy(&RMSErrorX, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get RMSErrorX:" + std::to_string(RMSErrorX), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&RMSErrorY, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get RMSErrorY:" + std::to_string(RMSErrorY), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&RMSErrorTotal, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get RMSErrorTotal:" + std::to_string(RMSErrorTotal), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&PixelRatio, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get PixelRatio:" + std::to_string(PixelRatio), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&StarLostAlert, sharedmemory_phd + mem_offset, sizeof(bool));
-    // Logger::Log("ShowPHDdata | get StarLostAlert:" + std::to_string(StarLostAlert), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(bool);
-    memcpy(&InGuiding, sharedmemory_phd + mem_offset, sizeof(bool));
-    // Logger::Log("ShowPHDdata | get InGuiding:" + std::to_string(InGuiding), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(bool);
+    if (!safe_copy(&dRa, sizeof(double))) return;
+    if (!safe_copy(&dDec, sizeof(double))) return;
+    if (!safe_copy(&SNR, sizeof(double))) return;
+    if (!safe_copy(&MASS, sizeof(double))) return;
+    if (!safe_copy(&RADUR, sizeof(int))) return;
+    if (!safe_copy(&DECDUR, sizeof(int))) return;
+    if (!safe_copy(&RADIR, sizeof(char))) return;
+    if (!safe_copy(&DECDIR, sizeof(char))) return;
+    if (!safe_copy(&RMSErrorX, sizeof(double))) return;
+    if (!safe_copy(&RMSErrorY, sizeof(double))) return;
+    if (!safe_copy(&RMSErrorTotal, sizeof(double))) return;
+    if (!safe_copy(&PixelRatio, sizeof(double))) return;
+    if (!safe_copy(&StarLostAlert, sizeof(bool))) return;
+    if (!safe_copy(&InGuiding, sizeof(bool))) return;
 
-    mem_offset = 1024 + 200;
-    memcpy(&isSelected, sharedmemory_phd + mem_offset, sizeof(bool));
-    // Logger::Log("ShowPHDdata | get isSelected:" + std::to_string(isSelected), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(bool);
-    memcpy(&StarX, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get StarX:" + std::to_string(StarX), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&StarY, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get StarY:" + std::to_string(StarY), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&showLockedCross, sharedmemory_phd + mem_offset, sizeof(bool));
-    // Logger::Log("ShowPHDdata | get showLockedCross:" + std::to_string(showLockedCross), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(bool);
-    memcpy(&LockedPositionX, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get LockedPositionX:" + std::to_string(LockedPositionX), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&LockedPositionY, sharedmemory_phd + mem_offset, sizeof(double));
-    // Logger::Log("ShowPHDdata | get LockedPositionY:" + std::to_string(LockedPositionY), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(double);
-    memcpy(&MultiStarNumber, sharedmemory_phd + mem_offset, sizeof(unsigned char));
-    // Logger::Log("ShowPHDdata | get MultiStarNumber:" + std::to_string(MultiStarNumber), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(unsigned char);
-    memcpy(MultiStarX, sharedmemory_phd + mem_offset, sizeof(MultiStarX));
-    // Logger::Log("ShowPHDdata | get MultiStarX , MultistarX length:" + std::to_string(sizeof(MultiStarX)), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(MultiStarX);
-    memcpy(MultiStarY, sharedmemory_phd + mem_offset, sizeof(MultiStarY));
-    // Logger::Log("ShowPHDdata | get MultiStarY , MultistarY length:" + std::to_string(sizeof(MultiStarY)), LogLevel::DEBUG, DeviceType::GUIDER);
-    mem_offset = mem_offset + sizeof(MultiStarY);
+    // 你的 1024+200 区域：锁星、十字、MultiStar（保持不变）
+    mem_offset = kHeaderOff + 200;
+    auto ensure_at = [&](size_t off, size_t n)->bool {
+        return (off + n <= kPayloadOff && off + n <= total_size);
+    };
 
-    sharedmemory_phd[guideDataIndicatorAddress] = 0x00; // have been read back
+    bool isSelected=false, showLockedCross=false;
+    double StarX=0, StarY=0, LockedPositionX=0, LockedPositionY=0;
+    unsigned char MultiStarNumber=0;
+    unsigned short MultiStarX[32]={0}, MultiStarY[32]={0};
 
-    glPHD_isSelected = isSelected;
-    glPHD_StarX = StarX;
-    glPHD_StarY = StarY;
-    glPHD_CurrentImageSizeX = currentPHDSizeX;
-    glPHD_CurrentImageSizeY = currentPHDSizeY;
-    glPHD_LockPositionX = LockedPositionX;
-    glPHD_LockPositionY = LockedPositionY;
-    glPHD_ShowLockCross = showLockedCross;
+    if (!ensure_at(mem_offset, sizeof(bool))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&isSelected, sharedmemory_phd + mem_offset, sizeof(bool)); mem_offset += sizeof(bool);
 
-    // Logger::Log("ShowPHDdata | clear glPHD_Stars", LogLevel::DEBUG, DeviceType::GUIDER);
+    if (!ensure_at(mem_offset, sizeof(double))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&StarX, sharedmemory_phd + mem_offset, sizeof(double)); mem_offset += sizeof(double);
+
+    if (!ensure_at(mem_offset, sizeof(double))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&StarY, sharedmemory_phd + mem_offset, sizeof(double)); mem_offset += sizeof(double);
+
+    if (!ensure_at(mem_offset, sizeof(bool))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&showLockedCross, sharedmemory_phd + mem_offset, sizeof(bool)); mem_offset += sizeof(bool);
+
+    if (!ensure_at(mem_offset, sizeof(double))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&LockedPositionX, sharedmemory_phd + mem_offset, sizeof(double)); mem_offset += sizeof(double);
+
+    if (!ensure_at(mem_offset, sizeof(double))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&LockedPositionY, sharedmemory_phd + mem_offset, sizeof(double)); mem_offset += sizeof(double);
+
+    if (!ensure_at(mem_offset, sizeof(unsigned char))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(&MultiStarNumber, sharedmemory_phd + mem_offset, sizeof(unsigned char)); mem_offset += sizeof(unsigned char);
+    MultiStarNumber = std::min<unsigned char>(MultiStarNumber, 32);
+
+    if (!ensure_at(mem_offset, sizeof(MultiStarX))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(MultiStarX, sharedmemory_phd + mem_offset, sizeof(MultiStarX)); mem_offset += sizeof(MultiStarX);
+
+    if (!ensure_at(mem_offset, sizeof(MultiStarY))) { sharedmemory_phd[kFlagOff]=0x00; return; }
+    std::memcpy(MultiStarY, sharedmemory_phd + mem_offset, sizeof(MultiStarY)); mem_offset += sizeof(MultiStarY);
+
+    // 清除导星数据指示位（保持你的行为）
+    sharedmemory_phd[guideDataIndicatorAddress] = 0x00;
+
+    // ---------- 将导星/锁星信息分发到 UI/WS（保持你的逻辑） ----------
+    glPHD_isSelected         = isSelected;
+    glPHD_StarX              = StarX;
+    glPHD_StarY              = StarY;
+    glPHD_CurrentImageSizeX  = dispW;   // ★ 改成 dispW
+    glPHD_CurrentImageSizeY  = dispH;   // ★ 改成 dispH
+    glPHD_LockPositionX      = LockedPositionX;
+    glPHD_LockPositionY      = LockedPositionY;
+    glPHD_ShowLockCross      = showLockedCross;
+
     glPHD_Stars.clear();
-    // Logger::Log("ShowPHDdata | send ClearPHD2MultiStars", LogLevel::DEBUG, DeviceType::GUIDER);
     emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
-    for (int i = 1; i < MultiStarNumber; i++)
-    {
-        if (i > 12)
-            break;
-        QPoint p;
-        p.setX(MultiStarX[i]);
-        p.setY(MultiStarY[i]);
+    for (int i = 1; i < MultiStarNumber; i++) {
+        if (i > 12) break;
+        QPoint p; p.setX(MultiStarX[i]); p.setY(MultiStarY[i]);
         glPHD_Stars.push_back(p);
-        // qDebug() << "MultiStar[" << i << "]:" << MultiStarX[i] << ", " << MultiStarY[i];
-        emit wsThread->sendMessageToClient("PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
+        emit wsThread->sendMessageToClient(
+            "PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
     }
 
-    // Logger::Log("ShowPHDdata | send PHD2StarBoxView and PHD2StarBoxPosition", LogLevel::DEBUG, DeviceType::GUIDER);
-    // if (glPHD_StarX != 0 && glPHD_StarY != 0)
-    // {
-    if (glPHD_isSelected == true)
-    {
-        // qDebug() << "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY);
+    if (glPHD_isSelected) {
         emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
-        emit wsThread->sendMessageToClient("PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY));
-    }
-    else
-    {
+        emit wsThread->sendMessageToClient(
+            "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY));
+    } else {
         emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
     }
 
-    // Logger::Log("ShowPHDdata | send PHD2StarCrossView and PHD2StarCrossPosition", LogLevel::DEBUG, DeviceType::GUIDER);
-    if (glPHD_ShowLockCross == true)
-    {
+    if (glPHD_ShowLockCross) {
         emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
-        emit wsThread->sendMessageToClient("PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_LockPositionX) + ":" + QString::number(glPHD_LockPositionY));
-    }
-    else
-    {
+        emit wsThread->sendMessageToClient(
+            "PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(glPHD_LockPositionX) + ":" + QString::number(glPHD_LockPositionY));
+    } else {
         emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
     }
-    // }
 
-    if (sharedmemory_phd[2047] == 0x02 && bitDepth > 0 && currentPHDSizeX > 0 && currentPHDSizeY > 0)
-    {
-        // 导星过程中的数据
+    // ---------- 导星状态/曲线（保持你的逻辑） ----------
+    if (sharedmemory_phd[kFlagOff] == 0x02 && bitDepth > 0 && currentPHDSizeX > 0 && currentPHDSizeY > 0) {
         unsigned char phdstatu;
         call_phd_checkStatus(phdstatu);
-        // Logger::Log("ShowPHDdata | phdstatu:" + std::to_string(phdstatu), LogLevel::DEBUG, DeviceType::GUIDER);
-        Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
-        if (dRa != 0 || dDec != 0)
-        {
-            qDebug() << "ShowPHDdata | 当前导星赤道仪位置dRa:" << dRa << ", dDec:" << dDec;
-            // Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
-            QPointF tmp;
-            tmp.setX(-dRa * PixelRatio);
-            tmp.setY(dDec * PixelRatio);
-            glPHD_rmsdate.append(tmp);
-            // Logger::Log("ShowPHDdata | send AddScatterChartData", LogLevel::DEBUG, DeviceType::GUIDER);
-            emit wsThread->sendMessageToClient("AddScatterChartData:" + QString::number(-dRa * PixelRatio) + ":" + QString::number(-dDec * PixelRatio));
 
-            // 图像中的小绿框
-            if (InGuiding == true)
-            {
-                // Logger::Log("ShowPHDdata | send GuiderStatus:InGuiding", LogLevel::DEBUG, DeviceType::GUIDER);
+        Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec),
+                    LogLevel::DEBUG, DeviceType::GUIDER);
+
+        if (dRa != 0 || dDec != 0) {
+            QPointF tmp; tmp.setX(-dRa * PixelRatio); tmp.setY(dDec * PixelRatio);
+            glPHD_rmsdate.append(tmp);
+            emit wsThread->sendMessageToClient("AddScatterChartData:" +
+                QString::number(-dRa * PixelRatio) + ":" + QString::number(-dDec * PixelRatio));
+
+            if (InGuiding) {
                 emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
-            }
-            else
-            {
-                // Logger::Log("ShowPHDdata | send GuiderStatus:InCalibration", LogLevel::DEBUG, DeviceType::GUIDER);
+            } else {
                 emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
             }
 
-            if (StarLostAlert == true)
-            {
-                Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert", LogLevel::DEBUG, DeviceType::GUIDER);
+            if (StarLostAlert) {
+                Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert",
+                            LogLevel::DEBUG, DeviceType::GUIDER);
                 emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:2");
             }
 
-            emit wsThread->sendMessageToClient("AddRMSErrorData:" + QString::number(RMSErrorX, 'f', 3) + ":" + QString::number(RMSErrorX, 'f', 3));
+            emit wsThread->sendMessageToClient("AddRMSErrorData:" +
+                QString::number(RMSErrorX, 'f', 3) + ":" + QString::number(RMSErrorX, 'f', 3));
         }
-        // Logger::Log("ShowPHDdata | glPHD_rmsdate.size():" + std::to_string(glPHD_rmsdate.size()), LogLevel::DEBUG, DeviceType::GUIDER);
-        for (int i = 0; i < glPHD_rmsdate.size(); i++)
-        {
-            if (i == glPHD_rmsdate.size() - 1)
-            {
-                // Logger::Log("ShowPHDdata | send AddLineChartData", LogLevel::DEBUG, DeviceType::GUIDER);
-                emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
+
+        for (int i = 0; i < glPHD_rmsdate.size(); i++) {
+            if (i == glPHD_rmsdate.size() - 1) {
+                emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" +
+                    QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
                 if (i > 50)
-                {
-                    // Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
-                }
                 else
-                {
-                    // Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
-                    emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(0) + ":" + QString::number(50));
-                }
+                    emit wsThread->sendMessageToClient("SetLineChartRange:0:50");
             }
         }
-
-        unsigned int byteCount;
-        byteCount = currentPHDSizeX * currentPHDSizeY * (bitDepth / 8);
-
-        unsigned char *srcData = new unsigned char[byteCount];
-
-        mem_offset = 2048;
-        // Logger::Log("ShowPHDdata | mem_offset:" + std::to_string(mem_offset), LogLevel::DEBUG, DeviceType::GUIDER);
-        memcpy(srcData, sharedmemory_phd + mem_offset, byteCount);
-        // Logger::Log("ShowPHDdata | get srcData", LogLevel::DEBUG, DeviceType::GUIDER);
-        sharedmemory_phd[2047] = 0x00; // 0x00= image has been read
-
-        // Logger::Log("ShowPHDdata | guider image start to process ...", LogLevel::DEBUG, DeviceType::GUIDER);
-        cv::Mat PHDImg;
-
-        if (bitDepth == 16)
-            PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_16UC1);
-        else
-            PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_8UC1);
-
-        PHDImg.data = srcData;
-
-        uint16_t B = 0;
-        uint16_t W = 65535;
-
-        cv::Mat image_raw8;
-        image_raw8.create(PHDImg.rows, PHDImg.cols, CV_8UC1);
-
-        if (AutoStretch == true)
-        {
-            // Logger::Log("ShowPHDdata | Tools::GetAutoStretch", LogLevel::DEBUG, DeviceType::GUIDER);
-            Tools::GetAutoStretch(PHDImg, 0, B, W);
-        }
-        else
-        {
-            B = 0;
-            W = 65535;
-        }
-
-        // Logger::Log("ShowPHDdata | Tools::Bit16To8_Stretch", LogLevel::DEBUG, DeviceType::GUIDER);
-        Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
-
-        // Logger::Log("ShowPHDdata | saveGuiderImageAsJPG", LogLevel::DEBUG, DeviceType::GUIDER);
-        saveGuiderImageAsJPG(image_raw8);
-
-        // Logger::Log("ShowPHDdata | guider image process done", LogLevel::DEBUG, DeviceType::GUIDER);
-        delete[] srcData;
-        PHDImg.release();
-        // Logger::Log("ShowPHDdata finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
+
+    // ===================== 像素数据读取 / 解码 =====================
+    const size_t payload_cap_bytes = (total_size > kPayloadOff) ? (total_size - kPayloadOff) : 0;
+    if (payload_cap_bytes == 0) { sharedmemory_phd[kFlagOff] = 0x00; return; }
+
+    cv::Mat PHDImg;
+    std::unique_ptr<uint8_t[]> buf;
+
+    if (hasV2) {
+        Logger::Log("V2 hdr: coding=" + std::to_string(v2.coding) +
+                    " out=" + std::to_string(v2.outW) + "x" + std::to_string(v2.outH) +
+                    " depth=" + std::to_string(v2.bitDepth) +
+                    " payload=" + std::to_string(v2.payloadSize),
+                    LogLevel::DEBUG, DeviceType::GUIDER);
+
+        const uint16_t coding   = v2.coding;
+        const uint16_t v2Depth  = v2.bitDepth;
+        const size_t   bpp      = (v2Depth == 16) ? 2 : 1;
+        const uint32_t outW     = v2.outW;
+        const uint32_t outH     = v2.outH;
+        const size_t   outPix   = (size_t)outW * (size_t)outH;
+        const size_t   need     = outPix * bpp;
+        const size_t   payLen   = (size_t)v2.payloadSize;
+
+        if (!(v2Depth==8 || v2Depth==16) || outW==0 || outH==0 || payLen > payload_cap_bytes) {
+            // 头异常，退回旧逻辑
+            hasV2 = false;
+        } else {
+            const uint8_t* payload = (const uint8_t*)(sharedmemory_phd + kPayloadOff);
+
+            if (coding == CODING_RAW || coding == CODING_NEAREST) {
+                if (need > payload_cap_bytes) { sharedmemory_phd[kFlagOff] = 0x00; return; }
+                buf.reset(new uint8_t[need]);
+                std::memcpy(buf.get(), payload, need);
+                if (v2Depth == 16) PHDImg.create(outH, outW, CV_16UC1);
+                else               PHDImg.create(outH, outW, CV_8UC1);
+                PHDImg.data = buf.get();
+            } else if (coding == CODING_RLE) {
+                buf.reset(new uint8_t[need]);
+                bool ok = (v2Depth==8)
+                    ? rle_decompress_8(payload, payLen, buf.get(), outPix)
+                    : rle_decompress_16(payload, payLen, (uint16_t*)buf.get(), outPix);
+                if (!ok) { sharedmemory_phd[kFlagOff] = 0x00; return; }
+                if (v2Depth == 16) PHDImg.create(outH, outW, CV_16UC1);
+                else               PHDImg.create(outH, outW, CV_8UC1);
+                PHDImg.data = buf.get();
+            } else {
+                hasV2 = false;
+            }
+        }
+    }
+
+    if (!hasV2) {
+        Logger::Log("Legacy path (no V2 header)", LogLevel::DEBUG, DeviceType::GUIDER);
+        const size_t need = (size_t)currentPHDSizeX * (size_t)currentPHDSizeY * (bitDepth / 8);
+        if (need == 0 || need > payload_cap_bytes) {
+            Logger::Log("ShowPHDdata | legacy frame too large or zero", LogLevel::WARNING, DeviceType::GUIDER);
+            sharedmemory_phd[kFlagOff] = 0x00;
+            return;
+        }
+        buf.reset(new uint8_t[need]);
+        std::memcpy(buf.get(), sharedmemory_phd + kPayloadOff, need);
+        if (bitDepth == 16) PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_16UC1);
+        else                PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_8UC1);
+        PHDImg.data = buf.get();
+    }
+
+    // 像素完整拷贝/解码完成后再清 2047 标志，避免半帧被清
+    sharedmemory_phd[kFlagOff] = 0x00;
+
+    // ===== 你的后处理：拉伸/保存/显示（保持不变）=====
+    uint16_t B = 0;
+    uint16_t W = 65535;
+
+    cv::Mat image_raw8;
+    image_raw8.create(PHDImg.rows, PHDImg.cols, CV_8UC1);
+
+    if (AutoStretch == true) {
+        Tools::GetAutoStretch(PHDImg, 0, B, W);
+    } else {
+        B = 0; W = 65535;
+    }
+    Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
+    saveGuiderImageAsJPG(image_raw8);
+
+    // 如需把 PHDImg 交给其他线程，建议 clone() 一份，然后当前作用域结束由 buf 自动释放
+    // cv::Mat safe = PHDImg.clone();
+    // ……
 }
+
+
+// void MainWindow::ShowPHDdata()
+// {
+//     // Logger::Log("ShowPHDdata start ...", LogLevel::DEBUG, DeviceType::MAIN);
+//     unsigned int currentPHDSizeX = 1;
+//     unsigned int currentPHDSizeY = 1;
+//     unsigned int bitDepth = 1;
+
+//     unsigned char guideDataIndicator;
+//     unsigned int guideDataIndicatorAddress;
+//     double dRa, dDec, SNR, MASS, RMSErrorX, RMSErrorY, RMSErrorTotal, PixelRatio;
+//     int RADUR, DECDUR;
+//     char RADIR, DECDIR;
+//     unsigned char LossAlert;
+
+//     double StarX;
+//     double StarY;
+//     bool isSelected;
+
+//     bool showLockedCross;
+//     double LockedPositionX;
+//     double LockedPositionY;
+
+//     unsigned char MultiStarNumber;
+//     unsigned short MultiStarX[32];
+//     unsigned short MultiStarY[32];
+
+//     unsigned int mem_offset;
+//     int sdk_direction = 0;
+//     int sdk_duration = 0;
+//     int sdk_num;
+//     int zero = 0;
+
+//     bool StarLostAlert = false;
+
+//     if (sharedmemory_phd[2047] != 0x02)
+//     {
+//         // Logger::Log("ShowPHDdata | no image comes", LogLevel::DEBUG, DeviceType::MAIN);
+//         // sleep(1); // 如果没有图像，等待1秒
+//         return; // if there is no image comes, return
+//     }
+
+//     mem_offset = 1024;
+//     // guide image dimention data
+//     memcpy(&currentPHDSizeX, sharedmemory_phd + mem_offset, sizeof(unsigned int));
+//     // Logger::Log("ShowPHDdata | get currentPHDSizeX:" + std::to_string(currentPHDSizeX), LogLevel::DEBUG, DeviceType::MAIN);
+//     mem_offset = mem_offset + sizeof(unsigned int);
+//     memcpy(&currentPHDSizeY, sharedmemory_phd + mem_offset, sizeof(unsigned int));
+//     // Logger::Log("ShowPHDdata | get currentPHDSizeY:" + std::to_string(currentPHDSizeY), LogLevel::DEBUG, DeviceType::MAIN);
+//     mem_offset = mem_offset + sizeof(unsigned int);
+//     memcpy(&bitDepth, sharedmemory_phd + mem_offset, sizeof(unsigned char));
+//     // Logger::Log("ShowPHDdata | get bitDepth:" + std::to_string(bitDepth), LogLevel::DEBUG, DeviceType::MAIN);
+//     mem_offset = mem_offset + sizeof(unsigned char);
+
+//     mem_offset = mem_offset + sizeof(int); // &sdk_num
+//     mem_offset = mem_offset + sizeof(int); // &sdk_direction
+//     mem_offset = mem_offset + sizeof(int); // &sdk_duration
+
+//     guideDataIndicatorAddress = mem_offset;
+
+//     // guide error data
+//     guideDataIndicator = sharedmemory_phd[guideDataIndicatorAddress];
+//     // Logger::Log("ShowPHDdata | get guideDataIndicator:" + std::to_string(guideDataIndicator), LogLevel::DEBUG, DeviceType::GUIDER);
+
+//     mem_offset = mem_offset + sizeof(unsigned char);
+//     memcpy(&dRa, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get dRa:" + std::to_string(dRa), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&dDec, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&SNR, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get SNR:" + std::to_string(SNR), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&MASS, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get MASS:" + std::to_string(MASS), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+
+//     memcpy(&RADUR, sharedmemory_phd + mem_offset, sizeof(int));
+//     // Logger::Log("ShowPHDdata | get RADUR:" + std::to_string(RADUR), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(int);
+//     memcpy(&DECDUR, sharedmemory_phd + mem_offset, sizeof(int));
+//     // Logger::Log("ShowPHDdata | get DECDUR:" + std::to_string(DECDUR), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(int);
+
+//     memcpy(&RADIR, sharedmemory_phd + mem_offset, sizeof(char));
+//     // Logger::Log("ShowPHDdata | get RADIR:" + std::to_string(RADIR), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(char);
+//     memcpy(&DECDIR, sharedmemory_phd + mem_offset, sizeof(char));
+//     // Logger::Log("ShowPHDdata | get DECDIR:" + std::to_string(DECDIR), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(char);
+
+//     memcpy(&RMSErrorX, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get RMSErrorX:" + std::to_string(RMSErrorX), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&RMSErrorY, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get RMSErrorY:" + std::to_string(RMSErrorY), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&RMSErrorTotal, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get RMSErrorTotal:" + std::to_string(RMSErrorTotal), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&PixelRatio, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get PixelRatio:" + std::to_string(PixelRatio), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&StarLostAlert, sharedmemory_phd + mem_offset, sizeof(bool));
+//     // Logger::Log("ShowPHDdata | get StarLostAlert:" + std::to_string(StarLostAlert), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(bool);
+//     memcpy(&InGuiding, sharedmemory_phd + mem_offset, sizeof(bool));
+//     // Logger::Log("ShowPHDdata | get InGuiding:" + std::to_string(InGuiding), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(bool);
+
+//     mem_offset = 1024 + 200;
+//     memcpy(&isSelected, sharedmemory_phd + mem_offset, sizeof(bool));
+//     // Logger::Log("ShowPHDdata | get isSelected:" + std::to_string(isSelected), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(bool);
+//     memcpy(&StarX, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get StarX:" + std::to_string(StarX), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&StarY, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get StarY:" + std::to_string(StarY), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&showLockedCross, sharedmemory_phd + mem_offset, sizeof(bool));
+//     // Logger::Log("ShowPHDdata | get showLockedCross:" + std::to_string(showLockedCross), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(bool);
+//     memcpy(&LockedPositionX, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get LockedPositionX:" + std::to_string(LockedPositionX), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&LockedPositionY, sharedmemory_phd + mem_offset, sizeof(double));
+//     // Logger::Log("ShowPHDdata | get LockedPositionY:" + std::to_string(LockedPositionY), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(double);
+//     memcpy(&MultiStarNumber, sharedmemory_phd + mem_offset, sizeof(unsigned char));
+//     // Logger::Log("ShowPHDdata | get MultiStarNumber:" + std::to_string(MultiStarNumber), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(unsigned char);
+//     memcpy(MultiStarX, sharedmemory_phd + mem_offset, sizeof(MultiStarX));
+//     // Logger::Log("ShowPHDdata | get MultiStarX , MultistarX length:" + std::to_string(sizeof(MultiStarX)), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(MultiStarX);
+//     memcpy(MultiStarY, sharedmemory_phd + mem_offset, sizeof(MultiStarY));
+//     // Logger::Log("ShowPHDdata | get MultiStarY , MultistarY length:" + std::to_string(sizeof(MultiStarY)), LogLevel::DEBUG, DeviceType::GUIDER);
+//     mem_offset = mem_offset + sizeof(MultiStarY);
+
+//     sharedmemory_phd[guideDataIndicatorAddress] = 0x00; // have been read back
+
+//     glPHD_isSelected = isSelected;
+//     glPHD_StarX = StarX;
+//     glPHD_StarY = StarY;
+//     glPHD_CurrentImageSizeX = currentPHDSizeX;
+//     glPHD_CurrentImageSizeY = currentPHDSizeY;
+//     glPHD_LockPositionX = LockedPositionX;
+//     glPHD_LockPositionY = LockedPositionY;
+//     glPHD_ShowLockCross = showLockedCross;
+
+//     // Logger::Log("ShowPHDdata | clear glPHD_Stars", LogLevel::DEBUG, DeviceType::GUIDER);
+//     glPHD_Stars.clear();
+//     // Logger::Log("ShowPHDdata | send ClearPHD2MultiStars", LogLevel::DEBUG, DeviceType::GUIDER);
+//     emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+//     for (int i = 1; i < MultiStarNumber; i++)
+//     {
+//         if (i > 12)
+//             break;
+//         QPoint p;
+//         p.setX(MultiStarX[i]);
+//         p.setY(MultiStarY[i]);
+//         glPHD_Stars.push_back(p);
+//         // qDebug() << "MultiStar[" << i << "]:" << MultiStarX[i] << ", " << MultiStarY[i];
+//         emit wsThread->sendMessageToClient("PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
+//     }
+
+//     // Logger::Log("ShowPHDdata | send PHD2StarBoxView and PHD2StarBoxPosition", LogLevel::DEBUG, DeviceType::GUIDER);
+//     // if (glPHD_StarX != 0 && glPHD_StarY != 0)
+//     // {
+//     if (glPHD_isSelected == true)
+//     {
+//         // qDebug() << "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY);
+//         emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+//         emit wsThread->sendMessageToClient("PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY));
+//     }
+//     else
+//     {
+//         emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
+//     }
+
+//     // Logger::Log("ShowPHDdata | send PHD2StarCrossView and PHD2StarCrossPosition", LogLevel::DEBUG, DeviceType::GUIDER);
+//     if (glPHD_ShowLockCross == true)
+//     {
+//         emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
+//         emit wsThread->sendMessageToClient("PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" + QString::number(glPHD_CurrentImageSizeY) + ":" + QString::number(glPHD_LockPositionX) + ":" + QString::number(glPHD_LockPositionY));
+//     }
+//     else
+//     {
+//         emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
+//     }
+//     // }
+
+//     if (sharedmemory_phd[2047] == 0x02 && bitDepth > 0 && currentPHDSizeX > 0 && currentPHDSizeY > 0)
+//     {
+//         // 导星过程中的数据
+//         unsigned char phdstatu;
+//         call_phd_checkStatus(phdstatu);
+//         // Logger::Log("ShowPHDdata | phdstatu:" + std::to_string(phdstatu), LogLevel::DEBUG, DeviceType::GUIDER);
+//         Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
+//         if (dRa != 0 || dDec != 0)
+//         {
+//             qDebug() << "ShowPHDdata | 当前导星赤道仪位置dRa:" << dRa << ", dDec:" << dDec;
+//             // Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec), LogLevel::DEBUG, DeviceType::GUIDER);
+//             QPointF tmp;
+//             tmp.setX(-dRa * PixelRatio);
+//             tmp.setY(dDec * PixelRatio);
+//             glPHD_rmsdate.append(tmp);
+//             // Logger::Log("ShowPHDdata | send AddScatterChartData", LogLevel::DEBUG, DeviceType::GUIDER);
+//             emit wsThread->sendMessageToClient("AddScatterChartData:" + QString::number(-dRa * PixelRatio) + ":" + QString::number(-dDec * PixelRatio));
+
+//             // 图像中的小绿框
+//             if (InGuiding == true)
+//             {
+//                 // Logger::Log("ShowPHDdata | send GuiderStatus:InGuiding", LogLevel::DEBUG, DeviceType::GUIDER);
+//                 emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+//                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+//             }
+//             else
+//             {
+//                 // Logger::Log("ShowPHDdata | send GuiderStatus:InCalibration", LogLevel::DEBUG, DeviceType::GUIDER);
+//                 emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+//                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+//             }
+
+//             if (StarLostAlert == true)
+//             {
+//                 Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert", LogLevel::DEBUG, DeviceType::GUIDER);
+//                 emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
+//                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:2");
+//             }
+
+//             emit wsThread->sendMessageToClient("AddRMSErrorData:" + QString::number(RMSErrorX, 'f', 3) + ":" + QString::number(RMSErrorX, 'f', 3));
+//         }
+//         // Logger::Log("ShowPHDdata | glPHD_rmsdate.size():" + std::to_string(glPHD_rmsdate.size()), LogLevel::DEBUG, DeviceType::GUIDER);
+//         for (int i = 0; i < glPHD_rmsdate.size(); i++)
+//         {
+//             if (i == glPHD_rmsdate.size() - 1)
+//             {
+//                 // Logger::Log("ShowPHDdata | send AddLineChartData", LogLevel::DEBUG, DeviceType::GUIDER);
+//                 emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
+//                 if (i > 50)
+//                 {
+//                     // Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
+//                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
+//                 }
+//                 else
+//                 {
+//                     // Logger::Log("ShowPHDdata | send SetLineChartRange", LogLevel::DEBUG, DeviceType::GUIDER);
+//                     emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(0) + ":" + QString::number(50));
+//                 }
+//             }
+//         }
+
+//         unsigned int byteCount;
+//         byteCount = currentPHDSizeX * currentPHDSizeY * (bitDepth / 8);
+
+//         unsigned char *srcData = new unsigned char[byteCount];
+
+//         mem_offset = 2048;
+//         // Logger::Log("ShowPHDdata | mem_offset:" + std::to_string(mem_offset), LogLevel::DEBUG, DeviceType::GUIDER);
+//         memcpy(srcData, sharedmemory_phd + mem_offset, byteCount);
+//         // Logger::Log("ShowPHDdata | get srcData", LogLevel::DEBUG, DeviceType::GUIDER);
+//         sharedmemory_phd[2047] = 0x00; // 0x00= image has been read
+
+//         // Logger::Log("ShowPHDdata | guider image start to process ...", LogLevel::DEBUG, DeviceType::GUIDER);
+//         cv::Mat PHDImg;
+
+//         if (bitDepth == 16)
+//             PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_16UC1);
+//         else
+//             PHDImg.create(currentPHDSizeY, currentPHDSizeX, CV_8UC1);
+
+//         PHDImg.data = srcData;
+
+//         uint16_t B = 0;
+//         uint16_t W = 65535;
+
+//         cv::Mat image_raw8;
+//         image_raw8.create(PHDImg.rows, PHDImg.cols, CV_8UC1);
+
+//         if (AutoStretch == true)
+//         {
+//             // Logger::Log("ShowPHDdata | Tools::GetAutoStretch", LogLevel::DEBUG, DeviceType::GUIDER);
+//             Tools::GetAutoStretch(PHDImg, 0, B, W);
+//         }
+//         else
+//         {
+//             B = 0;
+//             W = 65535;
+//         }
+
+//         // Logger::Log("ShowPHDdata | Tools::Bit16To8_Stretch", LogLevel::DEBUG, DeviceType::GUIDER);
+//         Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
+
+//         // Logger::Log("ShowPHDdata | saveGuiderImageAsJPG", LogLevel::DEBUG, DeviceType::GUIDER);
+//         saveGuiderImageAsJPG(image_raw8);
+
+//         // Logger::Log("ShowPHDdata | guider image process done", LogLevel::DEBUG, DeviceType::GUIDER);
+//         delete[] srcData;
+//         PHDImg.release();
+//         // Logger::Log("ShowPHDdata finish!", LogLevel::DEBUG, DeviceType::GUIDER);
+//     }
+// }
 void MainWindow::ControlGuide(int Direction, int Duration)
 {
     Logger::Log("ControlGuide start ...", LogLevel::INFO, DeviceType::GUIDER);
