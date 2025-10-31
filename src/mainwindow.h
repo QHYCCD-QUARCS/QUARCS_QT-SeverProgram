@@ -62,7 +62,8 @@ namespace fs = std::filesystem;
 #include <stellarsolver.h>
 
 /**********************  宏与常量定义  **********************/
-#define QT_Client_Version getBuildDate()
+// #define QT_Client_Version getBuildDate()
+#define QT_Client_Version "20251030"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
