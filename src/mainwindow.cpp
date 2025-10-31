@@ -613,6 +613,13 @@ void MainWindow::onMessageReceived(const QString &message)
             GotoThenSolve = false;
         }
         Tools::saveParameter("Mount", "GotoThenSolve", parts[1].trimmed());
+    }else if (parts.size() == 3 && parts[0].trimmed() == "Goto")
+    {
+        Logger::Log("Goto ...", LogLevel::DEBUG, DeviceType::MOUNT);
+        double Ra = parts[1].trimmed().toDouble();
+        double Dec = parts[2].trimmed().toDouble();
+        MountOnlyGoto(Ra, Dec);
+        Logger::Log("Goto finish!", LogLevel::DEBUG, DeviceType::MOUNT);
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "AutoFlip")
     {
@@ -665,7 +672,12 @@ void MainWindow::onMessageReceived(const QString &message)
         MainCameraCFA = parts[1].trimmed();
         Logger::Log("ImageCFA is set to " + MainCameraCFA.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveParameter("MainCamera", "ImageCFA", parts[1].trimmed());
+    }else if (parts.size() == 2 && parts[0].trimmed() == "Self Exposure Time (ms)")
+    {
+        Logger::Log("Self Exposure Time (ms) is set to " + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera", "SelfExposureTime(ms)", parts[1].trimmed());
     }
+    
 
     else if (parts[0].trimmed() == "ScheduleTabelData")
     {
@@ -7835,6 +7847,59 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
     telescopeTimer.start(1000);
 
     Logger::Log("MountGoto finish!", LogLevel::INFO, DeviceType::MAIN);
+}
+
+void MainWindow::MountOnlyGoto(double Ra_Hour, double Dec_Degree)
+{
+    if (dpMount == NULL)
+    {
+        Logger::Log("MountOnlyGoto | No Mount Connect.", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("MountOnlyGotoFailed:No Mount Connect");  // 发送转到失败的消息
+        return;
+    }
+    if (Ra_Hour < 0 || Ra_Hour > 24 || Dec_Degree < -90 || Dec_Degree > 90)
+    {
+        Logger::Log("MountOnlyGoto | Invalid RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("MountOnlyGotoFailed:Invalid RaDec(Hour)");  // 发送转到失败的消息
+        return;
+    }
+    if (indi_Client->mountState.isMovingNow())
+    {
+        Logger::Log("MountOnlyGoto | Mount is Moving.", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("MountOnlyGotoFailed:Mount is Moving");  // 发送转到失败的消息
+        return;
+    }
+    Logger::Log("MountOnlyGoto start ...", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MountOnlyGoto | RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+    // 停止和清理先前的计时器
+    telescopeTimer.stop();
+    telescopeTimer.disconnect();
+
+    TelescopeControl_Goto(Ra_Hour, Dec_Degree); // 转到目标位置
+
+    sleep(2); // 赤道仪的状态更新有一定延迟
+
+    // 启动等待赤道仪转动的定时器
+    telescopeTimer.setSingleShot(true);
+
+    connect(&telescopeTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
+    {
+        if (WaitForTelescopeToComplete())
+        {
+            telescopeTimer.stop();  // 转动完成时停止定时器
+            Logger::Log("MountOnlyGoto | Mount Only Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("MountOnlyGotoSuccess");  // 发送转到成功消息
+        }
+        else
+        {
+            telescopeTimer.start(1000);  // 继续等待赤道仪转动
+        }
+    });
+    telescopeTimer.start(1000);
+
+    Logger::Log("MountOnlyGoto finish!", LogLevel::INFO, DeviceType::MAIN);
+
 }
 void MainWindow::DeleteImage(QStringList DelImgPath)
 {

@@ -1166,6 +1166,14 @@ public:
      */
     void MountGoto(double Ra_Hour, double Dec_Degree);
 
+
+    /**
+     * @brief 赤道仪转到坐标（别名）
+     * @param Ra_Hour 赤经（小时）
+     * @param Dec_Degree 赤纬（度）
+     */
+    void MountOnlyGoto(double Ra_Hour, double Dec_Degree);
+
     /**
      * @brief 删除图片文件
      * @param DelImgPath 路径列表
@@ -1487,9 +1495,9 @@ public:
 
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
  
-    std::string vueImagePath = "/var/www/html/img/";
+    // std::string vueImagePath = "/var/www/html/img/";
 
-    // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
 
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
     std::string PriorROIImage = "NULL";    // 上一帧 ROI 图
