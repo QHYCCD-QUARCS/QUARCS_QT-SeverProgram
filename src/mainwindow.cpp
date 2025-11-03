@@ -1090,6 +1090,13 @@ void MainWindow::onMessageReceived(const QString &message)
         GetImageFiles(FolderPath);
         Logger::Log("GetImageFiles finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
+    else if (parts[0].trimmed() == "GetUSBFiles")
+    {
+        Logger::Log("GetUSBFiles ...", LogLevel::DEBUG, DeviceType::MAIN);
+        QString relativePath = parts.size() >= 2 ? parts[1].trimmed() : QString();
+        GetUSBFiles(relativePath);
+        Logger::Log("GetUSBFiles finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }
 
     else if (parts[0].trimmed() == "ReadImageFile")
     {
@@ -1218,6 +1225,13 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             indi_Client->setCCDGain(dpMainCamera, CameraGain);
         }
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraAutoSave")
+    {
+        mainCameraAutoSave = (parts[1].trimmed() == "true" || parts[1].trimmed() == "1");
+        Logger::Log("Set MainCamera Auto Save to " + std::string(mainCameraAutoSave ? "true" : "false"), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera", "AutoSave", parts[1].trimmed());
     }
 
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
@@ -1785,6 +1799,13 @@ void MainWindow::initINDIClient()
                         saveFitsAsPNG(QString::fromStdString(filename), true); // "/dev/shm/ccd_simulator.fits"
                         // saveFitsAsPNG("/home/quarcs/2025_06_26T08_24_13_544.fits", true);
                         // saveFitsAsPNG("/dev/shm/SOLVETEST.fits", true);
+                        
+                        // 如果自动保存开启，自动保存图像
+                        if (mainCameraAutoSave)
+                        {
+                            Logger::Log("Auto Save enabled, saving captured image...", LogLevel::INFO, DeviceType::MAIN);
+                            CaptureImageSave();
+                        }
                     }
                     else
                     {
@@ -8310,12 +8331,23 @@ void MainWindow::USBCheck()
     {
         usb_mount_point = basePath + "/" + folderList.at(0);
         Logger::Log("USBCheck | USB mount point:" + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        
+        // 验证这是否是一个真正挂载的存储设备
+        QStorageInfo storageInfo(usb_mount_point);
+        if (!storageInfo.isValid() || !storageInfo.isReady())
+        {
+            Logger::Log("USBCheck | The directory exists but is not a valid mounted storage device.", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("USBCheck:Null, Null");
+            return;
+        }
+        
         QString usbName = folderList.join(",");
         message = "USBCheck";
         long long remaining_space = getUSBSpace(usb_mount_point);
         if (remaining_space == -1)
         {
             Logger::Log("USBCheck | Check whether a USB flash drive or portable hard drive is inserted!", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("USBCheck:Null, Null");
             return;
         }
         message = message + ":" + folderList.at(0) + "," + QString::number(remaining_space);
@@ -8334,6 +8366,104 @@ void MainWindow::USBCheck()
     }
 
     return;
+}
+
+void MainWindow::GetUSBFiles(const QString &relativePath)
+{
+    Logger::Log("GetUSBFiles start ...", LogLevel::INFO, DeviceType::MAIN);
+    
+    QString base = "/media/";
+    QString username = QDir::home().dirName();
+    QString basePath = base + username;
+    QDir baseDir(basePath);
+    QString usb_mount_point = "";
+    
+    if (!baseDir.exists())
+    {
+        Logger::Log("GetUSBFiles | Base directory does not exist.", LogLevel::WARNING, DeviceType::MAIN);
+        QJsonObject errorObj;
+        errorObj["error"] = "USB drive not found";
+        errorObj["path"] = "";
+        errorObj["files"] = QJsonArray();
+        QJsonDocument errorDoc(errorObj);
+        emit wsThread->sendMessageToClient("USBFilesList:" + errorDoc.toJson(QJsonDocument::Compact));
+        return;
+    }
+
+    // 获取所有文件夹，排除"."和".."，并且排除"CDROM"
+    QStringList filters;
+    filters << "*";
+    QStringList folderList = baseDir.entryList(filters, QDir::Dirs | QDir::NoDotAndDotDot);
+    folderList.removeAll("CDROM");
+
+    if (folderList.size() != 1)
+    {
+        Logger::Log("GetUSBFiles | USB drive not found or multiple drives detected.", LogLevel::WARNING, DeviceType::MAIN);
+        QJsonObject errorObj;
+        errorObj["error"] = "USB drive not found or multiple drives detected";
+        errorObj["path"] = "";
+        errorObj["files"] = QJsonArray();
+        QJsonDocument errorDoc(errorObj);
+        emit wsThread->sendMessageToClient("USBFilesList:" + errorDoc.toJson(QJsonDocument::Compact));
+        return;
+    }
+
+    usb_mount_point = basePath + "/" + folderList.at(0);
+    QString fullPath = usb_mount_point;
+    
+    // 如果提供了相对路径，追加到USB挂载点
+    if (!relativePath.isEmpty())
+    {
+        // 清理路径，防止路径遍历攻击
+        QString cleanPath = relativePath;
+        cleanPath.replace("..", ""); // 移除路径遍历
+        cleanPath.replace("//", "/"); // 移除双斜杠
+        if (cleanPath.startsWith("/"))
+        {
+            cleanPath = cleanPath.mid(1); // 移除开头的斜杠
+        }
+        fullPath = usb_mount_point + "/" + cleanPath;
+    }
+
+    QDir targetDir(fullPath);
+    if (!targetDir.exists())
+    {
+        Logger::Log("GetUSBFiles | Target directory does not exist: " + fullPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        QJsonObject errorObj;
+        errorObj["error"] = "Directory not found";
+        errorObj["path"] = relativePath.isEmpty() ? "/" : ("/" + relativePath);
+        errorObj["files"] = QJsonArray();
+        QJsonDocument errorDoc(errorObj);
+        emit wsThread->sendMessageToClient("USBFilesList:" + errorDoc.toJson(QJsonDocument::Compact));
+        return;
+    }
+
+    QJsonArray filesArray;
+    QFileInfoList entries = targetDir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot, QDir::Name | QDir::DirsFirst);
+    
+    for (const QFileInfo &entry : entries)
+    {
+        QJsonObject fileObj;
+        fileObj["name"] = entry.fileName();
+        fileObj["isDirectory"] = entry.isDir();
+        if (!entry.isDir())
+        {
+            fileObj["size"] = static_cast<qint64>(entry.size());
+        }
+        filesArray.append(fileObj);
+    }
+
+    QJsonObject result;
+    QString displayPath = relativePath.isEmpty() ? "/" : ("/" + relativePath);
+    result["path"] = displayPath;
+    result["files"] = filesArray;
+
+    QJsonDocument doc(result);
+    QString jsonString = doc.toJson(QJsonDocument::Compact);
+    
+    Logger::Log("GetUSBFiles | Found " + QString::number(filesArray.size()).toStdString() + " items in " + fullPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    emit wsThread->sendMessageToClient("USBFilesList:" + jsonString);
+    Logger::Log("GetUSBFiles finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
 void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight)
@@ -10502,6 +10632,10 @@ void MainWindow::getMainCameraParameters()
         }
         if (it.key() == "ROI_x") roiAndFocuserInfo["ROI_x"] = it.value().toDouble();
         if (it.key() == "ROI_y") roiAndFocuserInfo["ROI_y"] = it.value().toDouble();
+        if (it.key() == "AutoSave") {
+            mainCameraAutoSave = (it.value() == "true");
+            // Logger::Log("/*/*/*/*/*/*getMainCameraParameters | AutoSave: " + std::to_string(mainCameraAutoSave), LogLevel::DEBUG, DeviceType::MAIN);
+        }
     }
     Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
     emit wsThread->sendMessageToClient(order);

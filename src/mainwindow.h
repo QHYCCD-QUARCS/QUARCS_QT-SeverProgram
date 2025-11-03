@@ -19,6 +19,11 @@
 #include <QStorageInfo>
 #include <QtSerialPort/QSerialPortInfo>
 #include <QSerialPort>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QFileInfo>
+#include <QDir>
 
 #include <fitsio.h>
 
@@ -1240,6 +1245,12 @@ public:
      */
     void USBCheck();
 
+    /**
+     * @brief 获取USB驱动器文件列表
+     * @param relativePath 相对于USB根目录的路径（可选，为空则列出根目录）
+     */
+    void GetUSBFiles(const QString &relativePath = QString());
+
 /**********************  GPIO 控制  **********************/
 public:
     /**
@@ -1486,6 +1497,7 @@ public:
     bool glIsFocusingLooping = false;     // 对焦循环开关
     QString glMainCameraStatu;            // 主相机状态
     QElapsedTimer glMainCameraCaptureTimer; // 拍摄计时
+    bool mainCameraAutoSave = false;      // 主相机自动保存开关
 
     bool isAutoFlip = false;                  // 是否自动翻转
     int flipPrepareTimeDefault = 10;          // 预备翻转时间默认值
