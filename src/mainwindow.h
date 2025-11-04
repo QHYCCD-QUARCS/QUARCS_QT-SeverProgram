@@ -13,6 +13,7 @@
 #include <QPointF>
 #include <QString>
 #include <QStringList>
+#include <QMap>
 #include <QDateTime>
 #include <QXmlStreamReader>
 #include <QNetworkInterface>
@@ -1093,8 +1094,9 @@ public:
 /**********************  文件/目录与 USB 相关  **********************/
 public:
     // 保存路径（保留原默认值与注释）
-    std::string ImageSaveBasePath = "image";
-    QString     ImageSaveBaseDirectory = "image";
+    std::string ImageSaveBasePath = "image"; // 默认保存路径
+    QString     ImageSaveBaseDirectory = "image"; // 当前保存路径
+    QMap<QString, QString> usbMountPointsMap; // U盘映射表：U盘名 -> U盘路径
 
     /**
      * @brief 检查目录是否存在
@@ -1217,7 +1219,7 @@ public:
      * @brief 移动图像到 U 盘（并删除原始）
      * @param RemoveImgPath 路径列表
      */
-    void RemoveImageToUsb(QStringList RemoveImgPath);
+    void RemoveImageToUsb(QStringList RemoveImgPath, QString usbName = "");
 
     /**
      * @brief 判断挂载点是否只读
@@ -1247,9 +1249,17 @@ public:
 
     /**
      * @brief 获取USB驱动器文件列表
-     * @param relativePath 相对于USB根目录的路径（可选，为空则列出根目录）
+     * @param usbName U盘名称（必需）
+     * @param relativePath 相对于USB根目录的路径（空字符串表示根目录）
      */
-    void GetUSBFiles(const QString &relativePath = QString());
+    void GetUSBFiles(const QString &usbName, const QString &relativePath);
+
+    /**
+     * @brief 获取U盘挂载点（统一函数）
+     * @param usb_mount_point 输出参数，U盘挂载点路径
+     * @return 成功返回true，失败返回false（未找到、多个U盘等情况）
+     */
+    bool getUSBMountPoint(QString &usb_mount_point);
 
 /**********************  GPIO 控制  **********************/
 public:
@@ -1510,6 +1520,7 @@ public:
     std::string vueImagePath = "/var/www/html/img/";
 
     // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+
 
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
     std::string PriorROIImage = "NULL";    // 上一帧 ROI 图
