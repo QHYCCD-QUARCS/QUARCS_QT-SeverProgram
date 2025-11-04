@@ -1330,16 +1330,17 @@ void MainWindow::onMessageReceived(const QString &message)
 
         if (dpMainCamera != NULL)
         {
-            // indi_Client->setCCDBasicInfo(dpMainCamera, Width, Height, PixelSize, PixelSize, PixelSize, 8);
-            AfterDeviceConnect(dpMainCamera);
-
             DSLRsInfo DSLRsInfo;
             DSLRsInfo.Name = dpMainCamera->getDeviceName();
             DSLRsInfo.SizeX = Width;
             DSLRsInfo.SizeY = Height;
             DSLRsInfo.PixelSize = PixelSize;
-
             Tools::saveDSLRsInfo(DSLRsInfo);
+            NotSetDSLRsInfo = false;
+            // indi_Client->setCCDBasicInfo(dpMainCamera, Width, Height, PixelSize, PixelSize, PixelSize, 8);
+            AfterDeviceConnect(dpMainCamera);
+
+            
             Logger::Log("DSLRCameraInfo finish!", LogLevel::DEBUG, DeviceType::MAIN);
         }
         else
@@ -3638,6 +3639,26 @@ void MainWindow::AfterDeviceConnect()
 
     if (dpMainCamera != NULL)
     {
+        if (isDSLR(dpMainCamera) && NotSetDSLRsInfo)
+        {
+            QString CameraName = dpMainCamera->getDeviceName();
+            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
+            if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
+            {
+                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
+                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::number(DSLRsInfo.SizeX) + ":" + QString::number(DSLRsInfo.SizeY) + ":" + QString::number(DSLRsInfo.PixelSize));
+                return;
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+                return;
+            }
+        }
+        NotSetDSLRsInfo = true;
+
         indi_Client->GetAllPropertyName(dpMainCamera);
         Logger::Log("MainCamera connected after Device(" + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
@@ -3681,23 +3702,6 @@ void MainWindow::AfterDeviceConnect()
         // 设置初始温度
         indi_Client->setTemperature(dpMainCamera, CameraTemperature);
         Logger::Log("CCD Temperature set to: " + std::to_string(CameraTemperature), LogLevel::INFO, DeviceType::MAIN);
-
-        if (isDSLR(dpMainCamera))
-        {
-            QString CameraName = dpMainCamera->getDeviceName();
-            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
-            if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
-            {
-                // indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
-                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
-                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
-            {
-                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
-            }
-        }
 
         glCameraSize_width = maxX * pixelsize / 1000;
         glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
@@ -3911,6 +3915,25 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 {
     if (dpMainCamera == dp)
     {
+        if (isDSLR(dpMainCamera) && NotSetDSLRsInfo)
+        {
+            QString CameraName = dpMainCamera->getDeviceName();
+            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
+            if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
+            {
+                indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
+                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::number(DSLRsInfo.SizeX) + ":" + QString::number(DSLRsInfo.SizeY) + ":" + QString::number(DSLRsInfo.PixelSize));
+                return;
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
+                return;
+            }
+        }
+        NotSetDSLRsInfo = true;
         sleep(1); // 给与初始化数据更新时间
         indi_Client->GetAllPropertyName(dpMainCamera);
         Logger::Log("MainCamera connected after Device(" + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString() + ") Connect: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -3940,30 +3963,6 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         double pixelsize, pixelsizX, pixelsizY;
         int bitDepth;
 
-        if (isDSLR(dpMainCamera))
-        {
-            QString CameraName = dpMainCamera->getDeviceName();
-            Logger::Log("This may be a DSLRs Camera, need to set Resolution and pixel size. Camera: " + CameraName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            DSLRsInfo DSLRsInfo = Tools::readDSLRsInfo(CameraName);
-            if (DSLRsInfo.Name == CameraName && DSLRsInfo.SizeX != 0 && DSLRsInfo.SizeY != 0 && DSLRsInfo.PixelSize != 0)
-            {
-                // indi_Client->setCCDBasicInfo(dpMainCamera, DSLRsInfo.SizeX, DSLRsInfo.SizeY, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, DSLRsInfo.PixelSize, 8);
-                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
-                Logger::Log("Updated CCD Basic Info for DSLRs Camera.", LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
-            {
-                emit wsThread->sendMessageToClient("DSLRsSetup:" + QString::fromUtf8(dpMainCamera->getDeviceName()));
-            }
-        }else{
-            int time = 0;
-            while ((maxX == 0 || maxY == 0) && time < 5)
-            {
-                time++;
-                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
-                sleep(1);
-            }    
-        }
 
         Logger::Log("CCD Basic Info - MaxX: " + std::to_string(maxX) + ", MaxY: " + std::to_string(maxY) + ", PixelSize: " + std::to_string(pixelsize), LogLevel::INFO, DeviceType::MAIN);
         if (bitDepth != 16)

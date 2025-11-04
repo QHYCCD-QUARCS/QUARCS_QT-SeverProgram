@@ -387,6 +387,8 @@ public:
      */
     bool isDSLR(INDI::BaseDevice *device);  
 
+    bool NotSetDSLRsInfo = true;  // 是否未设置DSLR相机信息
+
     /**
      * @brief 检查多个属性是否存在其中之一
      * @param dev 设备
@@ -1517,9 +1519,9 @@ public:
 
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
  
-    std::string vueImagePath = "/var/www/html/img/";
+    // std::string vueImagePath = "/var/www/html/img/";
 
-    // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
 
 
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
