@@ -6845,7 +6845,7 @@ void MainWindow::startTimeWaiting()
         {
             timewaitingTimer.stop();  // 完成时停止定时器
             qDebug() << "Time Waiting Complete...";
-            m_scheduList[schedule_currentNum].progress=1;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(1, 1.0);  // 步骤1完成：等待时间
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
 
             startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
@@ -6861,7 +6861,7 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 {
     if (dpMount == NULL)
     {
-        m_scheduList[schedule_currentNum].progress = 10;
+        m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 无赤道仪时直接跳到步骤2完成
         emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
         Logger::Log("startMountGoto | dpMount is NULL,goto failed!Skip to set CFW.", LogLevel::ERROR, DeviceType::MAIN);
         startSetCFW(schedule_CFWpos);
@@ -6934,7 +6934,7 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
             if(GuidingHasStarted == false)
             {
                 qDebug() << "Mount Goto Complete...";
-                m_scheduList[schedule_currentNum].progress=10;
+                m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 步骤2完成：赤道仪转动
                 emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
                 startSetCFW(schedule_CFWpos);
             }
@@ -7059,19 +7059,19 @@ void MainWindow::startSetCFW(int pos)
         if (dpMainCamera != NULL)
         {
             qDebug() << "schedule CFW pos:" << pos;
-            m_scheduList[schedule_currentNum].progress = 20;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 0.5);  // 步骤3进行中：开始设置滤镜
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             indi_Client->setCFWPosition(dpMainCamera, pos);
             qDebug() << "CFW Goto Complete...";
             startCapture(schedule_ExpTime);
-            m_scheduList[schedule_currentNum].progress = 30;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 步骤3完成：滤镜设置完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
         }
         else
         {
             Logger::Log("startSetCFW | dpMainCamera is NULL,set CFW failed!", LogLevel::ERROR, DeviceType::MAIN);
 
-            m_scheduList[schedule_currentNum].progress = 30;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 无滤镜时直接跳到步骤3完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             startCapture(schedule_ExpTime);
         }
@@ -7081,18 +7081,18 @@ void MainWindow::startSetCFW(int pos)
         if (dpCFW != NULL)
         {
             qDebug() << "schedule CFW pos:" << pos;
-            m_scheduList[schedule_currentNum].progress = 20;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 0.5);  // 步骤3进行中：开始设置滤镜
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             indi_Client->setCFWPosition(dpCFW, pos);
             qDebug() << "CFW Goto Complete...";
-            m_scheduList[schedule_currentNum].progress = 30;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 步骤3完成：滤镜设置完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             startCapture(schedule_ExpTime);
         }
         else
         {
             Logger::Log("startSetCFW | dpCFW is NULL,set CFW failed!", LogLevel::ERROR, DeviceType::MAIN);
-            m_scheduList[schedule_currentNum].progress = 30;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 无滤镜时直接跳到步骤3完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             startCapture(schedule_ExpTime);
         }
@@ -7131,8 +7131,13 @@ void MainWindow::startCapture(int ExpTime)
             captureTimer.stop();  // 转动完成时停止定时器
             qDebug() << "Capture" << schedule_currentShootNum << "Complete!";
             ScheduleImageSave(m_scheduList[schedule_currentNum].shootTarget, schedule_currentShootNum);
-            // Process
             
+            // 计算当前拍摄完成的进度
+            // 拍摄步骤从步骤4开始，每张照片对应一个步骤
+            // 步骤编号 = 3 + schedule_currentShootNum
+            int currentStep = 3 + schedule_currentShootNum;
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(currentStep, 1.0);
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
 
             if (schedule_currentShootNum < schedule_RepeatNum)
             {
@@ -7156,8 +7161,17 @@ void MainWindow::startCapture(int ExpTime)
         else 
         {
             expTime_ms += 1000;
-            m_scheduList[schedule_currentNum].progress = int(30 + (expTime_ms / (float)schedule_ExpTime) * 70);
-            qDebug() << "expTime_ms:" << expTime_ms << ", schedule_ExpTime:" << schedule_ExpTime << ", Capture Progress:" << m_scheduList[schedule_currentNum].progress;
+            // 计算拍摄过程中的进度
+            // 拍摄步骤从步骤4开始，每张照片对应一个步骤
+            // 步骤编号 = 3 + schedule_currentShootNum
+            // stepProgress = 当前曝光进度（0.0-1.0）
+            int currentStep = 3 + schedule_currentShootNum;
+            double shotProgress = qMin(expTime_ms / (double)schedule_ExpTime, 1.0);  // 限制在0.0-1.0之间
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(currentStep, shotProgress);
+            qDebug() << "expTime_ms:" << expTime_ms << ", schedule_ExpTime:" << schedule_ExpTime 
+                     << ", currentShootNum:" << schedule_currentShootNum << ", RepeatNum:" << schedule_RepeatNum
+                     << ", currentStep:" << currentStep << ", shotProgress:" << shotProgress
+                     << ", Capture Progress:" << m_scheduList[schedule_currentNum].progress;
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
             captureTimer.start(1000);  // 继续等待
         } });
@@ -7206,6 +7220,37 @@ bool MainWindow::WaitForTimeToComplete()
     return true;
 }
 
+int MainWindow::calculateScheduleProgress(int stepNumber, double stepProgress)
+{
+    // 步骤定义：
+    // 步骤1：等待时间
+    // 步骤2：赤道仪转动
+    // 步骤3：滤镜设置
+    // 步骤4到4+RepeatNum-1：拍摄（每张照片算一个步骤）
+    // 总步骤数 = 3 + schedule_RepeatNum
+    
+    int totalSteps = 3 + schedule_RepeatNum;
+    if (totalSteps <= 0)
+    {
+        return 100;  // 如果总步骤数为0，直接返回100%
+    }
+    
+    // 计算每步的进度增量
+    double progressPerStep = 100.0 / totalSteps;
+    
+    // 计算当前步骤的进度
+    // stepProgress 用于步骤内的进度（0.0-1.0），例如拍摄过程中的进度
+    double currentProgress = stepNumber * progressPerStep * stepProgress;
+    
+    // 如果超过100%，强制转换为100%
+    if (currentProgress > 100.0)
+    {
+        currentProgress = 100.0;
+    }
+    
+    return static_cast<int>(currentProgress);
+}
+
 int MainWindow::CaptureImageSave()
 {
     qDebug() << "CaptureImageSave...";
@@ -7233,103 +7278,19 @@ int MainWindow::CaptureImageSave()
     // 判断是否为U盘路径
     bool isUSBSave = ImageSaveBaseDirectory.compare(QString::fromStdString(ImageSaveBasePath)) != 0;
     
-    if (isUSBSave)
+    // 使用通用函数检查存储空间并创建目录
+    QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer)) : QString();
+    int checkResult = checkStorageSpaceAndCreateDirectory(
+        sourcePath,
+        destinationDirectory,
+        dirPathToCreate,
+        "CaptureImageSave",
+        isUSBSave,
+        [this]() { createCaptureDirectory(); }
+    );
+    if (checkResult != 0)
     {
-        // 从ImageSaveBaseDirectory提取U盘挂载点（去掉/QUARCS_ImageSave）
-        QString usb_mount_point = ImageSaveBaseDirectory;
-        usb_mount_point.replace("/QUARCS_ImageSave", "");
-        
-        // 检查U盘空间和可写性
-        QStorageInfo storageInfo(usb_mount_point);
-        if (storageInfo.isValid() && storageInfo.isReady())
-        {
-            if (storageInfo.isReadOnly())
-            {
-                const QString password = "quarcs";
-                if (!remountReadWrite(usb_mount_point, password))
-                {
-                    Logger::Log("CaptureImageSave | Failed to remount USB as read-write.", LogLevel::WARNING, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-ReadOnly");
-                    return 1;
-                }
-            }
-            
-            // 先获取源文件大小
-            QFileInfo sourceFileInfo(sourcePath);
-            if (!sourceFileInfo.exists())
-            {
-                Logger::Log("CaptureImageSave | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                return 1;
-            }
-            long long fileSize = sourceFileInfo.size();
-            
-            // 检查U盘剩余空间
-            long long remaining_space = getUSBSpace(usb_mount_point);
-            if (remaining_space == -1 || remaining_space <= 0)
-            {
-                Logger::Log("CaptureImageSave | USB drive has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-                return 1;
-            }
-            
-            // 检查空间是否足够（文件大小必须小于剩余空间）
-            if (fileSize > remaining_space)
-            {
-                Logger::Log("CaptureImageSave | Insufficient USB space. Required: " + QString::number(fileSize).toStdString() + 
-                           " bytes, Available: " + QString::number(remaining_space).toStdString() + " bytes", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-                return 1;
-            }
-        }
-        
-        // 创建目录（使用sudo）
-        QString dirPath = destinationDirectory + "/" + QString(buffer);
-        const QString password = "quarcs";
-        QProcess mkdirProcess;
-        mkdirProcess.start("sudo", {"-S", "mkdir", "-p", dirPath});
-        if (!mkdirProcess.waitForStarted() || !mkdirProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("CaptureImageSave | Failed to create directory: " + dirPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        mkdirProcess.closeWriteChannel();
-        mkdirProcess.waitForFinished(-1);
-    }
-    else
-    {
-        // 默认位置：创建目录
-        createCaptureDirectory();
-        
-        // 检查本地路径剩余空间
-        QString localPath = QString::fromStdString(ImageSaveBasePath);
-        long long remaining_space = getUSBSpace(localPath);
-        if (remaining_space == -1 || remaining_space <= 0)
-        {
-            Logger::Log("CaptureImageSave | Local storage has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
-        
-        // 先获取源文件大小
-        QFileInfo sourceFileInfo(sourcePath);
-        if (!sourceFileInfo.exists())
-        {
-            Logger::Log("CaptureImageSave | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        long long fileSize = sourceFileInfo.size();
-        
-        // 检查空间是否足够（文件大小必须小于剩余空间）
-        if (fileSize > remaining_space)
-        {
-            Logger::Log("CaptureImageSave | Insufficient local storage space. Required: " + QString::number(fileSize).toStdString() + 
-                       " bytes, Available: " + QString::number(remaining_space).toStdString() + " bytes", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
+        return checkResult;
     }
 
     // 检查文件是否已存在
@@ -7340,58 +7301,11 @@ int MainWindow::CaptureImageSave()
         return 0;
     }
 
-    // 保存文件
-    if (isUSBSave)
+    // 使用通用函数保存文件
+    int saveResult = saveImageFile(sourcePath, destinationPath, "CaptureImageSave", isUSBSave);
+    if (saveResult != 0)
     {
-        // U盘保存使用sudo cp命令（与手动保存方式一致）
-        const QString password = "quarcs";
-        QProcess cpProcess;
-        cpProcess.start("sudo", {"-S", "cp", sourcePath, destinationPath});
-        if (!cpProcess.waitForStarted() || !cpProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("CaptureImageSave | Failed to execute sudo cp command.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        cpProcess.closeWriteChannel();
-        cpProcess.waitForFinished(-1);
-        
-        if (cpProcess.exitCode() != 0)
-        {
-            QByteArray stderrOutput = cpProcess.readAllStandardError();
-            Logger::Log("CaptureImageSave | Failed to copy file to USB: " + QString::fromUtf8(stderrOutput).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        
-        Logger::Log("CaptureImageSave | File saved to USB: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        // 默认位置保存使用普通文件操作
-        const char *destinationPathChar = destinationPath.toUtf8().constData();
-
-        std::ifstream sourceFile(sourcePath, std::ios::binary);
-        if (!sourceFile.is_open())
-        {
-            qWarning() << "Unable to open source file:" << sourcePath;
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-
-        std::ofstream destinationFile(destinationPathChar, std::ios::binary);
-        if (!destinationFile.is_open())
-        {
-            qWarning() << "Unable to create or open target file:" << destinationPathChar;
-            sourceFile.close();
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-
-        destinationFile << sourceFile.rdbuf();
-
-        sourceFile.close();
-        destinationFile.close();
+        return saveResult;
     }
 
     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
@@ -7421,151 +7335,26 @@ int MainWindow::ScheduleImageSave(QString name, int num)
     // 判断是否为U盘路径
     bool isUSBSave = ImageSaveBaseDirectory.compare(QString::fromStdString(ImageSaveBasePath)) != 0;
     
-    if (isUSBSave)
+    // 使用通用函数检查存储空间并创建目录
+    QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer) + " " + QTime::currentTime().toString("hh") + "h (" + ScheduleTargetNames + ")") : QString();
+    int checkResult = checkStorageSpaceAndCreateDirectory(
+        sourcePath,
+        destinationDirectory,
+        dirPathToCreate,
+        "ScheduleImageSave",
+        isUSBSave,
+        [this]() { createScheduleDirectory(); }
+    );
+    if (checkResult != 0)
     {
-        // 从ImageSaveBaseDirectory提取U盘挂载点（去掉/QUARCS_ImageSave）
-        QString usb_mount_point = ImageSaveBaseDirectory;
-        usb_mount_point.replace("/QUARCS_ImageSave", "");
-        
-        // 检查U盘空间和可写性
-        QStorageInfo storageInfo(usb_mount_point);
-        if (storageInfo.isValid() && storageInfo.isReady())
-        {
-            if (storageInfo.isReadOnly())
-            {
-                const QString password = "quarcs";
-                if (!remountReadWrite(usb_mount_point, password))
-                {
-                    Logger::Log("ScheduleImageSave | Failed to remount USB as read-write.", LogLevel::WARNING, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-ReadOnly");
-                    return 1;
-                }
-            }
-            
-            // 先获取源文件大小
-            QFileInfo sourceFileInfo(sourcePath);
-            if (!sourceFileInfo.exists())
-            {
-                Logger::Log("ScheduleImageSave | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                return 1;
-            }
-            long long fileSize = sourceFileInfo.size();
-            
-            // 检查U盘剩余空间
-            long long remaining_space = getUSBSpace(usb_mount_point);
-            if (remaining_space == -1 || remaining_space <= 0)
-            {
-                Logger::Log("ScheduleImageSave | USB drive has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-                return 1;
-            }
-            
-            // 检查空间是否足够（文件大小必须小于剩余空间）
-            if (fileSize > remaining_space)
-            {
-                Logger::Log("ScheduleImageSave | Insufficient USB space. Required: " + QString::number(fileSize).toStdString() + 
-                           " bytes, Available: " + QString::number(remaining_space).toStdString() + " bytes", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-                return 1;
-            }
-        }
-        
-        // 创建目录（使用sudo）
-        QString dirPath = destinationDirectory + "/" + QString(buffer) + " " + QTime::currentTime().toString("hh") + "h (" + ScheduleTargetNames + ")";
-        const QString password = "quarcs";
-        QProcess mkdirProcess;
-        mkdirProcess.start("sudo", {"-S", "mkdir", "-p", dirPath});
-        if (!mkdirProcess.waitForStarted() || !mkdirProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("ScheduleImageSave | Failed to create directory: " + dirPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        mkdirProcess.closeWriteChannel();
-        mkdirProcess.waitForFinished(-1);
-    }
-    else
-    {
-        // 检查本地路径剩余空间
-        QString localPath = QString::fromStdString(ImageSaveBasePath);
-        long long remaining_space = getUSBSpace(localPath);
-        if (remaining_space == -1 || remaining_space <= 0)
-        {
-            Logger::Log("ScheduleImageSave | Local storage has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
-        
-        // 先获取源文件大小
-        QFileInfo sourceFileInfo(sourcePath);
-        if (!sourceFileInfo.exists())
-        {
-            Logger::Log("ScheduleImageSave | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        long long fileSize = sourceFileInfo.size();
-        
-        // 检查空间是否足够（文件大小必须小于剩余空间）
-        if (fileSize > remaining_space)
-        {
-            Logger::Log("ScheduleImageSave | Insufficient local storage space. Required: " + QString::number(fileSize).toStdString() + 
-                       " bytes, Available: " + QString::number(remaining_space).toStdString() + " bytes", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
+        return checkResult;
     }
 
-    // 保存文件
-    if (isUSBSave)
+    // 使用通用函数保存文件
+    int saveResult = saveImageFile(sourcePath, destinationPath, "ScheduleImageSave", isUSBSave);
+    if (saveResult != 0)
     {
-        // U盘保存使用sudo cp命令（与CaptureImageSave一致）
-        const QString password = "quarcs";
-        QProcess cpProcess;
-        cpProcess.start("sudo", {"-S", "cp", sourcePath, destinationPath});
-        if (!cpProcess.waitForStarted() || !cpProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("ScheduleImageSave | Failed to execute sudo cp command.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        cpProcess.closeWriteChannel();
-        cpProcess.waitForFinished(-1);
-        
-        if (cpProcess.exitCode() != 0)
-        {
-            QByteArray stderrOutput = cpProcess.readAllStandardError();
-            Logger::Log("ScheduleImageSave | Failed to copy file to USB: " + QString::fromUtf8(stderrOutput).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        
-        Logger::Log("ScheduleImageSave | File saved to USB: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        // 默认位置保存使用普通文件操作
-        const char *destinationPathChar = destinationPath.toUtf8().constData();
-
-        std::ifstream sourceFile(sourcePath, std::ios::binary);
-        if (!sourceFile.is_open())
-        {
-            qWarning() << "Unable to open source file:" << sourcePath;
-            return 1;
-        }
-
-        std::ofstream destinationFile(destinationPathChar, std::ios::binary);
-        if (!destinationFile.is_open())
-        {
-            qWarning() << "Unable to create or open target file:" << destinationPathChar;
-            return 1;
-        }
-
-        destinationFile << sourceFile.rdbuf();
-
-        sourceFile.close();
-        destinationFile.close();
+        return saveResult;
     }
     
     qDebug() << "ScheduleImageSave Goto Complete...";
@@ -7601,103 +7390,19 @@ int MainWindow::solveFailedImageSave()
     // 判断是否为U盘路径
     bool isUSBSave = ImageSaveBaseDirectory.compare(QString::fromStdString(ImageSaveBasePath)) != 0;
     
-    if (isUSBSave)
+    // 使用通用函数检查存储空间并创建目录
+    QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer)) : QString();
+    int checkResult = checkStorageSpaceAndCreateDirectory(
+        sourcePath,
+        destinationDirectory,
+        dirPathToCreate,
+        "solveFailedImageSave",
+        isUSBSave,
+        [this]() { createsolveFailedImageDirectory(); }
+    );
+    if (checkResult != 0)
     {
-        // 从ImageSaveBaseDirectory提取U盘挂载点（去掉/QUARCS_ImageSave）
-        QString usb_mount_point = ImageSaveBaseDirectory;
-        usb_mount_point.replace("/QUARCS_ImageSave", "");
-        
-        // 检查U盘空间和可写性
-        QStorageInfo storageInfo(usb_mount_point);
-        if (storageInfo.isValid() && storageInfo.isReady())
-        {
-            if (storageInfo.isReadOnly())
-            {
-                const QString password = "quarcs";
-                if (!remountReadWrite(usb_mount_point, password))
-                {
-                    Logger::Log("solveFailedImageSave | Failed to remount USB as read-write.", LogLevel::WARNING, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-ReadOnly");
-                    return 1;
-                }
-            }
-            
-            // 先获取源文件大小
-            QFileInfo sourceFileInfo(sourcePath);
-            if (!sourceFileInfo.exists())
-            {
-                Logger::Log("solveFailedImageSave | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                return 1;
-            }
-            long long fileSize = sourceFileInfo.size();
-            
-            // 检查U盘剩余空间
-            long long remaining_space = getUSBSpace(usb_mount_point);
-            if (remaining_space == -1 || remaining_space <= 0)
-            {
-                Logger::Log("solveFailedImageSave | USB drive has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-                return 1;
-            }
-            
-            // 检查空间是否足够（文件大小必须小于剩余空间）
-            if (fileSize > remaining_space)
-            {
-                Logger::Log("solveFailedImageSave | Insufficient USB space. Required: " + QString::number(fileSize).toStdString() + 
-                           " bytes, Available: " + QString::number(remaining_space).toStdString() + " bytes", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-                return 1;
-            }
-        }
-        
-        // 创建目录（使用sudo）
-        QString dirPath = destinationDirectory + "/" + QString(buffer);
-        const QString password = "quarcs";
-        QProcess mkdirProcess;
-        mkdirProcess.start("sudo", {"-S", "mkdir", "-p", dirPath});
-        if (!mkdirProcess.waitForStarted() || !mkdirProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("solveFailedImageSave | Failed to create directory: " + dirPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        mkdirProcess.closeWriteChannel();
-        mkdirProcess.waitForFinished(-1);
-    }
-    else
-    {
-        // 默认位置：创建目录
-        createsolveFailedImageDirectory();
-        
-        // 检查本地路径剩余空间
-        QString localPath = QString::fromStdString(ImageSaveBasePath);
-        long long remaining_space = getUSBSpace(localPath);
-        if (remaining_space == -1 || remaining_space <= 0)
-        {
-            Logger::Log("solveFailedImageSave | Local storage has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
-        
-        // 先获取源文件大小
-        QFileInfo sourceFileInfo(sourcePath);
-        if (!sourceFileInfo.exists())
-        {
-            Logger::Log("solveFailedImageSave | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        long long fileSize = sourceFileInfo.size();
-        
-        // 检查空间是否足够（文件大小必须小于剩余空间）
-        if (fileSize > remaining_space)
-        {
-            Logger::Log("solveFailedImageSave | Insufficient local storage space. Required: " + QString::number(fileSize).toStdString() + 
-                       " bytes, Available: " + QString::number(remaining_space).toStdString() + " bytes", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
+        return checkResult;
     }
 
     // 检查文件是否已存在
@@ -7705,58 +7410,14 @@ int MainWindow::solveFailedImageSave()
     {
         qWarning() << "The file already exists, there is no need to save it again:" << destinationPath;
         emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
-        return 0; // 或返回其他状态码
+        return 0;
     }
 
-    // 保存文件
-    if (isUSBSave)
+    // 使用通用函数保存文件
+    int saveResult = saveImageFile(sourcePath, destinationPath, "solveFailedImageSave", isUSBSave);
+    if (saveResult != 0)
     {
-        // U盘保存使用sudo cp命令（与CaptureImageSave一致）
-        const QString password = "quarcs";
-        QProcess cpProcess;
-        cpProcess.start("sudo", {"-S", "cp", sourcePath, destinationPath});
-        if (!cpProcess.waitForStarted() || !cpProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("solveFailedImageSave | Failed to execute sudo cp command.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        cpProcess.closeWriteChannel();
-        cpProcess.waitForFinished(-1);
-        
-        if (cpProcess.exitCode() != 0)
-        {
-            QByteArray stderrOutput = cpProcess.readAllStandardError();
-            Logger::Log("solveFailedImageSave | Failed to copy file to USB: " + QString::fromUtf8(stderrOutput).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        
-        Logger::Log("solveFailedImageSave | File saved to USB: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        // 默认位置保存使用普通文件操作
-        const char *destinationPathChar = destinationPath.toUtf8().constData();
-
-        std::ifstream sourceFile(sourcePath, std::ios::binary);
-        if (!sourceFile.is_open())
-        {
-            qWarning() << "Unable to open source file:" << sourcePath;
-            return 1;
-        }
-
-        std::ofstream destinationFile(destinationPathChar, std::ios::binary);
-        if (!destinationFile.is_open())
-        {
-            qWarning() << "Unable to create or open target file:" << destinationPathChar;
-            return 1;
-        }
-
-        destinationFile << sourceFile.rdbuf();
-
-        sourceFile.close();
-        destinationFile.close();
+        return saveResult;
     }
 
     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
@@ -7853,6 +7514,186 @@ bool MainWindow::createsolveFailedImageDirectory()
     {
         Logger::Log("createCaptureDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
     }
+}
+
+int MainWindow::checkStorageSpaceAndCreateDirectory(const QString &sourcePath, 
+                                                     const QString &destinationDirectory,
+                                                     const QString &dirPathToCreate,
+                                                     const QString &functionName,
+                                                     bool isUSBSave,
+                                                     std::function<void()> createLocalDirectoryFunc)
+{
+    // 先获取源文件大小（在空间检查之前）
+    QFileInfo sourceFileInfo(sourcePath);
+    if (!sourceFileInfo.exists())
+    {
+        Logger::Log(functionName.toStdString() + " | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+        return 1;
+    }
+    long long fileSize = sourceFileInfo.size();
+    
+    if (isUSBSave)
+    {
+        // 从ImageSaveBaseDirectory提取U盘挂载点（去掉/QUARCS_ImageSave）
+        QString usb_mount_point = ImageSaveBaseDirectory;
+        usb_mount_point.replace("/QUARCS_ImageSave", "");
+        
+        // 检查U盘空间和可写性
+        QStorageInfo storageInfo(usb_mount_point);
+        if (storageInfo.isValid() && storageInfo.isReady())
+        {
+            if (storageInfo.isReadOnly())
+            {
+                const QString password = "quarcs";
+                if (!remountReadWrite(usb_mount_point, password))
+                {
+                    Logger::Log(functionName.toStdString() + " | Failed to remount USB as read-write.", LogLevel::WARNING, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-ReadOnly");
+                    return 1;
+                }
+            }
+            
+            // 检查U盘剩余空间（在创建目录之前）
+            long long remaining_space = getUSBSpace(usb_mount_point);
+            if (remaining_space == -1 || remaining_space <= 0)
+            {
+                Logger::Log(functionName.toStdString() + " | USB drive has no available space.", LogLevel::WARNING, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
+                return 1;
+            }
+            
+            // 预留至少100MB的缓冲空间，避免写入时空间不足
+            const long long RESERVE_SPACE = 100 * 1024 * 1024; // 100MB
+            long long available_space = remaining_space - RESERVE_SPACE;
+            if (available_space < 0)
+            {
+                available_space = 0;
+            }
+            
+            // 检查空间是否足够（文件大小必须小于可用空间，已预留缓冲）
+            if (fileSize > available_space)
+            {
+                Logger::Log(functionName.toStdString() + " | Insufficient USB space. Required: " + QString::number(fileSize).toStdString() + 
+                           " bytes, Available: " + QString::number(remaining_space).toStdString() + 
+                           " bytes (reserved: " + QString::number(RESERVE_SPACE).toStdString() + " bytes)", LogLevel::WARNING, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
+                return 1;
+            }
+        }
+        
+        // 创建目录（使用sudo）- 在空间检查通过后
+        const QString password = "quarcs";
+        QProcess mkdirProcess;
+        mkdirProcess.start("sudo", {"-S", "mkdir", "-p", dirPathToCreate});
+        if (!mkdirProcess.waitForStarted() || !mkdirProcess.write((password + "\n").toUtf8()))
+        {
+            Logger::Log(functionName.toStdString() + " | Failed to create directory: " + dirPathToCreate.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+            return 1;
+        }
+        mkdirProcess.closeWriteChannel();
+        mkdirProcess.waitForFinished(-1);
+    }
+    else
+    {
+        // 默认位置：先检查空间（在创建目录之前）
+        QString localPath = QString::fromStdString(ImageSaveBasePath);
+        long long remaining_space = getUSBSpace(localPath);
+        if (remaining_space == -1 || remaining_space <= 0)
+        {
+            Logger::Log(functionName.toStdString() + " | Local storage has no available space.", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
+            return 1;
+        }
+        
+        // 预留至少100MB的缓冲空间，避免写入时空间不足
+        const long long RESERVE_SPACE = 100 * 1024 * 1024; // 100MB
+        long long available_space = remaining_space - RESERVE_SPACE;
+        if (available_space < 0)
+        {
+            available_space = 0;
+        }
+        
+        // 检查空间是否足够（文件大小必须小于可用空间，已预留缓冲）
+        if (fileSize > available_space)
+        {
+            Logger::Log(functionName.toStdString() + " | Insufficient local storage space. Required: " + QString::number(fileSize).toStdString() + 
+                       " bytes, Available: " + QString::number(remaining_space).toStdString() + 
+                       " bytes (reserved: " + QString::number(RESERVE_SPACE).toStdString() + " bytes)", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
+            return 1;
+        }
+        
+        // 创建目录 - 在空间检查通过后
+        if (createLocalDirectoryFunc)
+        {
+            createLocalDirectoryFunc();
+        }
+    }
+    
+    return 0;
+}
+
+int MainWindow::saveImageFile(const QString &sourcePath, 
+                              const QString &destinationPath,
+                              const QString &functionName,
+                              bool isUSBSave)
+{
+    if (isUSBSave)
+    {
+        // U盘保存使用sudo cp命令
+        const QString password = "quarcs";
+        QProcess cpProcess;
+        cpProcess.start("sudo", {"-S", "cp", sourcePath, destinationPath});
+        if (!cpProcess.waitForStarted() || !cpProcess.write((password + "\n").toUtf8()))
+        {
+            Logger::Log(functionName.toStdString() + " | Failed to execute sudo cp command.", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+            return 1;
+        }
+        cpProcess.closeWriteChannel();
+        cpProcess.waitForFinished(-1);
+        
+        if (cpProcess.exitCode() != 0)
+        {
+            QByteArray stderrOutput = cpProcess.readAllStandardError();
+            Logger::Log(functionName.toStdString() + " | Failed to copy file to USB: " + QString::fromUtf8(stderrOutput).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+            return 1;
+        }
+        
+        Logger::Log(functionName.toStdString() + " | File saved to USB: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    }
+    else
+    {
+        // 默认位置保存使用普通文件操作
+        const char *destinationPathChar = destinationPath.toUtf8().constData();
+
+        std::ifstream sourceFile(sourcePath.toUtf8().constData(), std::ios::binary);
+        if (!sourceFile.is_open())
+        {
+            qWarning() << "Unable to open source file:" << sourcePath;
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+            return 1;
+        }
+
+        std::ofstream destinationFile(destinationPathChar, std::ios::binary);
+        if (!destinationFile.is_open())
+        {
+            qWarning() << "Unable to create or open target file:" << destinationPathChar;
+            sourceFile.close();
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+            return 1;
+        }
+
+        destinationFile << sourceFile.rdbuf();
+
+        sourceFile.close();
+        destinationFile.close();
+    }
+    
+    return 0;
 }
 void MainWindow::getClientSettings()
 {
@@ -8550,8 +8391,10 @@ long long MainWindow::getUSBSpace(const QString &usb_mount_point)
     struct statvfs stat;
     if (statvfs(usb_mount_point.toUtf8().constData(), &stat) == 0)
     {
-        long long free_space = static_cast<long long>(stat.f_bfree) * stat.f_frsize;
-        Logger::Log("getUSBSpace | USB Space: " + std::to_string(free_space) + " bytes", LogLevel::INFO, DeviceType::MAIN);
+        // 使用 f_bavail 而不是 f_bfree，因为 f_bavail 是普通用户实际可用的空间
+        // f_bfree 可能包含系统保留的空间，实际用户可能无法使用
+        long long free_space = static_cast<long long>(stat.f_bavail) * stat.f_frsize;
+        Logger::Log("getUSBSpace | USB Space (available): " + std::to_string(free_space) + " bytes", LogLevel::INFO, DeviceType::MAIN);
         return free_space;
     }
     else

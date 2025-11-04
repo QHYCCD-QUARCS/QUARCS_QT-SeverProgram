@@ -51,6 +51,7 @@
 #include <cmath>
 #include <math.h>
 #include <QElapsedTimer>
+#include <functional>
 
 #include <filesystem>
 #include <filesystem>  //（按原文件保留重复包含）
@@ -1072,6 +1073,14 @@ public:
     bool WaitForFocuserToComplete();
 
     /**
+     * @brief 计算计划表步骤的进度
+     * @param stepNumber 步骤编号（1=等待，2=转动，3=滤镜，4-N=拍摄）
+     * @param stepProgress 步骤内的进度（0.0-1.0，用于拍摄过程中的进度）
+     * @return 计算后的进度值（限制在0-100之间）
+     */
+    int calculateScheduleProgress(int stepNumber, double stepProgress = 1.0);
+
+    /**
      * @brief 调度图像保存（命名/序号）
      * @param name 目标名
      * @param num 序号
@@ -1124,6 +1133,36 @@ public:
      * @return 成功返回 true
      */
     bool createsolveFailedImageDirectory();
+
+    /**
+     * @brief 检查存储空间并创建目录（通用辅助函数）
+     * @param sourcePath 源文件路径
+     * @param destinationDirectory 目标目录
+     * @param dirPathToCreate 需要创建的目录路径（U盘保存时使用）
+     * @param functionName 函数名（用于日志）
+     * @param isUSBSave 是否为U盘保存
+     * @param createLocalDirectoryFunc 本地保存时创建目录的回调函数（std::function<void()>）
+     * @return 成功返回0，失败返回1
+     */
+    int checkStorageSpaceAndCreateDirectory(const QString &sourcePath, 
+                                           const QString &destinationDirectory,
+                                           const QString &dirPathToCreate,
+                                           const QString &functionName,
+                                           bool isUSBSave,
+                                           std::function<void()> createLocalDirectoryFunc = nullptr);
+
+    /**
+     * @brief 保存图像文件（通用辅助函数）
+     * @param sourcePath 源文件路径
+     * @param destinationPath 目标文件路径
+     * @param functionName 函数名（用于日志）
+     * @param isUSBSave 是否为U盘保存
+     * @return 成功返回0，失败返回1
+     */
+    int saveImageFile(const QString &sourcePath, 
+                     const QString &destinationPath,
+                     const QString &functionName,
+                     bool isUSBSave);
 
     bool isStagingImage = false;   // 是否有缓存图像
     std::string SavedImage;        // 最近保存图像路径
@@ -1519,9 +1558,9 @@ public:
 
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
  
-    // std::string vueImagePath = "/var/www/html/img/";
+    std::string vueImagePath = "/var/www/html/img/";
 
-    std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
+    // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";
 
 
     std::string PriorGuiderImage = "NULL"; // 上一帧导星图
