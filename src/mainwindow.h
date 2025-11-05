@@ -1080,6 +1080,7 @@ public:
      */
     int calculateScheduleProgress(int stepNumber, double stepProgress = 1.0);
 
+
     /**
      * @brief 调度图像保存（命名/序号）
      * @param name 目标名
@@ -1108,6 +1109,7 @@ public:
     std::string ImageSaveBasePath = "image"; // 默认保存路径
     QString     ImageSaveBaseDirectory = "image"; // 当前保存路径
     QMap<QString, QString> usbMountPointsMap; // U盘映射表：U盘名 -> U盘路径
+    QString saveMode = "local"; // 保存模式：local=本地，其它为U盘名代码U盘模式
 
     /**
      * @brief 检查目录是否存在

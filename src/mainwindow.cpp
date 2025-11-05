@@ -1257,24 +1257,29 @@ void MainWindow::onMessageReceived(const QString &message)
     }else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraSaveFolder")
     {
         QString Mode = parts[1].trimmed();
-        if(Mode == "default") {
+        if(Mode == "local" || Mode == "default") {  // 兼容旧的"default"
             ImageSaveBaseDirectory = QString::fromStdString(ImageSaveBasePath);
-            Logger::Log("Set MainCamera Save Folder to default: " + ImageSaveBaseDirectory.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            saveMode = "local";
+            Logger::Log("Set MainCamera Save Folder to local: " + ImageSaveBaseDirectory.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         } else {
             // 根据U盘名从映射表获取路径
             if (usbMountPointsMap.contains(Mode)) {
                 QString usb_mount_point = usbMountPointsMap[Mode];
                 QString folderName = "QUARCS_ImageSave";
                 ImageSaveBaseDirectory = usb_mount_point + "/" + folderName;
+                saveMode = Mode;  // 保存U盘名
                 Logger::Log("Set MainCamera Save Folder to USB: " + Mode.toStdString() + " -> " + ImageSaveBaseDirectory.toStdString(), LogLevel::INFO, DeviceType::MAIN);
             } else {
                 // U盘不存在，回退到默认路径
                 ImageSaveBaseDirectory = QString::fromStdString(ImageSaveBasePath);
-                Logger::Log("Set MainCamera Save Folder: USB '" + Mode.toStdString() + "' not found, using default", LogLevel::WARNING, DeviceType::MAIN);
+                saveMode = "local";
+                Logger::Log("Set MainCamera Save Folder: USB '" + Mode.toStdString() + "' not found, using local", LogLevel::WARNING, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NotAvailable");
             }
         }
-        Tools::saveParameter("MainCamera", "Save Folder", parts[1].trimmed());
+        // 保存时统一使用"local"替代"default"
+        QString saveValue = (Mode == "default") ? "local" : Mode;
+        Tools::saveParameter("MainCamera", "Save Folder", saveValue);
     }
 
 
@@ -7251,6 +7256,7 @@ int MainWindow::calculateScheduleProgress(int stepNumber, double stepProgress)
     return static_cast<int>(currentProgress);
 }
 
+
 int MainWindow::CaptureImageSave()
 {
     qDebug() << "CaptureImageSave...";
@@ -7275,8 +7281,8 @@ int MainWindow::CaptureImageSave()
     QString destinationDirectory = ImageSaveBaseDirectory + "/CaptureImage";
     QString destinationPath = destinationDirectory + "/" + QString(buffer) + "/" + resultFileName;
     
-    // 判断是否为U盘路径
-    bool isUSBSave = ImageSaveBaseDirectory.compare(QString::fromStdString(ImageSaveBasePath)) != 0;
+    // 判断是否为U盘路径（使用saveMode参数）
+    bool isUSBSave = (saveMode != "local");
     
     // 使用通用函数检查存储空间并创建目录
     QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer)) : QString();
@@ -7332,8 +7338,8 @@ int MainWindow::ScheduleImageSave(QString name, int num)
     // 拼接目标文件路径
     QString destinationPath = destinationDirectory + "/" + buffer + " " + QTime::currentTime().toString("hh") + "h (" + ScheduleTargetNames + ")" + "/" + resultFileName;
     
-    // 判断是否为U盘路径
-    bool isUSBSave = ImageSaveBaseDirectory.compare(QString::fromStdString(ImageSaveBasePath)) != 0;
+    // 判断是否为U盘路径（使用saveMode参数）
+    bool isUSBSave = (saveMode != "local");
     
     // 使用通用函数检查存储空间并创建目录
     QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer) + " " + QTime::currentTime().toString("hh") + "h (" + ScheduleTargetNames + ")") : QString();
@@ -7387,8 +7393,8 @@ int MainWindow::solveFailedImageSave()
 
     QString destinationPath = destinationDirectory + "/" + buffer + "/" + resultFileName;
     
-    // 判断是否为U盘路径
-    bool isUSBSave = ImageSaveBaseDirectory.compare(QString::fromStdString(ImageSaveBasePath)) != 0;
+    // 判断是否为U盘路径（使用saveMode参数）
+    bool isUSBSave = (saveMode != "local");
     
     // 使用通用函数检查存储空间并创建目录
     QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer)) : QString();
@@ -7523,6 +7529,10 @@ int MainWindow::checkStorageSpaceAndCreateDirectory(const QString &sourcePath,
                                                      bool isUSBSave,
                                                      std::function<void()> createLocalDirectoryFunc)
 {
+    Logger::Log(functionName.toStdString() + " | checkStorageSpaceAndCreateDirectory | saveMode: " + saveMode.toStdString() + 
+               ", isUSBSave: " + std::string(isUSBSave ? "true" : "false") + 
+               ", ImageSaveBaseDirectory: " + ImageSaveBaseDirectory.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    
     // 先获取源文件大小（在空间检查之前）
     QFileInfo sourceFileInfo(sourcePath);
     if (!sourceFileInfo.exists())
@@ -7539,47 +7549,56 @@ int MainWindow::checkStorageSpaceAndCreateDirectory(const QString &sourcePath,
         QString usb_mount_point = ImageSaveBaseDirectory;
         usb_mount_point.replace("/QUARCS_ImageSave", "");
         
+        Logger::Log(functionName.toStdString() + " | USB save mode | ImageSaveBaseDirectory: " + ImageSaveBaseDirectory.toStdString() + 
+                   ", extracted USB mount point: " + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        
         // 检查U盘空间和可写性
         QStorageInfo storageInfo(usb_mount_point);
-        if (storageInfo.isValid() && storageInfo.isReady())
+        if (!storageInfo.isValid() || !storageInfo.isReady())
         {
-            if (storageInfo.isReadOnly())
+            Logger::Log(functionName.toStdString() + " | USB drive is not valid or not ready: " + usb_mount_point.toStdString() + 
+                       " (isValid: " + std::string(storageInfo.isValid() ? "true" : "false") + 
+                       ", isReady: " + std::string(storageInfo.isReady() ? "true" : "false") + ")", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NotAvailable");
+            return 1;
+        }
+        
+        if (storageInfo.isReadOnly())
+        {
+            const QString password = "quarcs";
+            if (!remountReadWrite(usb_mount_point, password))
             {
-                const QString password = "quarcs";
-                if (!remountReadWrite(usb_mount_point, password))
-                {
-                    Logger::Log(functionName.toStdString() + " | Failed to remount USB as read-write.", LogLevel::WARNING, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-ReadOnly");
-                    return 1;
-                }
-            }
-            
-            // 检查U盘剩余空间（在创建目录之前）
-            long long remaining_space = getUSBSpace(usb_mount_point);
-            if (remaining_space == -1 || remaining_space <= 0)
-            {
-                Logger::Log(functionName.toStdString() + " | USB drive has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
+                Logger::Log(functionName.toStdString() + " | Failed to remount USB as read-write.", LogLevel::WARNING, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-ReadOnly");
                 return 1;
             }
-            
-            // 预留至少100MB的缓冲空间，避免写入时空间不足
-            const long long RESERVE_SPACE = 100 * 1024 * 1024; // 100MB
-            long long available_space = remaining_space - RESERVE_SPACE;
-            if (available_space < 0)
-            {
-                available_space = 0;
-            }
-            
-            // 检查空间是否足够（文件大小必须小于可用空间，已预留缓冲）
-            if (fileSize > available_space)
-            {
-                Logger::Log(functionName.toStdString() + " | Insufficient USB space. Required: " + QString::number(fileSize).toStdString() + 
-                           " bytes, Available: " + QString::number(remaining_space).toStdString() + 
-                           " bytes (reserved: " + QString::number(RESERVE_SPACE).toStdString() + " bytes)", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-                return 1;
-            }
+        }
+        
+        // 检查U盘剩余空间（在创建目录之前）
+        long long remaining_space = getUSBSpace(usb_mount_point);
+        if (remaining_space == -1 || remaining_space <= 0)
+        {
+            Logger::Log(functionName.toStdString() + " | USB drive has no available space.", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
+            return 1;
+        }
+        
+        // 预留至少100MB的缓冲空间，避免写入时空间不足
+        const long long RESERVE_SPACE = 100 * 1024 * 1024; // 100MB
+        long long available_space = remaining_space - RESERVE_SPACE;
+        if (available_space < 0)
+        {
+            available_space = 0;
+        }
+        
+        // 检查空间是否足够（文件大小必须小于可用空间，已预留缓冲）
+        if (fileSize > available_space)
+        {
+            Logger::Log(functionName.toStdString() + " | Insufficient USB space. Required: " + QString::number(fileSize).toStdString() + 
+                       " bytes, Available: " + QString::number(remaining_space).toStdString() + 
+                       " bytes (reserved: " + QString::number(RESERVE_SPACE).toStdString() + " bytes)", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
+            return 1;
         }
         
         // 创建目录（使用sudo）- 在空间检查通过后
@@ -7599,6 +7618,7 @@ int MainWindow::checkStorageSpaceAndCreateDirectory(const QString &sourcePath,
     {
         // 默认位置：先检查空间（在创建目录之前）
         QString localPath = QString::fromStdString(ImageSaveBasePath);
+        Logger::Log(functionName.toStdString() + " | Local save mode | checking local path: " + localPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         long long remaining_space = getUSBSpace(localPath);
         if (remaining_space == -1 || remaining_space <= 0)
         {
@@ -8466,7 +8486,8 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath, QString usbName)
     // 如果上面没有获取到，优先使用 ImageSaveBaseDirectory 指定的U盘路径
     if (usb_mount_point.isEmpty())
     {
-        bool isUSBSave = ImageSaveBaseDirectory.compare(QString::fromStdString(ImageSaveBasePath)) != 0;
+        // 使用saveMode判断是否为U盘保存
+        bool isUSBSave = (saveMode != "local");
         
         if (isUSBSave && ImageSaveBaseDirectory.contains("/QUARCS_ImageSave"))
         {
@@ -11045,12 +11066,24 @@ void MainWindow::getMainCameraParameters()
         Logger::Log("getMainCameraParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         if (it.key() == "Save Folder" ) {
             QString oldSaveFolder = it.value();
-            if (oldSaveFolder != "default" && !usbMountPointsMap.contains(oldSaveFolder)) {
-                it.value() = "default";
+            // 兼容旧的"default"，转换为"local"
+            if (oldSaveFolder == "default") {
+                oldSaveFolder = "local";
+                it.value() = "local";
+            }
+            
+            if (oldSaveFolder == "local") {
                 ImageSaveBaseDirectory = QString::fromStdString(ImageSaveBasePath);
-            }else{
-                it.value() = oldSaveFolder;
-                ImageSaveBaseDirectory = usbMountPointsMap[oldSaveFolder];
+                saveMode = "local";
+            } else if (usbMountPointsMap.contains(oldSaveFolder)) {
+                ImageSaveBaseDirectory = usbMountPointsMap[oldSaveFolder] + "/QUARCS_ImageSave";
+                saveMode = oldSaveFolder;
+            } else {
+                // U盘不存在，回退到本地
+                it.value() = "local";
+                ImageSaveBaseDirectory = QString::fromStdString(ImageSaveBasePath);
+                saveMode = "local";
+                Logger::Log("LoadParameter | USB '" + oldSaveFolder.toStdString() + "' not found, using local", LogLevel::WARNING, DeviceType::MAIN);
             }
         }
         order += ":" + it.key() + ":" + it.value();
