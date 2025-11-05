@@ -2786,6 +2786,18 @@ void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
     wx = bx + 10;
   }  // avoid bx == wx
 
+  // 根据图像位深度调整最大值
+  uint16_t maxValue;
+  if (img_raw16.depth() == CV_8U) {
+    maxValue = 255;
+  } else if (img_raw16.depth() == CV_16U) {
+    maxValue = 65535;
+  } else {
+    // 默认使用16位
+    maxValue = 65535;
+    Logger::Log("GetAutoStretch | unsupported image depth: " + std::to_string(img_raw16.depth()) + ", using 16-bit default", LogLevel::WARNING, DeviceType::MAIN);
+  }
+
   if (bx < 0) bx = 0;
   if (wx > 65535) wx = 65535;
 
@@ -2794,7 +2806,7 @@ void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
 
   // process some sepcial condtion
   // full saturated
-  if (B == 65535 && W == 65535) {
+  if (B == maxValue && W == maxValue) {
     B = 0;
     W = 65535;
   }
@@ -2826,9 +2838,32 @@ void Tools::Bit16To8_MakeLUT(uint16_t B, uint16_t W, uint8_t* lut) {
   #endif
 }
 
+// 8位图像拉伸LUT生成函数
+static void Bit8To8_MakeLUT(uint8_t B, uint8_t W, uint8_t* lut) {
+  double ratio;
+  uint32_t pixel;
+
+  ratio = double((W - B)) / 256;
+
+  if (ratio == 0) ratio = 1;  // avoid /zero
+
+  for (int i = 0; i < 256; i++) {
+    pixel = i;
+    if (pixel > B) {
+      pixel = (uint32_t)((pixel - B) / ratio);
+      if (pixel > 255) pixel = 255;
+    } else
+      pixel = 0;
+    lut[i] = (uint8_t)pixel;
+  }
+  #ifdef ImageDebug
+  Logger::Log("Bit8To8_MakeLUT |" + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
+  #endif
+}
+
 void Tools::Bit16To8_Stretch(cv::Mat img16, cv::Mat img8, uint16_t B,
                              uint16_t W) {
-  // this API support 16bit image input, 3 channel and 1 channel
+  // this API support 8bit and 16bit image input, 1 channel (grayscale) and 3 channel (color)
   #ifdef ImageDebug
   Logger::Log("Bit16To8_Stretch | start" + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
   #endif
@@ -2843,20 +2878,50 @@ void Tools::Bit16To8_Stretch(cv::Mat img16, cv::Mat img8, uint16_t B,
   imageX = img16.cols;
   imageY = img16.rows;
 
+  // 检测输入图像位深度
+  bool is8bit = (img16.depth() == CV_8U);
+  bool is16bit = (img16.depth() == CV_16U);
+
+  if (!is8bit && !is16bit) {
+    Logger::Log("Bit16To8_Stretch | unsupported image depth: " + std::to_string(img16.depth()), LogLevel::ERROR, DeviceType::MAIN);
+    return;
+  }
+
   if (img16.channels() == 1) {
-    uint8_t LUT16TO8[65536];
-    Bit16To8_MakeLUT(B, W, LUT16TO8);
+    // 单通道图像（黑白）
+    if (is16bit) {
+      // 16位黑白图像处理
+      uint8_t LUT16TO8[65536];
+      Bit16To8_MakeLUT(B, W, LUT16TO8);
 
-    uint16_t* data16 = (uint16_t*)img16.data;
+      uint16_t* data16 = (uint16_t*)img16.data;
 
-    s = 0;
+      s = 0;
 
-    for (i = 0; i < imageY; i++) {
-      for (j = 0; j < imageX; j++) {
-        pixel = data16[s];  // img16.data[k] + img16.data[k + 1] * 256;
-        img8.data[s] = LUT16TO8[pixel];
-        s = s + 1;
-        // k = k + 1;
+      for (i = 0; i < imageY; i++) {
+        for (j = 0; j < imageX; j++) {
+          pixel = data16[s];
+          img8.data[s] = LUT16TO8[pixel];
+          s = s + 1;
+        }
+      }
+    } else {
+      // 8位黑白图像处理
+      uint8_t B8 = (B > 255) ? 255 : (uint8_t)B;
+      uint8_t W8 = (W > 255) ? 255 : (uint8_t)W;
+      uint8_t LUT8TO8[256];
+      Bit8To8_MakeLUT(B8, W8, LUT8TO8);
+
+      uint8_t* data8 = (uint8_t*)img16.data;
+
+      s = 0;
+
+      for (i = 0; i < imageY; i++) {
+        for (j = 0; j < imageX; j++) {
+          pixel = data8[s];
+          img8.data[s] = LUT8TO8[pixel];
+          s = s + 1;
+        }
       }
     }
 
@@ -2895,31 +2960,63 @@ void Tools::Bit16To8_Stretch(cv::Mat img16, cv::Mat img8, uint16_t B,
   }
 
   else {
-    uint8_t LUT16TO8R[65536];
-    uint8_t LUT16TO8G[65536];
-    uint8_t LUT16TO8B[65536];
-    // here we use the same LUT for RGB channel
-    Bit16To8_MakeLUT(B, W, LUT16TO8R);
-    memcpy(LUT16TO8G, LUT16TO8R, 65536);
-    memcpy(LUT16TO8B, LUT16TO8R, 65536);
+    // 多通道图像（彩色）
+    if (is16bit) {
+      // 16位彩色图像处理
+      uint8_t LUT16TO8R[65536];
+      uint8_t LUT16TO8G[65536];
+      uint8_t LUT16TO8B[65536];
+      // here we use the same LUT for RGB channel
+      Bit16To8_MakeLUT(B, W, LUT16TO8R);
+      memcpy(LUT16TO8G, LUT16TO8R, 65536);
+      memcpy(LUT16TO8B, LUT16TO8R, 65536);
 
-    // this code will take only 50ms for 6000*4000 color image (under release).
-    uint16_t* data16;
+      // this code will take only 50ms for 6000*4000 color image (under release).
+      uint16_t* data16;
 
-    data16 = (uint16_t*)img16.data;
+      data16 = (uint16_t*)img16.data;
 
-    s = 0;
-    for (i = 0; i < imageY; i++) {
-      for (j = 0; j < imageX; j++) {
-        pixel = data16[s];
-        img8.data[s] = LUT16TO8R[pixel];
-        s++;
-        pixel = data16[s];
-        img8.data[s] = LUT16TO8G[pixel];
-        s++;
-        pixel = data16[s];
-        img8.data[s] = LUT16TO8B[pixel];
-        s++;
+      s = 0;
+      for (i = 0; i < imageY; i++) {
+        for (j = 0; j < imageX; j++) {
+          pixel = data16[s];
+          img8.data[s] = LUT16TO8R[pixel];
+          s++;
+          pixel = data16[s];
+          img8.data[s] = LUT16TO8G[pixel];
+          s++;
+          pixel = data16[s];
+          img8.data[s] = LUT16TO8B[pixel];
+          s++;
+        }
+      }
+    } else {
+      // 8位彩色图像处理
+      uint8_t B8 = (B > 255) ? 255 : (uint8_t)B;
+      uint8_t W8 = (W > 255) ? 255 : (uint8_t)W;
+      uint8_t LUT8TO8R[256];
+      uint8_t LUT8TO8G[256];
+      uint8_t LUT8TO8B[256];
+      // here we use the same LUT for RGB channel
+      Bit8To8_MakeLUT(B8, W8, LUT8TO8R);
+      memcpy(LUT8TO8G, LUT8TO8R, 256);
+      memcpy(LUT8TO8B, LUT8TO8R, 256);
+
+      uint8_t* data8 = (uint8_t*)img16.data;
+
+      s = 0;
+      for (i = 0; i < imageY; i++) {
+        for (j = 0; j < imageX; j++) {
+          pixel = data8[s];
+          img8.data[s] = LUT8TO8R[pixel];
+          s++;
+          pixel = data8[s];
+          img8.data[s] = LUT8TO8G[pixel];
+          s++;
+          pixel = data8[s];
+          img8.data[s] = LUT8TO8B[pixel];
+          s++;
+        }
       }
     }
 

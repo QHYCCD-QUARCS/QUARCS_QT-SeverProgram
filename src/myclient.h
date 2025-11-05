@@ -61,6 +61,7 @@ class MyClient : public INDI::BaseClient
         uint32_t setTemperature(INDI::BaseDevice *dp,double value);
         uint32_t getTemperature(INDI::BaseDevice *dp,double &value);
         uint32_t takeExposure(INDI::BaseDevice *dp,double seconds);
+        uint32_t disableDSLRLiveView(INDI::BaseDevice *dp);
         uint32_t setCCDAbortExposure(INDI::BaseDevice *dp);
         uint32_t getCCDFrameInfo(INDI::BaseDevice *dp,int &X,int &Y,int &WIDTH,int &HEIGHT);
         uint32_t setCCDFrameInfo(INDI::BaseDevice *dp,int X,int Y,int WIDTH,int HEIGHT); //something like setROI
