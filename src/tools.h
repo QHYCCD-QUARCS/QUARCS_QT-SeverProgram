@@ -451,6 +451,7 @@ class Tools : public QObject {
   static MinMaxFOV calculateFOV(int FocalLength,double CameraSize_width,double CameraSize_height);
   static bool WaitForPlateSolveToComplete();
   static bool isSolveImageFinish();
+  static bool isPlateSolveInProgress();
   static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK, int mode = 0, double lastRA = 0.0, double lastDEC = 0.0);
   // mode: 0=基础模式, 1=包含视场参数, 2=包含视场和位置参数
   // lastRA: 上次解析的赤经，单位为度 (0-360°)

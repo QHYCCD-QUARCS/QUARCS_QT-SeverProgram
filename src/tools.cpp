@@ -5431,6 +5431,10 @@ bool Tools::WaitForPlateSolveToComplete() {
 bool Tools::isSolveImageFinish() {
   return isSolveImageFinished;
 }
+
+bool Tools::isPlateSolveInProgress() {
+  return PlateSolveInProgress;
+}
 bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK, int mode, double lastRA, double lastDEC)
 {
     // 参数说明：

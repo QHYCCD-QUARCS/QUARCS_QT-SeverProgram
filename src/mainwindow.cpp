@@ -1254,7 +1254,14 @@ void MainWindow::onMessageReceived(const QString &message)
         mainCameraAutoSave = (parts[1].trimmed() == "true" || parts[1].trimmed() == "1");
         Logger::Log("Set MainCamera Auto Save to " + std::string(mainCameraAutoSave ? "true" : "false"), LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveParameter("MainCamera", "AutoSave", parts[1].trimmed());
-    }else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraSaveFolder")
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraSaveFailedParse")
+    {
+        mainCameraSaveFailedParse = (parts[1].trimmed() == "true" || parts[1].trimmed() == "1");
+        Logger::Log("Set MainCamera Save Failed Parse to " + std::string(mainCameraSaveFailedParse ? "true" : "false"), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera", "SaveFailedParse", parts[1].trimmed());
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraSaveFolder")
     {
         QString Mode = parts[1].trimmed();
         if(Mode == "local" || Mode == "default") {  // 兼容旧的"default"
@@ -7166,6 +7173,37 @@ void MainWindow::startCapture(int ExpTime)
         else 
         {
             expTime_ms += 1000;
+            
+            // 检查是否超过最大超时时间（曝光时间 + 1分钟）
+            int maxTimeout = schedule_ExpTime + 60000;  // 曝光时间 + 60000毫秒（1分钟）
+            if (expTime_ms > maxTimeout)
+            {
+                // 拍摄超时，中止拍摄并处理超时情况
+                captureTimer.stop();
+                INDI_AbortCapture();
+                Logger::Log(QString("计划任务表拍摄超时: 当前拍摄时间 %1ms, 超过最大超时时间 %2ms (曝光时间 %3ms + 1分钟)").arg(expTime_ms).arg(maxTimeout).arg(schedule_ExpTime).toStdString(), 
+                           LogLevel::WARNING, DeviceType::MAIN);
+                qDebug() << "Capture timeout! expTime_ms:" << expTime_ms << ", maxTimeout:" << maxTimeout << ", schedule_ExpTime:" << schedule_ExpTime;
+                
+                // 跳过当前拍摄，继续下一个拍摄或任务
+                if (schedule_currentShootNum < schedule_RepeatNum)
+                {
+                    // 还有后续拍摄，继续下一个拍摄
+                    qDebug() << "Skip current capture, continue to next capture...";
+                    startCapture(schedule_ExpTime);
+                }
+                else
+                {
+                    // 当前任务的所有拍摄已完成或超时，进入下一个任务
+                    schedule_currentShootNum = 0;
+                    qDebug() << "All captures completed or timeout, move to next schedule...";
+                    m_scheduList[schedule_currentNum].progress = 100;
+                    emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+                    nextSchedule();
+                }
+                return;
+            }
+            
             // 计算拍摄过程中的进度
             // 拍摄步骤从步骤4开始，每张照片对应一个步骤
             // 步骤编号 = 3 + schedule_currentShootNum
@@ -7367,21 +7405,43 @@ int MainWindow::ScheduleImageSave(QString name, int num)
     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
     return 0;
 }
-int MainWindow::solveFailedImageSave()
+int MainWindow::solveFailedImageSave(const QString& imagePath)
 {
     qDebug() << "solveFailedImageSave...";
+    Logger::Log("solveFailedImageSave | Starting save process, imagePath: " + imagePath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-    const char *sourcePath = "/dev/shm/ccd_simulator.fits";
+    // 如果未提供路径，使用默认路径
+    QString sourcePathStr = imagePath.isEmpty() ? "/dev/shm/ccd_simulator.fits" : imagePath;
+    const char *sourcePath = sourcePathStr.toLocal8Bit().constData();
 
-    if (!QFile::exists("/dev/shm/ccd_simulator.fits"))
+    Logger::Log("solveFailedImageSave | Using source path: " + sourcePathStr.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    
+    if (!QFile::exists(sourcePathStr))
     {
+        Logger::Log("solveFailedImageSave | 文件不存在: " + sourcePathStr.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
         return 1;
     }
+    
+    Logger::Log("solveFailedImageSave | Source file exists, file size: " + std::to_string(QFileInfo(sourcePathStr).size()) + " bytes", LogLevel::INFO, DeviceType::MAIN);
 
-    QString CaptureTime = Tools::getFitsCaptureTime("/dev/shm/ccd_simulator.fits");
+    QString CaptureTime = Tools::getFitsCaptureTime(sourcePath);
+    Logger::Log("solveFailedImageSave | getFitsCaptureTime returned: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    
+    // 如果无法从 FITS 文件获取时间，使用当前时间戳
+    if (CaptureTime.isEmpty())
+    {
+        std::time_t currentTime = std::time(nullptr);
+        std::tm *timeInfo = std::localtime(&currentTime);
+        char buffer[80];
+        std::strftime(buffer, 80, "%Y_%m_%dT%H_%M_%S", timeInfo);
+        CaptureTime = QString::fromStdString(buffer);
+        Logger::Log("solveFailedImageSave | Using current timestamp as filename: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    }
+    
     CaptureTime.replace(QRegExp("[^a-zA-Z0-9]"), "_");
     QString resultFileName = CaptureTime + ".fits";
+    Logger::Log("solveFailedImageSave | Generated filename: " + resultFileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     std::time_t currentTime = std::time(nullptr);
     std::tm *timeInfo = std::localtime(&currentTime);
@@ -7397,9 +7457,19 @@ int MainWindow::solveFailedImageSave()
     bool isUSBSave = (saveMode != "local");
     
     // 使用通用函数检查存储空间并创建目录
+    // 注意：传入 QString 而不是 const char*，确保路径正确传递
     QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer)) : QString();
+    
+    // 在调用前再次确认文件存在（因为文件可能在检查后被删除）
+    if (!QFile::exists(sourcePathStr))
+    {
+        Logger::Log("solveFailedImageSave | Source file no longer exists before checkStorageSpaceAndCreateDirectory: " + sourcePathStr.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
+        return 1;
+    }
+    
     int checkResult = checkStorageSpaceAndCreateDirectory(
-        sourcePath,
+        sourcePathStr,  // 使用 QString 而不是 const char*
         destinationDirectory,
         dirPathToCreate,
         "solveFailedImageSave",
@@ -7408,22 +7478,43 @@ int MainWindow::solveFailedImageSave()
     );
     if (checkResult != 0)
     {
+        Logger::Log("solveFailedImageSave | checkStorageSpaceAndCreateDirectory failed with code: " + std::to_string(checkResult), LogLevel::ERROR, DeviceType::MAIN);
         return checkResult;
     }
 
     // 检查文件是否已存在
-    if (QFile::exists(destinationPath))
-    {
-        qWarning() << "The file already exists, there is no need to save it again:" << destinationPath;
-        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
-        return 0;
-    }
+    // if (QFile::exists(destinationPath))
+    // {
+    //     qWarning() << "The file already exists, there is no need to save it again:" << destinationPath;
+    //     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
+    //     return 0;
+    // }
 
     // 使用通用函数保存文件
-    int saveResult = saveImageFile(sourcePath, destinationPath, "solveFailedImageSave", isUSBSave);
+    // 在保存前再次确认源文件存在
+    if (!QFile::exists(sourcePathStr))
+    {
+        Logger::Log("solveFailedImageSave | Source file no longer exists before saveImageFile: " + sourcePathStr.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
+        return 1;
+    }
+    
+    Logger::Log("solveFailedImageSave | Attempting to save to: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    int saveResult = saveImageFile(sourcePathStr, destinationPath, "solveFailedImageSave", isUSBSave);  // 使用 QString 而不是 const char*
     if (saveResult != 0)
     {
+        Logger::Log("solveFailedImageSave | saveImageFile failed with error code: " + std::to_string(saveResult), LogLevel::ERROR, DeviceType::MAIN);
         return saveResult;
+    }
+
+    // 验证文件是否真的被保存了
+    if (QFile::exists(destinationPath))
+    {
+        Logger::Log("solveFailedImageSave | File saved successfully to: " + destinationPath.toStdString() + ", size: " + std::to_string(QFileInfo(destinationPath).size()) + " bytes", LogLevel::INFO, DeviceType::MAIN);
+    }
+    else
+    {
+        Logger::Log("solveFailedImageSave | WARNING: saveImageFile returned success but destination file does not exist: " + destinationPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
     }
 
     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
@@ -8001,7 +8092,10 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
             connect(&solveTimer, &QTimer::timeout, [this]()
             {
-                if (Tools::isSolveImageFinish())  // 检查图像解析是否完成
+                // 检查解析进程是否已结束
+                bool solveProcessFinished = !Tools::isPlateSolveInProgress();
+                
+                if (Tools::isSolveImageFinish())  // 检查图像解析是否成功完成
                 {
                     SloveResults result = Tools::ReadSolveResult(SolveImageFileName, glMainCCDSizeX, glMainCCDSizeY);  // 读取解析结果
                     Logger::Log("TelescopeControl_SolveSYNC | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
@@ -8009,9 +8103,27 @@ void MainWindow::TelescopeControl_SolveSYNC()
                     if (result.RA_Degree == -1 && result.DEC_Degree == -1)
                     {
                         Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
-                        solveFailedImageSave();
+                        Logger::Log("TelescopeControl_SolveSYNC | SolveImageFileName: " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse: " + std::string(mainCameraSaveFailedParse ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
+                        if (mainCameraSaveFailedParse)
+                        {
+                            int saveResult = solveFailedImageSave(SolveImageFileName);
+                            if (saveResult == 0)
+                            {
+                                Logger::Log("TelescopeControl_SolveSYNC | Failed solve image saved successfully", LogLevel::INFO, DeviceType::MAIN);
+                            }
+                            else
+                            {
+                                Logger::Log("TelescopeControl_SolveSYNC | Failed to save failed solve image, error code: " + std::to_string(saveResult), LogLevel::WARNING, DeviceType::MAIN);
+                            }
+                        }
+                        else
+                        {
+                            Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse is disabled, skipping save", LogLevel::INFO, DeviceType::MAIN);
+                        }
                         emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
                         isSolveSYNC = false;
+                        solveTimer.stop();  // 停止定时器
                     }
                     else
                     {
@@ -8040,15 +8152,43 @@ void MainWindow::TelescopeControl_SolveSYNC()
                             // Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
                             emit wsThread->sendMessageToClient("SolveImageSucceeded");
                             isSolveSYNC = false;
+                            solveTimer.stop();  // 停止定时器
                         }
                         else
                         {
                             Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
                             emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
                             isSolveSYNC = false;
+                            solveTimer.stop();  // 停止定时器
                             return;  // 如果望远镜未连接，记录日志并退出
                         }
                     }
+                }
+                else if (solveProcessFinished)
+                {
+                    // 解析进程已结束但未成功完成（退出码非0的情况）
+                    Logger::Log("TelescopeControl_SolveSYNC | Solve process finished but failed (exit code != 0)", LogLevel::ERROR, DeviceType::MAIN);
+                    Logger::Log("TelescopeControl_SolveSYNC | SolveImageFileName: " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse: " + std::string(mainCameraSaveFailedParse ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
+                    if (mainCameraSaveFailedParse)
+                    {
+                        int saveResult = solveFailedImageSave(SolveImageFileName);
+                        if (saveResult == 0)
+                        {
+                            Logger::Log("TelescopeControl_SolveSYNC | Failed solve image saved successfully", LogLevel::INFO, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            Logger::Log("TelescopeControl_SolveSYNC | Failed to save failed solve image, error code: " + std::to_string(saveResult), LogLevel::WARNING, DeviceType::MAIN);
+                        }
+                    }
+                    else
+                    {
+                        Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse is disabled, skipping save", LogLevel::INFO, DeviceType::MAIN);
+                    }
+                    emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
+                    isSolveSYNC = false;
+                    solveTimer.stop();  // 停止定时器
                 }
                 else 
                 {
@@ -8315,7 +8455,7 @@ std::string MainWindow::GetAllFile()
         Logger::Log("GetAllFile | General error: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
     }
 
-    resultString = captureString + "}:" + planString + '}' + solveFailedImageString + '}';
+    resultString = captureString + "}:" + planString + "}:" + solveFailedImageString + '}';
     Logger::Log("GetAllFile finish!", LogLevel::INFO, DeviceType::MAIN);
     return resultString;
 }
@@ -11096,6 +11236,9 @@ void MainWindow::getMainCameraParameters()
         if (it.key() == "AutoSave") {
             mainCameraAutoSave = (it.value() == "true");
             // Logger::Log("/*/*/*/*/*/*getMainCameraParameters | AutoSave: " + std::to_string(mainCameraAutoSave), LogLevel::DEBUG, DeviceType::MAIN);
+        }
+        if (it.key() == "SaveFailedParse") {
+            mainCameraSaveFailedParse = (it.value() == "true");
         }
     }
     Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);

@@ -1099,7 +1099,7 @@ public:
      * @brief 保存解算失败的图像
      * @return 状态码
      */
-    int solveFailedImageSave();
+    int solveFailedImageSave(const QString& imagePath = "");
 
     QString ScheduleTargetNames; // 调度目标集合名
 
@@ -1551,6 +1551,7 @@ public:
     QString glMainCameraStatu;            // 主相机状态
     QElapsedTimer glMainCameraCaptureTimer; // 拍摄计时
     bool mainCameraAutoSave = false;      // 主相机自动保存开关
+    bool mainCameraSaveFailedParse = false;  // 主相机保存解析失败图片开关
 
     bool isAutoFlip = false;                  // 是否自动翻转
     int flipPrepareTimeDefault = 10;          // 预备翻转时间默认值
