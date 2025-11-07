@@ -986,13 +986,16 @@ public:
     QTimer filterTimer;
     QTimer focusTimer;
     QTimer solveTimer;
+    QTimer exposureDelayTimer;  // 曝光延迟定时器
 
     int schedule_currentNum = 0;     // 当前任务序号
     int schedule_ExpTime = 0;        // 当前任务曝光（ms）
     int schedule_CFWpos = 0;         // 当前任务滤镜位
     int schedule_RepeatNum = 0;      // 任务重复次数
+    int schedule_ExposureDelay = 0;  // 当前任务曝光延迟（ms）
     int schedule_currentShootNum = 0;// 已拍张数
     int expTime_ms = 0;              // 当前拍摄时间（ms）
+    int exposureDelayElapsed_ms = 0; // 曝光延迟已过去的时间（ms）
 
     bool InSlewing = false;          // 正在转台
     bool GuidingHasStarted = false;  // 导星已启动
@@ -1035,6 +1038,11 @@ public:
      * @param ExpTime 曝光时间（ms）
      */
     void startCapture(int ExpTime);
+
+    /**
+     * @brief 启动曝光延迟等待
+     */
+    void startExposureDelay();
 
     /**
      * @brief 设置滤镜位置

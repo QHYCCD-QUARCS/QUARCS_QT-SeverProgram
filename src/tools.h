@@ -200,6 +200,7 @@ struct ScheduleData
   int repeatNumber;       //重复张数
   QString shootType;      //拍摄类型
   bool resetFocusing;     //重新调焦
+  int exposureDelay;      //曝光延迟（毫秒），相邻两张曝光之间额外等待的时间
   int progress;           //进度
 };
 

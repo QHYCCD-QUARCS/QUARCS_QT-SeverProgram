@@ -712,6 +712,16 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         Logger::Log("StopSchedule !", LogLevel::DEBUG, DeviceType::MAIN);
         StopSchedule = true;
+        // 立即停止曝光延迟定时器
+        bool wasActive = exposureDelayTimer.isActive();
+        exposureDelayTimer.stop();
+        exposureDelayTimer.disconnect();
+        if (wasActive || exposureDelayElapsed_ms > 0)
+        {
+            Logger::Log(("Exposure delay timer stopped immediately (wasActive: " + QString::number(wasActive ? 1 : 0) + ", elapsed: " + QString::number(exposureDelayElapsed_ms) + " ms)").toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            qDebug() << "Exposure delay timer stopped immediately (wasActive:" << wasActive << ", elapsed:" << exposureDelayElapsed_ms << "ms)";
+            exposureDelayElapsed_ms = 0; // 重置已过去的时间
+        }
     }
 
     else if (message == "CaptureImageSave")
@@ -6342,10 +6352,11 @@ void MainWindow::ScheduleTabelData(QString message)
     {
         QString ColData = ColDataList[i]; // ",M 24, Ra:4.785693,Dec:-0.323759,12:00:00,1 s,Ha,,Bias,ON,],"
         ScheduleData rowData;
+        rowData.exposureDelay = 0; // 初始化曝光延迟为0
         qDebug() << "ColData[" << i << "]:" << ColData;
 
         QStringList RowDataList = ColData.split(',');
-        for (int j = 1; j < 10; ++j)
+        for (int j = 1; j <= 10; ++j)
         {
             if (j == 1)
             {
@@ -6421,6 +6432,19 @@ void MainWindow::ScheduleTabelData(QString message)
                 rowData.resetFocusing = (RowDataList[j] == "ON");
                 qDebug() << "Focus:" << rowData.resetFocusing;
             }
+            else if (j == 10)
+            {
+                QStringList parts = RowDataList[j].split(' ');
+                QString value = parts[0];
+                QString unit = parts.size() > 1 ? parts[1] : "s";
+                if (unit == "s")
+                    rowData.exposureDelay = value.toInt() * 1000; // Convert seconds to milliseconds
+                else if (unit == "ms")
+                    rowData.exposureDelay = value.toInt(); // Milliseconds
+                else
+                    rowData.exposureDelay = 0; // Default to 0 if unit is not recognized
+                qDebug() << "Exposure Delay:" << rowData.exposureDelay << "ms";
+            }
         }
         rowData.progress = 0;
         // scheduleTable.Data.push_back(rowData);
@@ -6437,6 +6461,7 @@ void MainWindow::startSchedule()
         schedule_ExpTime = m_scheduList[schedule_currentNum].exposureTime;
         schedule_RepeatNum = m_scheduList[schedule_currentNum].repeatNumber;
         schedule_CFWpos = m_scheduList[schedule_currentNum].filterNumber.toInt();
+        schedule_ExposureDelay = m_scheduList[schedule_currentNum].exposureDelay;
         StopSchedule = false;
         startTimeWaiting();
     }
@@ -6738,12 +6763,79 @@ void MainWindow::startSetCFW(int pos)
     }
 }
 
+void MainWindow::startExposureDelay()
+{
+    qDebug() << "startExposureDelay...";
+    Logger::Log(("Waiting exposure delay: " + QString::number(schedule_ExposureDelay) + " ms before next capture").toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    qDebug() << "Waiting exposure delay:" << schedule_ExposureDelay << "ms before next capture";
+    
+    // 停止和清理先前的延迟定时器
+    exposureDelayTimer.stop();
+    exposureDelayTimer.disconnect();
+    
+    // 重置已过去的时间
+    exposureDelayElapsed_ms = 0;
+    
+    // 使用可控制的定时器，每100ms检查一次
+    exposureDelayTimer.setSingleShot(false);
+    connect(&exposureDelayTimer, &QTimer::timeout, [this]() {
+        // 首先检查是否已停止，必须在最开始检查
+        // 这个检查必须在任何其他操作之前，确保能够立即响应停止信号
+        if (StopSchedule)
+        {
+            // 立即停止定时器并清理
+            exposureDelayTimer.stop();
+            exposureDelayTimer.disconnect();
+            Logger::Log(("Exposure delay interrupted: Schedule stopped during delay wait (elapsed: " + QString::number(exposureDelayElapsed_ms) + " ms)").toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            qDebug() << "Exposure delay interrupted: Schedule stopped during delay wait (elapsed:" << exposureDelayElapsed_ms << "ms)";
+            exposureDelayElapsed_ms = 0; // 重置已过去的时间
+            return; // 立即返回，不执行任何后续操作
+        }
+        
+        // 检查定时器是否仍然激活（防止在回调执行期间被停止）
+        if (!exposureDelayTimer.isActive())
+        {
+            qDebug() << "Exposure delay timer is not active, returning";
+            return;
+        }
+        
+        // 增加已过去的时间
+        exposureDelayElapsed_ms += 100; // 每次增加100ms
+        
+        // 再次检查 StopSchedule（可能在增加时间的过程中被设置）
+        if (StopSchedule)
+        {
+            exposureDelayTimer.stop();
+            exposureDelayTimer.disconnect();
+            Logger::Log(("Exposure delay interrupted: Schedule stopped during delay wait (elapsed: " + QString::number(exposureDelayElapsed_ms) + " ms)").toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            qDebug() << "Exposure delay interrupted: Schedule stopped during delay wait (elapsed:" << exposureDelayElapsed_ms << "ms)";
+            exposureDelayElapsed_ms = 0; // 重置已过去的时间
+            return; // 立即返回，不执行任何后续操作
+        }
+        
+        // 检查是否已经过了延迟时间
+        if (exposureDelayElapsed_ms >= schedule_ExposureDelay)
+        {
+            exposureDelayTimer.stop();
+            exposureDelayTimer.disconnect();
+            qDebug() << "Exposure delay complete, starting next capture";
+            exposureDelayElapsed_ms = 0; // 重置已过去的时间
+            startCapture(schedule_ExpTime);
+        }
+    });
+    
+    exposureDelayTimer.start(100); // 每100ms检查一次
+}
+
 void MainWindow::startCapture(int ExpTime)
 {
     qDebug() << "startCapture...";
     // 停止和清理先前的计时器
     captureTimer.stop();
     captureTimer.disconnect();
+    // 停止曝光延迟定时器（如果正在运行）
+    exposureDelayTimer.stop();
+    exposureDelayTimer.disconnect();
 
     ShootStatus = "InProgress";
     qDebug() << "ShootStatus: " << ShootStatus;
@@ -6780,7 +6872,16 @@ void MainWindow::startCapture(int ExpTime)
 
             if (schedule_currentShootNum < schedule_RepeatNum)
             {
-                startCapture(schedule_ExpTime);
+                // 如果有曝光延迟，等待指定时间后再开始下一张
+                if (schedule_ExposureDelay > 0)
+                {
+                    startExposureDelay();
+                }
+                else
+                {
+                    // 没有延迟，直接开始下一张
+                    startCapture(schedule_ExpTime);
+                }
             }
             else
             {
@@ -6817,7 +6918,16 @@ void MainWindow::startCapture(int ExpTime)
                 {
                     // 还有后续拍摄，继续下一个拍摄
                     qDebug() << "Skip current capture, continue to next capture...";
-                    startCapture(schedule_ExpTime);
+                    // 如果有曝光延迟，等待指定时间后再开始下一张
+                    if (schedule_ExposureDelay > 0)
+                    {
+                        startExposureDelay();
+                    }
+                    else
+                    {
+                        // 没有延迟，直接开始下一张
+                        startCapture(schedule_ExpTime);
+                    }
                 }
                 else
                 {
