@@ -720,6 +720,11 @@ public:
      * @brief 启动自动对焦流程
      */
     void startAutoFocus();
+    
+    /**
+     * @brief 启动计划任务表触发的自动对焦
+     */
+    void startScheduleAutoFocus();
 
     AutoFocus *autoFocus = nullptr; // 自动对焦对象
     int  autoFocusStep = 0;         // 自动对焦步数
@@ -1005,6 +1010,7 @@ public:
     bool StopPlateSolve = false;     // 停止解算
     bool MountGotoError = false;     // GOTO 错误
     bool GotoThenSolve = false;      // GOTO 后解算
+    bool isScheduleTriggeredAutoFocus = false;  // 是否由计划任务表触发的自动对焦
 
     /**
      * @brief 启动调度

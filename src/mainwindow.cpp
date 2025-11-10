@@ -712,6 +712,20 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         Logger::Log("StopSchedule !", LogLevel::DEBUG, DeviceType::MAIN);
         StopSchedule = true;
+        
+        // 如果自动对焦正在运行（特别是由计划任务表触发的），也要停止自动对焦
+        if (isAutoFocus && autoFocus != nullptr)
+        {
+            Logger::Log("停止计划任务表时，检测到自动对焦正在运行，同时停止自动对焦", LogLevel::INFO, DeviceType::MAIN);
+            isScheduleTriggeredAutoFocus = false; // 清除标志，避免自动对焦完成后继续执行拍摄
+            autoFocus->stopAutoFocus();
+            cleanupAutoFocusConnections();
+            autoFocus->deleteLater();
+            autoFocus = nullptr;
+            isAutoFocus = false;
+            emit wsThread->sendMessageToClient("AutoFocusEnded:自动对焦已停止（计划任务表已暂停）");
+        }
+        
         // 立即停止曝光延迟定时器
         bool wasActive = exposureDelayTimer.isActive();
         exposureDelayTimer.stop();
@@ -6718,6 +6732,20 @@ void MainWindow::startGuiding()
 void MainWindow::startSetCFW(int pos)
 {
     qDebug() << "startSetCFW...";
+    
+    // 检查是否需要自动对焦（Refocus为ON）
+    if (schedule_currentNum >= 0 && schedule_currentNum < m_scheduList.size() && 
+        m_scheduList[schedule_currentNum].resetFocusing)
+    {
+        qDebug() << "Refocus is ON, starting autofocus before setting CFW...";
+        Logger::Log("计划任务表: Refocus为ON，在执行拍摄前先执行自动对焦", LogLevel::INFO, DeviceType::MAIN);
+        
+        // 启动自动对焦（startScheduleAutoFocus会设置isScheduleTriggeredAutoFocus标志）
+        startScheduleAutoFocus();
+        return; // 自动对焦完成后会继续执行startSetCFW
+    }
+    
+    // 如果不需要自动对焦，继续正常流程
     if (isFilterOnCamera)
     {
         if (dpMainCamera != NULL)
@@ -7276,22 +7304,24 @@ bool MainWindow::createScheduleDirectory()
     std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
     std::string folderName = basePath + "/" + buffer + " " + QTime::currentTime().toString("hh").toStdString() + "h (" + ScheduleTargetNames.toStdString() + ")";
 
-    // 如果目录不存在，则创建
+    // 如果目录不存在，则创建（使用 create_directories 创建多层目录）
     if (!std::filesystem::exists(folderName))
     {
-        if (std::filesystem::create_directory(folderName))
+        if (std::filesystem::create_directories(folderName))
         {
             Logger::Log("createScheduleDirectory | Folder created successfully: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
         }
         else
         {
-            Logger::Log("createScheduleDirectory | An error occurred while creating the folder.", LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log("createScheduleDirectory | An error occurred while creating the folder.", LogLevel::ERROR, DeviceType::MAIN);
+            return false;
         }
     }
     else
     {
         Logger::Log("createScheduleDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
     }
+    return true;
 }
 bool MainWindow::createCaptureDirectory()
 {
@@ -7518,10 +7548,24 @@ int MainWindow::saveImageFile(const QString &sourcePath,
         // 默认位置保存使用普通文件操作
         const char *destinationPathChar = destinationPath.toUtf8().constData();
 
+        // 确保目标目录存在
+        std::filesystem::path destPath(destinationPathChar);
+        std::filesystem::path destDir = destPath.parent_path();
+        if (!destDir.empty() && !std::filesystem::exists(destDir))
+        {
+            if (!std::filesystem::create_directories(destDir))
+            {
+                Logger::Log(functionName.toStdString() + " | Failed to create destination directory: " + destDir.string(), LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                return 1;
+            }
+            Logger::Log(functionName.toStdString() + " | Created destination directory: " + destDir.string(), LogLevel::INFO, DeviceType::MAIN);
+        }
+
         std::ifstream sourceFile(sourcePath.toUtf8().constData(), std::ios::binary);
         if (!sourceFile.is_open())
         {
-            qWarning() << "Unable to open source file:" << sourcePath;
+            Logger::Log(functionName.toStdString() + " | Unable to open source file: " + sourcePath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
             return 1;
         }
@@ -7529,7 +7573,7 @@ int MainWindow::saveImageFile(const QString &sourcePath,
         std::ofstream destinationFile(destinationPathChar, std::ios::binary);
         if (!destinationFile.is_open())
         {
-            qWarning() << "Unable to create or open target file:" << destinationPathChar;
+            Logger::Log(functionName.toStdString() + " | Unable to create or open target file: " + std::string(destinationPathChar), LogLevel::ERROR, DeviceType::MAIN);
             sourceFile.close();
             emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
             return 1;
@@ -7539,6 +7583,8 @@ int MainWindow::saveImageFile(const QString &sourcePath,
 
         sourceFile.close();
         destinationFile.close();
+        
+        Logger::Log(functionName.toStdString() + " | File saved successfully to: " + std::string(destinationPathChar), LogLevel::INFO, DeviceType::MAIN);
     }
     
     return 0;
@@ -10782,8 +10828,33 @@ void MainWindow::startAutoFocus()
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autofocusFailed, this, [this]()
             {
         Logger::Log("自动对焦失败，发送提示消息到前端", LogLevel::ERROR, DeviceType::FOCUSER);
+        
+        // 检查是否是由计划任务表触发的自动对焦
+        bool wasScheduleTriggered = isScheduleTriggeredAutoFocus;
+        int savedCFWpos = schedule_CFWpos; // 保存当前任务的滤镜位置
+        
         isAutoFocus = false;
+        isScheduleTriggeredAutoFocus = false; // 重置标志
+        
         emit wsThread->sendMessageToClient("FitResult:Failed:拟合结果为水平线，未找到最佳焦点");
+        
+        // 如果是由计划任务表触发的自动对焦失败，仍然继续执行拍摄任务
+        if (wasScheduleTriggered)
+        {
+            Logger::Log("计划任务表触发的自动对焦失败，但仍继续执行拍摄任务", LogLevel::WARNING, DeviceType::MAIN);
+            qDebug() << "Schedule-triggered autofocus failed, but continuing with CFW setup...";
+            
+            // 检查是否已停止计划任务表
+            if (StopSchedule)
+            {
+                Logger::Log("计划任务表已停止，不再继续执行拍摄任务", LogLevel::INFO, DeviceType::MAIN);
+                StopSchedule = false;
+                return;
+            }
+            
+            // 继续执行设置滤镜和拍摄
+            startSetCFW(savedCFWpos);
+        }
     }));
 
     // 连接星点识别结果信号
@@ -10819,8 +10890,15 @@ void MainWindow::startAutoFocus()
                    .arg(success).arg(bestPosition).arg(minHFR).toStdString(), 
                    LogLevel::INFO, DeviceType::FOCUSER);
         
+        // 检查是否是由计划任务表触发的自动对焦
+        bool wasScheduleTriggered = isScheduleTriggeredAutoFocus;
+        int savedCFWpos = schedule_CFWpos; // 保存当前任务的滤镜位置
+        
         // 结束阶段：统一清理自动对焦相关定时器与信号连接
         cleanupAutoFocusConnections();
+        
+        // 重置计划任务表触发标志
+        isScheduleTriggeredAutoFocus = false;
         
         // 确保实时位置更新定时器继续运行
         // if (realtimePositionTimer && !realtimePositionTimer->isActive()) {
@@ -10841,11 +10919,60 @@ void MainWindow::startAutoFocus()
         
         // 发送自动对焦结束事件到前端 - [AUTO_FOCUS_UI_ENHANCEMENT]
         emit wsThread->sendMessageToClient("AutoFocusEnded:自动对焦已结束");
+        
+        // 如果是由计划任务表触发的自动对焦，完成后继续执行拍摄任务
+        if (wasScheduleTriggered)
+        {
+            Logger::Log("计划任务表触发的自动对焦已完成，继续执行拍摄任务", LogLevel::INFO, DeviceType::MAIN);
+            qDebug() << "Schedule-triggered autofocus completed, continuing with CFW setup...";
+            
+            // 检查是否已停止计划任务表
+            if (StopSchedule)
+            {
+                Logger::Log("计划任务表已停止，不再继续执行拍摄任务", LogLevel::INFO, DeviceType::MAIN);
+                StopSchedule = false;
+                return;
+            }
+            
+            // 继续执行设置滤镜和拍摄
+            startSetCFW(savedCFWpos);
+        }
     }));
 
     autoFocus->startAutoFocus();
     isAutoFocus = true;
     autoFocusStep = 0;
+}
+
+void MainWindow::startScheduleAutoFocus()
+{
+    // 检查设备是否连接
+    if (dpFocuser == NULL || dpMainCamera == NULL)
+    {
+        Logger::Log("计划任务表自动对焦 | 调焦器或相机未连接，跳过自动对焦", LogLevel::WARNING, DeviceType::FOCUSER);
+        isScheduleTriggeredAutoFocus = false;
+        // 如果自动对焦失败，直接继续执行拍摄任务
+        startSetCFW(schedule_CFWpos);
+        return;
+    }
+    
+    // 如果已经有自动对焦在运行，先停止
+    if (isAutoFocus && autoFocus != nullptr)
+    {
+        Logger::Log("计划任务表自动对焦 | 检测到已有自动对焦在运行，先停止", LogLevel::INFO, DeviceType::FOCUSER);
+        autoFocus->stopAutoFocus();
+        cleanupAutoFocusConnections();
+        autoFocus->deleteLater();
+        autoFocus = nullptr;
+        isAutoFocus = false;
+    }
+    
+    // 标记这是由计划任务表触发的自动对焦
+    isScheduleTriggeredAutoFocus = true;
+    
+    // 调用通用的自动对焦启动函数
+    Logger::Log("计划任务表自动对焦 | 开始执行自动对焦", LogLevel::INFO, DeviceType::MAIN);
+    startAutoFocus();
 }
 
 void MainWindow::cleanupAutoFocusConnections()
