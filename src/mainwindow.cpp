@@ -6529,7 +6529,6 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
                 isStepMoving = false;
                 Logger::Log("FocuserControlMoveStep | Focuser Move Complete!", LogLevel::INFO, DeviceType::FOCUSER);
                 emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(CurrentPosition));
-                // FocusingLooping();
             } else {
                 focusTimer.start(100);
             }
