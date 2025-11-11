@@ -3020,33 +3020,46 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
     switch (systemdevicelist.currentDeviceCode)
     {
     case 0:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Mount";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        // 修复：检查currentDeviceCode索引是否有效
+        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Mount";
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        }
         // emit wsThread->sendMessageToClient("AddDeviceType:Mount");
         break;
     case 1:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Guider";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Guider";
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        }
         // emit wsThread->sendMessageToClient("AddDeviceType:Guider");
         break;
     case 2:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "PoleCamera";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "PoleCamera";
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        }
         // emit wsThread->sendMessageToClient("AddDeviceType:PoleCamera");
         break;
     case 20:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "MainCamera";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "MainCamera";
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        }
         // emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
         break;
     case 21:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "CFW";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "CFW";
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        }
         // emit wsThread->sendMessageToClient("AddDeviceType:CFW");
         break;
     case 22:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Focuser";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Focuser";
+            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        }
         // emit wsThread->sendMessageToClient("AddDeviceType:Focuser");
         break;
 
@@ -3054,14 +3067,26 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
         break;
     }
 
-    systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = DriverName;
+    // 修复：检查索引有效性后再访问
+    if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = DriverName;
+    } else {
+        Logger::Log("indi_Driver_Confirm | currentDeviceCode out of bounds: " + std::to_string(systemdevicelist.currentDeviceCode), LogLevel::ERROR, DeviceType::MAIN);
+    }
 }
 
 bool MainWindow::indi_Driver_Clear()
 {
-    systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "";
-    systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = "";
-    systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = 9600;
+    // 修复：检查索引有效性
+    if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = "";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = 9600;
+    } else {
+        Logger::Log("indi_Driver_Clear | currentDeviceCode out of bounds: " + std::to_string(systemdevicelist.currentDeviceCode), LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+    return true;
 }
 
 void MainWindow::indi_Device_Confirm(QString DeviceName, QString DriverName)
@@ -3231,81 +3256,108 @@ void MainWindow::continueConnectAllDeviceOnce()
 
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
-        Logger::Log("Start connecting devices:" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+        // 修复：检查系统设备列表索引是否有效
+        if (i >= systemdevicelist.system_devices.size()) {
+            Logger::Log("ConnectAllDeviceOnce | Index " + std::to_string(i) + " out of bounds for systemdevicelist (size: " + std::to_string(systemdevicelist.system_devices.size()) + ")", LogLevel::ERROR, DeviceType::MAIN);
+            break; // 停止循环，避免越界访问
+        }
+        
+        // 修复：检查设备指针是否有效
+        INDI::BaseDevice *device = indi_Client->GetDeviceFromList(i);
+        if (device == nullptr) {
+            Logger::Log("ConnectAllDeviceOnce | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+            continue; // 跳过这个设备
+        }
+        
+        std::string deviceName = indi_Client->GetDeviceNameFromList(i);
+        if (deviceName.empty()) {
+            Logger::Log("ConnectAllDeviceOnce | Device name at index " + std::to_string(i) + " is empty", LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+        
+        Logger::Log("Start connecting devices:" + deviceName, LogLevel::INFO, DeviceType::MAIN);
 
-        indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-        indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
+        indi_Client->setBaudRate(device, systemdevicelist.system_devices[i].BaudRate);
+        indi_Client->connectDevice(deviceName.c_str());
 
         int waitTime = 0;
-        while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5)
+        while (device != nullptr && !device->isConnected() && waitTime < 5)
         {
-            Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log("Wait for Connect" + deviceName, LogLevel::INFO, DeviceType::MAIN);
             QThread::msleep(1000); // 等待1秒
             waitTime++;
         }
 
-        if (!indi_Client->GetDeviceFromList(i)->isConnected())
+        if (device == nullptr || !device->isConnected())
         {
-            Logger::Log("ConnectDriver | Device (" + indi_Client->GetDeviceNameFromList(i) + ") is not connected,try to update port", LogLevel::WARNING, DeviceType::MAIN);
+            Logger::Log("ConnectDriver | Device (" + deviceName + ") is not connected,try to update port", LogLevel::WARNING, DeviceType::MAIN);
             // 特殊处理(电调和赤道仪)
-            if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE || indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE){
+            // 修复：使用已检查的device指针，避免重复调用GetDeviceFromList
+            if (device != nullptr && (device->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE || device->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE)){
                 QString DevicePort;
-                indi_Client->getDevicePort(indi_Client->GetDeviceFromList(i), DevicePort);
+                indi_Client->getDevicePort(device, DevicePort);
                 QString DeviceType = detector.detectDeviceTypeForPort(DevicePort);
 
                 // 获取设备类型
                 QString DriverType = "";
-                for(int j = 0; j < systemdevicelist.system_devices.size(); j++)
-                {
-                    if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec())
+                // 修复：使用已检查的device指针
+                if (device != nullptr) {
+                    for(int j = 0; j < systemdevicelist.system_devices.size(); j++)
                     {
-                        DriverType = systemdevicelist.system_devices[j].Description;
+                        if (systemdevicelist.system_devices[j].DriverIndiName == device->getDriverExec())
+                        {
+                            DriverType = systemdevicelist.system_devices[j].Description;
+                        }
                     }
-                }
-                // 处理电调和赤道仪的连接
-                if (DeviceType != "Focuser" && DriverType == "Focuser")
-                {
-                    // 识别到当前设备是电调，但是设备的串口不是电调的串口,需更新
-                    // 正确的串口是detector.getFocuserPort()
-                    QString realFocuserPort = detector.getFocuserPort();
-                    if (!realFocuserPort.isEmpty())
+                    // 处理电调和赤道仪的连接
+                    if (DeviceType != "Focuser" && DriverType == "Focuser")
                     {
-                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
-                        Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    }
-                    else
+                        // 识别到当前设备是电调，但是设备的串口不是电调的串口,需更新
+                        // 正确的串口是detector.getFocuserPort()
+                        QString realFocuserPort = detector.getFocuserPort();
+                        if (!realFocuserPort.isEmpty())
+                        {
+                            indi_Client->setDevicePort(device, realFocuserPort);
+                            Logger::Log("ConnectDriver | Focuser Device (" + std::string(device->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                            continue;
+                        }
+                    }else if (DeviceType != "Mount" && DriverType == "Mount")
                     {
-                        Logger::Log("No matched Focuser port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
-                        continue;
+                        // 识别到当前设备是赤道仪，但是设备的串口不是赤道仪的串口,需更新
+                        // 正确的串口是detector.getMountPort()
+                        QString realMountPort = detector.getMountPort();
+                        if (!realMountPort.isEmpty())
+                        {
+                            indi_Client->setDevicePort(device, realMountPort);
+                            Logger::Log("ConnectDriver | Mount Device (" + std::string(device->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
+                            continue;
+                        }
+                    }else{
+                        Logger::Log("ConnectDriver | Device (" + std::string(device->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
                     }
-                }else if (DeviceType != "Mount" && DriverType == "Mount")
-                {
-                    // 识别到当前设备是赤道仪，但是设备的串口不是赤道仪的串口,需更新
-                    // 正确的串口是detector.getMountPort()
-                    QString realMountPort = detector.getMountPort();
-                    if (!realMountPort.isEmpty())
-                    {
-                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
-                        Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    }
-                    else
-                    {
-                        Logger::Log("No matched Mount port found by detector.", LogLevel::WARNING, DeviceType::MAIN);
-                        continue;
-                    }
-                }else{
-                    Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is not updated.", LogLevel::WARNING, DeviceType::MAIN);
                 }
             }
-            indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
-            indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
-    
-            int waitTime = 0;
-            while (!indi_Client->GetDeviceFromList(i)->isConnected() && waitTime < 5)
-            {
-                Logger::Log("Wait for Connect" + indi_Client->GetDeviceNameFromList(i), LogLevel::INFO, DeviceType::MAIN);
-                QThread::msleep(1000); // 等待1秒
-                waitTime++;
+            // 修复：使用已检查的device指针和deviceName
+            if (device != nullptr && !deviceName.empty()) {
+                indi_Client->setBaudRate(device, systemdevicelist.system_devices[i].BaudRate);
+                indi_Client->connectDevice(deviceName.c_str());
+        
+                int waitTime = 0;
+                while (device != nullptr && !device->isConnected() && waitTime < 5)
+                {
+                    // 修复：使用已检查的deviceName变量
+                    Logger::Log("Wait for Connect" + deviceName, LogLevel::INFO, DeviceType::MAIN);
+                    QThread::msleep(1000); // 等待1秒
+                    waitTime++;
+                }
             }
         }
     }
@@ -3317,33 +3369,40 @@ void MainWindow::continueConnectAllDeviceOnce()
     ConnectedFILTERList.clear();
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++) //  indi_Client->GetDeviceFromList(i)
     {
-        if (indi_Client->GetDeviceFromList(i)->isConnected())
+        // 修复：检查设备指针是否有效
+        INDI::BaseDevice *device = indi_Client->GetDeviceFromList(i);
+        if (device == nullptr) {
+            Logger::Log("AfterDeviceConnect | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+        
+        if (device->isConnected())
         {
-            if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE)
+            if (device->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE)
             {
                 Logger::Log("We received a CCD!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedCCDList.push_back(i);
             }
-            else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE)
+            else if (device->getDriverInterface() & INDI::BaseDevice::FILTER_INTERFACE)
             {
                 Logger::Log("We received a FILTER!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedFILTERList.push_back(i);
             }
-            else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE)
+            else if (device->getDriverInterface() & INDI::BaseDevice::TELESCOPE_INTERFACE)
             {
                 Logger::Log("We received a TELESCOPE!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedTELESCOPEList.push_back(i);
             }
-            else if (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE)
+            else if (device->getDriverInterface() & INDI::BaseDevice::FOCUSER_INTERFACE)
             {
                 Logger::Log("We received a FOCUSER!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedFOCUSERList.push_back(i);
             }
-            Logger::Log("Driver:" + std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) + " Device:" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()), LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log("Driver:" + std::string(device->getDriverExec()) + " Device:" + std::string(device->getDeviceName()), LogLevel::INFO, DeviceType::MAIN);
         }
         else
         {
-            QString DeviceName = indi_Client->GetDeviceFromList(i)->getDeviceName();
+            QString DeviceName = QString::fromStdString(device->getDeviceName());
             Logger::Log("Connect failed device:" + DeviceName.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("ConnectFailed:Connect device failed:" + DeviceName);
         }
@@ -3365,11 +3424,21 @@ void MainWindow::continueConnectAllDeviceOnce()
 
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
-        if (indi_Client->GetDeviceFromList(i)->isConnected())
+        // 修复：检查设备指针是否有效
+        INDI::BaseDevice *device = indi_Client->GetDeviceFromList(i);
+        if (device == nullptr) {
+            continue;
+        }
+        
+        if (device->isConnected())
         {
+            std::string driverExec = device->getDriverExec();
+            QString driverExecQString = QString::fromStdString(driverExec);
             for (int j = 0; j < systemdevicelist.system_devices.size(); j++)
             {
-                if (systemdevicelist.system_devices[j].DriverIndiName == indi_Client->GetDeviceFromList(i)->getDriverExec() || (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd" && std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) == "indi_qhy_ccd2") || (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd2" && std::string(indi_Client->GetDeviceFromList(i)->getDriverExec()) == "indi_qhy_ccd"))
+                if (systemdevicelist.system_devices[j].DriverIndiName == driverExecQString || 
+                    (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd" && driverExec == "indi_qhy_ccd2") || 
+                    (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd2" && driverExec == "indi_qhy_ccd"))
                 {
                     emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[j].Description);
                 }
@@ -3391,27 +3460,52 @@ void MainWindow::continueConnectAllDeviceOnce()
     if (SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1)
     {
         Logger::Log("The Camera Selected and Connected are Both 1", LogLevel::INFO, DeviceType::MAIN);
-        if (SelectedCameras[0] == "Guider")
+        // 修复：检查向量是否为空以及索引是否有效
+        if (SelectedCameras.empty() || ConnectedCCDList.empty()) {
+            Logger::Log("SelectedCameras or ConnectedCCDList is empty, cannot assign camera", LogLevel::ERROR, DeviceType::MAIN);
+        } else if (SelectedCameras[0] == "Guider")
         {
-            dpGuider = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            systemdevicelist.system_devices[1].isConnect = true;
-            indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
-            sleep(1);
-            call_phd_whichCamera(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
-            // PHD2 connect status
-            AfterDeviceConnect(dpGuider);
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
+            if (device == nullptr) {
+                Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
+            } else {
+                dpGuider = device;
+                // 修复：检查system_devices索引是否有效
+                if (systemdevicelist.system_devices.size() > 1) {
+                    systemdevicelist.system_devices[1].isConnect = true;
+                }
+                indi_Client->disconnectDevice(device->getDeviceName());
+                sleep(1);
+                call_phd_whichCamera(device->getDeviceName());
+                // PHD2 connect status
+                AfterDeviceConnect(dpGuider);
+            }
         }
         else if (SelectedCameras[0] == "PoleCamera")
         {
-            dpPoleScope = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            systemdevicelist.system_devices[2].isConnect = true;
-            AfterDeviceConnect(dpPoleScope);
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
+            if (device == nullptr) {
+                Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
+            } else {
+                dpPoleScope = device;
+                if (systemdevicelist.system_devices.size() > 2) {
+                    systemdevicelist.system_devices[2].isConnect = true;
+                }
+                AfterDeviceConnect(dpPoleScope);
+            }
         }
         else if (SelectedCameras[0] == "MainCamera")
         {
-            dpMainCamera = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            systemdevicelist.system_devices[20].isConnect = true;
-            AfterDeviceConnect(dpMainCamera);
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
+            if (device == nullptr) {
+                Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
+            } else {
+                dpMainCamera = device;
+                if (systemdevicelist.system_devices.size() > 20) {
+                    systemdevicelist.system_devices[20].isConnect = true;
+                }
+                AfterDeviceConnect(dpMainCamera);
+            }
         }
     }
     else if (SelectedCameras.size() > 1 || ConnectedCCDList.size() > 1)
@@ -3419,55 +3513,103 @@ void MainWindow::continueConnectAllDeviceOnce()
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedCCDList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedCCDList[i])->getDeviceName())); // already allocated
+            // 修复：检查索引是否有效
+            if (ConnectedCCDList[i] >= 0 && ConnectedCCDList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(device->getDeviceName())); // already allocated
+                }
+            }
         }
     }
 
     if (ConnectedTELESCOPEList.size() == 1)
     {
         Logger::Log("Mount Connected Success and Mount device is only one!", LogLevel::INFO, DeviceType::MAIN);
-        dpMount = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
-        systemdevicelist.system_devices[0].isConnect = true;
-        AfterDeviceConnect(dpMount);
+        // 修复：检查向量和索引有效性
+        if (!ConnectedTELESCOPEList.empty() && ConnectedTELESCOPEList[0] >= 0 && ConnectedTELESCOPEList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
+            if (device != nullptr) {
+                dpMount = device;
+                if (systemdevicelist.system_devices.size() > 0) {
+                    systemdevicelist.system_devices[0].isConnect = true;
+                }
+                AfterDeviceConnect(dpMount);
+            }
+        }
     }
     else if (ConnectedTELESCOPEList.size() > 1)
     {
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedTELESCOPEList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i])->getDeviceName()));
+            // 修复：检查索引有效性
+            if (ConnectedTELESCOPEList[i] >= 0 && ConnectedTELESCOPEList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
+                }
+            }
         }
     }
 
     if (ConnectedFOCUSERList.size() == 1)
     {
         Logger::Log("Focuser Connected Success and Focuser device is only one!", LogLevel::INFO, DeviceType::MAIN);
-        dpFocuser = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
-        systemdevicelist.system_devices[22].isConnect = true;
-        AfterDeviceConnect(dpFocuser);
+        // 修复：检查向量和索引有效性
+        if (!ConnectedFOCUSERList.empty() && ConnectedFOCUSERList[0] >= 0 && ConnectedFOCUSERList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
+            if (device != nullptr) {
+                dpFocuser = device;
+                if (systemdevicelist.system_devices.size() > 22) {
+                    systemdevicelist.system_devices[22].isConnect = true;
+                }
+                AfterDeviceConnect(dpFocuser);
+            }
+        }
     }
     else if (ConnectedFOCUSERList.size() > 1)
     {
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedFOCUSERList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i])->getDeviceName()));
+            // 修复：检查索引有效性
+            if (ConnectedFOCUSERList[i] >= 0 && ConnectedFOCUSERList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
+                }
+            }
         }
     }
 
     if (ConnectedFILTERList.size() == 1)
     {
         Logger::Log("Filter Connected Success and Filter device is only one!", LogLevel::INFO, DeviceType::MAIN);
-        dpCFW = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
-        systemdevicelist.system_devices[21].isConnect = true;
-        AfterDeviceConnect(dpCFW);
+        // 修复：检查向量和索引有效性
+        if (!ConnectedFILTERList.empty() && ConnectedFILTERList[0] >= 0 && ConnectedFILTERList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
+            if (device != nullptr) {
+                dpCFW = device;
+                if (systemdevicelist.system_devices.size() > 21) {
+                    systemdevicelist.system_devices[21].isConnect = true;
+                }
+                AfterDeviceConnect(dpCFW);
+            }
+        }
     }
     else if (ConnectedFILTERList.size() > 1)
     {
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedFILTERList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFILTERList[i])->getDeviceName()));
+            // 修复：检查索引有效性
+            if (ConnectedFILTERList[i] >= 0 && ConnectedFILTERList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
+                }
+            }
         }
     }
 
@@ -3487,53 +3629,76 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
     indi_Client->PrintDevices();
     Logger::Log("BindingDevice:" + DeviceType.toStdString() + ":" + QString::number(DeviceIndex).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
+    // 修复：检查DeviceIndex是否有效
+    if (DeviceIndex < 0 || DeviceIndex >= indi_Client->GetDeviceCount()) {
+        Logger::Log("BindingDevice | Invalid DeviceIndex: " + std::to_string(DeviceIndex), LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
+    
+    INDI::BaseDevice *device = indi_Client->GetDeviceFromList(DeviceIndex);
+    if (device == nullptr) {
+        Logger::Log("BindingDevice | GetDeviceFromList returned nullptr for DeviceIndex: " + std::to_string(DeviceIndex), LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
+    
     if (DeviceType == "Guider")
     {
         Logger::Log("Binding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
-        dpGuider = indi_Client->GetDeviceFromList(DeviceIndex);
-        indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
+        dpGuider = device;
+        indi_Client->disconnectDevice(device->getDeviceName());
         Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
-        call_phd_whichCamera(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
+        call_phd_whichCamera(device->getDeviceName());
         Logger::Log("Call PHD2 Guider Connect", LogLevel::INFO, DeviceType::MAIN);
-        systemdevicelist.system_devices[1].isConnect = true;
-        systemdevicelist.system_devices[1].isBind = true;
+        if (systemdevicelist.system_devices.size() > 1) {
+            systemdevicelist.system_devices[1].isConnect = true;
+            systemdevicelist.system_devices[1].isBind = true;
+        }
         AfterDeviceConnect(dpGuider);
         Logger::Log("Binding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "MainCamera")
     {
         Logger::Log("Binding MainCamera Device start ...", LogLevel::INFO, DeviceType::MAIN);
-        dpMainCamera = indi_Client->GetDeviceFromList(DeviceIndex);
-        systemdevicelist.system_devices[20].isConnect = true;
-        systemdevicelist.system_devices[20].isBind = true;
+        dpMainCamera = device;
+        if (systemdevicelist.system_devices.size() > 20) {
+            systemdevicelist.system_devices[20].isConnect = true;
+            systemdevicelist.system_devices[20].isBind = true;
+        }
         AfterDeviceConnect(dpMainCamera);
         Logger::Log("Binding MainCamera Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "Mount")
     {
         Logger::Log("Binding Mount Device start ...", LogLevel::INFO, DeviceType::MAIN);
-        dpMount = indi_Client->GetDeviceFromList(DeviceIndex);
-        systemdevicelist.system_devices[0].isConnect = true;
-        systemdevicelist.system_devices[0].isBind = true;
+        dpMount = device;
+        if (systemdevicelist.system_devices.size() > 0) {
+            systemdevicelist.system_devices[0].isConnect = true;
+            systemdevicelist.system_devices[0].isBind = true;
+        }
         AfterDeviceConnect(dpMount);
         Logger::Log("Binding Mount Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "Focuser")
     {
         Logger::Log("Binding Focuser Device start ...", LogLevel::INFO, DeviceType::MAIN);
-        dpFocuser = indi_Client->GetDeviceFromList(DeviceIndex);
-        systemdevicelist.system_devices[22].isConnect = true;
-        systemdevicelist.system_devices[22].isBind = true;
+        dpFocuser = device;
+        if (systemdevicelist.system_devices.size() > 22) {
+            systemdevicelist.system_devices[22].isConnect = true;
+            systemdevicelist.system_devices[22].isBind = true;
+        }
         AfterDeviceConnect(dpFocuser);
         Logger::Log("Binding Focuser Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "PoleCamera")
     {
         Logger::Log("Binding PoleCamera Device start ...", LogLevel::INFO, DeviceType::MAIN);
-        dpPoleScope = indi_Client->GetDeviceFromList(DeviceIndex);
-        systemdevicelist.system_devices[2].isConnect = true;
-        systemdevicelist.system_devices[2].isBind = true;
+        // 修复：使用已检查的device指针
+        dpPoleScope = device;
+        if (systemdevicelist.system_devices.size() > 2) {
+            systemdevicelist.system_devices[2].isConnect = true;
+            systemdevicelist.system_devices[2].isBind = true;
+        }
         AfterDeviceConnect(dpPoleScope);
         Logger::Log("Binding PoleCamera Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -4701,6 +4866,13 @@ bool MainWindow::connectPHD(void)
 bool MainWindow::call_phd_GetVersion(QString &versionName)
 {
     Logger::Log("call_phd_GetVersion start ...", LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_GetVersion | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        versionName = "";
+        return false;
+    }
+    
     unsigned int baseAddress;
     unsigned int vendcommand;
     bzero(sharedmemory_phd, 1024); // 共享内存清空
@@ -4760,6 +4932,12 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
 uint32_t MainWindow::call_phd_StartLooping(void)
 {
     Logger::Log("call_phd_StartLooping start ...", LogLevel::INFO, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_StartLooping | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return false;
+    }
+    
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -4796,6 +4974,12 @@ uint32_t MainWindow::call_phd_StartLooping(void)
 uint32_t MainWindow::call_phd_StopLooping(void)
 {
     Logger::Log("call_phd_StopLooping start ...", LogLevel::INFO, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_StopLooping | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return false;
+    }
+    
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -4832,6 +5016,12 @@ uint32_t MainWindow::call_phd_StopLooping(void)
 uint32_t MainWindow::call_phd_AutoFindStar(void)
 {
     Logger::Log("call_phd_AutoFindStar start ...", LogLevel::INFO, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_AutoFindStar | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return false;
+    }
+    
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -4868,6 +5058,12 @@ uint32_t MainWindow::call_phd_AutoFindStar(void)
 uint32_t MainWindow::call_phd_StartGuiding(void)
 {
     Logger::Log("call_phd_StartGuiding start ...", LogLevel::INFO, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_StartGuiding | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return false;
+    }
+    
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -4904,6 +5100,13 @@ uint32_t MainWindow::call_phd_StartGuiding(void)
 uint32_t MainWindow::call_phd_checkStatus(unsigned char &status)
 {
     Logger::Log("call_phd_checkStatus start ...", LogLevel::DEBUG, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_checkStatus | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        status = 0;
+        return false;
+    }
+    
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -4946,6 +5149,12 @@ uint32_t MainWindow::call_phd_checkStatus(unsigned char &status)
 uint32_t MainWindow::call_phd_setExposureTime(unsigned int expTime)
 {
     Logger::Log("call_phd_setExposureTime start ...", LogLevel::INFO, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_setExposureTime | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return false;
+    }
+    
     unsigned int vendcommand;
     unsigned int baseAddress;
     Logger::Log("call_phd_setExposureTime | expTime:" + std::to_string(expTime), LogLevel::INFO, DeviceType::GUIDER);
@@ -4990,6 +5199,11 @@ uint32_t MainWindow::call_phd_whichCamera(std::string Camera)
 {
     Logger::Log("call_phd_whichCamera start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_whichCamera | Camera:" + Camera, LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_whichCamera | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return QHYCCD_ERROR;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5040,6 +5254,11 @@ uint32_t MainWindow::call_phd_ChackControlStatus(int sdk_num)
 {
     Logger::Log("call_phd_ChackControlStatus start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_ChackControlStatus | sdk_num:" + std::to_string(sdk_num), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_ChackControlStatus | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5081,6 +5300,12 @@ uint32_t MainWindow::call_phd_ChackControlStatus(int sdk_num)
 uint32_t MainWindow::call_phd_ClearCalibration(void)
 {
     Logger::Log("call_phd_ClearCalibration start ...", LogLevel::INFO, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_ClearCalibration | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return false;
+    }
+    
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -5117,6 +5342,11 @@ uint32_t MainWindow::call_phd_StarClick(int x, int y)
 {
     Logger::Log("call_phd_StarClick start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_StarClick | x:" + std::to_string(x) + ", y:" + std::to_string(y), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_StarClick | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5161,6 +5391,11 @@ uint32_t MainWindow::call_phd_FocalLength(int FocalLength)
 {
     Logger::Log("call_phd_FocalLength start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_FocalLength | FocalLength:" + std::to_string(FocalLength), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_FocalLength | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5203,6 +5438,11 @@ uint32_t MainWindow::call_phd_MultiStarGuider(bool isMultiStar)
 {
     Logger::Log("call_phd_MultiStarGuider start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_MultiStarGuider | isMultiStar:" + std::to_string(isMultiStar), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_MultiStarGuider | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5245,6 +5485,11 @@ uint32_t MainWindow::call_phd_CameraPixelSize(double PixelSize)
 {
     Logger::Log("call_phd_CameraPixelSize start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_CameraPixelSize | PixelSize:" + std::to_string(PixelSize), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_CameraPixelSize | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5287,6 +5532,11 @@ uint32_t MainWindow::call_phd_CameraGain(int Gain)
 {
     Logger::Log("call_phd_CameraGain start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_CameraGain | Gain:" + std::to_string(Gain), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_CameraGain | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5329,6 +5579,11 @@ uint32_t MainWindow::call_phd_CalibrationDuration(int StepSize)
 {
     Logger::Log("call_phd_CalibrationDuration start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_CalibrationDuration | StepSize:" + std::to_string(StepSize), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_CalibrationDuration | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5371,6 +5626,11 @@ uint32_t MainWindow::call_phd_RaAggression(int Aggression)
 {
     Logger::Log("call_phd_RaAggression start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_RaAggression | Aggression:" + std::to_string(Aggression), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_RaAggression | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5413,6 +5673,11 @@ uint32_t MainWindow::call_phd_DecAggression(int Aggression)
 {
     Logger::Log("call_phd_DecAggression start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("call_phd_DecAggression | Aggression:" + std::to_string(Aggression), LogLevel::INFO, DeviceType::MAIN);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_DecAggression | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
 
     unsigned int vendcommand;
     unsigned int baseAddress;
@@ -5492,11 +5757,20 @@ static bool rle_decompress_16(const uint8_t* src, size_t n, uint16_t* dst, size_
 // ====== 完整的读取函数（在你的 MainWindow 类内）=====
 void MainWindow::ShowPHDdata()
 {
+    // 修复：增强共享内存指针安全检查
     // 早退：共享内存可用且帧完成
     if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
         Logger::Log("ShowPHDdata | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return;
     }
+    
+    // 修复：验证共享内存大小，确保kFlagOff在有效范围内
+    const size_t total_size = (size_t)BUFSZ;
+    if (kFlagOff >= total_size) {
+        Logger::Log("ShowPHDdata | kFlagOff out of bounds", LogLevel::ERROR, DeviceType::GUIDER);
+        return;
+    }
+    
     if (sharedmemory_phd[kFlagOff] != 0x02) {
         // 没有新帧
         return;
@@ -5508,7 +5782,6 @@ void MainWindow::ShowPHDdata()
     unsigned int bitDepth        = 8;
 
     unsigned int mem_offset = kHeaderOff;
-    const size_t total_size = (size_t)BUFSZ;
 
     auto ensure = [&](size_t need) -> bool {
         // 头部区域必须在 payload 前结束
@@ -9385,28 +9658,42 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     if (SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1)
     {
         Logger::Log("ConnectDriver | The Camera Selected and Connected are Both 1", LogLevel::INFO, DeviceType::MAIN);
-        if (SelectedCameras[0] == "Guider")
-        {
-            dpGuider = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            systemdevicelist.system_devices[1].isConnect = true;
-            indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
-            sleep(1);
-            call_phd_whichCamera(indi_Client->GetDeviceFromList(ConnectedCCDList[0])->getDeviceName());
-            // PHD2 connect status
-            AfterDeviceConnect(dpGuider);
-        }
-        else if (SelectedCameras[0] == "PoleCamera")
-        {
-            dpPoleScope = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            systemdevicelist.system_devices[2].isConnect = true;
-            AfterDeviceConnect(dpPoleScope);
-        }
-        else if (SelectedCameras[0] == "MainCamera")
-        {
-            Logger::Log("ConnectDriver | MainCamera Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-            dpMainCamera = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            systemdevicelist.system_devices[20].isConnect = true;
-            AfterDeviceConnect(dpMainCamera);
+        // 修复：检查向量和索引有效性
+        if (SelectedCameras.empty() || ConnectedCCDList.empty()) {
+            Logger::Log("ConnectDriver | SelectedCameras or ConnectedCCDList is empty", LogLevel::ERROR, DeviceType::MAIN);
+        } else if (ConnectedCCDList[0] >= 0 && ConnectedCCDList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
+            if (device == nullptr) {
+                Logger::Log("ConnectDriver | GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
+            } else if (SelectedCameras[0] == "Guider")
+            {
+                dpGuider = device;
+                if (systemdevicelist.system_devices.size() > 1) {
+                    systemdevicelist.system_devices[1].isConnect = true;
+                }
+                indi_Client->disconnectDevice(device->getDeviceName());
+                sleep(1);
+                call_phd_whichCamera(device->getDeviceName());
+                // PHD2 connect status
+                AfterDeviceConnect(dpGuider);
+            }
+            else if (SelectedCameras[0] == "PoleCamera")
+            {
+                dpPoleScope = device;
+                if (systemdevicelist.system_devices.size() > 2) {
+                    systemdevicelist.system_devices[2].isConnect = true;
+                }
+                AfterDeviceConnect(dpPoleScope);
+            }
+            else if (SelectedCameras[0] == "MainCamera")
+            {
+                Logger::Log("ConnectDriver | MainCamera Connected Success!", LogLevel::INFO, DeviceType::MAIN);
+                dpMainCamera = device;
+                if (systemdevicelist.system_devices.size() > 20) {
+                    systemdevicelist.system_devices[20].isConnect = true;
+                }
+                AfterDeviceConnect(dpMainCamera);
+            }
         }
     }
     else if (SelectedCameras.size() > 1 || ConnectedCCDList.size() > 1)
@@ -9414,55 +9701,103 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedCCDList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedCCDList[i])->getDeviceName())); // already allocated
+            // 修复：检查索引有效性
+            if (ConnectedCCDList[i] >= 0 && ConnectedCCDList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(device->getDeviceName())); // already allocated
+                }
+            }
         }
     }
 
     if (ConnectedTELESCOPEList.size() == 1)
     {
         Logger::Log("ConnectDriver | Mount Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-        dpMount = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
-        systemdevicelist.system_devices[0].isConnect = true;
-        AfterDeviceConnect(dpMount);
+        // 修复：检查向量和索引有效性
+        if (!ConnectedTELESCOPEList.empty() && ConnectedTELESCOPEList[0] >= 0 && ConnectedTELESCOPEList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
+            if (device != nullptr) {
+                dpMount = device;
+                if (systemdevicelist.system_devices.size() > 0) {
+                    systemdevicelist.system_devices[0].isConnect = true;
+                }
+                AfterDeviceConnect(dpMount);
+            }
+        }
     }
     else if (ConnectedTELESCOPEList.size() > 1)
     {
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedTELESCOPEList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i])->getDeviceName()));
+            // 修复：检查索引有效性
+            if (ConnectedTELESCOPEList[i] >= 0 && ConnectedTELESCOPEList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
+                }
+            }
         }
     }
 
     if (ConnectedFOCUSERList.size() == 1)
     {
         Logger::Log("ConnectDriver | Focuser Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-        dpFocuser = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
-        systemdevicelist.system_devices[22].isConnect = true;
-        AfterDeviceConnect(dpFocuser);
+        // 修复：检查向量和索引有效性
+        if (!ConnectedFOCUSERList.empty() && ConnectedFOCUSERList[0] >= 0 && ConnectedFOCUSERList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
+            if (device != nullptr) {
+                dpFocuser = device;
+                if (systemdevicelist.system_devices.size() > 22) {
+                    systemdevicelist.system_devices[22].isConnect = true;
+                }
+                AfterDeviceConnect(dpFocuser);
+            }
+        }
     }
     else if (ConnectedFOCUSERList.size() > 1)
     {
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedFOCUSERList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i])->getDeviceName()));
+            // 修复：检查索引有效性
+            if (ConnectedFOCUSERList[i] >= 0 && ConnectedFOCUSERList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
+                }
+            }
         }
     }
 
     if (ConnectedFILTERList.size() == 1)
     {
         Logger::Log("ConnectDriver | Filter Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-        dpCFW = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
-        systemdevicelist.system_devices[21].isConnect = true;
-        AfterDeviceConnect(dpCFW);
+        // 修复：检查向量和索引有效性
+        if (!ConnectedFILTERList.empty() && ConnectedFILTERList[0] >= 0 && ConnectedFILTERList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
+            if (device != nullptr) {
+                dpCFW = device;
+                if (systemdevicelist.system_devices.size() > 21) {
+                    systemdevicelist.system_devices[21].isConnect = true;
+                }
+                AfterDeviceConnect(dpCFW);
+            }
+        }
     }
     else if (ConnectedFILTERList.size() > 1)
     {
         EachDeviceOne = false;
         for (int i = 0; i < ConnectedFILTERList.size(); i++)
         {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(ConnectedFILTERList[i])->getDeviceName()));
+            // 修复：检查索引有效性
+            if (ConnectedFILTERList[i] >= 0 && ConnectedFILTERList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[i]);
+                if (device != nullptr) {
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
+                }
+            }
         }
     }
 

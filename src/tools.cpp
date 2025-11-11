@@ -193,6 +193,15 @@ bool Tools::LoadSystemListFromXml(const QString& fileName) {
   }
 
   // Come from SelectQHYCCDSDKDevice
+  // 修复：确保数组有足够的元素，避免越界访问
+  // 需要至少24个元素（索引0-5和20-23）
+  const size_t requiredSize = 24;
+  if (systemDeviceList_.system_devices.size() < requiredSize) {
+    systemDeviceList_.system_devices.resize(requiredSize);
+    Logger::Log("loadSystemListFromXml | Resized system_devices to " + std::to_string(requiredSize) + " elements", LogLevel::INFO, DeviceType::MAIN);
+  }
+
+  // 现在可以安全地访问这些索引
   systemDeviceList_.system_devices[0].Description = "Mount";
   systemDeviceList_.system_devices[1].Description = "Guider";
   systemDeviceList_.system_devices[2].Description = "PoleCamera";

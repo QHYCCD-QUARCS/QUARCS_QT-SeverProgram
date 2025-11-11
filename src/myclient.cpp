@@ -122,11 +122,22 @@ void MyClient::updateProperty(INDI::Property property)
 
 void MyClient::AddDevice(INDI::BaseDevice *device, const std::string &name)
 {
-    for (int i = 0; i < deviceNames.size(); i++)
+    // 修复：确保deviceList和deviceNames保持同步
+    // 检查两个列表的大小是否一致
+    if (deviceList.size() != deviceNames.size()) {
+        Logger::Log("indi_client | AddDevice | Warning: deviceList and deviceNames size mismatch, fixing...", LogLevel::WARNING, DeviceType::MAIN);
+        // 同步两个列表的大小，取较小的值
+        size_t minSize = std::min(deviceList.size(), deviceNames.size());
+        deviceList.resize(minSize);
+        deviceNames.resize(minSize);
+    }
+    
+    for (int i = 0; i < deviceNames.size() && i < deviceList.size(); i++)
     {
         if (deviceNames[i] == name)
         {
-            if (deviceList[i]->isConnected())
+            // 修复：检查指针有效性
+            if (deviceList[i] != nullptr && deviceList[i]->isConnected())
             {
                 // 如果设备已经连接，跳过这个设备
                 return;
@@ -140,6 +151,7 @@ void MyClient::AddDevice(INDI::BaseDevice *device, const std::string &name)
         }
     }
     // 如果没有找到同名的设备，添加新设备
+    // 确保同时添加到两个列表，保持同步
     deviceList.push_back(device);
     deviceNames.push_back(name);
     Logger::Log("indi_client | newDevice | New DeviceName:" + std::string(name) + ", GetDeviceCount:" + std::to_string(GetDeviceCount()), LogLevel::INFO, DeviceType::MAIN);
@@ -190,6 +202,24 @@ QString MyClient::PrintDevices()
     {
         for (int i = 0; i < deviceNames.size(); i++)
         {
+            // 修复：检查deviceList和deviceNames是否同步，以及指针是否有效
+            if (i >= deviceList.size()) {
+                Logger::Log("indi_client | PrintDevices | Warning: deviceList size mismatch at index " + std::to_string(i), LogLevel::WARNING, DeviceType::MAIN);
+                break;
+            }
+            
+            if (deviceList[i] == nullptr) {
+                Logger::Log("indi_client | PrintDevices | Warning: deviceList[" + std::to_string(i) + "] is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+                // 继续处理其他设备，但不访问空指针
+                if (i > 0) {
+                    dev.append("|");
+                }
+                dev.append(deviceNames[i].c_str());
+                dev.append(":");
+                dev.append(QString::number(i));
+                continue;
+            }
+            
             std::string logMessage = "indi_client | PrintDevices | Device " + std::to_string(i) + ": " + deviceNames[i] + " (Driver: " + deviceList[i]->getDriverExec() + ")";
             Logger::Log(logMessage, LogLevel::INFO, DeviceType::MAIN);
             if (i > 0)
