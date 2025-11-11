@@ -4143,6 +4143,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             indi_Client->disableDSLRLiveView(dpMainCamera);
             Logger::Log("Disabled DSLR Live View for Camera: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         }
+        // 获取主相机所有参数
+        getMainCameraParameters();
         NotSetDSLRsInfo = true;
         sleep(1); // 给与初始化数据更新时间
         indi_Client->GetAllPropertyName(dpMainCamera);
@@ -11438,6 +11440,9 @@ void MainWindow::getMainCameraParameters()
         }
         if (it.key() == "SaveFailedParse") {
             mainCameraSaveFailedParse = (it.value() == "true");
+        }
+        if (it.key() == "Temperature") {
+            CameraTemperature = it.value().toDouble();
         }
     }
     Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
