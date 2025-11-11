@@ -1551,6 +1551,12 @@ private slots:
      */
     void onParseInfoEmitted(const QString &message);
 
+private:
+    // WebSocket消息防抖机制（只保留最后一条命令）
+    QString lastCommandMessage; // 存储最后一条完整消息（命令+参数）
+    qint64 lastCommandTime = 0; // 存储最后一条消息的执行时间（毫秒时间戳）
+    static const int COMMAND_DEBOUNCE_MS = 500; // 防抖时间窗口（500毫秒），短时间内重复的完整消息（命令和参数都相同）只执行一次
+
 /**********************  线程/定时器（通用）  **********************/
 public:
     bool one_touch_connect = true;        // 一键连接开关

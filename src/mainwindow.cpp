@@ -224,8 +224,37 @@ void MainWindow::onMessageReceived(const QString &message)
 {
     // 处理接收到的消息
     Logger::Log("Received message in MainWindow:" + message.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-    // 分割消息
+    
+    // 分割消息以提取命令（用于后续处理）
     QStringList parts = message.split(':');
+    QString command = parts.size() > 0 ? parts[0].trimmed() : message.trimmed();
+    
+    // 防抖检查：如果短时间内接收到与最后一条完全相同的命令（包括参数），则只执行一条
+    // 只保留最后一条命令，只检查最后一条的命令是否重复
+    QString trimmedMessage = message.trimmed();
+    qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
+    
+    // 检查当前命令是否与最后一条命令相同，且在时间窗口内
+    if (!lastCommandMessage.isEmpty() && lastCommandMessage == trimmedMessage && lastCommandTime > 0)
+    {
+        qint64 timeDiff = currentTime - lastCommandTime;
+        
+        if (timeDiff < COMMAND_DEBOUNCE_MS)
+        {
+            // 在时间窗口内收到与最后一条相同的命令（命令和参数都相同），跳过执行
+            Logger::Log("Command debounce: Skipping duplicate message '" + trimmedMessage.toStdString() + 
+                       "' received within " + std::to_string(timeDiff) + "ms (threshold: " + 
+                       std::to_string(COMMAND_DEBOUNCE_MS) + "ms)", LogLevel::DEBUG, DeviceType::MAIN);
+            return;
+        }
+    }
+    
+    // 更新最后一条命令和时间戳
+    lastCommandMessage = trimmedMessage;
+    lastCommandTime = currentTime;
+    
+    // 分割消息
+    // QStringList parts = message.split(':');
 
     if (parts.size() >= 2 && parts[0].trimmed() == "ConfirmIndiDriver")
     {
@@ -325,6 +354,8 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("focuser to " + parts[1].trimmed().toStdString() + " move " + parts[2].trimmed().toStdString() + " steps", LogLevel::DEBUG, DeviceType::FOCUSER);
         QString LR = parts[1].trimmed();
         int Steps = parts[2].trimmed().toInt();
+        // 单步执行时，如果上一次移动已完成，允许立即执行新的单步
+        // 注意：防抖机制会阻止完全相同的命令，但不同步数的命令应该可以执行
         FocuserControlMoveStep(LR == "Left", Steps);
     }
 
@@ -6483,16 +6514,18 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
 
         // 设置计时器为单次触发
         focusTimer.setSingleShot(true);
+        
+        // 先断开旧的连接，避免重复连接导致多次回调
+        disconnect(&focusTimer, &QTimer::timeout, this, nullptr);
 
-        // 已在下发命令前记录占用与目标
-
-        // 唯一连接定时回调，检查到位与刷位置
+        // 连接定时回调，检查到位与刷位置
         connect(&focusTimer, &QTimer::timeout, this, [this]() {
             stepMoveOutTime--;
             CurrentPosition = FocuserControl_getPosition();
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
-            if (CurrentPosition <= focuserMinPosition || CurrentPosition >= focuserMaxPosition || stepMoveOutTime <= 0) {
+            if (CurrentPosition <= focuserMinPosition || CurrentPosition >= focuserMaxPosition || stepMoveOutTime <= 0 || CurrentPosition == TargetPosition) {
                 focusTimer.stop();
+                disconnect(&focusTimer, &QTimer::timeout, this, nullptr); // 断开连接，避免重复触发
                 isStepMoving = false;
                 Logger::Log("FocuserControlMoveStep | Focuser Move Complete!", LogLevel::INFO, DeviceType::FOCUSER);
                 emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(CurrentPosition));
@@ -6501,6 +6534,9 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
                 focusTimer.start(100);
             }
         });
+        
+        // 启动定时器，开始检查移动状态
+        focusTimer.start(100);
 
     }
     else
@@ -6517,6 +6553,7 @@ void MainWindow::cancelStepMoveIfAny()
 {
     // 清理可能残留的计时器与状态，避免重复连接/循环
     if (focusTimer.isActive()) focusTimer.stop();
+    disconnect(&focusTimer, &QTimer::timeout, this, nullptr); // 断开所有连接
     isStepMoving = false;
 }
 
