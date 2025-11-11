@@ -7735,6 +7735,52 @@ int MainWindow::checkStorageSpaceAndCreateDirectory(const QString &sourcePath,
         }
         
         // 创建目录（使用sudo）- 在空间检查通过后
+        // 安全检查：避免在 /media/quarcs 路径下创建任何文件夹，避免被错误识别为U盘
+        QString normalizedPath = QDir(dirPathToCreate).absolutePath();
+        
+        // 检查路径是否在 /media/quarcs 下
+        if (normalizedPath.startsWith("/media/quarcs/"))
+        {
+            // 提取 /media/quarcs/ 之后的部分
+            QString pathAfterMedia = normalizedPath.mid(14); // 去掉 "/media/quarcs/"
+            
+            // 检查路径格式：应该是 /media/quarcs/某个U盘名/...
+            int firstSlash = pathAfterMedia.indexOf('/');
+            if (firstSlash > 0)
+            {
+                QString usbName = pathAfterMedia.left(firstSlash);
+                // 检查这个U盘名是否在映射表中（有效的U盘挂载点）
+                if (!usbMountPointsMap.contains(usbName))
+                {
+                    Logger::Log(functionName.toStdString() + " | Security check failed: Attempting to create directory in /media/quarcs/ but USB name '" + usbName.toStdString() + "' not found in mount points map. Path: " + dirPathToCreate.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                    return 1;
+                }
+                // 验证路径确实在U盘挂载点下
+                QString expectedMountPoint = "/media/quarcs/" + usbName;
+                if (!normalizedPath.startsWith(expectedMountPoint))
+                {
+                    Logger::Log(functionName.toStdString() + " | Security check failed: Path does not match expected mount point. Path: " + dirPathToCreate.toStdString() + ", Expected mount point: " + expectedMountPoint.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                    return 1;
+                }
+            }
+            else
+            {
+                // 路径格式不正确，可能是直接在 /media/quarcs/ 下创建文件夹
+                Logger::Log(functionName.toStdString() + " | Security check failed: Invalid path format in /media/quarcs/. Path: " + dirPathToCreate.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                return 1;
+            }
+        }
+        // 额外检查：确保路径不是直接在 /media/quarcs 下（没有子目录）
+        else if (normalizedPath == "/media/quarcs")
+        {
+            Logger::Log(functionName.toStdString() + " | Security check failed: Attempting to create directory directly at /media/quarcs. Path: " + dirPathToCreate.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+            return 1;
+        }
+        
         const QString password = "quarcs";
         QProcess mkdirProcess;
         mkdirProcess.start("sudo", {"-S", "mkdir", "-p", dirPathToCreate});
@@ -7821,20 +7867,70 @@ int MainWindow::saveImageFile(const QString &sourcePath,
     else
     {
         // 默认位置保存使用普通文件操作
-        const char *destinationPathChar = destinationPath.toUtf8().constData();
+        // 将相对路径转换为绝对路径
+        QString absoluteDestinationPath = destinationPath;
+        if (!QDir::isAbsolutePath(destinationPath))
+        {
+            absoluteDestinationPath = QDir::currentPath() + "/" + destinationPath;
+            Logger::Log(functionName.toStdString() + " | Converted relative path to absolute: " + destinationPath.toStdString() + " -> " + absoluteDestinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        }
+        const char *destinationPathChar = absoluteDestinationPath.toUtf8().constData();
 
         // 确保目标目录存在
         std::filesystem::path destPath(destinationPathChar);
         std::filesystem::path destDir = destPath.parent_path();
-        if (!destDir.empty() && !std::filesystem::exists(destDir))
+        if (!destDir.empty())
         {
-            if (!std::filesystem::create_directories(destDir))
+            if (!std::filesystem::exists(destDir))
             {
-                Logger::Log(functionName.toStdString() + " | Failed to create destination directory: " + destDir.string(), LogLevel::ERROR, DeviceType::MAIN);
+                try {
+                    if (!std::filesystem::create_directories(destDir))
+                    {
+                        Logger::Log(functionName.toStdString() + " | Failed to create destination directory: " + destDir.string(), LogLevel::ERROR, DeviceType::MAIN);
+                        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                        return 1;
+                    }
+                    Logger::Log(functionName.toStdString() + " | Created destination directory: " + destDir.string(), LogLevel::INFO, DeviceType::MAIN);
+                } catch (const std::filesystem::filesystem_error& e) {
+                    Logger::Log(functionName.toStdString() + " | Exception creating directory: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                    return 1;
+                }
+            }
+            else
+            {
+                // 检查目录是否可写
+                try {
+                    std::filesystem::perms dirPerms = std::filesystem::status(destDir).permissions();
+                    if ((dirPerms & std::filesystem::perms::owner_write) == std::filesystem::perms::none)
+                    {
+                        Logger::Log(functionName.toStdString() + " | Destination directory is not writable: " + destDir.string(), LogLevel::ERROR, DeviceType::MAIN);
+                        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                        return 1;
+                    }
+                } catch (const std::filesystem::filesystem_error& e) {
+                    Logger::Log(functionName.toStdString() + " | Exception checking directory permissions: " + std::string(e.what()), LogLevel::WARNING, DeviceType::MAIN);
+                }
+            }
+        }
+
+        // 检查目标文件是否已存在（处理竞态条件）
+        if (std::filesystem::exists(destPath))
+        {
+            Logger::Log(functionName.toStdString() + " | Target file already exists, attempting to remove: " + std::string(destinationPathChar), LogLevel::WARNING, DeviceType::MAIN);
+            try {
+                if (!std::filesystem::remove(destPath))
+                {
+                    Logger::Log(functionName.toStdString() + " | Failed to remove existing file: " + std::string(destinationPathChar), LogLevel::ERROR, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+                    return 1;
+                }
+                Logger::Log(functionName.toStdString() + " | Removed existing file: " + std::string(destinationPathChar), LogLevel::INFO, DeviceType::MAIN);
+            } catch (const std::filesystem::filesystem_error& e) {
+                Logger::Log(functionName.toStdString() + " | Exception removing existing file: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
                 return 1;
             }
-            Logger::Log(functionName.toStdString() + " | Created destination directory: " + destDir.string(), LogLevel::INFO, DeviceType::MAIN);
         }
 
         std::ifstream sourceFile(sourcePath.toUtf8().constData(), std::ios::binary);
@@ -7845,10 +7941,26 @@ int MainWindow::saveImageFile(const QString &sourcePath,
             return 1;
         }
 
-        std::ofstream destinationFile(destinationPathChar, std::ios::binary);
+        std::ofstream destinationFile(destinationPathChar, std::ios::binary | std::ios::trunc);
         if (!destinationFile.is_open())
         {
-            Logger::Log(functionName.toStdString() + " | Unable to create or open target file: " + std::string(destinationPathChar), LogLevel::ERROR, DeviceType::MAIN);
+            std::string dirInfo = "unknown";
+            try {
+                if (std::filesystem::exists(destDir))
+                {
+                    bool writable = (std::filesystem::status(destDir).permissions() & std::filesystem::perms::owner_write) != std::filesystem::perms::none;
+                    dirInfo = "exists: yes, writable: " + std::string(writable ? "yes" : "no");
+                }
+                else
+                {
+                    dirInfo = "exists: no";
+                }
+            } catch (...) {
+                dirInfo = "exists: unknown (exception)";
+            }
+            Logger::Log(functionName.toStdString() + " | Unable to create or open target file: " + std::string(destinationPathChar) + 
+                       " | " + dirInfo, 
+                       LogLevel::ERROR, DeviceType::MAIN);
             sourceFile.close();
             emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
             return 1;
@@ -7859,7 +7971,17 @@ int MainWindow::saveImageFile(const QString &sourcePath,
         sourceFile.close();
         destinationFile.close();
         
-        Logger::Log(functionName.toStdString() + " | File saved successfully to: " + std::string(destinationPathChar), LogLevel::INFO, DeviceType::MAIN);
+        // 验证文件是否成功写入
+        if (!std::filesystem::exists(destPath))
+        {
+            Logger::Log(functionName.toStdString() + " | File write completed but file does not exist: " + std::string(destinationPathChar), LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
+            return 1;
+        }
+        
+        Logger::Log(functionName.toStdString() + " | File saved successfully to: " + std::string(destinationPathChar) + 
+                   " | File size: " + std::to_string(std::filesystem::file_size(destPath)) + " bytes", 
+                   LogLevel::INFO, DeviceType::MAIN);
     }
     
     return 0;
@@ -8828,6 +8950,51 @@ void MainWindow::RemoveImageToUsb(QStringList RemoveImgPath, QString usbName)
             return;
         }
         QString destinationPath = folderPath + fileName.mid(pos1, pos - pos1 + 1);
+        
+        // 安全检查：避免在 /media/quarcs 路径下创建任何文件夹，避免被错误识别为U盘
+        QString normalizedDestPath = QDir(destinationPath).absolutePath();
+        if (normalizedDestPath.startsWith("/media/quarcs/"))
+        {
+            // 提取 /media/quarcs/ 之后的部分
+            QString pathAfterMedia = normalizedDestPath.mid(14); // 去掉 "/media/quarcs/"
+            
+            // 检查路径格式：应该是 /media/quarcs/某个U盘名/...
+            int firstSlash = pathAfterMedia.indexOf('/');
+            if (firstSlash > 0)
+            {
+                QString usbName = pathAfterMedia.left(firstSlash);
+                // 检查这个U盘名是否在映射表中（有效的U盘挂载点）
+                if (!usbMountPointsMap.contains(usbName))
+                {
+                    Logger::Log("RemoveImageToUsb | Security check failed: Attempting to create directory in /media/quarcs/ but USB name '" + usbName.toStdString() + "' not found in mount points map. Path: " + destinationPath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
+                    continue;
+                }
+                // 验证路径确实在U盘挂载点下
+                QString expectedMountPoint = "/media/quarcs/" + usbName;
+                if (!normalizedDestPath.startsWith(expectedMountPoint))
+                {
+                    Logger::Log("RemoveImageToUsb | Security check failed: Path does not match expected mount point. Path: " + destinationPath.toStdString() + ", Expected mount point: " + expectedMountPoint.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                    emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
+                    continue;
+                }
+            }
+            else
+            {
+                // 路径格式不正确，可能是直接在 /media/quarcs/ 下创建文件夹
+                Logger::Log("RemoveImageToUsb | Security check failed: Invalid path format in /media/quarcs/. Path: " + destinationPath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
+                continue;
+            }
+        }
+        // 额外检查：确保路径不是直接在 /media/quarcs 下（没有子目录）
+        else if (normalizedDestPath == "/media/quarcs")
+        {
+            Logger::Log("RemoveImageToUsb | Security check failed: Attempting to create directory directly at /media/quarcs. Path: " + destinationPath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
+            continue;
+        }
+        
         QProcess process;
         process.start("sudo", {"-S", "mkdir", "-p", destinationPath});
         if (!process.waitForStarted() || !process.write((password + "\n").toUtf8()))
