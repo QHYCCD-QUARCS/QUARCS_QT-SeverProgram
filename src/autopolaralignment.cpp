@@ -2063,7 +2063,7 @@ bool PolarAlignment::waitForCaptureComplete()
     
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
-            if (true) {
+            if (false) {
                 if (currentState == PolarAlignmentState::CHECKING_POLAR_POINT) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/1.fits");
                 }
