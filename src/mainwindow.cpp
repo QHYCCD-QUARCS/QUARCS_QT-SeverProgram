@@ -6797,6 +6797,8 @@ void MainWindow::startSchedule()
         schedule_currentNum = 0;
         call_phd_StopLooping();
         GuidingHasStarted = false;
+        // 通知前端计划任务已完成，重置按钮状态
+        emit wsThread->sendMessageToClient("ScheduleComplete");
         // 在实际应用中，你可能想要返回一个默认值或者处理索引超出范围的情况
         // 这里仅仅是一个简单的示例
         // return ScheduleData();
@@ -6950,19 +6952,19 @@ void MainWindow::performObservation(
     double targetRA, double targetDec,
     double observatoryLongitude, double observatoryLatitude)
 {
-    if (needsMeridianFlip(lst, targetRA))
-    {
-        std::cout << "Meridian flip is needed." << std::endl;
-        TelescopeControl_Goto(lst, observatoryLatitude);
-        std::cout << "Performing meridian flip..." << std::endl;
-        std::this_thread::sleep_for(std::chrono::seconds(60));
-        TelescopeControl_Goto(targetRA, targetDec);
-    }
-    else
-    {
+    // if (needsMeridianFlip(lst, targetRA))
+    // {
+    //     std::cout << "Meridian flip is needed." << std::endl;
+    //     TelescopeControl_Goto(lst, observatoryLatitude);
+    //     std::cout << "Performing meridian flip..." << std::endl;
+    //     std::this_thread::sleep_for(std::chrono::seconds(60));
+    //     TelescopeControl_Goto(targetRA, targetDec);
+    // }
+    // else
+    // {
         std::cout << "No flip needed. Moving directly." << std::endl;
         TelescopeControl_Goto(targetRA, targetDec);
-    }
+    // }
 }
 
 // 计算儒略日（JD）
