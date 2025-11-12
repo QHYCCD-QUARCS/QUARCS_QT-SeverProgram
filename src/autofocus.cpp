@@ -20,7 +20,7 @@
 // ==================== 自动对焦配置结构体 ====================
 struct AutoFocusConfig {
     // HFR相关参数
-    double hfrThreshold = 2.0;                    // HFR阈值，超过此值进入粗调
+    double hfrThreshold = 1.0;                    // HFR阈值，超过此值进入粗调
     
     // 步长参数
     int coarseStepSize = 1000;                    // 粗调步长
