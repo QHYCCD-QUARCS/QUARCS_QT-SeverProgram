@@ -187,6 +187,8 @@ class MyClient : public INDI::BaseClient
         double oldDEC_Degree = 0;
         void updateMountState(INDI::BaseDevice *dp);
 
+        QString currentAction = "";
+
     //public slots:
         //void slotUpdateUI(QString filename,QString devname);
 

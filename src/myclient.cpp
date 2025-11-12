@@ -2241,18 +2241,21 @@ uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp, QStr
         property[0].setState(ISS_ON);
         property[1].setState(ISS_OFF);
         property[2].setState(ISS_OFF);
+        currentAction = "TRACK";
     }
     else if (action == "SLEW")
     {
         property[0].setState(ISS_OFF);
         property[1].setState(ISS_ON);
         property[2].setState(ISS_OFF);
+        currentAction = "SLEW";
     }
     else if (action == "SYNC")
     {
         property[0].setState(ISS_OFF);
         property[1].setState(ISS_OFF);
         property[2].setState(ISS_ON);
+        currentAction = "SYNC";
     }
 
     sendNewProperty(property);
@@ -2376,16 +2379,22 @@ uint32_t MyClient::setTelescopeRADECJNOW(INDI::BaseDevice *dp, double RA_Hours, 
         return QHYCCD_ERROR;
     }
 
-    property->np[0].value = RA_Hours;
-    property->np[1].value = DEC_Degree;
-    sendNewProperty(property);
-
     if (mountState.isSlewing)
     {
         Logger::Log("indi_client | setTelescopeRADECJNOW | Error: telescope is slewing", LogLevel::WARNING, DeviceType::MOUNT);
         return QHYCCD_ERROR;
     }
 
+    property->np[0].value = RA_Hours;
+    property->np[1].value = DEC_Degree;
+    sendNewProperty(property);
+
+    if (currentAction == "SYNC")
+    {
+        Logger::Log("indi_client | setTelescopeRADECJNOW | Sync RA: " + std::to_string(RA_Hours) + " DEC: " + std::to_string(DEC_Degree) + " completed", LogLevel::INFO, DeviceType::MOUNT);
+        return QHYCCD_SUCCESS;
+    }
+    
     // 若不是回零过程，标记为正在转动
     if (!mountState.isHoming && !mountState.isFlipping && !mountState.isFlipBacking)
         mountState.isSlewing = true;
