@@ -54,6 +54,17 @@ enum class PolarAlignmentState {
     USER_INTERVENTION       // 需要用户干预 - 需要用户手动处理
 };
 
+// 指导调整阶段步骤枚举 - 定义指导调整过程中的各个步骤
+enum class GuidanceAdjustmentStep {
+    CAPTURING,              // 正在拍摄图像
+    CHECKING_STARS,         // 正在检查星点质量
+    SOLVING,                // 正在解析图像
+    CALCULATING,            // 正在计算偏差
+    SENDING_GUIDANCE,       // 正在发送调整指导
+    WAITING_USER,           // 等待用户调整
+    COMPLETED               // 步骤完成
+};
+
 // 极轴校准结果结构 - 存储校准的最终结果
 struct PolarAlignmentResult {
     double raDeviation;     // 赤经偏差（度）- 极轴在赤经方向的偏差角度
@@ -374,6 +385,14 @@ signals:
      * @param error 错误信息
      */
     void errorOccurred(QString error);
+    
+    /**
+     * @brief 调整阶段进度信号 - 通知VUE端当前指导调整阶段执行到哪一步
+     * @param step 当前步骤
+     * @param message 步骤描述信息
+     * @param starCount 识别的星点数量（仅在CHECKING_STARS步骤时有效，-1表示未检测）
+     */
+    void guidanceAdjustmentStepProgress(GuidanceAdjustmentStep step, QString message, int starCount = -1);
 
 private slots:
     /**

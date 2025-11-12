@@ -367,6 +367,15 @@ class Tools : public QObject {
   static cv::Mat CalMoments(cv::Mat image);
 
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
+  
+  /**
+   * @brief 从文件路径读取FITS图像并识别星点数量
+   * @param fileName FITS文件路径
+   * @param AllStars 是否返回所有星点（true）或只返回部分星点（false）
+   * @param runHFR 是否计算HFR
+   * @return 识别到的星点数量，如果失败返回-1
+   */
+  static int FindStarsCountFromFile(QString fileName, bool AllStars = true, bool runHFR = false);
 
   static bool findStarsByPython_Process(QString filename);
   static double getLastHFR();

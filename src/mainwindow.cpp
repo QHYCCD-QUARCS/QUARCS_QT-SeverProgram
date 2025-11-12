@@ -11921,6 +11921,18 @@ bool MainWindow::initPolarAlignment()
                     emit this->wsThread->sendMessageToClient(logMsg);
                 });
 
+            // 连接调整阶段进度信号
+            connect(polarAlignment, &PolarAlignment::guidanceAdjustmentStepProgress,
+                [this](GuidanceAdjustmentStep step, QString message, int starCount)
+                {
+                    QString logMsg = QString("PolarAlignmentGuidanceStepProgress:%1:%2:%3")
+                                         .arg(static_cast<int>(step))
+                                         .arg(message)
+                                         .arg(starCount);
+                    Logger::Log(logMsg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                    emit this->wsThread->sendMessageToClient(logMsg);
+                });
+
     Logger::Log("initPolarAlignment | PolarAlignment initialized successfully", LogLevel::INFO, DeviceType::MAIN);
     return true;
 }

@@ -3398,6 +3398,28 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHF
   return stars;
 }
 
+int Tools::FindStarsCountFromFile(QString fileName, bool AllStars, bool runHFR)
+{
+  Tools tempTool;
+  
+  loadFitsResult result = loadFits(fileName);
+  
+  if (!result.success)
+  {
+    Logger::Log("Error in loading FITS file: " + fileName.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+    return -1;
+  }
+  
+  FITSImage::Statistic imageStats = result.imageStats;
+  uint8_t *imageBuffer = result.imageBuffer;
+  QList<FITSImage::Star> stars = tempTool.FindStarsByStellarSolver_(AllStars, imageStats, imageBuffer, runHFR);
+  
+  int starCount = stars.size();
+  Logger::Log("Found " + std::to_string(starCount) + " stars in file: " + fileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+  
+  return starCount;
+}
+
 QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR)
 {
   StellarSolver solver(imagestats, imageBuffer);
@@ -5556,7 +5578,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     // filename = "/home/quarcs/workspace/testimage/0.fits";
     PlateSolveInProgress = true;
     isSolveImageFinished = false;
-    mode = 1; // TODO:测试模式,使用模式1
+    mode = 0; // TODO:测试模式,使用模式1
 
     MinMaxFOV FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
 

@@ -1636,16 +1636,98 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     Logger::Log("PolarAlignment: 开始第 " + std::to_string(adjustmentAttempts) + " 次调整尝试",
                 LogLevel::INFO, DeviceType::MAIN);
 
-    if (!captureAndAnalyze(1)) {
-        Logger::Log("PolarAlignment: 验证拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
+    // 1. 拍摄图像
+    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "正在拍摄图像...");
+    
+    // 根据尝试次数确定曝光时间
+    int exposureTime = config.defaultExposureTime;
+    
+    if (!captureImage(exposureTime)) {
+        Logger::Log("PolarAlignment: 图像拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄失败", -1);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
         return false;
     }
+    
+    // 等待拍摄完成
+    if (!waitForCaptureComplete()) {
+        Logger::Log("PolarAlignment: 拍摄超时", LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄超时", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        return false;
+    }
+    
+    // 2. 拍摄完成后，先做星点识别检查
+    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "正在检查星点质量...");
+    
+    int starCount = Tools::FindStarsCountFromFile(lastCapturedImage, true, false);
+    
+    if (starCount < 0) {
+        Logger::Log("PolarAlignment: 星点识别失败，跳过本次调整", LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点识别失败", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        return false;
+    }
+    
+    // 如果识别的星点数小于10，认为图像质量差，跳过解析阶段，直接进入下一次拍摄
+    if (starCount < 10) {
+        Logger::Log("PolarAlignment: 星点数量不足（" + std::to_string(starCount) + " < 10），图像质量差，跳过解析，直接进入下一次拍摄", 
+                    LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, 
+                                           QString("星点数量不足（%1 < 10），图像质量差，跳过解析").arg(starCount), 
+                                           starCount);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        return false;
+    }
+    
+    // 星点数量足够，记录日志
+    Logger::Log("PolarAlignment: 识别到 " + std::to_string(starCount) + " 颗星点，图像质量良好", LogLevel::INFO, DeviceType::MAIN);
+    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, 
+                                       QString("识别到 %1 颗星点，图像质量良好").arg(starCount), 
+                                       starCount);
+    
+    // 3. 星点数量足够，继续解析图像
+    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "正在解析图像...");
+    
+    if (!solveImage(lastCapturedImage)) {
+        Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析失败", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        return false;
+    }
+    
+    // 等待解析完成
+    if (!waitForSolveComplete()) {
+        Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析超时", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        return false;
+    }
+    
+    // 4. 获取解析结果
+    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "正在计算偏差...");
+    
+    SloveResults analysisResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
+    if (!isAnalysisSuccessful(analysisResult)) {
+        Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "解析结果无效", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        return false;
+    }
+    
+    // 保存当前解析结果
+    currentSolveResult = analysisResult;
+    currentRAPosition = analysisResult.RA_Degree;
+    currentDECPosition = analysisResult.DEC_Degree;
 
     if (!isTargetPositionCached) {
         Logger::Log("PolarAlignment: 目标未锁定，请先完成三点校准", LogLevel::ERROR, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "目标未锁定", -1);
         return false;
     }
+
+    // 5. 计算偏差并发送调整指导
+    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SENDING_GUIDANCE, "正在生成调整指导...");
 
     // 当前实际解算点（只读）
     const double currentRA  = currentSolveResult.RA_Degree;
@@ -1690,6 +1772,9 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         cachedFakePolarRA, cachedFakePolarDEC,
         realPolarRA, realPolarDEC
     );
+
+    // 6. 发送完成信号，等待用户调整
+    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::WAITING_USER, "等待用户调整...", -1);
 
     // // 达标判断用球面距离
     // double precisionThreshold = config.finalVerificationThreshold; // 仍然"度"
@@ -1978,19 +2063,19 @@ bool PolarAlignment::waitForCaptureComplete()
     
     connect(&checkTimer, &QTimer::timeout, [&]() {
         if (isCaptureEnd) { // 5秒后假设完成
-            if (false) {
+            if (true) {
                 if (currentState == PolarAlignmentState::CHECKING_POLAR_POINT) {
                     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/1.fits");
                 }
                 if (currentState == PolarAlignmentState::FIRST_CAPTURE) {
-                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
+                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/6.fits");
                 }
-                if (currentState == PolarAlignmentState::SECOND_CAPTURE && secondCaptureAvoided) {
-                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/3.fits");
+                if (currentState == PolarAlignmentState::SECOND_CAPTURE) {
+                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/7.fits");
                 }
                 
-                if (currentState == PolarAlignmentState::THIRD_CAPTURE && thirdCaptureAvoided) {
-                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
+                if (currentState == PolarAlignmentState::THIRD_CAPTURE ) {
+                    lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/8.fits");
                 }
                 // if (currentState == PolarAlignmentState::THIRD_CAPTURE) {
                 //     lastCapturedImage = QString("/home/quarcs/workspace/QUARCS/testimage1/4.fits");
