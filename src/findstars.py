@@ -298,8 +298,8 @@ def choose_final_hfr(selected_stars):
     stars = [s for s in selected_stars if s.get("hfr", 0) > 0]
     if not stars:
         return None, {"reason": "no_valid_stars"}, []
-    # 当有效星点少于5颗时，返回None以确保识别正确性
-    if len(stars) < 5:
+    # 当有效星点少于7颗时，返回None以确保识别正确性
+    if len(stars) < 7:
         return None, {"reason": f"insufficient_stars", "count": len(stars)}, []
     hfrs = sorted(float(s["hfr"]) for s in stars)
     median_hfr = float(np.median(hfrs))
@@ -487,9 +487,9 @@ if __name__ == "__main__":
             min_sigma=float(args.min_sigma), max_sigma=float(args.max_sigma),
             sigma_ratio=1.6, threshold=float(args.threshold)
         )
-        # 检查有效星点数量，少于5颗时认为未识别到星点
+        # 检查有效星点数量，少于7颗时认为未识别到星点
         valid_star_count = len(selected_stars) if selected_stars else 0
-        if valid_star_count < 5:
+        if valid_star_count < 7:
             print("未识别到星点")
             sys.exit(2)
         if final_hfr is None or not np.isfinite(final_hfr) or final_hfr <= 0:
