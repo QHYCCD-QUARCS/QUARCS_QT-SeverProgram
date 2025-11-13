@@ -5610,10 +5610,10 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     // 设置父对象为 instance_，确保在 instance_ 销毁时自动释放
     cmd_test->setParent(instance_);
     QObject::connect(cmd_test, SIGNAL(finished(int)), instance_, SLOT(onSolveFinished(int)));
-    // 连接 finished 信号以自动释放 QProcess
-    QObject::connect(cmd_test, &QProcess::finished, [cmd_test]() {
-        cmd_test->deleteLater();
-    });
+    // 连接 finished 信号以自动释放 QProcess（消除重载歧义）
+    QObject::connect(cmd_test,
+                     QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                     cmd_test, &QObject::deleteLater);
 
     // 连接输出和错误信号以实时处理输出
     // 移除static关键字，每次调用都使用新的变量
