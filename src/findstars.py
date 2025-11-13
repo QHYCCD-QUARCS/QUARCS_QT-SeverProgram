@@ -297,13 +297,24 @@ def dynamic_radius_from_region(star_region, center_rc, fallback_radius):
 def choose_final_hfr(selected_stars):
     stars = [s for s in selected_stars if s.get("hfr", 0) > 0]
     if not stars:
-        return None, {"reason": "no_valid_stars"}, []
-    # 当有效星点少于7颗时，返回None以确保识别正确性
-    if len(stars) < 7:
-        return None, {"reason": f"insufficient_stars", "count": len(stars)}, []
+        return None, {"reason": "no_valid_stars"}
+    if len(stars) == 1:
+        return float(stars[0]["hfr"]), {"rule": "one_star", "picked": stars[0]}
+    if len(stars) == 2:
+        bs = [float(s.get("brightness", 0.0)) for s in stars]
+        bmin, bmax = float(min(bs)), float(max(bs))
+        norm = [(b - bmin) / (bmax - bmin) if (bmax - bmin) > 1e-9 else 0.5 for b in bs]
+        scores = []
+        for s, bnorm in zip(stars, norm):
+            circ = float(s.get("circularity_score", 0.0))
+            non_border = 1.0 if not s.get("on_border", False) else 0.0
+            rel = 0.6 * circ + 0.3 * bnorm + 0.1 * non_border
+            scores.append(rel)
+        best_idx = int(np.argmax(scores))
+        return float(stars[best_idx]["hfr"]), {"rule": "two_stars_pick_best", "picked": stars[best_idx]}
     hfrs = sorted(float(s["hfr"]) for s in stars)
     median_hfr = float(np.median(hfrs))
-    return median_hfr, {"rule": "multiple_stars_median", "all_hfrs": hfrs, "count": len(stars)}, stars
+    return median_hfr, {"rule": "multiple_stars_median", "all_hfrs": hfrs, "count": len(stars)}
 
 def _dog_candidates_skimage(image, min_sigma, max_sigma, sigma_ratio, threshold):
     blobs = blob_dog(image, min_sigma=min_sigma, max_sigma=max_sigma, sigma_ratio=sigma_ratio, threshold=threshold)
@@ -403,7 +414,7 @@ def detect_stars_hfr_only(image_path, require_circular=True, max_workers=None,
     else:
         blobs = _dog_candidates_fast(image, min_sigma, max_sigma, sigma_ratio, float(threshold))
     if blobs is None or len(blobs) == 0:
-        return None, [], []
+        return None, []
     H, W = image.shape[:2]
     workers = max_workers or min(4, (os.cpu_count() or 1))
     results = []
@@ -424,7 +435,7 @@ def detect_stars_hfr_only(image_path, require_circular=True, max_workers=None,
                     tmp[res["idx"]] = res
             results = [r for r in tmp if r is not None]
     if not results:
-        return None, [], []
+        return None, []
     results.sort(key=lambda s: (0 if not s["on_border"] else 1, -s["brightness"]))
     final_top_stars, backup = [], list(results)
     while len(final_top_stars) < 9 and backup:
@@ -453,8 +464,8 @@ def detect_stars_hfr_only(image_path, require_circular=True, max_workers=None,
         "circularity_score": float(s.get("circularity_score", 0.0)),
         "brightness": float(s.get("brightness", 0.0))
     } for s in final_top_stars]
-    final_hfr, _, selected_for_hfr = choose_final_hfr(star_data_min)
-    return final_hfr, star_data_min, selected_for_hfr
+    final_hfr, _ = choose_final_hfr(star_data_min)
+    return final_hfr, star_data_min
 
 def _parse_args(argv):
     import argparse
@@ -482,38 +493,15 @@ if __name__ == "__main__":
             except Exception:
                 cropped_path = prepared_path
         workers = args.workers if args.workers and args.workers > 0 else None
-        final_hfr, star_data_min, selected_stars = detect_stars_hfr_only(
+        final_hfr, _ = detect_stars_hfr_only(
             cropped_path, require_circular=True, max_workers=workers,
             min_sigma=float(args.min_sigma), max_sigma=float(args.max_sigma),
             sigma_ratio=1.6, threshold=float(args.threshold)
         )
-        # 检查有效星点数量，少于7颗时认为未识别到星点
-        valid_star_count = len(selected_stars) if selected_stars else 0
-        if valid_star_count < 7:
-            print("未识别到星点")
-            sys.exit(2)
         if final_hfr is None or not np.isfinite(final_hfr) or final_hfr <= 0:
-            print("未识别到星点")
+            print("最终HFR：未能计算（无有效星点）。")
             sys.exit(2)
         else:
-            # 读取处理后的图像并绘制绿色圆圈标记选中的星点
-            img_marked = cv2.imread(cropped_path, cv2.IMREAD_GRAYSCALE)
-            if img_marked is not None and selected_stars:
-                # 转换为彩色图像以便绘制绿色圆圈
-                img_marked = cv2.cvtColor(img_marked, cv2.COLOR_GRAY2BGR)
-                # 在选中的星点位置绘制绿色圆圈
-                for star in selected_stars:
-                    x, y = star["position"]
-                    radius = int(star.get("radius_dynamic", 10))
-                    # 绘制绿色圆圈，线宽为2
-                    cv2.circle(img_marked, (x, y), radius, (0, 255, 0), 2)
-                    # 在中心点绘制一个小点
-                    cv2.circle(img_marked, (x, y), 2, (0, 255, 0), -1)
-                # 保存标记后的图像
-                marked_path = os.path.splitext(cropped_path)[0] + "_marked.png"
-                cv2.imwrite(marked_path, img_marked)
-                print(f"已保存标记图像: {marked_path}")
-            
             print(f"最终HFR = {final_hfr:.6f} 像素")
             print(f"HFR:{final_hfr:.6f}")
             print(f"最终HFR(处理后像素) = {final_hfr:.6f} 像素")
