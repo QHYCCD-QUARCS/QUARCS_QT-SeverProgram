@@ -10784,158 +10784,17 @@ int MainWindow::process_fixed()
 
 void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 {
-    // 测试模式：使用虚拟星图序列（可通过 useVirtualTestImages 开关控制）
-    if (useVirtualTestImages)
-    {
-        static std::vector<QString> testFiles;
-        static int idx = 0;
-        static int dir = 1; // 1 前进，-1 后退
-    
-        if (testFiles.empty()) {
-            // 枚举目录下 star_*.fits，并按序号排序
-            const std::string dirPath = "/home/quarcs/workspace/QUARCS/star_frames";
-            std::vector<std::pair<int, QString>> entries;
-    
-            try {
-                std::regex pat(R"(star_(\d+)\.fits)", std::regex::icase);
-                for (const auto &p : fs::directory_iterator(dirPath)) {
-                    if (!fs::is_regular_file(p.status())) continue;
-                    const std::string name = p.path().filename().string();
-                    std::smatch m;
-                    if (std::regex_match(name, m, pat)) {
-                        int n = std::stoi(m[1]);
-                        entries.emplace_back(n, QString::fromStdString(p.path().string()));
-                    }
-                }
-                std::sort(entries.begin(), entries.end(),
-                          [](auto &a, auto &b){ return a.first < b.first; });
-                testFiles.reserve(entries.size());
-                for (auto &e : entries) testFiles.push_back(e.second);
-            } catch (...) {
-                // 枚举失败则保持空，后面会跳过
-            }
-        }
-    
-        if (!testFiles.empty()) {
-            filename = testFiles[static_cast<size_t>(idx)];
-            Logger::Log("saveFitsAsJPG | use virtual frame: " + filename.toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
-            // 前进/后退到边界反向
-            if (testFiles.size() == 1) {
-                idx = 0; dir = 1;
-            } else {
-                idx += dir;
-                if (idx >= static_cast<int>(testFiles.size())) { idx = static_cast<int>(testFiles.size()) - 2; dir = -1; }
-                else if (idx < 0) { idx = 1; dir = 1; }
-            }
-        } else {
-            Logger::Log("saveFitsAsJPG | no virtual frames found, using real image", LogLevel::WARNING, DeviceType::FOCUSER);
-        }
-    }
-
     cv::Mat image;
     // 读取FITS文件
     Tools::readFits(filename.toLocal8Bit().constData(), image);
 
-    // 若为虚拟星图（整幅原图）且启用了测试模式，按 ROI 裁剪
-    if (useVirtualTestImages && image.cols > 0 && image.rows > 0 &&
-        roiAndFocuserInfo.count("ROI_x") && roiAndFocuserInfo.count("ROI_y") && roiAndFocuserInfo.count("BoxSideLength"))
-    {
-        int roi_x = static_cast<int>(roiAndFocuserInfo["ROI_x"]);
-        int roi_y = static_cast<int>(roiAndFocuserInfo["ROI_y"]);
-        int box   = static_cast<int>(roiAndFocuserInfo["BoxSideLength"]);
-        roi_x = std::max(0, std::min(std::max(0, image.cols - box), roi_x));
-        roi_y = std::max(0, std::min(std::max(0, image.rows - box), roi_y));
-        if (box > 0 && roi_x + box <= image.cols && roi_y + box <= image.rows) {
-            try {
-                cv::Rect roiRect(roi_x, roi_y, box, box);
-                image = image(roiRect).clone();
-                Logger::Log("saveFitsAsJPG | apply ROI crop: x=" + std::to_string(roi_x) + ", y=" + std::to_string(roi_y) + ", box=" + std::to_string(box), LogLevel::INFO, DeviceType::FOCUSER);
-                
-                // 将裁剪后的 ROI 图像保存为 FITS 格式到 /dev/shm/ccd_simulator.fits（覆盖模式）
-                if (!image.empty()) {
-                    fitsfile* fptr = nullptr;
-                    int status = 0;
-                    
-                    // 确保是灰度图
-                    cv::Mat grayImage;
-                    if (image.channels() == 3) {
-                        cv::cvtColor(image, grayImage, cv::COLOR_BGR2GRAY);
-                    } else {
-                        grayImage = image;
-                    }
-                    
-                    // 设置 FITS 参数
-                    int bitpix, datatype;
-                    if (grayImage.depth() == CV_8U) {
-                        bitpix = BYTE_IMG;
-                        datatype = TBYTE;
-                    } else if (grayImage.depth() == CV_16U) {
-                        bitpix = USHORT_IMG;
-                        datatype = TUSHORT;
-                    } else {
-                        Logger::Log("saveFitsAsJPG | unsupported image depth for FITS", LogLevel::ERROR, DeviceType::FOCUSER);
-                        goto skip_fits_save;
-                    }
-                    
-                    long naxes[2] = {grayImage.cols, grayImage.rows};
-                    
-                    // 创建 FITS 文件（使用 ! 前缀覆盖已存在的文件）
-                    std::string fitsPath = "!/dev/shm/ccd_simulator.fits";
-                    fits_create_file(&fptr, fitsPath.c_str(), &status);
-                    if (status) {
-                        Logger::Log("saveFitsAsJPG | failed to create FITS file, status=" + std::to_string(status), LogLevel::ERROR, DeviceType::FOCUSER);
-                        goto skip_fits_save;
-                    }
-                    
-                    fits_create_img(fptr, bitpix, 2, naxes, &status);
-                    if (status) {
-                        Logger::Log("saveFitsAsJPG | failed to create FITS image, status=" + std::to_string(status), LogLevel::ERROR, DeviceType::FOCUSER);
-                        fits_close_file(fptr, &status);
-                        goto skip_fits_save;
-                    }
-                    
-                    // 写入图像数据
-                    if (grayImage.depth() == CV_8U) {
-                        fits_write_img(fptr, datatype, 1, grayImage.total(), grayImage.ptr<uchar>(), &status);
-                    } else if (grayImage.depth() == CV_16U) {
-                        fits_write_img(fptr, datatype, 1, grayImage.total(), grayImage.ptr<ushort>(), &status);
-                    }
-                    
-                    fits_close_file(fptr, &status);
-                    
-                    if (status) {
-                        char errMsg[FLEN_ERRMSG];
-                        fits_get_errstatus(status, errMsg);
-                        Logger::Log("saveFitsAsJPG | FITS write error: " + std::string(errMsg), LogLevel::ERROR, DeviceType::FOCUSER);
-                    } else {
-                        Logger::Log("saveFitsAsJPG | ROI image saved to /dev/shm/ccd_simulator.fits", LogLevel::INFO, DeviceType::FOCUSER);
-                    }
-                }
-                skip_fits_save:;
-            } catch (const std::exception &e) {
-                Logger::Log("saveFitsAsJPG | ROI crop/FITS save exception: " + std::string(e.what()), LogLevel::ERROR, DeviceType::FOCUSER);
-            } catch (...) {
-                Logger::Log("saveFitsAsJPG | ROI crop/FITS save unknown exception", LogLevel::ERROR, DeviceType::FOCUSER);
-            }
-        }
-    }
-
     QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
     currentSelectStarPosition = selectStar(stars);
-
-    // if (dpFocuser != NULL)
-    // {
-    //     emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(FocuserControl_getPosition()));
-    // }
 
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
     emit wsThread->sendMessageToClient("setSelectStarPosition:" + QString::number(roiAndFocuserInfo["SelectStarX"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarY"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
     emit wsThread->sendMessageToClient("addFwhmNow:" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
     Logger::Log("saveFitsAsJPG | 星点位置更新为 x:" + std::to_string(roiAndFocuserInfo["SelectStarX"]) + ",y:" + std::to_string(roiAndFocuserInfo["SelectStarY"]) + ",HFR:" + std::to_string(roiAndFocuserInfo["SelectStarHFR"]), LogLevel::INFO, DeviceType::FOCUSER);
-    // for (const auto &star : stars)
-    // {
-    //     emit wsThread->sendMessageToClient("focuserROIStarsList:" + QString::number(star.x) + ":" + QString::number(star.y) + ":" + QString::number(star.HFR));
-    // }
 
     // 判断当前相机是否为彩色相机
     bool isColor = !(MainCameraCFA == "" || MainCameraCFA == "null");

@@ -3395,6 +3395,14 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHF
   FITSImage::Statistic imageStats = result.imageStats;
   uint8_t *imageBuffer = result.imageBuffer;
   stars = tempTool.FindStarsByStellarSolver_(AllStars, imageStats, imageBuffer, runHFR);
+  
+  // 释放 imageBuffer 内存，避免内存泄漏
+  if (imageBuffer != nullptr)
+  {
+    delete[] imageBuffer;
+    imageBuffer = nullptr;
+  }
+  
   return stars;
 }
 
@@ -3416,6 +3424,13 @@ int Tools::FindStarsCountFromFile(QString fileName, bool AllStars, bool runHFR)
   
   int starCount = stars.size();
   Logger::Log("Found " + std::to_string(starCount) + " stars in file: " + fileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+  
+  // 释放 imageBuffer 内存，避免内存泄漏
+  if (imageBuffer != nullptr)
+  {
+    delete[] imageBuffer;
+    imageBuffer = nullptr;
+  }
   
   return starCount;
 }
@@ -3692,6 +3707,12 @@ loadFitsResult Tools::loadFits(QString fileName)
   {
     // logIssue("Error reading image.");
     Logger::Log("Error reading image.", LogLevel::WARNING, DeviceType::MAIN);
+    // 读取失败时释放已分配的内存
+    if (m_ImageBuffer != nullptr)
+    {
+      delete[] m_ImageBuffer;
+      m_ImageBuffer = nullptr;
+    }
     fits_close_file(fptr, &status);
     result.success = false;
     return result;
@@ -5586,7 +5607,13 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     QString MaxFOV = QString::number(FOV.maxFOV);
 
     QProcess* cmd_test = new QProcess();
+    // 设置父对象为 instance_，确保在 instance_ 销毁时自动释放
+    cmd_test->setParent(instance_);
     QObject::connect(cmd_test, SIGNAL(finished(int)), instance_, SLOT(onSolveFinished(int)));
+    // 连接 finished 信号以自动释放 QProcess
+    QObject::connect(cmd_test, &QProcess::finished, [cmd_test]() {
+        cmd_test->deleteLater();
+    });
 
     // 连接输出和错误信号以实时处理输出
     // 移除static关键字，每次调用都使用新的变量
@@ -5725,6 +5752,9 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   cmd_test->waitForFinished();  // 等待外部程序执行完成
 
   QString str = cmd_test->readAllStandardOutput();  // 读取程序输出的结果
+  
+  // 释放 QProcess 内存，避免内存泄漏
+  cmd_test->deleteLater();
 
   if (str.isEmpty()) {
     Logger::Log("wcsinfo 输出为空，解析失败", LogLevel::ERROR, DeviceType::MAIN);

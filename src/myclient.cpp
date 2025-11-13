@@ -1679,6 +1679,8 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
                         mountState.isHoming = false;
                         Logger::Log("indi_client | setTelescopeHomeInit | HOME_INIT completed",
                                     LogLevel::INFO, DeviceType::CAMERA);
+                        // 释放 timer 内存，避免内存泄漏
+                        timer->deleteLater();
                         return;
                     }
                 }else{
@@ -1686,6 +1688,8 @@ uint32_t MyClient::setTelescopeHomeInit(INDI::BaseDevice *dp, QString command)
                                 LogLevel::WARNING, DeviceType::CAMERA);
                     QObject::disconnect(timer, &QTimer::timeout, nullptr, nullptr);
                     mountState.isHoming = false;
+                    // 释放 timer 内存，避免内存泄漏
+                    timer->deleteLater();
                     return ;
                 } });
             timer->start(1000); // 1秒一次
