@@ -579,6 +579,7 @@ public:
     int key_phd = 0;                    // 共享内存 key
     int shmid_phd = -1;                 // 共享内存 id
     QProcess *cmdPHD2 = nullptr;        // PHD2 进程
+    bool phd2ExpectedRunning = false;   // 期望 PHD2 处于运行状态（用于判定异常退出）
 
     char phd_direction = 0;             // 指令方向
     int phd_step = 0;                   // 步长
@@ -608,6 +609,16 @@ public:
      * @brief 导星控制定时器回调（槽）
      */
     Q_SLOT void onPHDControlGuideTimeout();
+
+    // PHD2 进程监控与恢复
+    Q_SLOT void onPhd2Exited(int exitCode, QProcess::ExitStatus exitStatus);
+    Q_SLOT void onPhd2Error(QProcess::ProcessError error);
+
+    // 强制结束 PHD2 及清理共享内存（用于启动前和异常恢复）
+    void forceKillPhd2AndCleanupShm();
+    void cleanupPhd2Shm();
+    void promptFrontendPhd2Restart();
+    void disconnectFocuserIfConnected();
 
 /**********************  对焦/电调控制与自动对焦  **********************/
 public:

@@ -473,6 +473,17 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("abortExposure", LogLevel::DEBUG, DeviceType::CAMERA);
         INDI_AbortCapture();
     }
+    else if (message == "RestartPHD2" || message == "PHD2RestartConfirm")
+    {
+        Logger::Log("Frontend requested to restart PHD2", LogLevel::INFO, DeviceType::GUIDER);
+        // 先断开导星设备（均为已有接口，不新增函数）
+        if (dpGuider && dpGuider->isConnected()) {
+            DisconnectDevice(indi_Client, dpGuider->getDeviceName(), "Guider");
+        }
+        // 重启 PHD2
+        InitPHD2();
+        emit wsThread->sendMessageToClient("PHD2Restarting");
+    }
     else if (message == "connectAllDevice")
     {
         Logger::Log("connectAllDevice", LogLevel::DEBUG, DeviceType::MAIN);
@@ -4811,17 +4822,55 @@ void MainWindow::InitPHD2()
     Logger::Log("InitPHD2 start ...", LogLevel::INFO, DeviceType::MAIN);
     isGuideCapture = true;
 
-    cmdPHD2 = new QProcess();
+    if (!cmdPHD2) cmdPHD2 = new QProcess();
+    static bool phdSignalsConnected = false;
+    if (!phdSignalsConnected)
+    {
+        connect(cmdPHD2, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, &MainWindow::onPhd2Exited);
+        connect(cmdPHD2, &QProcess::errorOccurred,
+                this, &MainWindow::onPhd2Error);
+        phdSignalsConnected = true;
+    }
 
     bool connected = false;
     int retryCount = 3; // 设定重试次数
     while (retryCount > 0 && !connected)
     {
-        // 杀死所有已存在的 phd2 进程
-        cmdPHD2->start("pkill phd2");
-        sleep(0.1);
-        cmdPHD2->waitForStarted();
-        cmdPHD2->waitForFinished();
+        // 启动前强制结束残留进程并清理共享内存
+        // 以避免“初次启动时无法关闭导致启动失败”的问题
+        // 1) 若之前有 QProcess 实例，先尝试优雅结束并回收，避免僵尸进程
+        if (cmdPHD2->state() != QProcess::NotRunning) {
+            cmdPHD2->terminate();
+            if (!cmdPHD2->waitForFinished(1500)) {
+                cmdPHD2->kill();
+                cmdPHD2->waitForFinished(1000);
+            }
+        }
+        // 2) 系统级强杀（多种匹配方式）
+        QProcess::execute("pkill", QStringList() << "-TERM" << "-x" << "phd2");
+        QThread::msleep(200);
+        QProcess::execute("pkill", QStringList() << "-KILL" << "-x" << "phd2");
+        QThread::msleep(100);
+        // 3) 宽匹配（包含路径/命令行）
+        QProcess::execute("pkill", QStringList() << "-TERM" << "-f" << "phd2");
+        QThread::msleep(150);
+        QProcess::execute("pkill", QStringList() << "-KILL" << "-f" << "phd2");
+        QThread::msleep(150);
+        // 4) 轮询确认已无残留进程（最多 1s）
+        {
+            QElapsedTimer waitKill;
+            waitKill.start();
+            while (waitKill.elapsed() < 1000) {
+                int rc = QProcess::execute("pgrep", QStringList() << "-f" << "phd2");
+                if (rc != 0) break; // 无匹配
+                QThread::msleep(100);
+            }
+        }
+        // 清理共享内存段（key=0x90）
+        key_t cleanup_key = 0x90;
+        int cleanup_id = shmget(cleanup_key, BUFSZ_PHD, 0666);
+        if (cleanup_id != -1) shmctl(cleanup_id, IPC_RMID, NULL);
 
         // 重新生成共享内存，避免之前的进程遗留问题
         key_phd = 0x90;                                           // 重新设置共享内存的键值
@@ -4843,8 +4892,9 @@ void MainWindow::InitPHD2()
         // 读取共享内存数据
         Logger::Log("InitPHD2 | data_phd = [" + std::string(sharedmemory_phd) + "]", LogLevel::INFO, DeviceType::MAIN);
 
-        // 启动 phd2 进程
-        cmdPHD2->start("phd2");
+        // 启动 phd2 进程（显式指定实例号 1）
+        cmdPHD2->start("phd2", QStringList() << "-i" << "1");
+        phd2ExpectedRunning = true;
 
         // 等待最多 10 秒尝试连接
         QElapsedTimer t;
@@ -4873,6 +4923,52 @@ void MainWindow::InitPHD2()
     }
 
     Logger::Log("InitPHD2 finished.", LogLevel::INFO, DeviceType::MAIN);
+}
+
+void MainWindow::onPhd2Exited(int exitCode, QProcess::ExitStatus exitStatus)
+{
+    Logger::Log("PHD2 exited. code=" + std::to_string(exitCode) +
+                " status=" + std::to_string((int)exitStatus), LogLevel::WARNING, DeviceType::GUIDER);
+    if (phd2ExpectedRunning)
+    {
+        // 进程异常结束时，尝试发送一次“停止循环拍摄”命令以收敛前端状态
+        call_phd_StopLooping();
+        
+        // 通知前端状态：循环曝光已关闭
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        phd2ExpectedRunning = false;
+        // 清理共享内存段，避免前端继续读到旧数据
+        key_t key = 0x90;
+        int id = shmget(key, BUFSZ_PHD, 0666);
+        if (id != -1) shmctl(id, IPC_RMID, NULL);
+        // 提示前端是否重启
+        emit wsThread->sendMessageToClient("PHD2ClosedUnexpectedly:是否重新启动PHD2?");
+    }
+}
+
+void MainWindow::onPhd2Error(QProcess::ProcessError error)
+{
+    Logger::Log("PHD2 process error: " + std::to_string((int)error), LogLevel::ERROR, DeviceType::GUIDER);
+    if (phd2ExpectedRunning)
+    {
+        // 进程错误时，尝试发送“停止循环拍摄”命令以确保状态一致
+        call_phd_StopLooping();
+        // 通知前端状态：循环曝光已关闭
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        phd2ExpectedRunning = false;
+        key_t key = 0x90;
+        int id = shmget(key, BUFSZ_PHD, 0666);
+        if (id != -1) shmctl(id, IPC_RMID, NULL);
+        emit wsThread->sendMessageToClient("PHD2ClosedUnexpectedly:是否重新启动PHD2?");
+    }
+}
+
+void MainWindow::disconnectFocuserIfConnected()
+{
+    if (dpFocuser && dpFocuser->isConnected())
+    {
+        DisconnectDevice(indi_Client, dpFocuser->getDeviceName(), "Focuser");
+    }
 }
 
 bool MainWindow::connectPHD(void)
@@ -4921,9 +5017,10 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
     QElapsedTimer t;
     t.start();
 
-    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    // 放宽首次连接等待时长，避免 PHD2 启动/初始化较慢导致的超时
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 3000)
     {
-        // QCoreApplication::processEvents();
+        QThread::msleep(2);
     }
 
     if (t.elapsed() >= 500)
@@ -5121,6 +5218,10 @@ uint32_t MainWindow::call_phd_StartGuiding(void)
     {
         Logger::Log("call_phd_StartGuiding | timeout", LogLevel::ERROR, DeviceType::GUIDER);
         Logger::Log("call_phd_StartGuiding failed.", LogLevel::ERROR, DeviceType::GUIDER);
+        // 在启动导星失败时，发送关闭循环拍摄的命令
+        call_phd_StopLooping();
+        // 通知前端状态：循环曝光已关闭
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
         return false; // timeout
     }
     else
