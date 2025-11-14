@@ -954,6 +954,27 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         ClearCalibrationData = true;
         Logger::Log("Clear polar alignment calibration data", LogLevel::DEBUG, DeviceType::MAIN);
+    }else if (message == "getGuiderStatus")
+    {
+        Logger::Log("getGuiderStatus ...", LogLevel::DEBUG, DeviceType::GUIDER);
+        if (isGuiding)
+        {
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+        }
+        if ( isGuiderLoopExp)
+        {
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        }
+        
+        Logger::Log("getGuiderStatus finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
     else if (parts[0].trimmed() == "GuiderSwitch" && parts.size() == 2)
@@ -5219,9 +5240,10 @@ uint32_t MainWindow::call_phd_StartGuiding(void)
         Logger::Log("call_phd_StartGuiding | timeout", LogLevel::ERROR, DeviceType::GUIDER);
         Logger::Log("call_phd_StartGuiding failed.", LogLevel::ERROR, DeviceType::GUIDER);
         // 在启动导星失败时，发送关闭循环拍摄的命令
-        call_phd_StopLooping();
+        // call_phd_StopLooping();
         // 通知前端状态：循环曝光已关闭
-        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        // emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        isGuiding = false;
         return false; // timeout
     }
     else
