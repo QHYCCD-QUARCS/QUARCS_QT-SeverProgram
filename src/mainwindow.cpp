@@ -706,6 +706,10 @@ void MainWindow::onMessageReceived(const QString &message)
         ImageOffset = parts[1].trimmed().toDouble();
         Logger::Log("ImageOffset is set to " + std::to_string(ImageOffset), LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveParameter("MainCamera", "Offset", parts[1].trimmed());
+        if (dpMainCamera != NULL)
+        {
+            indi_Client->setCCDOffset(dpMainCamera, ImageOffset);
+        }
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageCFA")
@@ -957,7 +961,7 @@ void MainWindow::onMessageReceived(const QString &message)
     }else if (message == "getGuiderStatus")
     {
         Logger::Log("getGuiderStatus ...", LogLevel::DEBUG, DeviceType::GUIDER);
-        if (isGuiding)
+        if (isGuiding && dpGuider != NULL)
         {
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
         }
@@ -965,7 +969,7 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
         }
-        if ( isGuiderLoopExp)
+        if ( isGuiderLoopExp && dpGuider != NULL)
         {
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
         }
@@ -1101,19 +1105,19 @@ void MainWindow::onMessageReceived(const QString &message)
         glPHD_rmsdate.clear();
         Logger::Log("clearGuiderData finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
-
-    // else if (message == "getGuiderSwitchStatus")
-    // {
-    //     if(isGuiding) {
-    //         emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
-    //     } else {
-    //         emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
-    //     }
-    // }
-
     else if (parts[0].trimmed() == "SolveSYNC")
     {
         Logger::Log("SolveSYNC ...", LogLevel::DEBUG, DeviceType::MAIN);
+        if (dpMount == NULL ){
+            Logger::Log("Mount not connect", LogLevel::DEBUG, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("MountNotConnect");
+            return;
+        }
+        if (dpMainCamera == NULL ){
+            Logger::Log("MainCamera not connect", LogLevel::DEBUG, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("MainCameraNotConnect");
+            return;
+        }
         if (isSolveSYNC)
         {
             Logger::Log("SolveSYNC is already running", LogLevel::DEBUG, DeviceType::MAIN);
@@ -1327,7 +1331,7 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (parts.size() == 2 && parts[0].trimmed() == "SetCameraGain")
     {
-        int CameraGain = parts[1].trimmed().toInt();
+        CameraGain = parts[1].trimmed().toDouble();
         Logger::Log("Set Camera Gain to " + std::to_string(CameraGain), LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveParameter("MainCamera", "Gain", parts[1].trimmed());
         if (dpMainCamera != NULL)
@@ -4225,6 +4229,12 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
         emit wsThread->sendMessageToClient("getSDKVersion:MainCamera:" + SDKVERSION);
         Logger::Log("MainCamera SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+        // 设置初始gain
+        indi_Client->setCCDGain(dpMainCamera,CameraGain);
+
+        // 设置初始offset
+        indi_Client->setCCDOffset(dpMainCamera,ImageOffset);
 
         indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
         emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
@@ -11072,8 +11082,8 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
             if (applyY % 2 != 0) applyY += (applyY < maxY ? 1 : -1);
             applyX = std::min(std::max(0, applyX), maxX);
             applyY = std::min(std::max(0, applyY), maxY);
-            roiAndFocuserInfo["ROI_x"] = applyX;
-            roiAndFocuserInfo["ROI_y"] = applyY;
+            roiAndFocuserInfo["ROI_x"] = int(applyX/glMainCameraBinning);
+            roiAndFocuserInfo["ROI_y"] = int(applyY/glMainCameraBinning);
         }
 
         Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath + ",image size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -11102,8 +11112,8 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
 
     // 2) 读取 ROI 与选择点（全图坐标）
     const double boxSide = roiAndFocuserInfo.count("BoxSideLength") ? roiAndFocuserInfo["BoxSideLength"] : BoxSideLength;
-    const double roi_x    = roiAndFocuserInfo.count("ROI_x") ? roiAndFocuserInfo["ROI_x"] : 0;
-    const double roi_y    = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"] : 0;
+    const double roi_x    = roiAndFocuserInfo.count("ROI_x") ? roiAndFocuserInfo["ROI_x"]*glMainCameraBinning : 0;
+    const double roi_y    = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"]*glMainCameraBinning : 0;
     const double selXFull = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1;
     const double selYFull = roiAndFocuserInfo.count("SelectStarY") ? roiAndFocuserInfo["SelectStarY"] : -1;
 
@@ -11630,6 +11640,12 @@ void MainWindow::getMainCameraParameters()
         }
         if (it.key() == "Temperature") {
             CameraTemperature = it.value().toDouble();
+        }
+        if (it.key() == "Gain") {
+            CameraGain = it.value().toInt();
+        }
+        if (it.key() == "Offset") {
+            ImageOffset = it.value().toDouble();
         }
     }
     Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);

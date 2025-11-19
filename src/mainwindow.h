@@ -70,7 +70,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20251111"  // 手动指定版本号
+#define QT_Client_Version "20251119"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -702,6 +702,9 @@ public:
     QPointF lockedStarFull = QPointF(-1, -1);
 
     std::map<std::string, double> roiAndFocuserInfo; // ROI 与电调信息共享
+    
+
+
     QPointF currentSelectStarPosition;                 // 当前选中星点
     QVector<QPointF> currentAutoFocusStarPositionList; // 当前曲线拟合星点
     QVector<QPointF> allAutoFocusStarPositionList;     // 所有拟合星点
@@ -711,7 +714,7 @@ public:
     // 是否允许 selectStar 自动更新 ROI 位置（默认关闭用于排查抖动）
     bool enableAutoRoiCentering = true;
     // 追踪窗口比例（相对于 ROI 边长），当锁定星点超出该窗口时允许更新 ROI 使其回到中心
-    double trackWindowRatio = 0.05;
+    double trackWindowRatio = 0.06;
     // 选星防抖动参数：粘滞半径（像素）。若上一帧锁定星在该半径内有匹配，则保持锁定，避免在近邻星之间跳动
     double starStickRadiusPx = 6.0;
     // 选星防抖动参数：搜索半径（像素）。若最近星超出该半径，则视为丢失，不切换星点（保持上一帧锁定）
@@ -787,6 +790,7 @@ public:
     double ImageGainR = 1.0;   // 显示增益 R
     double ImageGainB = 1.0;   // 显示增益 B
     double ImageOffset = 0.0;  // 显示偏移
+    double CameraGain = 0;        // 相机增益
     QVector<QPointF> dataPoints; // FWHM 数据点
     double R2 = 0;             // 拟合优度
     bool isAutoFocus = false;  // 自动对焦开关
