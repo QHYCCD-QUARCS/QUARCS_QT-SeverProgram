@@ -4920,8 +4920,8 @@ void MainWindow::InitPHD2()
             continue;
         }
 
-        // 读取共享内存数据
-        Logger::Log("InitPHD2 | data_phd = [" + std::string(sharedmemory_phd) + "]", LogLevel::INFO, DeviceType::MAIN);
+        // 读取共享内存数据（避免将共享内存当作以\\0 结尾字符串打印，可能越界）
+        Logger::Log("InitPHD2 | shared memory mapped", LogLevel::INFO, DeviceType::MAIN);
 
         // 启动 phd2 进程（显式指定实例号 1）
         cmdPHD2->start("phd2", QStringList() << "-i" << "1");
@@ -10921,7 +10921,7 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     // 读取FITS文件
     Tools::readFits(filename.toLocal8Bit().constData(), image);
 
-    QList<FITSImage::Star> stars = Tools::FindStarsByStellarSolver(true, true);
+    QList<FITSImage::Star> stars = Tools::FindStarsByQHYCCDSDK(true, true);
     currentSelectStarPosition = selectStar(stars);
 
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));

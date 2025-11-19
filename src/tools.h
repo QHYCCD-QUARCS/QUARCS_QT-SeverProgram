@@ -367,6 +367,7 @@ class Tools : public QObject {
   static cv::Mat CalMoments(cv::Mat image);
 
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
+  static QList<FITSImage::Star> FindStarsByQHYCCDSDK(bool AllStars, bool runHFR);
   
   /**
    * @brief 从文件路径读取FITS图像并识别星点数量
@@ -498,6 +499,7 @@ signals:
   ~Tools();
 
   QList<FITSImage::Star> FindStarsByStellarSolver_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR);
+  QList<FITSImage::Star> FindStarsByQHYCCDSDK_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR);
 
 
 };

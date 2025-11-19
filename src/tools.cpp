@@ -1625,6 +1625,14 @@ uint32_t Tools::readFitsHeadForDevName(std::string filename, QString &devname)
     for (int i = 1; i <= nkeys; i++)
     { // Read and print each keyword
         fits_read_record(fptr, i, card, &status);
+        if (status)
+        {
+            // 读取关键字失败，报告后提前清理并返回
+            fits_report_error(stderr, status);
+            int closeStatus = 0;
+            fits_close_file(fptr, &closeStatus); // 确保关闭文件，即使 status 非0
+            return QHYCCD_ERROR;
+        }
         // qDebug()<<card;
 
         QString s = card;
@@ -1641,12 +1649,18 @@ uint32_t Tools::readFitsHeadForDevName(std::string filename, QString &devname)
     }
 
     // Close the FITS file
-    fits_close_file(fptr, &status);
-    if (status)
+    // 注意：若直接传入 status，当其非0时 close 可能被跳过，因此使用独立的 closeStatus
     {
-        fits_report_error(stderr, status); // Print error message
-        return QHYCCD_ERROR;
+        int closeStatus = 0;
+        fits_close_file(fptr, &closeStatus);
+        if (closeStatus)
+        {
+            fits_report_error(stderr, closeStatus); // Print error message
+            return QHYCCD_ERROR;
+        }
     }
+
+    return QHYCCD_SUCCESS;
 }
 
 int Tools::readFits(const char* fileName, cv::Mat& image) {
@@ -3375,6 +3389,23 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
 
 //     return false;
 // }
+QList<FITSImage::Star> Tools::FindStarsByQHYCCDSDK(bool AllStars, bool runHFR)
+{
+  Tools tempTool;
+  loadFitsResult result = loadFits("/dev/shm/ccd_simulator.fits");
+  QList<FITSImage::Star> stars;
+  if (!result.success)
+  {
+    Logger::Log("FindStarsByQHYCCDSDK | Error in loading FITS file", LogLevel::INFO, DeviceType::MAIN);
+    return stars;
+  }
+  stars = tempTool.FindStarsByQHYCCDSDK_(AllStars, result.imageStats, result.imageBuffer, runHFR);
+  if (result.imageBuffer != nullptr)
+  {
+    delete[] result.imageBuffer;
+  }
+  return stars;
+}
 
 QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHFR)
 {
@@ -3563,6 +3594,181 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver_(bool AllStars, const FIT
     Logger::Log("No stars detected, skipping star info output", LogLevel::INFO, DeviceType::MAIN);
   }
 
+  return stars;
+}
+
+/**
+ * 与 QHYCCD SDK 识星流程的对齐说明
+ * 一致点：
+ *  - 灰度化后进行 3x3 中值滤波
+ *  - 全图统计 SNR/RMS：snr = max/rms，阈值 SNRLimit=1.5；rmsLimit=128(8bit)/32768(16bit)
+ *  - 将图像归一到 8bit 后，阈值使用 mean + (max - mean)/4
+ *  - 提取轮廓，仅选择最大面积目标，且面积阈值 > 100
+ *  - 使用矩中心作为目标星点位置（WX, WY）
+ *
+ * 差异点（本实现的简化或增强）：
+ *  - 输入为 FITS 读入的内存缓冲，未直接调用 QHYBASE::* 原始接口，避免额外依赖耦合
+ *  - 可选的 HFR 计算步骤（runHFR=true 时，对小 ROI 调用现有 CalculateHFR），SDK 中该流程分散在其它模块
+ *  - 星点形状参数 a/b/theta 使用 fitEllipse 估计（SDK路径中以定位为主）
+ *  - 通量 flux 以 area*peak 的简化近似（SDK在不同路径下有多种统计口径）
+ *  - 未实现 SDK 中的直方图统计/近邻抑制表（StarRecognition_getHistTab/removeNear等）与 ROI 自适应移动
+ */
+QList<FITSImage::Star> Tools::FindStarsByQHYCCDSDK_(bool AllStars, const FITSImage::Statistic &imagestats, const uint8_t *imageBuffer, bool runHFR)
+{
+  QList<FITSImage::Star> stars;
+  if (imageBuffer == nullptr)
+  {
+    Logger::Log("FindStarsByQHYCCDSDK_ | imageBuffer is null", LogLevel::ERROR, DeviceType::MAIN);
+    return stars;
+  }
+
+  int width = imagestats.width;
+  int height = imagestats.height;
+  int channels = imagestats.channels;
+  int bppBytes = imagestats.bytesPerPixel;
+
+  int cvType = (bppBytes == 2) ? CV_16UC(channels) : CV_8UC(channels);
+  cv::Mat src(height, width, cvType, const_cast<uint8_t *>(imageBuffer));
+
+  // 1) 灰度 + 3x3 中值滤波（与 SDK 一致）
+  cv::Mat gray;
+  if (channels == 1)
+  {
+    src.copyTo(gray);
+  }
+  else
+  {
+    cv::cvtColor(src, gray, cv::COLOR_RGB2GRAY);
+  }
+  cv::medianBlur(gray, gray, 3);
+
+  // 2) SNR/RMS 过滤（与 SDK StarRecognition_GetGravityCenter_Whole 一致）
+  double min_val = 0, max_val = 0;
+  cv::minMaxLoc(gray, &min_val, &max_val);
+  cv::Scalar RMS, STD;
+  cv::meanStdDev(gray, RMS, STD);
+  double rms = RMS.val[0];
+  double snr = (rms == 0.0) ? 0.0 : (max_val / rms);
+  int rmsLimit = (gray.depth() == CV_16U) ? 32768 : 128;
+  if (snr < 1.5 || rms > rmsLimit)
+  {
+    Logger::Log("FindStarsByQHYCCDSDK_ | SNR/RMS filtered out (snr<1.5 or rms too high)", LogLevel::INFO, DeviceType::MAIN);
+    return stars;
+  }
+
+  // 3) 归一到 8bit + 自适应阈值（与 SDK ImageStabilization 一致）
+  cv::Mat mm8;
+  if (bppBytes == 1)
+  {
+    gray.copyTo(mm8);
+  }
+  else
+  {
+    cv::convertScaleAbs(gray, mm8, 1.0 / 256.0);
+  }
+  double minv = 0, maxv = 0;
+  cv::minMaxLoc(mm8, &minv, &maxv);
+  cv::Scalar mean = cv::mean(mm8);
+  double thresh = mean.val[0] + (maxv - mean.val[0]) / 4.0;
+
+  cv::Mat binary;
+  cv::threshold(mm8, binary, thresh, 255, cv::THRESH_BINARY);
+
+  // 4) 轮廓提取并仅保留最大面积轮廓（面积阈值 100，与 SDK 一致）
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(binary, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+  if (contours.empty())
+  {
+    Logger::Log("FindStarsByQHYCCDSDK_ | No contours found", LogLevel::INFO, DeviceType::MAIN);
+    return stars;
+  }
+  double maxArea = 0.0;
+  std::vector<cv::Point> maxContour;
+  for (const auto &c : contours)
+  {
+    double area = cv::contourArea(c);
+    if (area > maxArea)
+    {
+      maxArea = area;
+      maxContour = c;
+    }
+  }
+  if (maxContour.empty() || maxArea <= 100.0)
+  {
+    Logger::Log("FindStarsByQHYCCDSDK_ | No valid contour (area<=100)", LogLevel::INFO, DeviceType::MAIN);
+    return stars;
+  }
+
+  // 5) 取最大轮廓的矩中心作为目标星点（与 SDK 一致）
+  cv::Moments mu = cv::moments(maxContour);
+  if (mu.m00 == 0)
+  {
+    return stars;
+  }
+  int cx = cvRound(mu.m10 / mu.m00);
+  int cy = cvRound(mu.m01 / mu.m00);
+  if (cx < 0 || cy < 0 || cx >= width || cy >= height)
+  {
+    return stars;
+  }
+
+  // 统一一份16位灰度用于峰值/HFR计算（差异：此处便于后续 HFR 扩展）
+  cv::Mat gray16;
+  if (gray.depth() == CV_16U)
+  {
+    gray16 = gray;
+  }
+  else
+  {
+    gray.convertTo(gray16, CV_16U, 256.0);
+  }
+
+  FITSImage::Star star;
+  star.x = cx;
+  star.y = cy;
+  star.peak = gray16.at<uint16_t>(cy, cx);
+  star.flux = maxArea * std::max(1.0, static_cast<double>(star.peak));
+
+  if (maxContour.size() >= 5)
+  {
+    cv::RotatedRect ellipse = cv::fitEllipse(maxContour);
+    star.a = std::max(ellipse.size.width, ellipse.size.height);
+    star.b = std::min(ellipse.size.width, ellipse.size.height);
+    star.theta = ellipse.angle;
+  }
+  else
+  {
+    star.a = 0.0;
+    star.b = 0.0;
+    star.theta = 0.0;
+  }
+
+  if (runHFR) // 差异：可选 HFR 计算（SDK 中常在其它流程/模块）
+  {
+    int roiR = 16;
+    int x0 = std::max(0, cx - roiR);
+    int y0 = std::max(0, cy - roiR);
+    int x1 = std::min(width, cx + roiR);
+    int y1 = std::min(height, cy + roiR);
+    if (x1 > x0 && y1 > y0)
+    {
+      cv::Mat roi = gray16(cv::Rect(x0, y0, x1 - x0, y1 - y0)).clone();
+      HFR_Result h = CalculateHFR(roi);
+      star.HFR = h.HFR;
+    }
+    else
+    {
+      star.HFR = 0.0;
+    }
+  }
+  else
+  {
+    star.HFR = 0.0;
+  }
+
+  stars.append(star);
+
+  Logger::Log("FindStarsByQHYCCDSDK_ | Detected " + std::to_string(stars.size()) + " stars.", LogLevel::INFO, DeviceType::MAIN);
   return stars;
 }
 
@@ -4532,9 +4738,9 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
       }
       cv::Mat srcMat(cv::Size(width, height), CV_8UC(camchannels));
       cv::Mat dstMat(cv::Size(width / camxbin, height / camybin), CV_8UC(camchannels));
-      memcpy(srcMat.data, srcdata, srcMat.cols * srcMat.rows * srcMat.channels());
+      memcpy(srcMat.data, srcdata, srcMat.total() * srcMat.elemSize());
       cv::resize(srcMat, dstMat, cv::Size(dstMat.cols, dstMat.rows));
-      memcpy(bindata, dstMat.data, dstMat.cols * dstMat.rows * dstMat.channels());
+      memcpy(bindata, dstMat.data, dstMat.total() * dstMat.elemSize());
       srcMat.release();
       dstMat.release();
       if (data != NULL)
@@ -4554,12 +4760,13 @@ uint32_t Tools::PixelsDataSoftBin(uint8_t *srcdata, uint8_t *bindata, uint32_t w
         srcdata = data;
       }
       Logger::Log("memcpy 1", LogLevel::INFO, DeviceType::MAIN);
-      cv::Mat srcMat(cv::Size(2 * width, height), CV_16UC(camchannels));
-      cv::Mat dstMat(cv::Size(2 * width / camxbin, height / camybin), CV_16UC(camchannels));
-      memcpy(srcMat.data, srcdata, srcMat.cols * srcMat.rows * srcMat.channels());
+      // 注意：cv::Mat 的尺寸单位是像素，不是字节。16bit 图像每像素2字节由类型表达（CV_16UC），不应把列数写成 2*width
+      cv::Mat srcMat(cv::Size(width, height), CV_16UC(camchannels));
+      cv::Mat dstMat(cv::Size(width / camxbin, height / camybin), CV_16UC(camchannels));
+      memcpy(srcMat.data, srcdata, srcMat.total() * srcMat.elemSize());
       Logger::Log("memcpy 2", LogLevel::INFO, DeviceType::MAIN);
       cv::resize(srcMat, dstMat, cv::Size(dstMat.cols, dstMat.rows));
-      memcpy(bindata, dstMat.data, dstMat.cols * dstMat.rows * dstMat.channels());
+      memcpy(bindata, dstMat.data, dstMat.total() * dstMat.elemSize());
       Logger::Log("memcpy 3", LogLevel::INFO, DeviceType::MAIN);
       srcMat.release();
       dstMat.release();
