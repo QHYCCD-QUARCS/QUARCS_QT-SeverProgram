@@ -592,6 +592,11 @@ public:
     double glPHD_StarY = 0;             // 星点 Y
     int glPHD_CurrentImageSizeX = 0;    // 当前图像宽
     int glPHD_CurrentImageSizeY = 0;    // 当前图像高
+    int glPHD_OrigImageSizeX = 0;       // 原始图像宽（未合并/缩放前）
+    int glPHD_OrigImageSizeY = 0;       // 原始图像高（未合并/缩放前）
+    int glPHD_OutImageSizeX  = 0;       // 实际输出到UI的图像宽（合并/缩放后）
+    int glPHD_OutImageSizeY  = 0;       // 实际输出到UI的图像高（合并/缩放后）
+    int glPHD_ImageScale     = 1;       // 合并/缩放倍数（例如 NEAREST 下的 scale）
     double glPHD_LockPositionX = 0;     // 锁定位置 X
     double glPHD_LockPositionY = 0;     // 锁定位置 Y
     bool glPHD_ShowLockCross = false;   // 是否显示锁定十字

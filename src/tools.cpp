@@ -118,6 +118,7 @@ double Tools::getLastHFR()
 {
     return g_lastHFR;
 }
+
 void Tools::Initialize() { instance_ = new Tools; }
 
 void Tools::Release() { delete instance_; }
@@ -3389,6 +3390,9 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
 
 //     return false;
 // }
+
+
+
 QList<FITSImage::Star> Tools::FindStarsByQHYCCDSDK(bool AllStars, bool runHFR)
 {
   Tools tempTool;
@@ -3435,6 +3439,80 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHF
   }
   
   return stars;
+}
+
+QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
+{
+  Q_UNUSED(AllStars);
+  Q_UNUSED(runHFR);
+  QList<FITSImage::Star> out;
+  loadFitsResult result = loadFits("/dev/shm/ccd_simulator.fits");
+  if (!result.success)
+  {
+    Logger::Log("FindStarsByFocusedCpp | Error in loading FITS file", LogLevel::INFO, DeviceType::MAIN);
+    return out;
+  }
+  const FITSImage::Statistic &st = result.imageStats;
+  const int width = st.width;
+  const int height = st.height;
+  const int channels = st.channels;
+  const int bppBytes = st.bytesPerPixel;
+  int cvType = (bppBytes == 2) ? CV_16UC(channels) : CV_8UC(channels);
+  cv::Mat src(height, width, cvType, const_cast<uint8_t *>(result.imageBuffer));
+  cv::Mat gray;
+  if (channels == 1)
+  {
+    src.copyTo(gray);
+  }
+  else
+  {
+    cv::cvtColor(src, gray, cv::COLOR_RGB2GRAY);
+  }
+  // 使用C++合焦算法检测
+  std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, false);
+  // 转换为 FITSImage::Star
+  for (const auto &s : fs)
+  {
+    FITSImage::Star star;
+    int xi = static_cast<int>(std::lround(s.x));
+    int yi = static_cast<int>(std::lround(s.y));
+    if (xi < 0) xi = 0;
+    if (yi < 0) yi = 0;
+    if (xi >= gray.cols) xi = gray.cols - 1;
+    if (yi >= gray.rows) yi = gray.rows - 1;
+    uint16_t peak = 0;
+    if (gray.depth() == CV_16U)
+    {
+      peak = gray.at<uint16_t>(yi, xi);
+    }
+    else if (gray.depth() == CV_8U)
+    {
+      peak = static_cast<uint16_t>(gray.at<uint8_t>(yi, xi)) * 256u;
+    }
+    else if (gray.depth() == CV_32F)
+    {
+      float v = gray.at<float>(yi, xi);
+      if (v < 0.0f) v = 0.0f;
+      if (v > 1.0f) v = 1.0f;
+      peak = static_cast<uint16_t>(std::lround(v * 65535.0f));
+    }
+    star.x = s.x;
+    star.y = s.y;
+    star.HFR = s.hfr;
+    star.peak = peak;
+    // 近似flux：以归一化通量放大到16位空间
+    star.flux = s.flux * 65535.0;
+    star.a = 0.0;
+    star.b = 0.0;
+    star.theta = 0.0;
+    out.append(star);
+  }
+  if (result.imageBuffer != nullptr)
+  {
+    delete[] result.imageBuffer;
+  }
+  Logger::Log("FindStarsByFocusedCpp | Detected " + std::to_string(out.size()) + " stars.", LogLevel::INFO, DeviceType::MAIN);
+  return out;
 }
 
 int Tools::FindStarsCountFromFile(QString fileName, bool AllStars, bool runHFR)
@@ -5803,10 +5881,8 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     // - 模式2缺少视场参数 → 回退到模式0  
     // - 模式1缺少视场参数 → 回退到模式0
     
-    // filename = "/home/quarcs/workspace/testimage/0.fits";
     PlateSolveInProgress = true;
     isSolveImageFinished = false;
-    mode = 0; // TODO:测试模式,使用模式1
 
     MinMaxFOV FOV = calculateFOV(FocalLength, CameraSize_width, CameraSize_height);
 
@@ -5887,23 +5963,68 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
         }
         
         // 根据实际模式构建命令
+        // 新参数策略参考 Python 中的 run_solve_field_multi_axy / run_solve_field_r1：
+        //  - 使用 --downsample 1 加速解析
+        //  - 使用 --objs 0 让求解器使用切片内全部目标（提高鲁棒性）
+        //  - 使用 --parity neg 固定奇偶性，减少搜索空间
+        //  - 模式1/2 叠加视场限制（--scale-units degwidth --scale-low/high）
+        //  - 模式2 叠加 RA/DEC 与搜索半径限制
         switch (actualMode) {
             case 1:
-                // 模式1：基础命令 + 视场参数
-                command_qstr = "solve-field " + filename + " --overwrite --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV;
+                // 模式1：基础命令 + 新参数 + 视场参数
+                command_qstr =
+                    "solve-field " + filename +
+                    " --overwrite"
+                    " --no-plots"
+                    " --uniformize 0"
+                    " --timestamp"
+                    " --pixel-error 1.5"
+                    " --cpulimit 20"
+                    " --downsample 1"
+                    " --objs 0"
+                    " --parity neg"
+                    " --scale-units degwidth"
+                    " --scale-low " + MinFOV +
+                    " --scale-high " + MaxFOV;
                 Logger::Log("使用模式1解析（包含视场参数）", LogLevel::INFO, DeviceType::MAIN);
                 break;
             case 2:
-                // 模式2：基础命令 + 视场参数 + RA/DEC参数
+                // 模式2：基础命令 + 新参数 + 视场参数 + RA/DEC参数
                 // --radius 5 表示在指定RA/DEC周围5度半径的圆形区域内搜索
                 // 注意：solve-field的--ra参数接受度制或hh:mm:ss格式，--dec接受度制或[+-]dd:mm:ss格式
-                command_qstr = "solve-field " + filename + " --overwrite --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20 --scale-units degwidth --scale-low " + MinFOV + " --scale-high " + MaxFOV + " --ra " + QString::number(lastRA, 'f', 6) + " --dec " + QString::number(lastDEC, 'f', 6) + " --radius 5";
+                command_qstr =
+                    "solve-field " + filename +
+                    " --overwrite"
+                    " --no-plots"
+                    " --uniformize 0"
+                    " --timestamp"
+                    " --pixel-error 1.5"
+                    " --cpulimit 20"
+                    " --downsample 1"
+                    " --objs 0"
+                    " --parity neg"
+                    " --scale-units degwidth"
+                    " --scale-low " + MinFOV +
+                    " --scale-high " + MaxFOV +
+                    " --ra " + QString::number(lastRA, 'f', 6) +
+                    " --dec " + QString::number(lastDEC, 'f', 6) +
+                    " --radius 2";
                 Logger::Log("使用模式2解析（包含视场和位置参数）", LogLevel::INFO, DeviceType::MAIN);
                 break;
             case 0:
             default:
-                // 模式0：默认命令（原有逻辑）
-                command_qstr = "solve-field " + filename + " --overwrite --no-plots --uniformize 0 --timestamp --pixel-error 1.5 --cpulimit 20";
+                // 模式0：基础命令 + 新参数（不使用视场与位置约束）
+                command_qstr =
+                    "solve-field " + filename +
+                    " --overwrite"
+                    " --no-plots"
+                    " --uniformize 0"
+                    " --timestamp"
+                    " --pixel-error 1.5"
+                    " --cpulimit 20"
+                    " --downsample 1"
+                    " --objs 0"
+                    " --parity neg";
                 Logger::Log("使用模式0解析（默认模式）", LogLevel::INFO, DeviceType::MAIN);
                 break;
         }

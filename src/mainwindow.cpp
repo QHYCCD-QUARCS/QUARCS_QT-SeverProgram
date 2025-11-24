@@ -1396,8 +1396,8 @@ void MainWindow::onMessageReceived(const QString &message)
             double ratioZoomX = (double)glPHD_CurrentImageSizeX / CanvasWidth;
             double ratioZoomY = (double)glPHD_CurrentImageSizeY / CanvasHeight;
             Logger::Log("ratioZoom:" + std::to_string(ratioZoomX) + "," + std::to_string(ratioZoomY), LogLevel::DEBUG, DeviceType::MAIN);
-            double PHD2Click_X = (double)Click_X * ratioZoomX;
-            double PHD2Click_Y = (double)Click_Y * ratioZoomY;
+            double PHD2Click_X = (double)Click_X * ratioZoomX*glPHD_ImageScale;
+            double PHD2Click_Y = (double)Click_Y * ratioZoomY*glPHD_ImageScale;
             Logger::Log("PHD2Click:" + std::to_string(PHD2Click_X) + "," + std::to_string(PHD2Click_Y), LogLevel::DEBUG, DeviceType::MAIN);
             call_phd_StarClick(PHD2Click_X, PHD2Click_Y);
         }
@@ -2562,24 +2562,9 @@ MeridianStatus MainWindow::checkMeridianStatus()
 //         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
 //     }
 // }
-int a = 0;
+
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
-    // fitsFileName = "/home/quarcs/workspace/QUARCS/star_frames/star_0000.fits";
-    // if (a == 0){
-    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_26_33_299.fits";
-    //     a = 1;
-    // }else if (a == 1){
-    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_26_47_548.fits";
-    //     a = 2;
-    // }else if (a == 2){
-    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_32_09_232.fits";
-    //     a = 0;
-    // }
-    // fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
-    // emit wsThread->sendMessageToClient("addLineData_Point:" + QString::number(1.0e-6) + ":" + QString::number(-0.006) + ":" + QString::number(14));
-    // fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_36_54_070/2025_03_20T13_36_54_070.fits";
-
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat originalImage16;
@@ -3716,6 +3701,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
         call_phd_whichCamera(device->getDeviceName());
+        sleep(2);
         Logger::Log("Call PHD2 Guider Connect", LogLevel::INFO, DeviceType::MAIN);
         if (systemdevicelist.system_devices.size() > 1) {
             systemdevicelist.system_devices[1].isConnect = true;
@@ -3787,6 +3773,13 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     if (DeviceType == "Guider")
     {
         Logger::Log("UnBinding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
+        call_phd_StopLooping();
+        isGuiding = false;
+        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+        isGuiderLoopExp = false;
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+
         indi_Client->disconnectDevice(dpGuider->getDeviceName());
         Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
@@ -5994,6 +5987,19 @@ void MainWindow::ShowPHDdata()
         useDepth = (uint16_t)bitDepth;
     }
 
+    // 记录原始/输出尺寸与缩放倍数，供坐标换算使用
+    glPHD_OrigImageSizeX = hasV2 ? (int)v2.origW : (int)currentPHDSizeX;
+    glPHD_OrigImageSizeY = hasV2 ? (int)v2.origH : (int)currentPHDSizeY;
+    glPHD_OutImageSizeX  = (int)dispW;
+    glPHD_OutImageSizeY  = (int)dispH;
+    {
+        double sx = (glPHD_OutImageSizeX  > 0) ? (double)glPHD_OrigImageSizeX / (double)glPHD_OutImageSizeX  : 1.0;
+        double sy = (glPHD_OutImageSizeY  > 0) ? (double)glPHD_OrigImageSizeY / (double)glPHD_OutImageSizeY  : 1.0;
+        int s = (int)std::lround((sx + sy) * 0.5);
+        if (s < 1) s = 1;
+        glPHD_ImageScale = s;
+    }
+
     // ---------- 跳过你原有的 3 个 int 字段（sdk_*） ----------
     if (!ensure(sizeof(int))) { sharedmemory_phd[kFlagOff]=0x00; return; }  mem_offset += sizeof(int);
     if (!ensure(sizeof(int))) { sharedmemory_phd[kFlagOff]=0x00; return; }  mem_offset += sizeof(int);
@@ -6076,40 +6082,60 @@ void MainWindow::ShowPHDdata()
     glPHD_isSelected         = isSelected;
     glPHD_StarX              = StarX;
     glPHD_StarY              = StarY;
-    glPHD_CurrentImageSizeX  = dispW;   // ★ 改成 dispW
-    glPHD_CurrentImageSizeY  = dispH;   // ★ 改成 dispH
+    glPHD_CurrentImageSizeX  = dispW;   // UI 显示尺寸（合并/缩放后）
+    glPHD_CurrentImageSizeY  = dispH;   // UI 显示尺寸（合并/缩放后）
     glPHD_LockPositionX      = LockedPositionX;
     glPHD_LockPositionY      = LockedPositionY;
     glPHD_ShowLockCross      = showLockedCross;
 
     glPHD_Stars.clear();
     emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+    const double mapRatioX = (glPHD_OrigImageSizeX > 0) ? (double)glPHD_OutImageSizeX / (double)glPHD_OrigImageSizeX : 1.0;
+    const double mapRatioY = (glPHD_OrigImageSizeY > 0) ? (double)glPHD_OutImageSizeY / (double)glPHD_OrigImageSizeY : 1.0;
     for (int i = 1; i < MultiStarNumber; i++) {
         if (i > 12) break;
-        QPoint p; p.setX(MultiStarX[i]); p.setY(MultiStarY[i]);
+        int outX = (int)std::lround(MultiStarX[i] * mapRatioX);
+        int outY = (int)std::lround(MultiStarY[i] * mapRatioY);
+        if (outX < 0) outX = 0;
+        if (outY < 0) outY = 0;
+        if (outX >= glPHD_OutImageSizeX) outX = glPHD_OutImageSizeX - 1;
+        if (outY >= glPHD_OutImageSizeY) outY = glPHD_OutImageSizeY - 1;
+        QPoint p; p.setX(outX); p.setY(outY);
         glPHD_Stars.push_back(p);
         emit wsThread->sendMessageToClient(
             "PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
-            QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
+            QString::number(outX) + ":" + QString::number(outY));
     }
 
     if (glPHD_isSelected) {
         emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+        int outStarX = (int)std::lround(glPHD_StarX * mapRatioX);
+        int outStarY = (int)std::lround(glPHD_StarY * mapRatioY);
+        if (outStarX < 0) outStarX = 0;
+        if (outStarY < 0) outStarY = 0;
+        if (outStarX >= glPHD_OutImageSizeX) outStarX = glPHD_OutImageSizeX - 1;
+        if (outStarY >= glPHD_OutImageSizeY) outStarY = glPHD_OutImageSizeY - 1;
         emit wsThread->sendMessageToClient(
             "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
-            QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY));
+            QString::number(outStarX) + ":" + QString::number(outStarY));
     } else {
         emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
     }
 
     if (glPHD_ShowLockCross) {
         emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
+        int outLockX = (int)std::lround(glPHD_LockPositionX * mapRatioX);
+        int outLockY = (int)std::lround(glPHD_LockPositionY * mapRatioY);
+        if (outLockX < 0) outLockX = 0;
+        if (outLockY < 0) outLockY = 0;
+        if (outLockX >= glPHD_OutImageSizeX) outLockX = glPHD_OutImageSizeX - 1;
+        if (outLockY >= glPHD_OutImageSizeY) outLockY = glPHD_OutImageSizeY - 1;
         emit wsThread->sendMessageToClient(
             "PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
-            QString::number(glPHD_LockPositionX) + ":" + QString::number(glPHD_LockPositionY));
+            QString::number(outLockX) + ":" + QString::number(outLockY));
     } else {
         emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
     }
@@ -10165,6 +10191,18 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + DeviceType);
         return;
     }
+    if (DeviceType == "Guider")
+
+        {
+        // 停止导星
+        call_phd_StopLooping();
+        isGuiding = false;
+        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+        isGuiderLoopExp = false;
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+        sleep(3);
+    }
 
     Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") start...", LogLevel::INFO, DeviceType::MAIN);
     int num = 0;
@@ -10921,7 +10959,7 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     // 读取FITS文件
     Tools::readFits(filename.toLocal8Bit().constData(), image);
 
-    QList<FITSImage::Star> stars = Tools::FindStarsByQHYCCDSDK(true, true);
+    QList<FITSImage::Star> stars = Tools::FindStarsByFocusedCpp(true, true);
     currentSelectStarPosition = selectStar(stars);
 
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
@@ -10946,6 +10984,11 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         return;
     }
     Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(originalImage16.cols) + "x" + std::to_string(originalImage16.rows), LogLevel::INFO, DeviceType::FOCUSER);
+
+    // 中值滤波
+    Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
+    cv::medianBlur(originalImage16, originalImage16, 3);
+    Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
 
     cv::Mat image16;
     if (ProcessBin && glMainCameraBinning != 1)

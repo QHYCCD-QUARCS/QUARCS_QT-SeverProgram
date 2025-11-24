@@ -323,6 +323,55 @@ class Tools : public QObject {
 
   static int readFits_(const char* fileName, cv::Mat& image);
 
+  // ---------------- Focused star detection (C++ 实现，来自 findstars.py 的合焦算法) ----------------
+  struct FocusedStar {
+    double x;       // 星心 x（全图坐标）
+    double y;       // 星心 y（全图坐标）
+    double flux;    // 前景总光通量
+    double hfr;     // Half Flux Radius
+    double radius;  // 几何半径（像素）
+    int area;       // 像素个数
+    double snr;     // 信噪比
+    QString snrQuality; // 信噪比评价
+  };
+
+  /**
+   * @brief 检测合焦小星（完整C++实现，不依赖Python）
+   * @param image16  原始16位（或8/16/32F可兼容）单通道图像，cv::Mat
+   * @param kSigma   阈值倍数（默认 3.5）
+   * @param minArea  最小面积（默认 3）
+   * @param maxArea  最大面积（默认 200）
+   * @param minSNR   最小SNR阈值（默认 3.0）
+   * @param bgKsize  背景估计高斯核大小（默认 51，奇数）
+   * @param smoothSigma 前景轻微平滑sigma（默认 1.0）
+   * @param verbose  输出调试信息
+   * @return         通过噪声过滤与去重后的合焦星点列表
+   */
+  static std::vector<FocusedStar> DetectFocusedStars(const cv::Mat& image16,
+                                                     double kSigma = 3.5,
+                                                     int minArea = 3,
+                                                     int maxArea = 200,
+                                                     double minSNR = 3.0,
+                                                     int bgKsize = 51,
+                                                     double smoothSigma = 1.0,
+                                                     bool verbose = false);
+
+  /**
+   * @brief 从FITS文件直接检测合焦小星（C++实现）
+   * @param fileName FITS 文件路径（UTF-8 C字符串）
+   * @param outStars 输出星点列表
+   * @param verbose  输出调试信息
+   * @return 0 表示成功；非0为CFITSIO或读取错误码
+   */
+  static int DetectFocusedStarsFromFITS(const char* fileName,
+                                        std::vector<FocusedStar>& outStars,
+                                        bool verbose = false);
+
+  /**
+   * @brief 从星点集合计算中位数HFR（若为空返回0）
+   */
+  static double MedianHFR(const std::vector<FocusedStar>& stars);
+
   // QHYCCD Camera
   static void ConnectQHYCCDSDK();
   static void ScanCamera();
@@ -368,6 +417,8 @@ class Tools : public QObject {
 
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
   static QList<FITSImage::Star> FindStarsByQHYCCDSDK(bool AllStars, bool runHFR);
+  // 基于C++合焦算法的星点识别（仿照上面两个接口）
+  static QList<FITSImage::Star> FindStarsByFocusedCpp(bool AllStars, bool runHFR);
   
   /**
    * @brief 从文件路径读取FITS图像并识别星点数量
