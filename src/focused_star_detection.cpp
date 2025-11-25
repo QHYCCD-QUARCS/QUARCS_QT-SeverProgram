@@ -185,43 +185,123 @@ static double percentile(std::vector<double> vals, double p) {
 static std::vector<Tools::FocusedStar> filterNoiseFocused(std::vector<Tools::FocusedStar> stars,
                                                           double minHFR = 0.5,
                                                           double maxHFR = 50.0,
-                                                          double fluxPercentile = 10.0) {
-	if (stars.empty()) return stars;
-	// 合焦：若数量很少（<=3），很可能是噪声
-	if (static_cast<int>(stars.size()) <= 3) return {};
+                                                          double fluxPercentile = 10.0,
+                                                          bool verbose = false) {
+	if (stars.empty()) {
+		if (verbose) {
+			Logger::Log("[Focused][Filter] 输入星点为空，跳过噪声过滤",
+			            LogLevel::DEBUG, DeviceType::MAIN);
+		}
+		return stars;
+	}
+	if (verbose) {
+		Logger::Log("[Focused][Filter] Step0 输入星点数量 = " + std::to_string(stars.size()),
+		            LogLevel::DEBUG, DeviceType::MAIN);
+		for (size_t i = 0; i < stars.size(); ++i) {
+			const auto &s = stars[i];
+			std::string msg = "  原始星点 " + std::to_string(i) +
+			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
+			                  " flux=" + std::to_string(s.flux) +
+			                  " hfr=" + std::to_string(s.hfr) +
+			                  " radius=" + std::to_string(s.radius);
+			Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+		}
+	}
+	// 这里原本有“星点数量<=3 直接视为噪声”的规则，
+	// 但在小视场/单星 ROI 场景下会误杀目标星，故取消此硬性数量阈值，
+	// 改为完全依赖后续的 flux/HFR/半径 等约束进行过滤。
 	// 过滤 HFR == 1
 	std::vector<Tools::FocusedStar> filtered;
 	filtered.reserve(stars.size());
-	for (const auto& s : stars) {
-		if (std::abs(s.hfr - 1.0) > 0.01) filtered.push_back(s);
+	for (size_t i = 0; i < stars.size(); ++i) {
+		const auto &s = stars[i];
+		if (std::abs(s.hfr - 1.0) <= 0.01) {
+			if (verbose) {
+				std::string msg = "[Focused][Filter] 丢弃星点(索引 " + std::to_string(i) +
+				                  ") 原因:HFR≈1.0 pos=(" + std::to_string(s.x) + "," +
+				                  std::to_string(s.y) + ") hfr=" + std::to_string(s.hfr);
+				Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+			}
+			continue;
+		}
+		filtered.push_back(s);
 	}
-	if (filtered.empty()) return filtered;
+	if (filtered.empty()) {
+		if (verbose) {
+			Logger::Log("[Focused][Filter] 经过 HFR==1 过滤后星点为空",
+			            LogLevel::DEBUG, DeviceType::MAIN);
+		}
+		return filtered;
+	}
 	// 计算 min_flux
 	std::vector<double> fluxes;
 	for (const auto& s : filtered) if (s.flux > 0.0) fluxes.push_back(s.flux);
 	double minFlux = 0.0;
 	if (!fluxes.empty()) minFlux = percentile(fluxes, fluxPercentile);
+	if (verbose) {
+		std::string msg = "[Focused][Filter] 根据 flux 百分位计算得到 minFlux = " +
+		                  std::to_string(minFlux) + " (percentile = " +
+		                  std::to_string(fluxPercentile) + ")";
+		Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+	}
 	// 一般约束
 	std::vector<Tools::FocusedStar> filtered2;
-	for (const auto& s : filtered) {
-		if (s.flux < minFlux) continue;
-		if (s.hfr < minHFR || s.hfr > maxHFR) continue;
+	for (size_t i = 0; i < filtered.size(); ++i) {
+		const auto &s = filtered[i];
+		if (s.flux < minFlux) {
+			if (verbose) {
+				std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
+				                  ") 原因:flux < minFlux flux=" + std::to_string(s.flux) +
+				                  " minFlux=" + std::to_string(minFlux);
+				Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+			}
+			continue;
+		}
+		if (s.hfr < minHFR || s.hfr > maxHFR) {
+			if (verbose) {
+				std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
+				                  ") 原因:HFR越界 hfr=" + std::to_string(s.hfr) +
+				                  " 允许范围[" + std::to_string(minHFR) + "," +
+				                  std::to_string(maxHFR) + "]";
+				Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+			}
+			continue;
+		}
 		if (s.hfr > 0.0 && s.radius > 0.0) {
 			double ratio = s.hfr / s.radius;
-			if (ratio > 2.5) continue;
-			if (ratio < 0.1) continue;
+			if (ratio > 2.5) {
+				if (verbose) {
+					std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
+					                  ") 原因:HFR/半径比过大 ratio=" + std::to_string(ratio);
+					Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+				}
+				continue;
+			}
+			if (ratio < 0.1) {
+				if (verbose) {
+					std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
+					                  ") 原因:HFR/半径比过小 ratio=" + std::to_string(ratio);
+					Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+				}
+				continue;
+			}
 		}
 		filtered2.push_back(s);
 	}
-	// 特判：过滤后若数量仍<=3，且HFR/半径几乎相同，视作噪声
-	if (static_cast<int>(filtered2.size()) <= 3 && !filtered2.empty()) {
-		double minH = std::numeric_limits<double>::max(), maxH = -1.0;
-		double minR = std::numeric_limits<double>::max(), maxR = -1.0;
-		for (const auto& s : filtered2) {
-			minH = std::min(minH, s.hfr); maxH = std::max(maxH, s.hfr);
-			minR = std::min(minR, s.radius); maxR = std::max(maxR, s.radius);
+	// 这里原先还有一个“过滤后若数量仍<=3 且 HFR/半径变化很小则全部丢弃”的特判，
+	// 同样会在单星 / 少星 ROI 场景下误杀目标星，已移除，仅保留上面的物理约束过滤。
+	if (verbose) {
+		Logger::Log("[Focused][Filter] 最终保留星点数量 = " + std::to_string(filtered2.size()),
+		            LogLevel::DEBUG, DeviceType::MAIN);
+		for (size_t i = 0; i < filtered2.size(); ++i) {
+			const auto &s = filtered2[i];
+			std::string msg = "  保留星点 " + std::to_string(i) +
+			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
+			                  " flux=" + std::to_string(s.flux) +
+			                  " hfr=" + std::to_string(s.hfr) +
+			                  " radius=" + std::to_string(s.radius);
+			Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
 		}
-		if ((maxH - minH) < 0.1 && (maxR - minR) < 0.1) return {};
 	}
 	return filtered2;
 }
@@ -266,16 +346,42 @@ static std::vector<Tools::FocusedStar> detectSmallStarsFocused(const cv::Mat& fg
                                                                bool verbose) {
 	cv::Mat bin;
 	double thr = estimateThreshold(fg, kSigma);
+	if (verbose) {
+		std::string msg = "[Focused][Detect] Step2 阈值估计 kSigma=" +
+		                  std::to_string(kSigma) + " thr=" + std::to_string(thr);
+		Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+	}
 	cv::threshold(fg, bin, thr, 1.0, cv::THRESH_BINARY);
 	cv::Mat binU8;
 	bin.convertTo(binU8, CV_8U, 255.0);
 	cv::Mat labels, stats, centroids;
 	int numLabels = cv::connectedComponentsWithStats(binU8, labels, stats, centroids, 8, CV_32S);
+	if (verbose) {
+		Logger::Log("[Focused][Detect] 初始连通域个数(含背景) = " + std::to_string(numLabels),
+		            LogLevel::DEBUG, DeviceType::MAIN);
+	}
 	std::vector<Tools::FocusedStar> stars;
 	for (int lab = 1; lab < numLabels; ++lab) {
 		int area = stats.at<int>(lab, cv::CC_STAT_AREA);
-		if (area <= 30) continue; // 排除超小噪点（对齐Python逻辑）
-		if (area < minArea || area > maxArea) continue;
+		if (area <= 30) { // 排除超小噪点（对齐Python逻辑）
+			if (verbose) {
+				std::string msg = "[Focused][Detect] 丢弃连通域 label=" +
+				                  std::to_string(lab) +
+				                  " 原因: area <= 30 area=" + std::to_string(area);
+				Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+			}
+			continue;
+		}
+		if (area < minArea || area > maxArea) {
+			if (verbose) {
+				std::string msg = "[Focused][Detect] 丢弃连通域 label=" +
+				                  std::to_string(lab) +
+				                  " 原因: area 不在[" + std::to_string(minArea) + "," +
+				                  std::to_string(maxArea) + "] area=" + std::to_string(area);
+				Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+			}
+			continue;
+		}
 		double cx = centroids.at<double>(lab, 0);
 		double cy = centroids.at<double>(lab, 1);
 		int x = stats.at<int>(lab, cv::CC_STAT_LEFT);
@@ -304,10 +410,13 @@ static std::vector<Tools::FocusedStar> detectSmallStarsFocused(const cv::Mat& fg
 		double snr = snrRes.first;
 		if (snr < minSNR) {
 			if (verbose) {
-				qDebug() << "SNR过滤"
-				         << "位置(" << cx << "," << cy << ")"
-				         << "SNR=" << snr << "<" << minSNR
-				         << "质量=" << snrRes.second;
+				std::string msg = "[Focused][Detect] SNR过滤 label=" +
+				                  std::to_string(lab) +
+				                  " 位置(" + std::to_string(cx) + "," + std::to_string(cy) +
+				                  ") SNR=" + std::to_string(snr) +
+				                  "<" + std::to_string(minSNR) +
+				                  " 质量=" + snrRes.second.toStdString();
+				Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
 			}
 			continue;
 		}
@@ -318,7 +427,19 @@ static std::vector<Tools::FocusedStar> detectSmallStarsFocused(const cv::Mat& fg
 	}
 	if (verbose) {
 		int totalDetected = static_cast<int>(stars.size());
-		qDebug() << "合焦小星（SNR过滤后）数量:" << totalDetected;
+		Logger::Log("[Focused][Detect] 合焦小星（面积+SNR过滤后）数量: " + std::to_string(totalDetected),
+		            LogLevel::DEBUG, DeviceType::MAIN);
+		for (int i = 0; i < totalDetected; ++i) {
+			const auto &s = stars[i];
+			std::string msg = "  通过小星检测星点 " + std::to_string(i) +
+			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
+			                  " area=" + std::to_string(s.area) +
+			                  " flux=" + std::to_string(s.flux) +
+			                  " hfr=" + std::to_string(s.hfr) +
+			                  " snr=" + std::to_string(s.snr) +
+			                  " 质量=" + s.snrQuality.toStdString();
+			Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+		}
 	}
 	return stars;
 }
@@ -336,19 +457,46 @@ std::vector<Tools::FocusedStar> Tools::DetectFocusedStars(const cv::Mat& image16
                                                           bool verbose) {
 	if (image16.empty()) return {};
 	// Step 1: 前景图（背景扣除）
-	if (verbose) qDebug() << "[Focused] Step 1 预处理（背景扣除+平滑）";
+	if (verbose) {
+		Logger::Log("[Focused] Step 1 预处理（背景扣除+平滑）",
+		            LogLevel::DEBUG, DeviceType::MAIN);
+	}
 	cv::Mat fg = preprocessFocused(image16, bgKsize, smoothSigma);
 	// Step 2: 小星检测（全图）
-	if (verbose) qDebug() << "[Focused] Step 2 小星检测（全图阈值+连通域）";
+	if (verbose) {
+		Logger::Log("[Focused] Step 2 小星检测（全图阈值+连通域）",
+		            LogLevel::DEBUG, DeviceType::MAIN);
+	}
 	cv::Mat bgForSnr = toFloat32Normalized(image16);
 	std::vector<Tools::FocusedStar> allStars = detectSmallStarsFocused(fg, bgForSnr, kSigma, minArea, maxArea, minSNR, verbose);
 	// Step 3: 噪声过滤（合焦策略）
-	if (verbose) qDebug() << "[Focused] Step 3 噪声过滤（合焦规则）";
-	allStars = filterNoiseFocused(allStars);
+	if (verbose) {
+		Logger::Log("[Focused] Step 3 噪声过滤（合焦规则）",
+		            LogLevel::DEBUG, DeviceType::MAIN);
+	}
+	allStars = filterNoiseFocused(allStars, 0.5, 50.0, 10.0, verbose);
 	// Step 4: 去重
-	if (verbose) qDebug() << "[Focused] Step 4 去重";
+	if (verbose) {
+		Logger::Log("[Focused] Step 4 去重", LogLevel::DEBUG, DeviceType::MAIN);
+		Logger::Log("[Focused][BeforeDedup] 星点数量 = " + std::to_string(allStars.size()),
+		            LogLevel::DEBUG, DeviceType::MAIN);
+	}
 	allStars = removeDuplicatesFocused(allStars);
-	if (verbose) qDebug() << "[Focused] 完成，星点数量:" << static_cast<int>(allStars.size());
+	if (verbose) {
+		Logger::Log("[Focused] 完成，星点数量: " + std::to_string(static_cast<int>(allStars.size())),
+		            LogLevel::DEBUG, DeviceType::MAIN);
+		for (size_t i = 0; i < allStars.size(); ++i) {
+			const auto &s = allStars[i];
+			std::string msg = "  最终星点 " + std::to_string(i) +
+			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
+			                  " flux=" + std::to_string(s.flux) +
+			                  " hfr=" + std::to_string(s.hfr) +
+			                  " radius=" + std::to_string(s.radius) +
+			                  " snr=" + std::to_string(s.snr) +
+			                  " 质量=" + s.snrQuality.toStdString();
+			Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
+		}
+	}
 	return allStars;
 }
 

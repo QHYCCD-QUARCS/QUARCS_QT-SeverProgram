@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <cmath>
 
+// Qt 相关头文件（用于文件/目录操作）
+#include <QDir>
+#include <QFile>
+
 // ===== 你的 BUFSZ 定义（保持不变）=====
 #define BUFSZ 16590848 // 原始约 16 MB
 
@@ -3216,6 +3220,15 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 防御性检查：确保 indi_Client 已经初始化
+    if (indi_Client == nullptr)
+    {
+        Logger::Log("ConnectAllDeviceOnce | indi_Client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
+        return;
+    }
+
     dpMount = nullptr;
     dpGuider = nullptr;
     dpPoleScope = nullptr;
@@ -3272,6 +3285,14 @@ void MainWindow::ConnectAllDeviceOnce()
 
     sleep(1);
 
+    // 再次防御性检查，避免空指针解引用
+    if (indi_Client == nullptr)
+    {
+        Logger::Log("ConnectAllDeviceOnce | indi_Client became nullptr before server check", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:ClientDisconnected");
+        return;
+    }
+
     if (indi_Client->isServerConnected() == false)
     {
         Logger::Log("Can not find server.", LogLevel::ERROR, DeviceType::MAIN);
@@ -3284,6 +3305,15 @@ void MainWindow::ConnectAllDeviceOnce()
     int time = 0;
     connect(timer, &QTimer::timeout, this, [this, timer, &time]()
             {
+        // 防御性检查：避免 indi_Client 为空导致段错误
+        if (indi_Client == nullptr) {
+            Logger::Log("ConnectAllDeviceOnce | indi_Client is nullptr in timer callback", LogLevel::ERROR, DeviceType::MAIN);
+            timer->stop();
+            timer->deleteLater();
+            emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
+            return;
+        }
+
         if (indi_Client->GetDeviceCount() > 0 || time >= 10) {
             timer->stop();
             timer->deleteLater();
@@ -3297,6 +3327,16 @@ void MainWindow::ConnectAllDeviceOnce()
 }
 void MainWindow::continueConnectAllDeviceOnce()
 {
+    // 防御性检查：确保 indi_Client 有效
+    if (indi_Client == nullptr)
+    {
+        Logger::Log("continueConnectAllDeviceOnce | indi_Client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
+        Tools::stopIndiDriverAll(drivers_list);
+        ConnectDriverList.clear();
+        return;
+    }
+
     if (indi_Client->GetDeviceCount() == 0)
     {
         Logger::Log("Driver start success but no device found", LogLevel::ERROR, DeviceType::MAIN);
@@ -4590,30 +4630,53 @@ bool MainWindow::isDSLR(INDI::BaseDevice *device)
 void MainWindow::disconnectIndiServer(MyClient *client)
 {
     Logger::Log("disconnectIndiServer start ...", LogLevel::INFO, DeviceType::MAIN);
-    // client->disconnectAllDevice();
-    QVector<INDI::BaseDevice *> dp;
-
-    for (int i = 0; i < client->GetDeviceCount(); i++)
+    // 防御性检查：客户端指针为空则直接返回，避免段错误
+    if (client == nullptr)
     {
-        dp.append(client->GetDeviceFromList(i));
-        if (dp[i]->isConnected())
-        {
-            client->disconnectDevice(dp[i]->getDeviceName());
-            int num = 0;
-            while (dp[i]->isConnected())
-            {
-                Logger::Log("disconnectAllDevice | Waiting for disconnect device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") finish...", LogLevel::INFO, DeviceType::MAIN);
-                sleep(1);
-                num++;
+        Logger::Log("disconnectIndiServer | client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        Tools::stopIndiDriverAll(drivers_list);
+        ConnectDriverList.clear();
+        return;
+    }
 
-                if (num > 10)
-                {
-                    Logger::Log("disconnectAllDevice | device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") disconnect failed.", LogLevel::WARNING, DeviceType::MAIN);
-                    break;
-                }
+    int deviceCount = client->GetDeviceCount();
+    if (deviceCount > 0)
+    {
+        for (int i = 0; i < deviceCount; i++)
+        {
+            INDI::BaseDevice *device = client->GetDeviceFromList(i);
+            if (device == nullptr)
+            {
+                Logger::Log("disconnectAllDevice | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+                continue;
             }
-            Logger::Log("disconnectAllDevice | device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
+
+            if (device->isConnected())
+            {
+                const char *devName = device->getDeviceName();
+                QString qName = devName ? QString::fromUtf8(devName) : QString("UnknownDevice");
+
+                client->disconnectDevice(devName ? devName : "");
+                int num = 0;
+                while (device->isConnected())
+                {
+                    Logger::Log("disconnectAllDevice | Waiting for disconnect device (" + qName.toStdString() + ") finish...", LogLevel::INFO, DeviceType::MAIN);
+                    sleep(1);
+                    num++;
+
+                    if (num > 10)
+                    {
+                        Logger::Log("disconnectAllDevice | device (" + qName.toStdString() + ") disconnect failed.", LogLevel::WARNING, DeviceType::MAIN);
+                        break;
+                    }
+                }
+                Logger::Log("disconnectAllDevice | device (" + qName.toStdString() + ") disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
+            }
         }
+    }
+    else
+    {
+        Logger::Log("disconnectIndiServer | no devices to disconnect (device count = 0)", LogLevel::INFO, DeviceType::MAIN);
     }
 
     Tools::stopIndiDriverAll(drivers_list);
@@ -4634,7 +4697,10 @@ void MainWindow::disconnectIndiServer(MyClient *client)
         Logger::Log("Waiting for server to disconnect...", LogLevel::INFO, DeviceType::MAIN);
     }
     Logger::Log("disconnectServer finished.", LogLevel::INFO, DeviceType::MAIN);
-    indi_Client->PrintDevices();
+    if (indi_Client != nullptr)
+    {
+        indi_Client->PrintDevices();
+    }
 }
 
 bool MainWindow::connectIndiServer(MyClient *client)
@@ -4872,9 +4938,12 @@ void MainWindow::InitPHD2()
             }
         }
         // 2) 系统级强杀（多种匹配方式）
+        // 注意：有的系统进程名是 phd2.bin，这里同时匹配 phd2 和 phd2.bin
         QProcess::execute("pkill", QStringList() << "-TERM" << "-x" << "phd2");
+        QProcess::execute("pkill", QStringList() << "-TERM" << "-x" << "phd2.bin");
         QThread::msleep(200);
         QProcess::execute("pkill", QStringList() << "-KILL" << "-x" << "phd2");
+        QProcess::execute("pkill", QStringList() << "-KILL" << "-x" << "phd2.bin");
         QThread::msleep(100);
         // 3) 宽匹配（包含路径/命令行）
         QProcess::execute("pkill", QStringList() << "-TERM" << "-f" << "phd2");
@@ -4889,6 +4958,33 @@ void MainWindow::InitPHD2()
                 int rc = QProcess::execute("pgrep", QStringList() << "-f" << "phd2");
                 if (rc != 0) break; // 无匹配
                 QThread::msleep(100);
+            }
+        }
+
+        // 5) 启动前清空 PHD2 日志目录，以规避“损坏/异常 GuidingLog 导致启动卡死”的问题
+        //    目标目录：/home/quarcs/Documents/PHD2
+        {
+            const QString phd2LogDirPath = QStringLiteral("/home/quarcs/Documents/PHD2");
+            QDir phd2LogDir(phd2LogDirPath);
+            if (phd2LogDir.exists())
+            {
+                // 递归删除整个日志目录及其内容，然后重新创建一个空目录
+                if (!phd2LogDir.removeRecursively())
+                {
+                    Logger::Log("InitPHD2 | failed to clear PHD2 log dir: " + phd2LogDirPath.toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
+            }
+            // 确保目录最终存在（即使之前不存在或被删除）
+            if (!phd2LogDir.mkpath("."))
+            {
+                Logger::Log("InitPHD2 | failed to recreate PHD2 log dir: " + phd2LogDirPath.toStdString(),
+                            LogLevel::WARNING, DeviceType::MAIN);
+            }
+            else
+            {
+                Logger::Log("InitPHD2 | PHD2 log dir cleared: " + phd2LogDirPath.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
             }
         }
         // 清理共享内存段（key=0x90）
@@ -5041,13 +5137,15 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
     QElapsedTimer t;
     t.start();
 
-    // 放宽首次连接等待时长，避免 PHD2 启动/初始化较慢导致的超时
-    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 3000)
+    // 放宽首次连接等待时长，避免 PHD2 在树莓派等设备上启动/初始化较慢导致的超时
+    // 最长等待 10 秒，让 PHD2 有充分时间写回版本信息
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 10000)
     {
         QThread::msleep(2);
     }
 
-    if (t.elapsed() >= 500)
+    // 如果超过 10 秒仍未收到响应，则认为超时
+    if (t.elapsed() >= 10000)
     {
         versionName = "";
         Logger::Log("call_phd_GetVersion | timeout", LogLevel::ERROR, DeviceType::MAIN);
@@ -10509,11 +10607,43 @@ void MainWindow::loadBindDeviceTypeList()
 void MainWindow::loadBindDeviceList(MyClient *client)
 {
     QString order = "BindDeviceList";
-    for (int i = 0; i < client->GetDeviceCount(); i++)
+
+    // 修复：防御性编程，防止空指针和非法访问导致段错误
+    if (client == nullptr)
     {
-        if (client->GetDeviceFromList(i)->isConnected() && client->GetDeviceFromList(i)->getDeviceName() != "")
+        Logger::Log("LoadBindDeviceList | client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient(order);
+        return;
+    }
+
+    int deviceCount = client->GetDeviceCount();
+    if (deviceCount <= 0)
+    {
+        Logger::Log("LoadBindDeviceList | no devices in client list", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient(order);
+        return;
+    }
+
+    for (int i = 0; i < deviceCount; i++)
+    {
+        INDI::BaseDevice *device = client->GetDeviceFromList(i);
+        if (device == nullptr)
         {
-            order += ":" + QString::fromUtf8(client->GetDeviceFromList(i)->getDeviceName()) + ":" + QString::number(i);
+            Logger::Log("LoadBindDeviceList | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+
+        const char *name = device->getDeviceName();
+        if (!name)
+        {
+            Logger::Log("LoadBindDeviceList | Device at index " + std::to_string(i) + " has null name pointer", LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+
+        QString qName = QString::fromUtf8(name);
+        if (device->isConnected() && !qName.isEmpty())
+        {
+            order += ":" + qName + ":" + QString::number(i);
         }
     }
 
