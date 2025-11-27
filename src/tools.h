@@ -301,6 +301,36 @@ class Tools : public QObject {
   static void saveCFWList(QString Name, QString List);
   static QString readCFWList(QString Name);
 
+  // ---------- Schedule presets (任务计划表预设) ----------
+  /**
+   * @brief 保存任务计划表预设到独立文件
+   * @param name  预设名称（作为文件名的一部分）
+   * @param data  任务计划表原始数据（不含前缀，如一串以 '[' 分隔的行）
+   *
+   * 路径示例：config/schedules/<name>.sched
+   */
+  static void saveSchedulePreset(const QString &name, const QString &data);
+
+  /**
+   * @brief 读取指定名称的任务计划表预设
+   * @param name  预设名称
+   * @return 成功返回任务计划表数据（与 StagingScheduleData: 后面的格式一致），失败返回空字符串
+   */
+  static QString readSchedulePreset(const QString &name);
+
+  /**
+   * @brief 列出所有已保存的任务计划表预设名称
+   * @return 名称列表（不含扩展名）
+   */
+  static QStringList listSchedulePresets();
+
+  /**
+   * @brief 删除指定名称的任务计划表预设
+   * @param name  预设名称
+   * @return 删除成功返回 true，失败或不存在返回 false
+   */
+  static bool deleteSchedulePreset(const QString &name);
+
   static void saveDSLRsInfo(DSLRsInfo DSLRsInfo);
   static DSLRsInfo readDSLRsInfo(QString Name);
 

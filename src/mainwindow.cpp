@@ -761,7 +761,10 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "StopSchedule")
     {
         Logger::Log("StopSchedule !", LogLevel::DEBUG, DeviceType::MAIN);
-        StopSchedule = true;
+    StopSchedule = true;
+    isScheduleRunning = false;
+    // 立即通知前端计划任务已停止，避免仅依赖进度推断带来的延迟
+    emit wsThread->sendMessageToClient("ScheduleRunning:false");
         
         // 如果自动对焦正在运行（特别是由计划任务表触发的），也要停止自动对焦
         if (isAutoFocus && autoFocus != nullptr)
@@ -827,6 +830,63 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("getStagingScheduleData ...", LogLevel::DEBUG, DeviceType::MAIN);
         getStagingScheduleData();
         Logger::Log("getStagingScheduleData finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }
+
+    // ---------- Schedule presets (任务计划表预设管理) ----------
+    else if (parts[0].trimmed() == "saveSchedulePreset" && parts.size() >= 3)
+    {
+        // 格式：saveSchedulePreset:<name>:<rawData>
+        QString presetName = parts[1].trimmed();
+        // 重新拼接 data（防止 data 中本身包含 ':' 被 split 掉）
+        QString rawData;
+        for (int i = 2; i < parts.size(); ++i)
+        {
+            if (i > 2)
+                rawData += ":";
+            rawData += parts[i];
+        }
+
+        Logger::Log("saveSchedulePreset | name=" + presetName.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveSchedulePreset(presetName, rawData);
+    }
+    else if (parts[0].trimmed() == "loadSchedulePreset" && parts.size() == 2)
+    {
+        // 格式：loadSchedulePreset:<name>
+        QString presetName = parts[1].trimmed();
+        Logger::Log("loadSchedulePreset | name=" + presetName.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        QString data = Tools::readSchedulePreset(presetName);
+        if (!data.isEmpty())
+        {
+            // 复用现有 StagingScheduleData 协议，直接推送给前端
+            QString messageOut = "StagingScheduleData:" + data;
+            emit wsThread->sendMessageToClient(messageOut);
+        }
+    }
+    else if (parts[0].trimmed() == "deleteSchedulePreset" && parts.size() == 2)
+    {
+        // 格式：deleteSchedulePreset:<name>
+        QString presetName = parts[1].trimmed();
+        Logger::Log("deleteSchedulePreset | name=" + presetName.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        bool ok = Tools::deleteSchedulePreset(presetName);
+        if (!ok)
+        {
+            Logger::Log("deleteSchedulePreset | failed to delete preset: " + presetName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+    else if (message == "listSchedulePresets")
+    {
+        // 返回格式：SchedulePresetList:name1;name2;name3
+        Logger::Log("listSchedulePresets ...", LogLevel::DEBUG, DeviceType::MAIN);
+        QStringList names = Tools::listSchedulePresets();
+        QString payload = "SchedulePresetList:";
+        for (int i = 0; i < names.size(); ++i)
+        {
+            if (i > 0)
+                payload += ";";
+            payload += names.at(i);
+        }
+        emit wsThread->sendMessageToClient(payload);
+        Logger::Log("listSchedulePresets finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
     else if (message == "getStagingGuiderData")
@@ -6923,11 +6983,12 @@ bool MainWindow::TelescopeControl_Track()
     }
     return isTrack;
 }
-// TODO: 任务计划表数据解析
 void MainWindow::ScheduleTabelData(QString message)
 {
     ScheduleTargetNames.clear();
     m_scheduList.clear();
+    // 每次接收到新的任务计划表时，从第一条任务开始执行
+    schedule_currentNum = 0;
     schedule_currentShootNum = 0;
     QStringList ColDataList = message.split('[');
     for (int i = 1; i < ColDataList.size(); ++i)
@@ -6938,8 +6999,24 @@ void MainWindow::ScheduleTabelData(QString message)
         qDebug() << "ColData[" << i << "]:" << ColData;
 
         QStringList RowDataList = ColData.split(',');
+        if (RowDataList.size() <= 10)
+        {
+            Logger::Log(QString("ScheduleTabelData | row %1 has insufficient columns: %2").arg(i).arg(RowDataList.size()).toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+
         for (int j = 1; j <= 10; ++j)
         {
+            // 防御性检查：确保索引有效
+            if (j >= RowDataList.size())
+            {
+                Logger::Log(QString("ScheduleTabelData | row %1 column index %2 out of range (size=%3)")
+                                .arg(i).arg(j).arg(RowDataList.size()).toStdString(),
+                            LogLevel::WARNING, DeviceType::MAIN);
+                break;
+            }
+
             if (j == 1)
             {
                 rowData.shootTarget = RowDataList[j];
@@ -6956,13 +7033,31 @@ void MainWindow::ScheduleTabelData(QString message)
             else if (j == 2)
             {
                 QStringList parts = RowDataList[j].split(':');
+                if (parts.size() >= 2)
+                {
                 rowData.targetRa = Tools::RadToHour(parts[1].toDouble());
+                }
+                else
+                {
+                    rowData.targetRa = 0;
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid RA field: %2").arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
                 qDebug() << "Ra:" << rowData.targetRa;
             }
             else if (j == 3)
             {
                 QStringList parts = RowDataList[j].split(':');
+                if (parts.size() >= 2)
+                {
                 rowData.targetDec = Tools::RadToDegree(parts[1].toDouble());
+                }
+                else
+                {
+                    rowData.targetDec = 0;
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid Dec field: %2").arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
                 qDebug() << "Dec:" << rowData.targetDec;
             }
             else if (j == 4)
@@ -6973,8 +7068,18 @@ void MainWindow::ScheduleTabelData(QString message)
             else if (j == 5)
             {
                 QStringList parts = RowDataList[j].split(' ');
+                if (parts.isEmpty())
+                {
+                    rowData.exposureTime = 1000; // 默认 1s
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid exposure field: %2, fallback to 1000ms")
+                                    .arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                    qDebug() << "Exptime error, Exptime = 1000 ms";
+                    continue;
+                }
+
                 QString value = parts[0];
-                QString unit = parts[1];
+                QString unit = (parts.size() > 1) ? parts[1] : "s";
                 if (unit == "s")
                     rowData.exposureTime = value.toInt() * 1000; // Convert seconds to milliseconds
                 else if (unit == "ms")
@@ -7017,6 +7122,16 @@ void MainWindow::ScheduleTabelData(QString message)
             else if (j == 10)
             {
                 QStringList parts = RowDataList[j].split(' ');
+                if (parts.isEmpty())
+                {
+                    rowData.exposureDelay = 0;
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid exposure delay field: %2, fallback to 0")
+                                    .arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                    qDebug() << "Exposure Delay error, use 0 ms";
+                    continue;
+                }
+
                 QString value = parts[0];
                 QString unit = parts.size() > 1 ? parts[1] : "s";
                 if (unit == "s")
@@ -7032,6 +7147,19 @@ void MainWindow::ScheduleTabelData(QString message)
         // scheduleTable.Data.push_back(rowData);
         m_scheduList.append(rowData);
     }
+
+    // 同步更新暂存的任务计划表数据，方便前端在刷新后通过 getStagingScheduleData 恢复当前计划
+    // 前端发送格式为 "ScheduleTabelData:[,Target,...[,...]]"，这里复用内容，仅替换成 StagingScheduleData 前缀
+    if (message.startsWith("ScheduleTabelData:"))
+    {
+        QString stagingMessage = message;
+        stagingMessage.replace(0,
+                               QString("ScheduleTabelData:").length(),
+                               "StagingScheduleData:");
+        isStagingScheduleData = true;
+        StagingScheduleData = stagingMessage;
+    }
+
     startSchedule();
 }
 void MainWindow::startSchedule()
@@ -7045,17 +7173,22 @@ void MainWindow::startSchedule()
         schedule_CFWpos = m_scheduList[schedule_currentNum].filterNumber.toInt();
         schedule_ExposureDelay = m_scheduList[schedule_currentNum].exposureDelay;
         StopSchedule = false;
+        isScheduleRunning = true;
+        // 通知前端：计划任务当前处于运行状态
+        emit wsThread->sendMessageToClient("ScheduleRunning:true");
         startTimeWaiting();
     }
     else
     {
         qDebug() << "Index out of range, Schedule is complete!";
         StopSchedule = true;
+        isScheduleRunning = false;
         schedule_currentNum = 0;
         call_phd_StopLooping();
         GuidingHasStarted = false;
         // 通知前端计划任务已完成，重置按钮状态
         emit wsThread->sendMessageToClient("ScheduleComplete");
+        emit wsThread->sendMessageToClient("ScheduleRunning:false");
         // 在实际应用中，你可能想要返回一个默认值或者处理索引超出范围的情况
         // 这里仅仅是一个简单的示例
         // return ScheduleData();
@@ -7095,6 +7228,13 @@ void MainWindow::startTimeWaiting()
             qDebug() << "Time Waiting Complete...";
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(1, 1.0);  // 步骤1完成：等待时间
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "wait:" +
+                "0:" +
+                "0:" +
+                "100");
 
             startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
         } 
@@ -7111,6 +7251,13 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
     {
         m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 无赤道仪时直接跳到步骤2完成
         emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+        emit wsThread->sendMessageToClient(
+            "ScheduleStepState:" +
+            QString::number(schedule_currentNum) + ":" +
+            "mount:" +
+            "0:" +
+            "0:" +
+            "100");
         Logger::Log("startMountGoto | dpMount is NULL,goto failed!Skip to set CFW.", LogLevel::ERROR, DeviceType::MAIN);
         startSetCFW(schedule_CFWpos);
         return;
@@ -7148,6 +7295,21 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 
     sleep(2); // 赤道仪的状态更新有一定延迟
 
+    // 步骤2：赤道仪转动，明确发送“开始移动”的细分信号，方便前端显示循环进度条
+    // 这里将该步骤标记为进行中（本地进度 0.5），但 stepProgress 使用 0，表示刚开始。
+    m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 0.5);
+    emit wsThread->sendMessageToClient(
+        "UpdateScheduleProcess:" +
+        QString::number(schedule_currentNum) + ":" +
+        QString::number(m_scheduList[schedule_currentNum].progress));
+    emit wsThread->sendMessageToClient(
+        "ScheduleStepState:" +
+        QString::number(schedule_currentNum) + ":" +
+        "mount:" +
+        "0:" +
+        "0:" +
+        "0");
+
     // 启动等待赤道仪转动的定时器
     telescopeTimer.setSingleShot(true);
 
@@ -7184,6 +7346,13 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
                 qDebug() << "Mount Goto Complete...";
                 m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 步骤2完成：赤道仪转动
                 emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+                emit wsThread->sendMessageToClient(
+                    "ScheduleStepState:" +
+                    QString::number(schedule_currentNum) + ":" +
+                    "mount:" +
+                    "0:" +
+                    "0:" +
+                    "100");
                 startSetCFW(schedule_CFWpos);
             }
         } 
@@ -7323,11 +7492,25 @@ void MainWindow::startSetCFW(int pos)
             qDebug() << "schedule CFW pos:" << pos;
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 0.5);  // 步骤3进行中：开始设置滤镜
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "50");
             indi_Client->setCFWPosition(dpMainCamera, pos);
             qDebug() << "CFW Goto Complete...";
             startCapture(schedule_ExpTime);
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 步骤3完成：滤镜设置完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "100");
         }
         else
         {
@@ -7345,10 +7528,24 @@ void MainWindow::startSetCFW(int pos)
             qDebug() << "schedule CFW pos:" << pos;
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 0.5);  // 步骤3进行中：开始设置滤镜
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "50");
             indi_Client->setCFWPosition(dpCFW, pos);
             qDebug() << "CFW Goto Complete...";
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 步骤3完成：滤镜设置完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "100");
             startCapture(schedule_ExpTime);
         }
         else
@@ -7376,6 +7573,14 @@ void MainWindow::startExposureDelay()
     
     // 使用可控制的定时器，每100ms检查一次
     exposureDelayTimer.setSingleShot(false);
+    // 向前端发送步骤状态：进入延时阶段
+    emit wsThread->sendMessageToClient(
+        "ScheduleStepState:" +
+        QString::number(schedule_currentNum) + ":" +
+        "delay:" +
+        "0:" +
+        "0:" +
+        "0");
     connect(&exposureDelayTimer, &QTimer::timeout, [this]() {
         // 首先检查是否已停止，必须在最开始检查
         // 这个检查必须在任何其他操作之前，确保能够立即响应停止信号
@@ -7411,6 +7616,20 @@ void MainWindow::startExposureDelay()
             return; // 立即返回，不执行任何后续操作
         }
         
+        // 向前端报告当前延迟阶段的进度（0-100）
+        if (schedule_ExposureDelay > 0)
+        {
+            int progress = static_cast<int>(
+                qMin(100.0, exposureDelayElapsed_ms * 100.0 / static_cast<double>(schedule_ExposureDelay)));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "delay:" +
+                "0:" +
+                "0:" +
+                QString::number(progress));
+        }
+        
         // 检查是否已经过了延迟时间
         if (exposureDelayElapsed_ms >= schedule_ExposureDelay)
         {
@@ -7418,6 +7637,13 @@ void MainWindow::startExposureDelay()
             exposureDelayTimer.disconnect();
             qDebug() << "Exposure delay complete, starting next capture";
             exposureDelayElapsed_ms = 0; // 重置已过去的时间
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "delay:" +
+                "0:" +
+                "0:" +
+                "100");
             startCapture(schedule_ExpTime);
         }
     });
@@ -7467,6 +7693,28 @@ void MainWindow::startCapture(int ExpTime)
             int currentStep = 3 + schedule_currentShootNum;
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(currentStep, 1.0);
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "exposure:" +
+                QString::number(schedule_currentShootNum) + ":" +
+                QString::number(schedule_RepeatNum) + ":" +
+                "100");
+
+            // 同步更新循环进度（loopDone）：每完成一张就回传当前已完成张数和总张数，
+            // 便于前端实时显示 “已拍/总拍” 的精细进度，而不是只在最后一次拍摄结束时一次性更新。
+            if (schedule_RepeatNum > 0)
+            {
+                int loopProgress = static_cast<int>(
+                    qMin(100.0, schedule_currentShootNum * 100.0 / static_cast<double>(schedule_RepeatNum)));
+                emit wsThread->sendMessageToClient(
+                    // 专用循环状态信号：ScheduleLoopState:row:loopDone:loopTotal:progress
+                    "ScheduleLoopState:" +
+                    QString::number(schedule_currentNum) + ":" +
+                    QString::number(schedule_currentShootNum) + ":" +
+                    QString::number(schedule_RepeatNum) + ":" +
+                    QString::number(loopProgress));
+            }
 
             if (schedule_currentShootNum < schedule_RepeatNum)
             {
@@ -7485,10 +7733,6 @@ void MainWindow::startCapture(int ExpTime)
             {
                 schedule_currentShootNum = 0;
 
-                // // next schedule...
-                // schedule_currentNum ++;
-                // qDebug() << "next schedule...";
-                // startSchedule();
                 m_scheduList[schedule_currentNum].progress=100;
                 emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));   
                 qDebug() << "Capture Goto Complete...";
@@ -7534,6 +7778,13 @@ void MainWindow::startCapture(int ExpTime)
                     qDebug() << "All captures completed or timeout, move to next schedule...";
                     m_scheduList[schedule_currentNum].progress = 100;
                     emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+                    emit wsThread->sendMessageToClient(
+                        // 专用循环状态信号收尾：全部完成时回传 100%
+                        "ScheduleLoopState:" +
+                        QString::number(schedule_currentNum) + ":" +
+                        QString::number(schedule_RepeatNum) + ":" +
+                        QString::number(schedule_RepeatNum) + ":" +
+                        "100");
                     nextSchedule();
                 }
                 return;
@@ -7551,6 +7802,13 @@ void MainWindow::startCapture(int ExpTime)
                      << ", currentStep:" << currentStep << ", shotProgress:" << shotProgress
                      << ", Capture Progress:" << m_scheduList[schedule_currentNum].progress;
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "exposure:" +
+                QString::number(schedule_currentShootNum) + ":" +
+                QString::number(schedule_RepeatNum) + ":" +
+                QString::number(static_cast<int>(shotProgress * 100.0)));
             captureTimer.start(1000);  // 继续等待
         } });
 
@@ -8419,6 +8677,33 @@ void MainWindow::getStagingScheduleData()
     {
         emit wsThread->sendMessageToClient(StagingScheduleData);
     }
+
+    // 将当前调度列表中的进度同步给前端，便于页面刷新后恢复每一行的执行进度
+    for (int i = 0; i < m_scheduList.size(); ++i)
+    {
+        int progress = m_scheduList[i].progress;
+        if (progress < 0)
+        {
+            progress = 0;
+        }
+        else if (progress > 100)
+        {
+            progress = 100;
+        }
+
+        // 仅对已有进度的行进行同步，避免干扰尚未使用的默认行
+        if (progress > 0)
+        {
+            emit wsThread->sendMessageToClient(
+                "UpdateScheduleProcess:" +
+                QString::number(i) + ":" +
+                QString::number(progress));
+        }
+    }
+
+    // 无论是否有暂存数据，都向前端同步当前计划运行状态
+    emit wsThread->sendMessageToClient(
+        QString("ScheduleRunning:%1").arg(isScheduleRunning ? "true" : "false"));
 }
 
 void MainWindow::getStagingGuiderData()
@@ -11541,6 +11826,17 @@ void MainWindow::startAutoFocus()
         int savedCFWpos = schedule_CFWpos; // 保存当前任务的滤镜位置
         
         isAutoFocus = false;
+        // 如果是计划触发的自动对焦，向前端报告步骤完成（失败）
+        if (wasScheduleTriggered)
+        {
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "autofocus:" +
+                "0:" +
+                "0:" +
+                "100");
+        }
         isScheduleTriggeredAutoFocus = false; // 重置标志
         
         emit wsThread->sendMessageToClient("FitResult:Failed:拟合结果为水平线，未找到最佳焦点");
@@ -11603,6 +11899,18 @@ void MainWindow::startAutoFocus()
         
         // 结束阶段：统一清理自动对焦相关定时器与信号连接
         cleanupAutoFocusConnections();
+        
+        // 如果是计划触发的自动对焦，向前端报告步骤完成
+        if (wasScheduleTriggered)
+        {
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "autofocus:" +
+                "0:" +
+                "0:" +
+                "100");
+        }
         
         // 重置计划任务表触发标志
         isScheduleTriggeredAutoFocus = false;
@@ -11676,6 +11984,14 @@ void MainWindow::startScheduleAutoFocus()
     
     // 标记这是由计划任务表触发的自动对焦
     isScheduleTriggeredAutoFocus = true;
+    // 向前端发送步骤状态：当前行进入自动对焦阶段
+    emit wsThread->sendMessageToClient(
+        "ScheduleStepState:" +
+        QString::number(schedule_currentNum) + ":" +
+        "autofocus:" +
+        "0:" +
+        "0:" +
+        "0");
     
     // 调用通用的自动对焦启动函数
     Logger::Log("计划任务表自动对焦 | 开始执行自动对焦", LogLevel::INFO, DeviceType::MAIN);

@@ -1219,6 +1219,147 @@ QString Tools::readCFWList(QString Name)
     return CFWList;
 }
 
+// ---------- Schedule presets (任务计划表预设) ----------
+void Tools::saveSchedulePreset(const QString &name, const QString &data)
+{
+    // 预设目录：config/schedules
+    std::string baseDir = "config";
+    std::string schedDir = baseDir + "/schedules";
+
+    // 确保主配置目录存在
+    if (!std::filesystem::exists(baseDir))
+    {
+        if (!std::filesystem::create_directory(baseDir))
+        {
+            Logger::Log("saveSchedulePreset | Failed to create config directory: " + baseDir, LogLevel::ERROR, DeviceType::MAIN);
+            return;
+        }
+    }
+
+    // 确保 schedules 子目录存在
+    if (!std::filesystem::exists(schedDir))
+    {
+        if (!std::filesystem::create_directory(schedDir))
+        {
+            Logger::Log("saveSchedulePreset | Failed to create schedules directory: " + schedDir, LogLevel::ERROR, DeviceType::MAIN);
+            return;
+        }
+    }
+
+    // 简单防御性处理：去掉名称中的路径分隔符，避免越权写文件
+    QString safeName = name;
+    safeName.replace(QChar('/'), QChar('_'));
+    safeName.replace(QChar('\\'), QChar('_'));
+    safeName.replace(QChar(':'), QChar('_'));
+
+    std::string filename = schedDir + "/" + safeName.toStdString() + ".sched";
+
+    std::ofstream outfile(filename, std::ios::out | std::ios::trunc);
+    if (!outfile.is_open())
+    {
+        Logger::Log("saveSchedulePreset | Failed to open file for writing: " + filename, LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
+
+    // 直接将原始调度数据写入文件（与 StagingScheduleData: 后面的部分一致）
+    QByteArray utf8 = data.toUtf8();
+    outfile.write(utf8.constData(), utf8.size());
+    outfile.close();
+
+    Logger::Log("saveSchedulePreset | Saved schedule preset: " + filename, LogLevel::DEBUG, DeviceType::MAIN);
+}
+
+QString Tools::readSchedulePreset(const QString &name)
+{
+    std::string schedDir = "config/schedules";
+
+    // 名称清洗
+    QString safeName = name;
+    safeName.replace(QChar('/'), QChar('_'));
+    safeName.replace(QChar('\\'), QChar('_'));
+    safeName.replace(QChar(':'), QChar('_'));
+
+    std::string filename = schedDir + "/" + safeName.toStdString() + ".sched";
+
+    std::ifstream infile(filename, std::ios::in | std::ios::binary);
+    if (!infile.is_open())
+    {
+        Logger::Log("readSchedulePreset | Failed to open preset file: " + filename, LogLevel::ERROR, DeviceType::MAIN);
+        return QString();
+    }
+
+    std::stringstream buffer;
+    buffer << infile.rdbuf();
+    infile.close();
+
+    std::string content = buffer.str();
+    return QString::fromUtf8(content.c_str(), static_cast<int>(content.size()));
+}
+
+QStringList Tools::listSchedulePresets()
+{
+    QStringList names;
+    std::string schedDir = "config/schedules";
+
+    if (!std::filesystem::exists(schedDir))
+    {
+        // 没有目录则视为无预设，直接返回空列表
+        return names;
+    }
+
+    for (const auto &entry : std::filesystem::directory_iterator(schedDir))
+    {
+        if (!entry.is_regular_file())
+            continue;
+
+        std::string path = entry.path().string();
+        std::string ext = entry.path().extension().string();
+        if (ext != ".sched")
+            continue;
+
+        std::string stem = entry.path().stem().string();
+        names.append(QString::fromStdString(stem));
+    }
+
+    return names;
+}
+
+bool Tools::deleteSchedulePreset(const QString &name)
+{
+    std::string schedDir = "config/schedules";
+
+    // 名称清洗，避免路径穿越
+    QString safeName = name;
+    safeName.replace(QChar('/'), QChar('_'));
+    safeName.replace(QChar('\\'), QChar('_'));
+
+    std::string filename = schedDir + "/" + safeName.toStdString() + ".sched";
+
+    try
+    {
+        if (!std::filesystem::exists(filename))
+        {
+            Logger::Log("deleteSchedulePreset | preset file not found: " + filename, LogLevel::WARNING, DeviceType::MAIN);
+            return false;
+        }
+
+        bool ok = std::filesystem::remove(filename);
+        if (!ok)
+        {
+            Logger::Log("deleteSchedulePreset | failed to remove file: " + filename, LogLevel::ERROR, DeviceType::MAIN);
+            return false;
+        }
+
+        Logger::Log("deleteSchedulePreset | removed preset file: " + filename, LogLevel::DEBUG, DeviceType::MAIN);
+        return true;
+    }
+    catch (const std::exception &ex)
+    {
+        Logger::Log(std::string("deleteSchedulePreset | exception: ") + ex.what(), LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+}
+
 void Tools::saveDSLRsInfo(DSLRsInfo DSLRsInfo)
 {
   std::string directory = "config";                 // 配置文件夹名

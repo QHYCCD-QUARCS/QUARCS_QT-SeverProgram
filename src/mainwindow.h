@@ -1027,6 +1027,7 @@ public:
     QString ShootStatus;             // 拍摄状态文本
 
     bool StopSchedule = false;       // 停止调度
+    bool isScheduleRunning = false;  // 当前计划任务是否在运行（用于前端同步）
     bool StopPlateSolve = false;     // 停止解算
     bool MountGotoError = false;     // GOTO 错误
     bool GotoThenSolve = false;      // GOTO 后解算
