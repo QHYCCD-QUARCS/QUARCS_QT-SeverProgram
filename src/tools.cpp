@@ -48,8 +48,9 @@ Tools::~Tools() {
 //   if (polerhandle_ != NULL) CloseQHYCCD(polerhandle_);
 //   ReleaseQHYCCDResource();
 }
-// 静态变量存储最后一次检测的FWHM值
+// 静态变量存储最后一次检测的FWHM值（HFR）和 SNR 值
 static double g_lastHFR = 0.0;
+static double g_lastSNR = 0.0;
 
 bool Tools::findStarsByPython_Process(QString filename)
 {
@@ -117,6 +118,201 @@ bool Tools::findStarsByPython_Process(QString filename)
 double Tools::getLastHFR()
 {
     return g_lastHFR;
+}
+
+bool Tools::findMedianHFRByPython_Process(QString filename)
+{
+    QString program = "python3";
+    QStringList arguments;
+    // 与 findSNRByPython_Process 一致的相对路径约定
+    arguments << "../calculatestars.py" << filename;
+
+    QProcess process;
+    process.start(program, arguments);
+    if (!process.waitForStarted())
+    {
+        qDebug() << "Failed to start the Python median_HFR script.";
+        g_lastHFR = 0.0; // 标记为无效，本次测量不参与拟合
+        return false;
+    }
+
+    // -1: 无限等待直到脚本结束
+    if (!process.waitForFinished(-1))
+    {
+        qDebug() << "Python median_HFR script did not finish.";
+        g_lastHFR = 0.0;
+        return false;
+    }
+
+    QByteArray output = process.readAllStandardOutput();
+    QByteArray errorOutput = process.readAllStandardError();
+
+    if (!errorOutput.isEmpty())
+    {
+        // 仅记录 stderr，某些情况下可能只是警告，不直接视为失败
+        qDebug() << "Stderr from Python median_HFR script:" << errorOutput;
+    }
+
+    qDebug() << "Output from Python median_HFR script:" << output;
+
+    // 解析 Python 脚本输出中的 median_HFR 数值
+    // 典型格式：
+    //   <filename>: median_HFR = 3.1234 像素（基于 N 个星点）
+    QString outputStr = QString::fromUtf8(output);
+    QStringList lines = outputStr.split('\n', Qt::SkipEmptyParts);
+
+    double parsedHFR = 0.0;
+    bool found = false;
+
+    // 从后往前找，优先匹配最后一行结果
+    for (int i = lines.size() - 1; i >= 0; --i)
+    {
+        const QString &line = lines[i];
+        if (line.contains("median_HFR"))
+        {
+            QRegExp rx("median_HFR\\s*=\\s*([-+eE0-9\\.]+)");
+            if (rx.indexIn(line) != -1)
+            {
+                bool ok = false;
+                double val = rx.cap(1).toDouble(&ok);
+                if (ok)
+                {
+                    parsedHFR = val;
+                    found = true;
+                    qDebug() << "解析到 median_HFR 值:" << parsedHFR;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!found)
+    {
+        qDebug() << "未在 Python 输出中找到 median_HFR 有效值，本次记为 0.0（不参与拟合）。";
+        parsedHFR = 0.0;
+    }
+
+    g_lastHFR = parsedHFR;
+    return true;
+}
+
+double Tools::getLastMedianHFR()
+{
+    // 与 getLastHFR 共享同一存储，作为更语义化的别名
+    return g_lastHFR;
+}
+
+/**
+ * @brief 使用新的 findstars.py 脚本计算 SNR（基于所有星点 peak_snr 的平均值）
+ * @param filename FITS 文件路径
+ * @return 是否执行成功（成功则可通过 getLastSNR() 获取数值）
+ */
+bool Tools::findSNRByPython_Process(QString filename)
+{
+    QString program = "python3";
+    QStringList arguments;
+    arguments << "../findstars.py" << filename;
+
+    QProcess process;
+    process.start(program, arguments);
+    if (!process.waitForStarted())
+    {
+        qDebug() << "Failed to start the Python SNR script.";
+        return false;
+    }
+
+    if (!process.waitForFinished(-1)) // -1: wait indefinitely
+    {
+        qDebug() << "Python SNR script did not finish.";
+        return false;
+    }
+
+    QByteArray output = process.readAllStandardOutput();
+    QByteArray errorOutput = process.readAllStandardError();
+
+    if (!errorOutput.isEmpty())
+    {
+        qDebug() << "Error from Python SNR script:" << errorOutput;
+        // 仅记录错误，不直接返回，让我们尝试从 stdout 解析（某些情况下 stderr 里只是警告）
+    }
+
+    qDebug() << "Output from Python SNR script:" << output;
+
+    // 解析 Python 脚本输出中的 SNR 数值
+    QString outputStr = QString::fromUtf8(output);
+    QStringList lines = outputStr.split('\n', Qt::SkipEmptyParts);
+
+    // 新版脚本对每个文件会额外输出一行标准化结果：
+    //   result=0.123456
+    // 为保证兼容旧版，实现两级解析策略：
+    //   1）优先解析 "result=" 行；
+    //   2）找不到时回退解析旧格式 "avg_top50_snr" 行。
+    double parsedSNR = 0.0;
+    bool found = false;
+
+    // 优先解析标准化结果：result=<value>
+    for (int i = lines.size() - 1; i >= 0; --i)
+    {
+        const QString &line = lines[i];
+        if (line.contains("result"))
+        {
+            QRegExp rx("result\\s*=\\s*([-+eE0-9\\.]+)");
+            if (rx.indexIn(line) != -1)
+            {
+                bool ok = false;
+                double val = rx.cap(1).toDouble(&ok);
+                if (ok)
+                {
+                    parsedSNR = val;
+                    found = true;
+                    qDebug() << "解析到标准化 mean_snr 值:" << parsedSNR;
+                    break;
+                }
+            }
+        }
+    }
+
+    // 回退解析旧格式：<filename>: avg_top50_snr = ...
+    if (!found)
+    {
+        // 脚本对每个文件的旧输出形如：
+        //   <filename>: avg_top50_snr = 0.123456
+        // 这里我们从后往前寻找包含 "avg_top50_snr" 的行
+        for (int i = lines.size() - 1; i >= 0; --i)
+        {
+            const QString &line = lines[i];
+            if (line.contains("avg_top50_snr"))
+            {
+                QRegExp rx("avg_top50_snr\\s*=\\s*([-+eE0-9\\.]+)");
+                if (rx.indexIn(line) != -1)
+                {
+                    bool ok = false;
+                    double val = rx.cap(1).toDouble(&ok);
+                    if (ok)
+                    {
+                        parsedSNR = val;
+                        found = true;
+                        qDebug() << "解析到 avg_top50_snr 值(兼容旧格式):" << parsedSNR;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!found)
+    {
+        qDebug() << "未在 Python 输出中找到有效的 SNR 数值（既无 result= 也无 avg_top50_snr），使用 0 作为占位。";
+        parsedSNR = 0.0;
+    }
+
+    g_lastSNR = parsedSNR;
+    return true;
+}
+
+double Tools::getLastSNR()
+{
+    return g_lastSNR;
 }
 void Tools::Initialize() { instance_ = new Tools; }
 

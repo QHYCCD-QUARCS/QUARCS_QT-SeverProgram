@@ -420,6 +420,26 @@ void MainWindow::onMessageReceived(const QString &message)
             autofocusBacklashCompensation = Backlash;
         }
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "AutoFocus Exposure Time (ms)")
+    {
+        QString valueStr = parts[1].trimmed();
+        int exposureMs = valueStr.toInt();
+        if (exposureMs <= 0)
+        {
+            exposureMs = 1000;
+        }
+
+        autoFocusExposureTime = exposureMs;
+
+        Logger::Log("AutoFocus Exposure Time (ms) is set to " + std::to_string(autoFocusExposureTime),
+                    LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("Focuser", "AutoFocusExposureTime(ms)", valueStr);
+
+        if (autoFocus != nullptr)
+        {
+            autoFocus->setDefaultExposureTime(autoFocusExposureTime);
+        }
+    }
     else if (parts.size() == 3 && parts[0].trimmed() == "setROIPosition")
     {
         Logger::Log("setROIPosition:" + parts[1].trimmed().toStdString() + "*" + parts[2].trimmed().toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -436,23 +456,33 @@ void MainWindow::onMessageReceived(const QString &message)
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
     }
 
-    else if (message.startsWith("AutoFocusConfirm:Yes")) // [AUTO_FOCUS_UI_ENHANCEMENT]
+    else if (message.startsWith("AutoFocusConfirm:")) // [AUTO_FOCUS_UI_ENHANCEMENT]
     {
+        const QString prefix = "AutoFocusConfirm:";
+        QString mode = message.mid(prefix.length()).trimmed();
+
         // 发送自动对焦开始事件到前端
-        if (isAutoFocus) {
-            Logger::Log("AutoFocus already started", LogLevel::INFO, DeviceType::MAIN);
-            return;
+        if (mode.compare("No", Qt::CaseInsensitive) != 0) {
+            if (isAutoFocus) {
+                Logger::Log("AutoFocus already started", LogLevel::INFO, DeviceType::MAIN);
+                return;
+            }
         }
-        emit wsThread->sendMessageToClient("AutoFocusStarted:自动对焦已开始");
-        startAutoFocus();
-        isAutoFocus = true;
-        autoFocusStep = 0;
-    }
-    else if (message == "AutoFocusConfirm:No") // [AUTO_FOCUS_UI_ENHANCEMENT]
-    {
-        Logger::Log("用户取消自动对焦", LogLevel::INFO, DeviceType::MAIN);
-        // 发送取消确认到前端
-        emit wsThread->sendMessageToClient("AutoFocusCancelled:用户已取消自动对焦");
+
+        if (mode.isEmpty() || mode == "Yes" || mode == "Coarse") {
+            // 完整自动对焦流程：粗调 + 精调 + super-fine
+            emit wsThread->sendMessageToClient("AutoFocusStarted:自动对焦已开始");
+            startAutoFocus();
+        }
+        else if (mode == "Fine") {
+            // 仅从当前位置进行 super-fine 精调
+            emit wsThread->sendMessageToClient("AutoFocusStarted:自动对焦已开始");
+            startAutoFocusSuperFineOnly();
+        }
+        else { // No 或未知模式，视为取消
+            Logger::Log("用户取消自动对焦", LogLevel::INFO, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("AutoFocusCancelled:用户已取消自动对焦");
+        }
     }
     else if (message == "StopAutoFocus")
     {
@@ -11267,7 +11297,7 @@ void MainWindow::startAutoFocus()
     }
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
-    autoFocus->setDefaultExposureTime(1000); // 1s曝光
+    autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
     autoFocus->setUseVirtualData(false);      // 使用虚拟数据
     
     // 设置空程补偿
@@ -11474,6 +11504,226 @@ void MainWindow::startAutoFocus()
     }));
 
     autoFocus->startAutoFocus();
+    isAutoFocus = true;
+    autoFocusStep = 0;
+}
+
+void MainWindow::startAutoFocusSuperFineOnly()
+{
+    if (dpFocuser == NULL || dpMainCamera == NULL)
+    {
+        Logger::Log("AutoFocus (super-fine only) | 调焦器或相机未连接", LogLevel::WARNING, DeviceType::FOCUSER);
+        isAutoFocus = false;
+        emit wsThread->sendMessageToClient("AutoFocusOver:false");
+        return;
+    }
+
+    // 预处理：统一清理自动对焦相关定时器与信号连接，避免残留或重复
+    cleanupAutoFocusConnections();
+
+    if (autoFocus == nullptr)
+    {
+        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, wsThread,this);
+    }
+    else
+    {
+        // 停止旧对象并清理信号连接
+        autoFocus->stopAutoFocus();
+        cleanupAutoFocusConnections();
+        autoFocus->deleteLater();
+        autoFocus = nullptr;
+        autoFocus = new AutoFocus(indi_Client, dpFocuser, dpMainCamera, wsThread,this);
+    }
+
+    // 与常规自动对焦保持一致的参数配置
+    autoFocus->setFocuserMinPosition(focuserMinPosition);
+    autoFocus->setFocuserMaxPosition(focuserMaxPosition);
+    autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
+    autoFocus->setUseVirtualData(false);      // 使用虚拟数据
+
+    // 设置空程补偿
+    if (autofocusBacklashCompensation > 0) {
+        autoFocus->setBacklashCompensation(autofocusBacklashCompensation, autofocusBacklashCompensation);
+        autoFocus->setUseBacklashCompensation(true);
+        Logger::Log(QString("设置自动对焦空程补偿: %1步").arg(autofocusBacklashCompensation).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+    } else {
+        autoFocus->setUseBacklashCompensation(false);
+        Logger::Log("自动对焦不使用空程补偿", LogLevel::INFO, DeviceType::FOCUSER);
+    }
+
+    // 复用与 startAutoFocus 相同的信号连接
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::roiInfoChanged, this, [this](const QRect &roi)
+            {
+        if (roi.width() == 0 && roi.height() == 0){
+            roiAndFocuserInfo["ROI_x"] = 0;
+            roiAndFocuserInfo["ROI_y"] = 0;
+            roiAndFocuserInfo["BoxSideLength"] = 300;
+            autoFocuserIsROI = false;
+        }else{
+            roiAndFocuserInfo["ROI_x"] = roi.x();
+            roiAndFocuserInfo["ROI_y"] = roi.y();
+            roiAndFocuserInfo["BoxSideLength"] = roi.width();
+            autoFocuserIsROI = true;
+        } }));
+
+    // 连接二次拟合结果信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::focusFitUpdated, this, [this](double a, double b, double c, double bestPosition, double minFWHM)
+            {
+        Logger::Log(QString("接收到focusFitUpdated信号: a=%1, b=%2, c=%3, bestPosition=%4, minFWHM=%5")
+                   .arg(a).arg(b).arg(c).arg(bestPosition).arg(minFWHM).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 发送二次曲线数据到前端
+        QString curveData = QString("fitQuadraticCurve:%1:%2:%3:%4:%5")
+                           .arg(a, 0, 'g', 15)  // 使用科学计数法，保留15位有效数字，确保小系数不被截断
+                           .arg(b, 0, 'g', 15)
+                           .arg(c, 0, 'g', 15)
+                           .arg(bestPosition, 0, 'f', 2)
+                           .arg(minFWHM, 0, 'f', 3);
+        
+        Logger::Log(QString("发送二次曲线数据: %1").arg(curveData).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(curveData);
+        
+        // 发送最佳位置点数据
+        QString minPointData = QString("fitQuadraticCurve_minPoint:%1:%2")
+                              .arg(bestPosition, 0, 'f', 2)
+                              .arg(minFWHM, 0, 'f', 3);
+        
+        Logger::Log(QString("发送最小点数据: %1").arg(minPointData).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(minPointData);
+        
+        Logger::Log(QString("二次拟合结果发送完成").toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+    }));
+
+    // 连接数据点信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::focusDataPointReady, this, [this](int position, double fwhm, const QString &stage)
+            {
+        Logger::Log(QString("接收到数据点: position=%1, fwhm=%2, stage=%3")
+                   .arg(position).arg(fwhm).arg(stage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 发送数据点到前端
+        QString dataPointMessage = QString("FocusMoveDone:%1:%2")
+                                 .arg(position).arg(fwhm);
+        
+        Logger::Log(QString("发送数据点: %1").arg(dataPointMessage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(dataPointMessage);
+    }));
+
+    // 连接自动对焦失败信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autofocusFailed, this, [this]()
+            {
+        Logger::Log("自动对焦失败，发送提示消息到前端", LogLevel::ERROR, DeviceType::FOCUSER);
+        
+        // 检查是否是由计划任务表触发的自动对焦
+        bool wasScheduleTriggered = isScheduleTriggeredAutoFocus;
+        int savedCFWpos = schedule_CFWpos; // 保存当前任务的滤镜位置
+        
+        isAutoFocus = false;
+        isScheduleTriggeredAutoFocus = false; // 重置标志
+        
+        emit wsThread->sendMessageToClient("FitResult:Failed:拟合结果为水平线，未找到最佳焦点");
+        
+        // 如果是由计划任务表触发的自动对焦失败，仍然继续执行拍摄任务
+        if (wasScheduleTriggered)
+        {
+            Logger::Log("计划任务表触发的自动对焦失败，但仍继续执行拍摄任务", LogLevel::WARNING, DeviceType::MAIN);
+            qDebug() << "Schedule-triggered autofocus failed, but continuing with CFW setup...";
+            
+            // 检查是否已停止计划任务表
+            if (StopSchedule)
+            {
+                Logger::Log("计划任务表已停止，不再继续执行拍摄任务", LogLevel::INFO, DeviceType::MAIN);
+                StopSchedule = false;
+                return;
+            }
+            
+            // 继续执行设置滤镜和拍摄
+            startSetCFW(savedCFWpos);
+        }
+    }));
+
+    // 连接星点识别结果信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::starDetectionResult, this, [this](bool detected, double fwhm)
+            {
+        if (detected) {
+            Logger::Log(QString("识别到星点，FWHM为: %1").arg(fwhm).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient(QString("StarDetectionResult:true:%1").arg(fwhm));
+        } else {
+            Logger::Log("未识别到星点", LogLevel::INFO, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("StarDetectionResult:false:0");
+        }
+    }));
+
+    // 连接自动对焦模式变化信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autoFocusModeChanged, this, [this](const QString &mode, double fwhm)
+            {
+        Logger::Log(QString("自动对焦模式变化: %1, FWHM: %2").arg(mode).arg(fwhm).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(QString("AutoFocusModeChanged:%1:%2").arg(mode).arg(fwhm));
+    }));
+
+    // 连接自动对焦步骤变化信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autoFocusStepChanged, this, [this](int step, const QString &description)
+            {
+        Logger::Log(QString("自动对焦步骤变化: 步骤%1 - %2").arg(step).arg(description).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(QString("AutoFocusStepChanged:%1:%2").arg(step).arg(description));
+    }));
+
+    // 连接自动对焦完成信号
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autoFocusCompleted, this, [this](bool success, double bestPosition, double minHFR)
+            {
+        Logger::Log(QString("自动对焦完成: success=%1, bestPosition=%2, minHFR=%3")
+                   .arg(success).arg(bestPosition).arg(minHFR).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        
+        // 检查是否是由计划任务表触发的自动对焦
+        bool wasScheduleTriggered = isScheduleTriggeredAutoFocus;
+        int savedCFWpos = schedule_CFWpos; // 保存当前任务的滤镜位置
+        
+        // 结束阶段：统一清理自动对焦相关定时器与信号连接
+        cleanupAutoFocusConnections();
+        
+        // 重置计划任务表触发标志
+        isScheduleTriggeredAutoFocus = false;
+        
+        // 发送自动对焦完成消息到前端
+        QString completeMessage = QString("AutoFocusOver:%1:%2:%3")
+                                .arg(success ? "true" : "false")
+                                .arg(bestPosition, 0, 'f', 2)
+                                .arg(minHFR, 0, 'f', 3);
+        
+        Logger::Log(QString("发送自动对焦完成消息: %1").arg(completeMessage).toStdString(), 
+                   LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(completeMessage);
+        isAutoFocus = false;
+        
+        // 发送自动对焦结束事件到前端 - [AUTO_FOCUS_UI_ENHANCEMENT]
+        emit wsThread->sendMessageToClient("AutoFocusEnded:自动对焦已结束");
+        
+        // 如果是由计划任务表触发的自动对焦，完成后继续执行拍摄任务
+        if (wasScheduleTriggered)
+        {
+            Logger::Log("计划任务表触发的自动对焦已完成，继续执行拍摄任务", LogLevel::INFO, DeviceType::MAIN);
+            qDebug() << "Schedule-triggered autofocus completed, continuing with CFW setup...";
+            
+            // 检查是否已停止计划任务表
+            if (StopSchedule)
+            {
+                Logger::Log("计划任务表已停止，不再继续执行拍摄任务", LogLevel::INFO, DeviceType::MAIN);
+                StopSchedule = false;
+                return;
+            }
+            
+            // 继续执行设置滤镜和拍摄
+            startSetCFW(savedCFWpos);
+        }
+    }));
+
+    autoFocus->startSuperFineFromCurrentPosition();
     isAutoFocus = true;
     autoFocusStep = 0;
 }

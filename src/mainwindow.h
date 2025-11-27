@@ -638,6 +638,7 @@ public:
     int focuserMaxPosition = -1;   // 行程上限
     int focuserMinPosition = -1;   // 行程下限
     int autofocusBacklashCompensation = 0; // 自动对焦空程补偿值
+    int autoFocusExposureTime = 1000;      // 自动对焦曝光时间(ms)，仅作用于自动对焦流程
 
     // 固定步数移动状态与看门狗
     bool isStepMoving = false;         // 是否正在执行一次固定步数移动
@@ -734,6 +735,7 @@ public:
      * @brief 启动自动对焦流程
      */
     void startAutoFocus();
+    void startAutoFocusSuperFineOnly();
     
     /**
      * @brief 启动计划任务表触发的自动对焦

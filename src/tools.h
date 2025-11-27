@@ -381,6 +381,24 @@ class Tools : public QObject {
   static bool findStarsByPython_Process(QString filename);
   static double getLastHFR();
 
+  /**
+   * @brief 使用 calculatestars.py 脚本计算单张 FITS 图像的 median_HFR
+   * @param filename FITS 文件路径
+   * @return 是否成功启动并运行脚本（即使未解析到有效数值也返回 true，由上层根据返回的数值是否大于0决定是否参与拟合）
+   */
+  static bool findMedianHFRByPython_Process(QString filename);
+
+  /**
+   * @brief 获取最近一次通过 calculatestars.py 计算得到的 median_HFR
+   *
+   * 目前内部与 getLastHFR() 共享同一存储（g_lastHFR），只是提供一个语义更清晰的别名。
+   */
+  static double getLastMedianHFR();
+
+  // 使用新的 findstars.py 脚本计算 avg_top50_snr（用于粗调/精调）
+  static bool findSNRByPython_Process(QString filename);
+  static double getLastSNR();
+
   static loadFitsResult loadFits(QString fileName);
 
   static void SaveMatTo8BitJPG(cv::Mat image);

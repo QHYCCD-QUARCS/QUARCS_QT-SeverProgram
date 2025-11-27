@@ -17,6 +17,13 @@
 #include "Logger.h"  // Logger类
 #include <stellarsolver.h> // FITSImage类来自stellarsolver
 
+// ==================== 调试开关 ====================
+// 如果希望用本地测试文件 /home/quarcs/FOCUSTEST/1.fits ~ 10.fits
+// 来循环模拟粗调/精调阶段的 SNR 计算，把下面这一行保持为 1。
+// 如果要恢复正常模式（使用实时拍摄的 /dev/shm/ccd_simulator.fits），
+// 请将 AUTOFOCUS_SNR_TEST_MODE 改为 0 后重新编译。
+#define AUTOFOCUS_SNR_TEST_MODE 1
+
 // ==================== 自动对焦配置结构体 ====================
 struct AutoFocusConfig {
     // HFR相关参数
@@ -145,6 +152,8 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_moveCheckTargetPosition(0)                 // 移动检查目标位置
     , m_moveCheckTolerance(5)                      // 移动检查容差
     , m_lastFitResult()                            // 初始化拟合结果
+    , m_coarseBestSNR(-1.0)                        // 粗调阶段最佳 SNR
+    , m_fineBestSNR(-1.0)                          // 精调阶段最佳 SNR
     , m_useVirtualData(false)                      // 默认不使用虚拟数据
     , m_starSimulator(nullptr)                     // 星图模拟器指针
     , m_virtualImagePath("")                       // 虚拟图像路径
@@ -325,39 +334,32 @@ AutoFocus::~AutoFocus()
 }
 
 /**
- * @brief 开始自动对焦流程
- * 
- * 这是自动对焦的主要入口函数，执行以下步骤：
- * 1. 检查是否已在运行
- * 2. 检查电调连接状态
- * 3. 初始化所有参数
- * 4. 启动定时器开始状态机处理
+ * @brief 公共初始化逻辑：设备检查 + 成员状态重置 + 行程范围与当前位置读取
  */
-void AutoFocus::startAutoFocus()
+bool AutoFocus::initializeAutoFocusCommon()
 {
-    
     if (m_isRunning) {
         log(QString("自动对焦已在运行中"));
-        return;
+        return false;
     }
 
     // 检查设备对象是否有效
     if (!m_dpFocuser) {
         log(QString("错误: 电调设备对象为空，无法开始自动对焦"));
         emit errorOccurred("电调设备未连接");
-        return;
+        return false;
     }
     
     if (!m_dpMainCamera) {
         log(QString("错误: 主相机设备对象为空，无法开始自动对焦"));
         emit errorOccurred("主相机设备未连接");
-        return;
+        return false;
     }
     
     if (!m_indiServer) {
         log(QString("错误: INDI客户端对象为空，无法开始自动对焦"));
         emit errorOccurred("INDI客户端未连接");
-        return;
+        return false;
     }
     
     // 初始化所有参数，确保回调函数访问时不会出现段错误
@@ -426,10 +428,19 @@ void AutoFocus::startAutoFocus()
     m_indiServer->getFocuserAbsolutePosition(m_dpFocuser, currentPos);
     m_currentPosition = currentPos;
     log(QString("当前电调位置: %1").arg(m_currentPosition));
-    
 
-    
-    
+    return true;
+}
+
+/**
+ * @brief 开始自动对焦流程（完整流程：检查星点→粗调→精调→super-fine）
+ */
+void AutoFocus::startAutoFocus()
+{
+    if (!initializeAutoFocusCommon()) {
+        return;
+    }
+
     // 切换到初始状态
     changeState(AutoFocusState::CHECKING_STARS);
     updateAutoFocusStep(1, "Please observe if the camera has started shooting the full image. If it has started shooting, please wait for the shooting to complete"); // [AUTO_FOCUS_UI_ENHANCEMENT]
@@ -447,6 +458,53 @@ void AutoFocus::startAutoFocus()
     
     emit stateChanged(AutoFocusState::CHECKING_STARS);
     log("自动对焦流程已启动");
+}
+
+/**
+ * @brief 仅从当前位置开始 super-fine 精调（跳过前面的粗调/精调阶段）
+ */
+void AutoFocus::startSuperFineFromCurrentPosition()
+{
+    if (!initializeAutoFocusCommon()) {
+        return;
+    }
+
+    // 以当前位置作为 super-fine 的中心
+    int currentPos = getCurrentFocuserPosition();
+    const int minPos = m_focuserMinPosition;
+    const int maxPos = m_focuserMaxPosition;
+    currentPos = std::clamp(currentPos, minPos, maxPos);
+
+    m_currentPosition = currentPos;
+    m_fineBestPosition = currentPos;
+    m_fineBestSNR = -1.0;
+
+    // 为直接进入 super-fine 的场景显式设置精调 / super-fine 步距
+    // 与 startFineAdjustment 中保持一致：精调步距约为总行程的 2%，
+    // 而 super-fine 步距在 startSuperFineAdjustment 中会取 m_fineStepSpan 的一半，
+    // 也就是大约总行程的 1%。
+    const int totalRange = std::max(1, maxPos - minPos);
+    m_fineStepSpan = std::max(1, static_cast<int>(std::round(totalRange * 0.02)));
+
+    log(QString("从当前位置启动 super-fine 精调，当前位置: %1，精调步距≈%2 步（总行程约 2%%）")
+            .arg(m_currentPosition)
+            .arg(m_fineStepSpan));
+
+    // 直接进入 super-fine 阶段
+    startSuperFineAdjustment();
+
+    // 启动定时器驱动状态机
+    if (m_timer) {
+        m_timer->start(100); // 100ms间隔
+        log("定时器已启动，开始 super-fine 自动对焦流程");
+    } else {
+        log("错误: 定时器对象为空");
+        m_isRunning = false;
+        emit errorOccurred("定时器初始化失败");
+        return;
+    }
+
+    log("super-fine 自动对焦流程已启动");
 }
 
 void AutoFocus::stopAutoFocus()
@@ -590,7 +648,15 @@ void AutoFocus::getAutoFocusStep()
     else if (m_currentState == AutoFocusState::FINE_ADJUSTMENT)
     {
         updateAutoFocusStep(3, "Fine adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the fine adjustment to complete");
-    }else {
+    }
+    else if (m_currentState == AutoFocusState::SUPER_FINE_ADJUSTMENT
+             || m_currentState == AutoFocusState::FITTING_DATA
+             || m_currentState == AutoFocusState::MOVING_TO_BEST_POSITION)
+    {
+        updateAutoFocusStep(4, "Super fine adjustment in progress. The system is performing precise HFR-based fitting, please wait for the final best focus position.");
+    }
+    else {
+        // 其他状态默认按精调阶段提示
         updateAutoFocusStep(3, "Fine adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the fine adjustment to complete");
     }
 }
@@ -975,6 +1041,9 @@ void AutoFocus::processCurrentState()
         break;
     case AutoFocusState::FINE_ADJUSTMENT:
         processFineAdjustment();             // 精调状态
+        break;
+    case AutoFocusState::SUPER_FINE_ADJUSTMENT:
+        processSuperFineAdjustment();        // 更细致精调状态
         break;
     case AutoFocusState::COLLECTING_DATA:
         collectFocusData();                  // 收集数据状态
@@ -1463,10 +1532,12 @@ void AutoFocus::startCoarseAdjustment()
 {
     emit focusSeriesReset(QStringLiteral("coarse"));
 
-changeState(AutoFocusState::COARSE_ADJUSTMENT);
+    changeState(AutoFocusState::COARSE_ADJUSTMENT);
     updateAutoFocusStep(2, "Coarse adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the coarse adjustment to complete"); // [AUTO_FOCUS_UI_ENHANCEMENT]
     m_focusData.clear();
     m_dataCollectionCount = 0;
+    m_coarseBestSNR = -1.0;
+    m_coarseHasValidSNR = false;  // 粗调开始时尚未发现任何有效 SNR
 
     // 从INI配置的最大、最小范围生成11个位置：从最大到最小
     const int minPos = m_focuserMinPosition;
@@ -1484,8 +1555,22 @@ changeState(AutoFocusState::COARSE_ADJUSTMENT);
         if (m_coarseScanPositions.isEmpty() || m_coarseScanPositions.last() != p)
             m_coarseScanPositions.push_back(p);
     }
+    // 限制粗调总采样点数不超过 10 个
+    if (m_coarseScanPositions.size() > 10) {
+        QVector<int> limited;
+        int total = m_coarseScanPositions.size();
+        int desired = 10;
+        for (int i = 0; i < desired; ++i) {
+            int idx = static_cast<int>(std::round(i * (total - 1.0) / (desired - 1.0)));
+            idx = std::clamp(idx, 0, total - 1);
+            int p = m_coarseScanPositions[idx];
+            if (limited.isEmpty() || limited.last() != p)
+                limited.push_back(p);
+        }
+        m_coarseScanPositions = limited;
+    }
+
     m_coarseScanIndex = 0;
-    m_coarseBestHFR = std::numeric_limits<double>::infinity();
     m_coarseBestPosition = maxPos;
 
     Logger::Log(QString("开始粗调：范围[%1, %2]，步进=%3，共%4个采样点")
@@ -1524,27 +1609,43 @@ void AutoFocus::processCoarseAdjustment()
 
 void AutoFocus::performCoarseDataCollection()
 {
-// 立即检查运行状态
+    // 立即检查运行状态
     if (!m_isRunning) {
         log("自动对焦已停止，跳过粗调数据收集");
         return;
     }
 
     if (m_coarseScanIndex >= m_coarseScanPositions.size()) {
-        // 粗调结束，移动到最优位置并进入精调
-        if (std::isfinite(m_coarseBestHFR)) {
-            emit focusBestMovePlanned(m_coarseBestPosition, QStringLiteral("coarse"));
+        // 所有粗调采样点已完成，先检查是否存在任何有效 SNR
+        if (!m_coarseHasValidSNR) {
+            // 说明本轮粗调中的每一张星图识别结果都是 0（无有效星点）
+            Logger::Log("粗调阶段所有采样点的 SNR 均为 0 或无效，判定本次对焦失败", LogLevel::ERROR, DeviceType::FOCUSER);
+            emit autofocusFailed();
+            // 结束自动对焦流程，不再进入精调
+            completeAutoFocus(false);
+            return;
+        }
 
-            Logger::Log(QString("粗调完成：最小HFR=%1，位置=%2").arg(m_coarseBestHFR).arg(m_coarseBestPosition).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
-            if (beginMoveTo(m_coarseBestPosition, "粗调完成，移动到最优位置")) {
-                // 切到精调状态；等待到位后，onTimerTimeout会调用performFineDataCollection()
-                startFineAdjustment();
-            } else {
-                // 无需移动也直接开始精调
-                startFineAdjustment();
-            }
+        // 粗调结束，存在至少一个有效 SNR，移动到 SNR 最佳位置并进入精调
+        if (m_coarseBestSNR < 0.0) {
+            // 理论上 m_coarseHasValidSNR==true 时不应出现此情况，但仍做保护
+            int current = getCurrentFocuserPosition();
+            m_coarseBestPosition = current;
+            Logger::Log("粗调阶段未正确记录最佳 SNR 位置，回退使用当前位置作为精调起点", LogLevel::WARNING, DeviceType::FOCUSER);
+        }
+
+        emit focusBestMovePlanned(m_coarseBestPosition, QStringLiteral("coarse"));
+
+        Logger::Log(QString("粗调完成：最佳 SNR=%1，位置=%2")
+            .arg(m_coarseBestSNR).arg(m_coarseBestPosition).toStdString(),
+            LogLevel::INFO, DeviceType::FOCUSER);
+
+        if (beginMoveTo(m_coarseBestPosition, "粗调完成，移动到 SNR 最优位置")) {
+            // 切到精调状态；等待到位后，onTimerTimeout 会调用 performFineDataCollection()
+            startFineAdjustment();
         } else {
-            handleError("粗调未获得有效的HFR数据");
+            // 无需移动也直接开始精调
+            startFineAdjustment();
         }
         return;
     }
@@ -1564,79 +1665,47 @@ void AutoFocus::performCoarseDataCollection()
     if (!captureFullImage()) { handleError("拍摄图像失败"); return; }
     if (!waitForCaptureComplete()) { handleError("拍摄超时"); return; }
 
-    // 通过Python检测并得到HFR
-    double hfr = 0.0;
-    bool ok = detectHFRByPython(hfr);
-    if (!ok) {
-        Logger::Log("该位置未识到星点或Python脚本执行失败，使用占位值", LogLevel::INFO, DeviceType::FOCUSER);
-        // 发送未识别到星点的弹窗消息
+    // 通过 Python 脚本计算 avg_top50_snr
+    double snr = 0.0;
+    bool ok = detectSNRByPython(snr);
+    if (!ok || !std::isfinite(snr) || snr <= 0.0) {
+        Logger::Log("该位置未识到有效 SNR 或 Python SNR 脚本执行失败，使用占位值 0", LogLevel::INFO, DeviceType::FOCUSER);
         emit starDetectionResult(false, 0.0);
-        hfr = 999.0; // 作为占位，不参与最佳选择
-    } else if (hfr <= 0 || !std::isfinite(hfr)) {
-        Logger::Log(QString("HFR值无效: %1，使用占位值").arg(hfr).toStdString(), LogLevel::WARNING, DeviceType::FOCUSER);
-        // 发送未识别到星点的弹窗消息
-        emit starDetectionResult(false, 0.0);
-        hfr = 999.0;
-    } else if (hfr >= 100.0) {
-        // HFR值过大，视为未检测到星点
-        Logger::Log(QString("HFR值%1过大(>=100)，视为未检测到星点").arg(hfr).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
-        // 发送未识别到星点的弹窗消息
-        emit starDetectionResult(false, 0.0);
-        m_lastHFR = hfr;
-        // 不记录此数据点，直接跳到下一个
-        m_coarseScanIndex++;
-        if (m_coarseScanIndex >= m_coarseScanPositions.size()) {
-            // 粗调数据收集完成
-            processCoarseAdjustment();
-        } else {
-            // 继续下一个点
-            int nextTarget = m_coarseScanPositions[m_coarseScanIndex];
-            if (beginMoveTo(nextTarget, QString("粗调移动到位置%1").arg(nextTarget))) {
-                // 移动成功，等待到位后继续
-            } else {
-                handleError("粗调移动失败");
-            }
-        }
-        return;
+        snr = 0.0;
     } else {
-        // 识别到星点，发送HFR值
-        Logger::Log(QString("识别到星点，HFR为: %1").arg(hfr).toStdString(), LogLevel::INFO, DeviceType::FOCUSER);
-        emit starDetectionResult(true, hfr);
+        Logger::Log(QString("粗调位置检测到 mean_peak_snr: %1").arg(snr).toStdString(),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+        emit starDetectionResult(true, snr);
+        // 标记本轮粗调存在至少一个 SNR>0 的有效位置
+        if (snr > 0.0) {
+            m_coarseHasValidSNR = true;
+        }
     }
 
-    
-    m_lastHFR = hfr;
-// 记录数据
-    FocusDataPoint dp(target, hfr);
+    // 发送 SNR 结果到前端
+    if (m_wsThread) {
+        QString msg = QString("AutoFocusSNR:coarse:%1:%2:%3")
+                          .arg(m_coarseScanIndex + 1)
+                          .arg(target)
+                          .arg(snr, 0, 'f', 6);
+        emit m_wsThread->sendMessageToClient(msg);
+    }
+
+    // 记录数据（此处 hfr 字段存放 SNR，仅用于日志与调试，不参与拟合）
+    FocusDataPoint dp(target, snr);
     m_focusData.append(dp);
     m_dataCollectionCount++;
     // 粗调阶段不发送数据点到前端，避免干扰精调拟合
     // emit focusDataPointReady(target, fwhm, QStringLiteral("coarse"));
 
-    Logger::Log(QString("粗调数据点%1/%2：位置=%3，HFR=%4，当前最佳HFR=%5")
-        .arg(m_coarseScanIndex+1).arg(m_coarseScanPositions.size()).arg(target).arg(hfr).arg(m_coarseBestHFR).toStdString(), 
+    Logger::Log(QString("粗调数据点%1/%2：位置=%3，SNR=%4，当前最佳SNR=%5")
+        .arg(m_coarseScanIndex+1).arg(m_coarseScanPositions.size()).arg(target).arg(snr).arg(m_coarseBestSNR).toStdString(), 
         LogLevel::INFO, DeviceType::FOCUSER);
 
-    // 只在识到星点时更新最优值
-    if (ok && hfr < m_coarseBestHFR) {
-        m_coarseBestHFR = hfr;
+    // 更新最佳 SNR 位置（只在识到有效 SNR 时）
+    if (ok && snr > m_coarseBestSNR) {
+        m_coarseBestSNR = snr;
         m_coarseBestPosition = target;
-    }
-
-    // 检查HFR趋势：如果当前HFR比最佳HFR大，说明焦点开始远离，提前结束粗调
-    if (ok && std::isfinite(m_coarseBestHFR) && hfr > m_coarseBestHFR) {
-        Logger::Log(QString("检测到HFR增大：当前HFR=%1 > 最佳HFR=%2，提前结束粗调")
-            .arg(hfr).arg(m_coarseBestHFR).toStdString(), 
-            LogLevel::INFO, DeviceType::FOCUSER);
-        
-        // 直接移动到最佳位置并进入精调
-        if (beginMoveTo(m_coarseBestPosition, "检测到HFR增大，提前结束粗调")) {
-            startFineAdjustment();
-        } else {
-            // 无需移动也直接开始精调
-            startFineAdjustment();
-        }
-        return;
     }
 
     // 下一个位置
@@ -1665,10 +1734,105 @@ void AutoFocus::performFineDataCollection()
     }
 
     if (m_fineScanIndex >= m_fineScanPositions.size()) {
-        // 全部采样完毕 —— 进入拟合阶段
-        log(QString("精调采样完成（共%1点），开始拟合HFR二次曲线")
-            .arg(m_fineScanPositions.size()));
-        changeState(AutoFocusState::FITTING_DATA);
+        // 全部采样完毕 —— 优先尝试基于 SNR 的二次曲线拟合，得到更精确的 super-fine 起点；
+        // 如拟合失败或质量较差，则退回到“直接取最大 SNR 点”的逻辑。
+        if (!m_fineFocusData.isEmpty()) {
+            // 构造 SNR 数据点：x = focuserPosition, y = SNR (暂存于 hfr 字段)
+            QVector<QPointF> snrPoints;
+            snrPoints.reserve(m_fineFocusData.size());
+            double minPos = std::numeric_limits<double>::max();
+            double maxPos = std::numeric_limits<double>::lowest();
+            for (const auto &dp : m_fineFocusData) {
+                double x = static_cast<double>(dp.focuserPosition);
+                double y = dp.hfr;
+                if (!std::isfinite(y) || y <= 0.0)
+                    continue;
+                snrPoints.append(QPointF(x, y));
+                if (x < minPos) minPos = x;
+                if (x > maxPos) maxPos = x;
+            }
+
+            const int minPointsForFit = 5;
+            const double minRSquaredForAccept = 0.8;
+            bool useFittedPosition = false;
+            double fittedBestPos = 0.0;
+            double fittedBestSNR = 0.0;
+
+            if (snrPoints.size() >= minPointsForFit) {
+                float a = 0.0f, b = 0.0f, c = 0.0f;
+                int fitCode = Tools::fitQuadraticCurve(snrPoints, a, b, c);
+                if (fitCode == 0) {
+                    double r2 = Tools::calculateRSquared(snrPoints, a, b, c);
+                    // 对焦时 SNR 在最佳位置应形成开口向下的抛物线，因此 a 需小于 0
+                    if (r2 >= minRSquaredForAccept && a < 0.0f) {
+                        double vertexX = -static_cast<double>(b) / (2.0 * static_cast<double>(a));
+                        if (std::isfinite(vertexX)) {
+                            // 限制顶点位置在采样范围内，同时也限制在电调物理范围内
+                            vertexX = std::clamp(vertexX, minPos, maxPos);
+                            vertexX = std::clamp(vertexX,
+                                                 static_cast<double>(m_focuserMinPosition),
+                                                 static_cast<double>(m_focuserMaxPosition));
+                            fittedBestPos = std::round(vertexX);
+                            fittedBestSNR = static_cast<double>(a) * vertexX * vertexX +
+                                            static_cast<double>(b) * vertexX +
+                                            static_cast<double>(c);
+                            useFittedPosition = true;
+                            log(QString("SNR 二次曲线拟合成功：a=%1, b=%2, c=%3, R²=%4, 顶点位置=%5, 估计最大 SNR=%6")
+                                .arg(a).arg(b).arg(c).arg(r2).arg(fittedBestPos).arg(fittedBestSNR));
+                        } else {
+                            log("SNR 二次曲线拟合结果顶点位置为非有限值，放弃使用拟合结果");
+                        }
+                    } else {
+                        log(QString("SNR 二次曲线拟合质量不足或开口方向不正确：a=%1, R²=%2，退回使用实际最大 SNR 点")
+                            .arg(a).arg(r2));
+                    }
+                } else {
+                    log("SNR 二次曲线拟合失败，退回使用实际最大 SNR 点");
+                }
+            } else {
+                log(QString("精调阶段用于 SNR 拟合的有效数据点不足（仅 %1 个），跳过二次拟合")
+                    .arg(snrPoints.size()));
+            }
+
+            if (useFittedPosition) {
+                m_fineBestPosition = static_cast<int>(fittedBestPos);
+                m_fineBestSNR = fittedBestSNR;
+            } else {
+                // 拟合不可用时，遍历精调阶段所有 SNR 数据点，选择 SNR 最大的位置，
+                // 作为 super-fine 的中心，避免增量更新过程中出现偏差。
+                double bestSNR = m_fineFocusData[0].hfr; // 这里的 hfr 字段存的是 SNR
+                int bestPos = m_fineFocusData[0].focuserPosition;
+                for (const auto &dp : m_fineFocusData) {
+                    if (dp.hfr > bestSNR) {
+                        bestSNR = dp.hfr;
+                        bestPos = dp.focuserPosition;
+                    }
+                }
+                m_fineBestSNR = bestSNR;
+                m_fineBestPosition = bestPos;
+                log(QString("使用精调阶段实际观测到的最大 SNR 位置作为 super-fine 起点：SNR=%1, 位置=%2")
+                    .arg(m_fineBestSNR).arg(m_fineBestPosition));
+            }
+        } else {
+            int current = getCurrentFocuserPosition();
+            m_fineBestPosition = current;
+            m_fineBestSNR = -1.0;
+            Logger::Log("精调阶段没有有效的 SNR 数据点，使用当前位置作为 super-fine 起点",
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+        }
+
+        Logger::Log(QString("精调采样完成（共%1点），最佳 SNR=%2，位置=%3，准备进入更细致精调")
+                        .arg(m_fineScanPositions.size())
+                        .arg(m_fineBestSNR)
+                        .arg(m_fineBestPosition)
+                        .toStdString(),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+
+        if (beginMoveTo(m_fineBestPosition, "精调完成，移动到 SNR 最佳位置")) {
+            startSuperFineAdjustment();
+        } else {
+            startSuperFineAdjustment();
+        }
         return;
     }
 
@@ -1686,52 +1850,36 @@ void AutoFocus::performFineDataCollection()
     if (!captureFullImage()) { handleError("拍摄图像失败"); return; }
     if (!waitForCaptureComplete()) { handleError("拍摄超时"); return; }
 
-    // 识别 HFR
-    double hfr = 0.0;
-    bool ok = detectHFRByPython(hfr);
-    if (!ok || !(std::isfinite(hfr) && hfr > 0)) {
-        log(QString("该位置HFR无效或未识到星，使用占位值999"));
-        // 发送未识别到星点的弹窗消息
+    // 识别 SNR
+    double snr = 0.0;
+    bool ok = detectSNRByPython(snr);
+    if (!ok || !(std::isfinite(snr) && snr > 0.0)) {
+        log(QString("该位置 SNR 无效或未识到星，使用占位值 0"));
         emit starDetectionResult(false, 0.0);
-        hfr = 999.0;
-    } else if (hfr >= 100.0) {
-        // HFR值过大，视为未检测到星点
-        log(QString("HFR值%1过大(>=100)，视为未检测到星点").arg(hfr));
-        // 发送未识别到星点的弹窗消息
-        emit starDetectionResult(false, 0.0);
-        m_lastHFR = hfr;
-        // 不记录此数据点，直接跳到下一个
-        m_fineScanIndex++;
-        if (m_fineScanIndex >= m_fineScanPositions.size()) {
-            // 精调数据收集完成
-            processFittingData();
-        } else {
-            // 继续下一个点
-            int nextTarget = m_fineScanPositions[m_fineScanIndex];
-            if (beginMoveTo(nextTarget, QString("精调移动到位置%1").arg(nextTarget))) {
-                // 移动成功，等待到位后继续
-            } else {
-                handleError("精调移动失败");
-            }
-        }
-        return;
+        snr = 0.0;
     } else {
-        // 识别到星点，发送HFR值
-        log(QString("识别到星点，HFR为: %1").arg(hfr));
-        emit starDetectionResult(true, hfr);
+        log(QString("精调位置检测到 avg_top50_snr: %1").arg(snr));
+        emit starDetectionResult(true, snr);
     }
-    
-    m_lastHFR = hfr;
 
-    // 记录数据点（stage="fine" 方便前端绘制）
-    FocusDataPoint dp(target, hfr);
+    // 发送 SNR 结果到前端
+    if (m_wsThread) {
+        QString msg = QString("AutoFocusSNR:fine:%1:%2:%3")
+                          .arg(m_fineScanIndex + 1)
+                          .arg(target)
+                          .arg(snr, 0, 'f', 6);
+        emit m_wsThread->sendMessageToClient(msg);
+    }
+
+    // 记录数据点（在 fine 阶段 hfr 字段中暂存 SNR，只用于可视化）
+    FocusDataPoint dp(target, snr);
     m_focusData.append(dp);
     m_fineFocusData.append(dp);  // 同时添加到精调专用数组
     m_dataCollectionCount++;
-    emit focusDataPointReady(target, hfr, QStringLiteral("fine"));
+    emit focusDataPointReady(target, snr, QStringLiteral("fine"));
 
-    log(QString("精调数据点%1/%2：位置=%3，HFR=%4")
-        .arg(m_fineScanIndex+1).arg(m_fineScanPositions.size()).arg(target).arg(hfr));
+    log(QString("精调数据点%1/%2：位置=%3，SNR=%4")
+        .arg(m_fineScanIndex+1).arg(m_fineScanPositions.size()).arg(target).arg(snr));
 
     // 下一个点
     ++m_fineScanIndex;
@@ -1752,6 +1900,7 @@ void AutoFocus::startFineAdjustment()
     updateAutoFocusStep(3, "Fine adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the fine adjustment to complete"); // [AUTO_FOCUS_UI_ENHANCEMENT]
     m_focusData.clear();
     m_dataCollectionCount = 0;
+    m_fineBestSNR = -1.0;
 
     const int minPos = m_focuserMinPosition;
     const int maxPos = m_focuserMaxPosition;
@@ -1790,6 +1939,21 @@ void AutoFocus::startFineAdjustment()
     // 按位置排序，确保采样顺序合理（从最小到最大）
     std::sort(m_fineScanPositions.begin(), m_fineScanPositions.end());
 
+    // 限制精调采样点数不超过 10 个
+    if (m_fineScanPositions.size() > 10) {
+        QVector<int> limited;
+        int total = m_fineScanPositions.size();
+        int desired = 10;
+        for (int i = 0; i < desired; ++i) {
+            int idx = static_cast<int>(std::round(i * (total - 1.0) / (desired - 1.0)));
+            idx = std::clamp(idx, 0, total - 1);
+            int p = m_fineScanPositions[idx];
+            if (limited.isEmpty() || limited.last() != p)
+                limited.push_back(p);
+        }
+        m_fineScanPositions = limited;
+    }
+
     m_fineScanIndex = 0;
 
     log(QString("开始精调：中心=%1，步距=%2（=总量程2%%），计划采样点数=%3")
@@ -1826,6 +1990,141 @@ void AutoFocus::processFineAdjustment()
     }
     // 改为序列驱动的精调：统一走 performFineDataCollection()
     performFineDataCollection();
+}
+
+/**
+ * @brief 启动更细致精调阶段（基于 StellarSolver + HFR 拟合）
+ */
+void AutoFocus::startSuperFineAdjustment()
+{
+    emit focusSeriesReset(QStringLiteral("super_fine"));
+
+    // 进入更精细精调前，清空前端当前的精调数据点
+    emit focusDataPointReady(-1, -1, QStringLiteral("clear"));
+
+    changeState(AutoFocusState::SUPER_FINE_ADJUSTMENT);
+    updateAutoFocusStep(4, "Super fine adjustment in progress. The system is performing precise HFR-based fitting, please wait for the final best focus position.");
+
+    // 仅保留 super-fine 数据用于拟合，清空旧的精调/粗调数据
+    m_focusData.clear();
+    m_fineFocusData.clear();
+    m_superFineFocusData.clear();
+    m_dataCollectionCount = 0;
+
+    const int minPos = m_focuserMinPosition;
+    const int maxPos = m_focuserMaxPosition;
+
+    // 以精调阶段 SNR 最佳位置为 super-fine 中心
+    int center = m_fineBestPosition;
+    center = std::clamp(center, minPos, maxPos);
+
+    const int totalRange = std::max(1, maxPos - minPos);
+    // super-fine 步距：比精调更密，例如精调步距的一半
+    m_superFineStepSpan = std::max(1, m_fineStepSpan / 2);
+    if (m_superFineStepSpan <= 0) {
+        m_superFineStepSpan = std::max(1, static_cast<int>(std::round(totalRange * 0.01)));
+    }
+
+    m_superFineScanPositions.clear();
+    auto push_unique_sf = [&](int p) {
+        p = std::clamp(p, minPos, maxPos);
+        if (m_superFineScanPositions.isEmpty() || m_superFineScanPositions.back() != p)
+            m_superFineScanPositions.push_back(p);
+    };
+
+    // 构造 9 个 super-fine 采样点：center, ±1..±4
+    push_unique_sf(center);
+    for (int k = 1; k <= 4; ++k) {
+        push_unique_sf(center - k * m_superFineStepSpan);
+        push_unique_sf(center + k * m_superFineStepSpan);
+    }
+
+    std::sort(m_superFineScanPositions.begin(), m_superFineScanPositions.end());
+    m_superFineScanIndex = 0;
+
+    log(QString("开始更细致精调：中心=%1，步距=%2，计划采样点数=%3")
+            .arg(center).arg(m_superFineStepSpan).arg(m_superFineScanPositions.size()));
+
+    if (!m_superFineScanPositions.isEmpty()) {
+        const int firstTarget = m_superFineScanPositions.first();
+        const int current = getCurrentFocuserPosition();
+        if (!isPositionReached(current, firstTarget, g_autoFocusConfig.positionTolerance)) {
+            beginMoveTo(firstTarget, "super-fine 起始移动");
+        } else {
+            log("已在 super-fine 起始点，直接开始采样");
+        }
+    }
+}
+
+/**
+ * @brief 处理更细致精调阶段：使用 StellarSolver 计算 HFR 并收集拟合数据
+ */
+void AutoFocus::processSuperFineAdjustment()
+{
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过更细致精调");
+        return;
+    }
+
+    if (m_superFineScanIndex >= m_superFineScanPositions.size()) {
+        log(QString("更细致精调采样完成（共%1点），进入拟合阶段")
+                .arg(m_superFineScanPositions.size()));
+        changeState(AutoFocusState::FITTING_DATA);
+        return;
+    }
+
+    const int target = m_superFineScanPositions[m_superFineScanIndex];
+    const int current = getCurrentFocuserPosition();
+    if (!isPositionReached(current, target, g_autoFocusConfig.positionTolerance)) {
+        beginMoveTo(target, QString("super-fine 移动到第%1个点").arg(m_superFineScanIndex + 1));
+        return;
+    }
+
+    // 发送电调位置同步信号
+    emit m_wsThread->sendMessageToClient("FocusPosition:" + QString::number(current) + ":" + QString::number(current));
+
+    // 拍摄并等待完成
+    if (!captureFullImage()) { handleError("super-fine 拍摄图像失败"); return; }
+    if (!waitForCaptureComplete()) { handleError("super-fine 拍摄超时"); return; }
+
+    // 使用 calculatestars.py 计算 median_HFR，替代 StellarSolver HFR
+    double hfr = 0.0;
+    bool okHfr = detectMedianHFRByPython(hfr);
+
+    if (!okHfr) {
+        // 严重错误（例如图像文件无效），记录日志，但本点 HFR 记为 0，继续流程
+        log("super-fine 阶段调用 Python median_HFR 失败，本点 HFR 记为 0，不参与拟合");
+        hfr = 0.0;
+        emit starDetectionResult(false, 0.0);
+    } else {
+        if (!std::isfinite(hfr) || hfr <= 0.0) {
+            log("super-fine 阶段 Python 返回的 median_HFR 无效或为 0，本点不参与拟合");
+            hfr = 0.0;
+            emit starDetectionResult(false, 0.0);
+        } else {
+            log(QString("super-fine 位置检测到 median_HFR: %1").arg(hfr));
+            emit starDetectionResult(true, hfr);
+        }
+    }
+
+    // 记录 super-fine 数据点，并通知前端绘制
+    FocusDataPoint dp(target, hfr);
+    m_superFineFocusData.append(dp);
+    m_focusData.append(dp);
+    m_fineFocusData.append(dp); // 复用已有拟合流程中对 fine 数据的引用
+    m_dataCollectionCount++;
+    emit focusDataPointReady(target, hfr, QStringLiteral("super_fine"));
+
+    log(QString("super-fine 数据点%1/%2：位置=%3，HFR=%4")
+        .arg(m_superFineScanIndex+1).arg(m_superFineScanPositions.size()).arg(target).arg(hfr));
+
+    // 下一个点
+    ++m_superFineScanIndex;
+    if (m_superFineScanIndex < m_superFineScanPositions.size()) {
+        beginMoveTo(m_superFineScanPositions[m_superFineScanIndex], "super-fine 扫描下一个点");
+    } else {
+        log("super-fine 采样已完成，等待拟合阶段");
+    }
 }
 
 void AutoFocus::collectFocusData()
@@ -1899,7 +2198,10 @@ void AutoFocus::processFittingData()
         if (alt.bestPosition < m_focuserMinPosition || alt.bestPosition > m_focuserMaxPosition || 
             alt.minHFR > 50.0 || !std::isfinite(alt.bestPosition) || !std::isfinite(alt.minHFR)) {
             log("插值结果也不合理，自动对焦失败");
+            // 通知上层逻辑（例如 MainWindow）本次自动对焦失败
             emit autofocusFailed();
+            // 确保自动对焦流程整体结束，停止定时器和状态机，避免重复多次进入拟合阶段
+            completeAutoFocus(false);
             return;
         }
         
@@ -1911,6 +2213,10 @@ void AutoFocus::processFittingData()
     }
 
     // Step 7: 移动到 HFR 最小的位置
+    // 为避免沿用粗调/精调/super-fine 阶段遗留的移动状态，这里重置等待标志，
+    // 确保在 MOVING_TO_BEST_POSITION 状态下重新发起一次独立的“移动到最佳位置”。
+    m_waitingForMove = false;
+    m_isFocuserMoving = false;
     changeState(AutoFocusState::MOVING_TO_BEST_POSITION);
 }
 
@@ -2020,27 +2326,55 @@ FitResult AutoFocus::fitFocusData()
 {
     FitResult result;
     
-    // 检查精调数据点是否足够进行拟合
-    if (m_fineFocusData.size() < g_autoFocusConfig.minDataPoints) {
-        log(QString("精调数据点不足，无法进行拟合，需要至少%1个数据点，当前只有%2个").arg(g_autoFocusConfig.minDataPoints).arg(m_fineFocusData.size()));
+    // 优先使用 super-fine 阶段数据进行拟合；若为空则回退到精调数据
+    const QVector<FocusDataPoint> &sourceData =
+        !m_superFineFocusData.isEmpty() ? m_superFineFocusData : m_fineFocusData;
+
+    // 检查数据点是否足够进行拟合
+    if (sourceData.size() < g_autoFocusConfig.minDataPoints) {
+        log(QString("用于拟合的数据点不足，无法进行拟合，需要至少%1个数据点，当前只有%2个")
+                .arg(g_autoFocusConfig.minDataPoints).arg(sourceData.size()));
         
-        // 如果精调数据点太少，尝试使用插值方法
-        if (m_fineFocusData.size() >= 2) {
-            log("精调数据点不足但可以使用插值方法");
+        // 如果数据点太少，尝试使用插值方法
+        if (sourceData.size() >= 2) {
+            log("数据点不足但可以使用插值方法");
             return findBestPositionByInterpolation();
         } else {
-            log("精调数据点严重不足，无法进行任何拟合");
+            log("数据点严重不足，无法进行任何拟合");
             return result;
         }
     }
     
-    log(QString("开始改进的二次函数拟合，精调数据点数量: %1").arg(m_fineFocusData.size()));
+    log(QString("开始改进的二次函数拟合，原始数据点数量: %1").arg(sourceData.size()));
     
-    // 数据预处理：去除异常值（只使用精调数据）
-    QVector<FocusDataPoint> cleanData = removeOutliers(m_fineFocusData);
+    // 数据预处理：去除异常值（优先使用 super-fine / 退回精调数据）
+    QVector<FocusDataPoint> cleanData = removeOutliers(sourceData);
     if (cleanData.size() < 3) {
-        log(QString("去除异常值后精调数据点不足，使用原始精调数据"));
-        cleanData = m_fineFocusData;
+        log(QString("去除异常值后数据点不足，使用原始数据"));
+        cleanData = sourceData;
+    }
+
+    // 进一步过滤：只保留 HFR>0 且为有限数的有效数据点
+    QVector<FocusDataPoint> validData;
+    validData.reserve(cleanData.size());
+    for (const FocusDataPoint &p : cleanData) {
+        if (std::isfinite(p.hfr) && p.hfr > 0.0) {
+            validData.append(p);
+        }
+    }
+
+    if (validData.size() < g_autoFocusConfig.minDataPoints) {
+        log(QString("用于拟合的有效 HFR 数据点不足（剔除 HFR<=0 后仅剩 %1 个），无法进行二次拟合")
+                .arg(validData.size()));
+
+        // 如果有效点数量仍然足以做插值，则退回插值方法（同样基于 HFR>0 的点）
+        if (validData.size() >= 2) {
+            log("有效数据点不足但可以使用插值方法（忽略 HFR=0 的点）");
+            return findBestPositionByInterpolation(validData);
+        } else {
+            log("有效数据点严重不足，无法进行任何拟合或插值");
+            return result;
+        }
     }
     
     // 尝试多种拟合方法，选择最佳结果
@@ -2048,9 +2382,9 @@ FitResult AutoFocus::fitFocusData()
     double bestRSquared = -1.0;
     
     // 方法1：标准最小二乘法
-    FitResult result1 = performStandardLeastSquares(cleanData);
+    FitResult result1 = performStandardLeastSquares(validData);
     if (result1.bestPosition > 0) {
-        double rSquared1 = calculateRSquared(cleanData, result1, getDataMinPosition(cleanData));
+        double rSquared1 = calculateRSquared(validData, result1, getDataMinPosition(validData));
         log(QString("标准最小二乘法 R² = %1").arg(rSquared1));
         if (rSquared1 > bestRSquared) {
             bestResult = result1;
@@ -2059,9 +2393,9 @@ FitResult AutoFocus::fitFocusData()
     }
     
     // 方法2：加权最小二乘法（给中心点更高权重）
-    FitResult result2 = performWeightedLeastSquares(cleanData);
+    FitResult result2 = performWeightedLeastSquares(validData);
     if (result2.bestPosition > 0) {
-        double rSquared2 = calculateRSquared(cleanData, result2, getDataMinPosition(cleanData));
+        double rSquared2 = calculateRSquared(validData, result2, getDataMinPosition(validData));
         log(QString("加权最小二乘法 R² = %1").arg(rSquared2));
         if (rSquared2 > bestRSquared) {
             bestResult = result2;
@@ -2070,9 +2404,9 @@ FitResult AutoFocus::fitFocusData()
     }
     
     // 方法3：鲁棒拟合（使用Huber损失函数）
-    FitResult result3 = performRobustFitting(cleanData);
+    FitResult result3 = performRobustFitting(validData);
     if (result3.bestPosition > 0) {
-        double rSquared3 = calculateRSquared(cleanData, result3, getDataMinPosition(cleanData));
+        double rSquared3 = calculateRSquared(validData, result3, getDataMinPosition(validData));
         log(QString("鲁棒拟合 R² = %1").arg(rSquared3));
         if (rSquared3 > bestRSquared) {
             bestResult = result3;
@@ -2089,16 +2423,16 @@ FitResult AutoFocus::fitFocusData()
         }
         result = bestResult;
     } else {
-        log(QString("所有拟合方法都失败，使用插值方法"));
+        log(QString("所有拟合方法都失败，使用插值方法（基于 HFR>0 的有效数据）"));
         log(QString("拟合失败原因分析："));
-        log(QString("- 数据点数量: %1").arg(cleanData.size()));
-        log(QString("- 数据点范围: [%1, %2]").arg(getDataMinPosition(cleanData)).arg(getDataMaxPosition(cleanData)));
-        return findBestPositionByInterpolation();
+        log(QString("- 有效数据点数量: %1").arg(validData.size()));
+        log(QString("- 数据点范围: [%1, %2]").arg(getDataMinPosition(validData)).arg(getDataMaxPosition(validData)));
+        return findBestPositionByInterpolation(validData);
     }
     
     // 验证最佳位置是否在合理范围内
-    double minPos = getDataMinPosition(cleanData);
-    double maxPos = getDataMaxPosition(cleanData);
+    double minPos = getDataMinPosition(validData);
+    double maxPos = getDataMaxPosition(validData);
     if (result.bestPosition < minPos || result.bestPosition > maxPos) {
         log(QString("拟合的最佳位置超出数据范围，使用插值方法"));
         return findBestPositionByInterpolation();
@@ -2162,9 +2496,9 @@ void AutoFocus::completeAutoFocus(bool success)
 {
     try {
         log(QString("开始完成自动对焦流程，成功状态: %1").arg(success ? "是" : "否"));
-        
-        m_isRunning = false;
-        
+
+        // 先停止状态机定时器，但保持 m_isRunning=true，
+        // 以便在“最终拍摄”阶段仍然允许 captureImage / waitForCaptureComplete 正常工作。
         // 安全停止定时器
         if (m_timer && m_timer->isActive()) {
             m_timer->stop();
@@ -2199,7 +2533,10 @@ void AutoFocus::completeAutoFocus(bool success)
             emit autoFocusCompleted(false, 0.0, 0.0);
             log("自动对焦失败");
         }
-        
+
+        // 最终阶段再将运行状态标记为停止
+        m_isRunning = false;
+
         changeState(AutoFocusState::COMPLETED);
         log("自动对焦流程完成");
         
@@ -3284,31 +3621,48 @@ double AutoFocus::getDataMaxPosition(const QVector<FocusDataPoint>& data)
  */
 FitResult AutoFocus::findBestPositionByInterpolation()
 {
+    const QVector<FocusDataPoint> &sourceData =
+        !m_superFineFocusData.isEmpty() ? m_superFineFocusData : m_fineFocusData;
+    return findBestPositionByInterpolation(sourceData);
+}
+
+FitResult AutoFocus::findBestPositionByInterpolation(const QVector<FocusDataPoint>& sourceData)
+{
     FitResult result;
-    
-    if (m_fineFocusData.isEmpty()) {
+
+    if (sourceData.isEmpty()) {
         return result;
     }
-    
-    // 找到HFR最小的精调数据点
-    double minHFR = m_fineFocusData[0].hfr;
-    int bestPos = m_fineFocusData[0].focuserPosition;
-    
-    for (const FocusDataPoint &point : m_fineFocusData) {
-        if (point.hfr < minHFR) {
+
+    // 找到 HFR 最小的有效数据点（只考虑 HFR>0 且为有限数）
+    double minHFR = 0.0;
+    int bestPos = 0;
+    bool hasValid = false;
+
+    for (const FocusDataPoint &point : sourceData) {
+        if (!std::isfinite(point.hfr) || point.hfr <= 0.0) {
+            continue;
+        }
+        if (!hasValid || point.hfr < minHFR) {
             minHFR = point.hfr;
             bestPos = point.focuserPosition;
+            hasValid = true;
         }
     }
-    
+
+    if (!hasValid) {
+        log("插值法：没有任何 HFR>0 的有效数据点，返回默认结果");
+        return result;
+    }
+
     result.bestPosition = bestPos;
     result.minHFR = minHFR;
     result.a = 0.0;
     result.b = 0.0;
     result.c = minHFR;
-    
+
     log(QString("使用插值法找到最佳位置: %1, HFR: %2").arg(bestPos).arg(minHFR));
-    
+
     return result;
 }
 
@@ -4293,6 +4647,152 @@ bool AutoFocus::detectHFRByPython(double &hfr)
     hfr = val;
     if (!std::isfinite(val) || val <= 0) {
         log("HFR数值无效");
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief 使用 calculatestars.py 计算当前图像的 median_HFR
+ *
+ * 普通模式下使用最近一次拍摄的 m_lastCapturedImage 路径；
+ * 若脚本执行失败或未解析到有效数值，则返回的 hfr 记为 0.0，
+ * 上层逻辑据此决定“本次测量不参与拟合但流程继续”。
+ */
+bool AutoFocus::detectMedianHFRByPython(double &hfr)
+{
+    // 基本检查
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过 Python median_HFR 计算");
+        return false;
+    }
+
+    bool okScript = false;
+    double val = 0.0;
+
+#if AUTOFOCUS_SNR_TEST_MODE
+    // === 测试模式：使用 /home/quarcs/test_fits/1/1.fits ~ 9.fits 作为 super-fine 测试文件 ===
+    QString testFilePath = QString("/home/quarcs/test_fits/1/%1.fits").arg(m_testFileCounter);
+    QFileInfo fi(testFilePath);
+    if (!fi.exists() || fi.size() == 0) {
+        log(QString("错误：super-fine 测试文件不存在或无效: %1").arg(testFilePath));
+        return false;
+    }
+
+    log(QString("使用 super-fine 测试文件进行 median_HFR 计算: %1 (第%2个文件)")
+            .arg(testFilePath).arg(m_testFileCounter));
+
+    okScript = Tools::findMedianHFRByPython_Process(testFilePath);
+    val = Tools::getLastMedianHFR();
+
+    // 计数器递增，循环处理 1.fits ~ 9.fits
+    m_testFileCounter++;
+    if (m_testFileCounter > 9) {
+        m_testFileCounter = 1;
+        log("super-fine median_HFR 测试文件循环完成，重新从 1.fits 开始");
+    }
+
+    m_lastHFR = val;
+    log(QString("Python 返回 median_HFR: %1 (测试文件: %2, 脚本状态: %3)")
+            .arg(val)
+            .arg(testFilePath)
+            .arg(okScript ? "ok" : "failed"));
+#else
+    if (m_lastCapturedImage.isEmpty()) {
+        log("错误：没有可用的图像文件供 Python median_HFR 脚本使用");
+        return false;
+    }
+
+    QFileInfo fi(m_lastCapturedImage);
+    if (!fi.exists() || fi.size() == 0) {
+        log(QString("错误：图像文件无效: %1").arg(m_lastCapturedImage));
+        return false;
+    }
+
+    // 调用 calculatestars.py 计算 median_HFR
+    okScript = Tools::findMedianHFRByPython_Process(m_lastCapturedImage);
+    val = Tools::getLastMedianHFR();
+    m_lastHFR = val;
+
+    log(QString("Python 返回 median_HFR: %1 (文件: %2, 脚本状态: %3)")
+            .arg(val)
+            .arg(m_lastCapturedImage)
+            .arg(okScript ? "ok" : "failed"));
+#endif
+
+    // 数值校验：无效时记为 0.0，但整体流程继续
+    if (!std::isfinite(val) || val < 0.0) {
+        log("median_HFR 数值无效，记为 0.0（本点不参与拟合）");
+        val = 0.0;
+    }
+
+    hfr = val;
+    // 即使脚本执行失败（okScript == false），也返回 true，
+    // 由上层根据 hfr 是否大于 0 决定是否参与拟合。
+    return true;
+}
+
+/**
+ * @brief 通过 Python 脚本计算 avg_top50_snr（粗调 / 精调使用）
+ * @param snr 返回的 avg_top50_snr 数值
+ * @return 是否成功
+ */
+bool AutoFocus::detectSNRByPython(double &snr)
+{
+    // 基本检查
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过Python SNR计算");
+        return false;
+    }
+
+#if AUTOFOCUS_SNR_TEST_MODE
+    // === 测试模式：使用 /home/quarcs/FOCUSTEST/1.fits ~ 10.fits 循环 ===
+    QString testFilePath = QString("/home/quarcs/FOCUSTEST/%1.fits").arg(m_testFileCounter);
+    QFileInfo fi(testFilePath);
+    if (!fi.exists() || fi.size() == 0) {
+        log(QString("错误：测试文件不存在或无效: %1").arg(testFilePath));
+        return false;
+    }
+    log(QString("使用测试文件进行 SNR 计算: %1 (第%2个文件)").arg(testFilePath).arg(m_testFileCounter));
+
+    bool ok = Tools::findSNRByPython_Process(testFilePath);
+#else
+    if (m_lastCapturedImage.isEmpty()) {
+        log("错误：没有可用的图像文件供Python SNR脚本使用");
+        return false;
+    }
+    QFileInfo fi(m_lastCapturedImage);
+    if (!fi.exists() || fi.size() == 0) {
+        log(QString("错误：图像文件无效: %1").arg(m_lastCapturedImage));
+        return false;
+    }
+
+    bool ok = Tools::findSNRByPython_Process(m_lastCapturedImage);
+#endif
+    if (!ok) {
+        log("Python SNR 脚本执行失败或未返回有效结果");
+        return false;
+    }
+
+    double val = Tools::getLastSNR();
+    
+#if AUTOFOCUS_SNR_TEST_MODE
+    log(QString("Python 返回 avg_top50_snr: %1 (测试文件序号: %2)").arg(val).arg(m_testFileCounter));
+
+    // 计数器递增，循环处理 1-10.fits
+    m_testFileCounter++;
+    if (m_testFileCounter > 10) {
+        m_testFileCounter = 1;  // 重新从1开始循环
+        log("SNR 测试文件循环完成，重新从 1.fits 开始");
+    }
+#else
+    log(QString("Python 返回 mean_peak_snr: %1 (文件: %2)").arg(val).arg(m_lastCapturedImage));
+#endif
+
+    snr = val;
+
+    if (!std::isfinite(val) || val < 0) {
+        log("mean_peak_snr 数值无效");
         return false;
     }
     return true;

@@ -23,27 +23,29 @@ import numpy as np
 
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
-from scipy.ndimage import label, find_objects, median_filter
+from scipy.ndimage import (
+    label,
+    find_objects,
+    median_filter,
+    binary_closing,
+    generate_binary_structure,
+    binary_erosion,
+)
 
 import warnings
 
 # 固定参数配置（根据原来命令行示例写死）
 DETECT_SIGMA = 3.0       # 原脚本默认值
-SNR_THRESHOLD = 3.0      # --snr-threshold 1
-MIN_AREA = 4             # --min-area 4
+SNR_THRESHOLD = 6.0      # --snr-threshold 1
+MIN_AREA = 4            # --min-area 4
 BORDER_MARGIN = 10       # 原脚本默认值
 MAX_STARS = 100          # --max-stars 100
 MEDIAN_SIZE = 0          # 不做中值滤波
 DOWNSAMPLE = 5           # --downsample 5
 
-# 只有在 debug 模式才需要 matplotlib，避免无头环境报错
-try:
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
-    HAS_MPL = True
-except Exception:
-    HAS_MPL = False
-
+# 圆形度（circularity）筛选：4πA / P^2，1 为完美圆，越小越“不圆”
+# 设置成稍微宽松的阈值，避免误杀正常星点
+CIRCULARITY_MIN = 0.4
 
 def read_fits_data(filename):
     """读取 FITS 文件数据，返回 2D 浮点数组。"""
@@ -118,6 +120,11 @@ def detect_stars(image,
     threshold = median + detect_sigma * sigma
     mask = image > threshold
 
+    # 形态学闭运算：先膨胀再腐蚀，填补星点内部的小空洞/断口，
+    # 避免同一个大星点被分割成多个独立连通域
+    structure = generate_binary_structure(2, 1)  # 3x3 十字形结构元素
+    mask = binary_closing(mask, structure=structure, iterations=1)
+
     # 连通域标记
     labels, num = label(mask)
     if num == 0:
@@ -148,6 +155,20 @@ def detect_stars(image,
                 y1 > h - border_margin or x1 > w - border_margin):
             continue
 
+        # 圆形度检测：用 4πA / P^2 过滤重叠/拖尾/不规则星点
+        # 近似周长 P = 边界像素个数（用一次腐蚀得到边界）
+        eroded = binary_erosion(comp_mask, structure=np.ones((3, 3), dtype=bool))
+        border = comp_mask & (~eroded)
+        perimeter = int(border.sum())
+        if perimeter <= 0:
+            circularity = 0.0
+        else:
+            circularity = float(4.0 * np.pi * area / (perimeter ** 2))
+
+        if circularity < CIRCULARITY_MIN:
+            # 圆形度太低，可能是重叠星点或形状异常，丢弃
+            continue
+
         values = subimg[comp_mask]
         peak_value = float(values.max())
         # 像素层面的峰值 SNR
@@ -174,6 +195,50 @@ def detect_stars(image,
         cy = cy_rel + y0
         cx = cx_rel + x0
 
+        # 计算 HFR（Half-Flux Radius，半通量半径，单位：像素）
+        # 使用该星点连通域上的像素进行径向累积，得到经典的“半通量半径”
+        # coords 中是 comp_mask 内像素的 (y, x)，相对当前切片 slc
+        if coords.size == 0:
+            hfr = 0.0
+        else:
+            # 相对质心的半径（允许亚像素）
+            rel_y = coords[:, 0] - cy_rel
+            rel_x = coords[:, 1] - cx_rel
+            r = np.sqrt(rel_y ** 2 + rel_x ** 2)
+
+            # 净信号：减去全局背景 median，并截去负值
+            flux = values.astype(np.float64) - median
+            flux[flux < 0] = 0.0
+
+            if np.all(flux <= 0):
+                hfr = 0.0
+            else:
+                order = np.argsort(r)
+                r_sorted = r[order]
+                flux_sorted = flux[order]
+                cumsum = np.cumsum(flux_sorted)
+                half_flux = 0.5 * cumsum[-1]
+
+                # 在线性插值层面求解 half-flux 对应的半径，获得亚像素级 HFR
+                idx_hfr = np.searchsorted(cumsum, half_flux)
+                if idx_hfr == 0:
+                    hfr = float(r_sorted[0])
+                elif idx_hfr >= len(r_sorted):
+                    hfr = float(r_sorted[-1])
+                else:
+                    r1, r2 = r_sorted[idx_hfr - 1], r_sorted[idx_hfr]
+                    f1, f2 = cumsum[idx_hfr - 1], cumsum[idx_hfr]
+                    if f2 <= f1:
+                        hfr = float(r2)
+                    else:
+                        t = (half_flux - f1) / (f2 - f1)
+                        hfr = float(r1 + t * (r2 - r1))
+
+        # 过滤掉 HFR 过小的伪星点，避免极小连通域或异常形状干扰统计
+        # 注意：同时会排除 hfr == 0.0 的无效结果
+        if hfr < 0.5:
+            continue
+
         # 说明：
         # - peak_snr 反映“单像素信噪比/锐利程度”，适合作为对焦好坏的评价指标；
         # - snr_total 是经典的总光子计数 SNR，星点越大、总通量越大就越高，
@@ -182,7 +247,7 @@ def detect_stars(image,
             "label": i + 1,
             "area": area,
             "peak_value": peak_value,
-            "peak_snr": float(peak_snr),      # 用于对焦评价与排序
+            "peak_snr": float(peak_snr),      # 用于对焦评价与排序 & 过滤
             "snr_total": float(snr_total),    # 物理意义上的总 SNR，仅供参考
             "y0": int(y0),
             "y1": int(y1),
@@ -190,95 +255,21 @@ def detect_stars(image,
             "x1": int(x1),
             "cy": float(cy),
             "cx": float(cx),
+            "hfr": float(hfr),                # 半能量半径（像素）
+            "circularity": float(circularity) # 圆形度
         }
         stars.append(star)
 
-    # 对焦评价：按“峰值 SNR”排序（星点越小越锐利，峰值 SNR 越高）
-    stars_sorted = sorted(stars, key=lambda s: s["peak_snr"], reverse=True)
-    if max_stars is None or max_stars <= 0:
-        stars_top = stars_sorted
-    else:
-        stars_top = stars_sorted[:max_stars]
-
-    return stars_sorted, stars_top, (median, sigma), mask, labels
-
-
-def save_debug_images(image, mask, labels, stars, stars_top,
-                      stats, out_dir, base_name):
-    """保存 Debug 图像。"""
-    if not HAS_MPL:
-        print("警告：未能导入 matplotlib，无法输出 Debug 图像。")
-        return
-
-    os.makedirs(out_dir, exist_ok=True)
-    median, sigma = stats
-
-    # 为了显示效果做一个简单的线性拉伸
-    vmin = median - 2 * sigma
-    vmax = median + 10 * sigma
-
-    # 1. 原始图
-    fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(image, origin='lower', vmin=vmin, vmax=vmax)
-    ax.set_title(f"{base_name} - 原始图")
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.savefig(os.path.join(out_dir, f"{base_name}_raw.png"), dpi=150)
-    plt.close(fig)
-
-    # 2. 阈值掩膜图
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(mask, origin='lower', cmap='gray')
-    ax.set_title(f"{base_name} - 阈值掩膜")
-    fig.savefig(os.path.join(out_dir, f"{base_name}_mask.png"), dpi=150)
-    plt.close(fig)
-
-    # 3. 框出所有有效星点
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(image, origin='lower', vmin=vmin, vmax=vmax)
-    ax.set_title(f"{base_name} - 所有有效星点")
-    for s in stars:
-        rect = Rectangle((s["x0"], s["y0"]),
-                         s["x1"] - s["x0"],
-                         s["y1"] - s["y0"],
-                         linewidth=0.5,
-                         edgecolor='yellow',
-                         facecolor='none')
-        ax.add_patch(rect)
-    fig.savefig(os.path.join(out_dir, f"{base_name}_all_stars.png"), dpi=150)
-    plt.close(fig)
-
-    # 4. 单独标出前 N 个星点（红色）
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(image, origin='lower', vmin=vmin, vmax=vmax)
-    ax.set_title(f"{base_name} - 前{len(stars_top)}个星点（按SNR）")
-    # 先画所有，后画 top，使 top 更明显
-    for s in stars:
-        rect = Rectangle((s["x0"], s["y0"]),
-                         s["x1"] - s["x0"],
-                         s["y1"] - s["y0"],
-                         linewidth=0.3,
-                         edgecolor='yellow',
-                         facecolor='none')
-        ax.add_patch(rect)
-    for s in stars_top:
-        rect = Rectangle((s["x0"], s["y0"]),
-                         s["x1"] - s["x0"],
-                         s["y1"] - s["y0"],
-                         linewidth=0.8,
-                         edgecolor='red',
-                         facecolor='none')
-        ax.add_patch(rect)
-    fig.savefig(os.path.join(out_dir, f"{base_name}_top_stars.png"), dpi=150)
-    plt.close(fig)
+    # 对焦评价原本会按 “峰值 SNR” 排序并截取前 max_stars 个，
+    # 但当前脚本只需要 median_HFR，因此直接返回所有星点
+    return stars, (median, sigma), mask, labels
 
 
 def process_file(filename):
-    """处理单个 FITS 文件，计算并输出基于所有星点 peak_snr 的平均值。
+    """处理单个 FITS 文件，计算并输出 median_HFR。
 
-    说明：
-        - 为兼容旧版 C++ 解析逻辑，仍然沿用字段名 avg_top50_snr；
-        - 实际数值已经改为“所有检测到星点的平均 peak_snr”，不再对 50 做强行归一化；
-        - 额外输出一行标准化结果：result=<value>，供 C++ 端稳定解析。
+    返回:
+        median_hfr
     """
     print(f"处理文件：{filename}")
 
@@ -306,7 +297,7 @@ def process_file(filename):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        stars_all, stars_top, stats, _, _ = detect_stars(
+        stars_all, stats, mask, labels = detect_stars(
             image,
             detect_sigma=DETECT_SIGMA,
             snr_threshold=SNR_THRESHOLD,
@@ -315,32 +306,30 @@ def process_file(filename):
             max_stars=MAX_STARS,
         )
 
-    # 不再打印背景与星点数量，以提升速度
+    # 为提速，不再打印背景与星点数量等中间信息，只关注 HFR 结果
 
     if len(stars_all) == 0:
-        avg_top50_snr = 0.0
-        print("没有找到满足条件的星点，avg_top50_snr 记为 0.0")
-        # 标准化输出，供 C++ 解析
-        print(f"result={avg_top50_snr:.6f}")
-        print(f"{filename}: avg_top50_snr = {avg_top50_snr:.6f}")
-        return avg_top50_snr
+        median_hfr = 0.0
+        print("没有找到满足条件的星点，median_HFR 记为 0.0")
+        print(f"{filename}: median_HFR = {median_hfr:.4f} 像素（基于 0 个星点）")
+        return median_hfr
 
-    # 使用所有检测到的星点的 peak_snr 计算平均值
-    snr_all = np.array([s["peak_snr"] for s in stars_all], dtype=float)
-    if snr_all.size == 0:
-        avg_top50_snr = 0.0
+    # 计算并输出所有星点 HFR 的中位数（保持原有 HFR 逻辑不变）
+    hfr_all = np.array([s.get("hfr", 0.0) for s in stars_all], dtype=float)
+    hfr_valid = hfr_all[hfr_all > 0]
+    if hfr_valid.size == 0:
+        median_hfr = 0.0
+        print("所有星点的 HFR 均无效，median_HFR 记为 0.0")
     else:
-        avg_top50_snr = float(snr_all.mean())
+        median_hfr = float(np.median(hfr_valid))
+    print(f"{filename}: median_HFR = {median_hfr:.4f} 像素（基于 {hfr_valid.size} 个星点）")
 
-    # 先输出标准化结果，再输出兼容旧版的人类可读结果
-    print(f"result={avg_top50_snr:.6f}")
-    print(f"{filename}: avg_top50_snr = {avg_top50_snr:.6f}")
-    return avg_top50_snr
+    return median_hfr
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="根据星点 SNR 评估粗对焦 FITS 图像，并给出排序结果。"
+        description="根据星点 HFR 评估单张粗对焦 FITS 图像，对每张图输出 median_HFR。"
     )
     parser.add_argument("files", nargs="+", help="要处理的 FITS 文件列表")
     args = parser.parse_args()

@@ -24,6 +24,7 @@ enum class AutoFocusState {
     LARGE_RANGE_SEARCH,     // 大范围找星
     COARSE_ADJUSTMENT,      // 粗调
     FINE_ADJUSTMENT,        // 精调
+    SUPER_FINE_ADJUSTMENT,  // 更细致精调（基于HFR拟合）
     COLLECTING_DATA,        // 收集数据
     FITTING_DATA,           // 拟合数据
     MOVING_TO_BEST_POSITION, // 移动到最佳位置
@@ -139,6 +140,9 @@ public:
     bool isUsingBacklashCompensation() const;           // 检查是否使用空程补偿
     void setBacklashCompensation(int inward, int outward); // 设置空程补偿值
 
+    // 仅从当前位置启动 super-fine 精调（跳过粗调/精调的完整流程）
+    void startSuperFineFromCurrentPosition();
+
     void getAutoFocusStep(); // 获取自动对焦步骤信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
     void getAutoFocusData(); // 获取自动对焦数据信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
 
@@ -169,6 +173,8 @@ private slots:
     void forceStopAllWaiting();             // 强制停止所有等待状态
 
 private:
+    // 公共初始化逻辑：设备检查 + 成员状态重置 + 行程范围与当前位置读取
+    bool initializeAutoFocusCommon();
     // 硬件设备对象
     MyClient *m_indiServer;          // INDI客户端对象
     INDI::BaseDevice *m_dpFocuser;   // 电调设备对象
@@ -197,6 +203,9 @@ private:
     QVector<FocusDataPoint> m_fineFocusData; // 仅精调数据
     FitResult m_lastFitResult;              // 最后一次拟合结果
     double m_lastHFR;                     // 最近一次由Python得到的HFR
+    // 粗调/精调阶段基于 SNR 的最佳位置记录
+    double m_coarseBestSNR;               // 粗调阶段最佳 SNR（mean_peak_snr）
+    double m_fineBestSNR;                 // 精调阶段最佳 SNR（mean_peak_snr）
     // 扫描序列
     QVector<int> m_coarseScanPositions;    // 粗调扫描位置序列
     int m_coarseScanIndex;                 // 粗调扫描索引
@@ -206,6 +215,8 @@ private:
     int m_fineStepSpan;                    // 精调步进（= 粗调步进/10）
     int m_coarseBestPosition;              // 粗调期望位置
     double m_coarseBestHFR;
+    int m_fineBestPosition;                // 精调阶段 SNR 最佳位置（super-fine 中心）
+    bool m_coarseHasValidSNR;              // 粗调阶段是否存在至少一个 SNR>0 的位置
     
 // === 精调方向与反转逻辑（新增） ===
 int  m_fineDirection;       // +1: 向大的方向；-1: 向小的方向
@@ -213,6 +224,12 @@ int  m_fineIncreaseCount;   // 连续"HFR变大"的计数
 bool m_fineReversed;        // 是否已经发生过一次改向
 int  m_fineCenter;          // 精调中心（粗调最优位置）
                // 粗调最小HFR
+
+    // 更细致精调（super-fine）扫描数据
+    QVector<int> m_superFineScanPositions;   // super-fine 扫描位置序列
+    int m_superFineScanIndex;                // super-fine 扫描索引
+    int m_superFineStepSpan;                 // super-fine 步进
+    QVector<FocusDataPoint> m_superFineFocusData; // 仅 super-fine 数据（用于最终拟合）
 
     int m_currentLargeRangeShots;
     double m_currentLargeRangeStep;
@@ -300,7 +317,9 @@ int  m_fineCenter;          // 精调中心（粗调最优位置）
     bool waitForCaptureComplete(int timeoutMs = 30000); // 等待拍摄完成
     bool detectStarsInImage();                      // 检测图像中的星点
     double calculateHFR();                          // 计算HFR值
-    bool detectHFRByPython(double &hfr);          // 通过Python脚本识星并返回HFR
+    bool detectHFRByPython(double &hfr);            // 通过旧的 Python 脚本识星并返回HFR
+    bool detectMedianHFRByPython(double &hfr);      // 通过 calculatestars.py 计算 median_HFR（super-fine 使用）
+    bool detectSNRByPython(double &snr);            // 通过Python脚本计算 avg_top50_snr（粗调/精调）
     bool loadFocuserRangeFromIni(const QString &iniPath = QString()); // 从ini读取电调范围
 
     
@@ -352,6 +371,10 @@ int  m_fineCenter;          // 精调中心（粗调最优位置）
     void startFineAdjustment();
     void processFineAdjustment();
     
+    // 更细致精调流程
+    void startSuperFineAdjustment();
+    void processSuperFineAdjustment();
+    
     // 数据收集辅助方法
     void performCoarseDataCollection();
     void performFineDataCollection();
@@ -359,6 +382,7 @@ int  m_fineCenter;          // 精调中心（粗调最优位置）
     // 数据收集和处理
     void collectFocusData();
     FitResult fitFocusData();                       // 拟合对焦数据
+    FitResult findBestPositionByInterpolation(const QVector<FocusDataPoint>& data); // 基于给定数据的插值法
     void moveToBestPosition(double position);       // 移动到最佳位置
     
     // 拟合算法辅助方法
