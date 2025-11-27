@@ -30,6 +30,7 @@ add_executable(client
   websocketclient.h websocketclient.cpp
   mainwindow.h mainwindow.cpp
   tools.h tools.cpp
+  focused_star_detection.cpp
   myclient.h myclient.cpp
   websocketthread.h websocketthread.cpp
   Logger.h Logger.cpp

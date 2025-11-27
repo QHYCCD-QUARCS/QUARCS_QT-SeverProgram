@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <cmath>
 
+// Qt 相关头文件（用于文件/目录操作）
+#include <QDir>
+#include <QFile>
+
 // ===== 你的 BUFSZ 定义（保持不变）=====
 #define BUFSZ 16590848 // 原始约 16 MB
 
@@ -787,7 +791,10 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "StopSchedule")
     {
         Logger::Log("StopSchedule !", LogLevel::DEBUG, DeviceType::MAIN);
-        StopSchedule = true;
+    StopSchedule = true;
+    isScheduleRunning = false;
+    // 立即通知前端计划任务已停止，避免仅依赖进度推断带来的延迟
+    emit wsThread->sendMessageToClient("ScheduleRunning:false");
         
         // 如果自动对焦正在运行（特别是由计划任务表触发的），也要停止自动对焦
         if (isAutoFocus && autoFocus != nullptr)
@@ -853,6 +860,63 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("getStagingScheduleData ...", LogLevel::DEBUG, DeviceType::MAIN);
         getStagingScheduleData();
         Logger::Log("getStagingScheduleData finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }
+
+    // ---------- Schedule presets (任务计划表预设管理) ----------
+    else if (parts[0].trimmed() == "saveSchedulePreset" && parts.size() >= 3)
+    {
+        // 格式：saveSchedulePreset:<name>:<rawData>
+        QString presetName = parts[1].trimmed();
+        // 重新拼接 data（防止 data 中本身包含 ':' 被 split 掉）
+        QString rawData;
+        for (int i = 2; i < parts.size(); ++i)
+        {
+            if (i > 2)
+                rawData += ":";
+            rawData += parts[i];
+        }
+
+        Logger::Log("saveSchedulePreset | name=" + presetName.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveSchedulePreset(presetName, rawData);
+    }
+    else if (parts[0].trimmed() == "loadSchedulePreset" && parts.size() == 2)
+    {
+        // 格式：loadSchedulePreset:<name>
+        QString presetName = parts[1].trimmed();
+        Logger::Log("loadSchedulePreset | name=" + presetName.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        QString data = Tools::readSchedulePreset(presetName);
+        if (!data.isEmpty())
+        {
+            // 复用现有 StagingScheduleData 协议，直接推送给前端
+            QString messageOut = "StagingScheduleData:" + data;
+            emit wsThread->sendMessageToClient(messageOut);
+        }
+    }
+    else if (parts[0].trimmed() == "deleteSchedulePreset" && parts.size() == 2)
+    {
+        // 格式：deleteSchedulePreset:<name>
+        QString presetName = parts[1].trimmed();
+        Logger::Log("deleteSchedulePreset | name=" + presetName.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        bool ok = Tools::deleteSchedulePreset(presetName);
+        if (!ok)
+        {
+            Logger::Log("deleteSchedulePreset | failed to delete preset: " + presetName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+    else if (message == "listSchedulePresets")
+    {
+        // 返回格式：SchedulePresetList:name1;name2;name3
+        Logger::Log("listSchedulePresets ...", LogLevel::DEBUG, DeviceType::MAIN);
+        QStringList names = Tools::listSchedulePresets();
+        QString payload = "SchedulePresetList:";
+        for (int i = 0; i < names.size(); ++i)
+        {
+            if (i > 0)
+                payload += ";";
+            payload += names.at(i);
+        }
+        emit wsThread->sendMessageToClient(payload);
+        Logger::Log("listSchedulePresets finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
     else if (message == "getStagingGuiderData")
@@ -1426,8 +1490,8 @@ void MainWindow::onMessageReceived(const QString &message)
             double ratioZoomX = (double)glPHD_CurrentImageSizeX / CanvasWidth;
             double ratioZoomY = (double)glPHD_CurrentImageSizeY / CanvasHeight;
             Logger::Log("ratioZoom:" + std::to_string(ratioZoomX) + "," + std::to_string(ratioZoomY), LogLevel::DEBUG, DeviceType::MAIN);
-            double PHD2Click_X = (double)Click_X * ratioZoomX;
-            double PHD2Click_Y = (double)Click_Y * ratioZoomY;
+            double PHD2Click_X = (double)Click_X * ratioZoomX*glPHD_ImageScale;
+            double PHD2Click_Y = (double)Click_Y * ratioZoomY*glPHD_ImageScale;
             Logger::Log("PHD2Click:" + std::to_string(PHD2Click_X) + "," + std::to_string(PHD2Click_Y), LogLevel::DEBUG, DeviceType::MAIN);
             call_phd_StarClick(PHD2Click_X, PHD2Click_Y);
         }
@@ -2592,24 +2656,9 @@ MeridianStatus MainWindow::checkMeridianStatus()
 //         Logger::Log("Failed to save image.", LogLevel::ERROR, DeviceType::GUIDER);
 //     }
 // }
-int a = 0;
+
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
-    // fitsFileName = "/home/quarcs/workspace/QUARCS/star_frames/star_0000.fits";
-    // if (a == 0){
-    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_26_33_299.fits";
-    //     a = 1;
-    // }else if (a == 1){
-    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_26_47_548.fits";
-    //     a = 2;
-    // }else if (a == 2){
-    //     fitsFileName = "/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/build/image/CaptureImage/2025-07-30/2025_07_30T12_32_09_232.fits";
-    //     a = 0;
-    // }
-    // fitsFileName = QString("/home/quarcs/workspace/QUARCS/testimage1/2.fits");
-    // emit wsThread->sendMessageToClient("addLineData_Point:" + QString::number(1.0e-6) + ":" + QString::number(-0.006) + ":" + QString::number(14));
-    // fitsFileName = "/home/quarcs/workspace/image/2025-03-20/2025_03_20T13_36_54_070/2025_03_20T13_36_54_070.fits";
-
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat originalImage16;
@@ -3261,6 +3310,15 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
+    
+    // 防御性检查：确保 indi_Client 已经初始化
+    if (indi_Client == nullptr)
+    {
+        Logger::Log("ConnectAllDeviceOnce | indi_Client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
+        return;
+    }
+
     dpMount = nullptr;
     dpGuider = nullptr;
     dpPoleScope = nullptr;
@@ -3317,6 +3375,14 @@ void MainWindow::ConnectAllDeviceOnce()
 
     sleep(1);
 
+    // 再次防御性检查，避免空指针解引用
+    if (indi_Client == nullptr)
+    {
+        Logger::Log("ConnectAllDeviceOnce | indi_Client became nullptr before server check", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:ClientDisconnected");
+        return;
+    }
+
     if (indi_Client->isServerConnected() == false)
     {
         Logger::Log("Can not find server.", LogLevel::ERROR, DeviceType::MAIN);
@@ -3329,6 +3395,15 @@ void MainWindow::ConnectAllDeviceOnce()
     int time = 0;
     connect(timer, &QTimer::timeout, this, [this, timer, &time]()
             {
+        // 防御性检查：避免 indi_Client 为空导致段错误
+        if (indi_Client == nullptr) {
+            Logger::Log("ConnectAllDeviceOnce | indi_Client is nullptr in timer callback", LogLevel::ERROR, DeviceType::MAIN);
+            timer->stop();
+            timer->deleteLater();
+            emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
+            return;
+        }
+
         if (indi_Client->GetDeviceCount() > 0 || time >= 10) {
             timer->stop();
             timer->deleteLater();
@@ -3342,6 +3417,16 @@ void MainWindow::ConnectAllDeviceOnce()
 }
 void MainWindow::continueConnectAllDeviceOnce()
 {
+    // 防御性检查：确保 indi_Client 有效
+    if (indi_Client == nullptr)
+    {
+        Logger::Log("continueConnectAllDeviceOnce | indi_Client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
+        Tools::stopIndiDriverAll(drivers_list);
+        ConnectDriverList.clear();
+        return;
+    }
+
     if (indi_Client->GetDeviceCount() == 0)
     {
         Logger::Log("Driver start success but no device found", LogLevel::ERROR, DeviceType::MAIN);
@@ -3746,6 +3831,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
         call_phd_whichCamera(device->getDeviceName());
+        sleep(2);
         Logger::Log("Call PHD2 Guider Connect", LogLevel::INFO, DeviceType::MAIN);
         if (systemdevicelist.system_devices.size() > 1) {
             systemdevicelist.system_devices[1].isConnect = true;
@@ -3817,6 +3903,13 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     if (DeviceType == "Guider")
     {
         Logger::Log("UnBinding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
+        call_phd_StopLooping();
+        isGuiding = false;
+        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+        isGuiderLoopExp = false;
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+
         indi_Client->disconnectDevice(dpGuider->getDeviceName());
         Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
@@ -4627,30 +4720,53 @@ bool MainWindow::isDSLR(INDI::BaseDevice *device)
 void MainWindow::disconnectIndiServer(MyClient *client)
 {
     Logger::Log("disconnectIndiServer start ...", LogLevel::INFO, DeviceType::MAIN);
-    // client->disconnectAllDevice();
-    QVector<INDI::BaseDevice *> dp;
-
-    for (int i = 0; i < client->GetDeviceCount(); i++)
+    // 防御性检查：客户端指针为空则直接返回，避免段错误
+    if (client == nullptr)
     {
-        dp.append(client->GetDeviceFromList(i));
-        if (dp[i]->isConnected())
-        {
-            client->disconnectDevice(dp[i]->getDeviceName());
-            int num = 0;
-            while (dp[i]->isConnected())
-            {
-                Logger::Log("disconnectAllDevice | Waiting for disconnect device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") finish...", LogLevel::INFO, DeviceType::MAIN);
-                sleep(1);
-                num++;
+        Logger::Log("disconnectIndiServer | client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        Tools::stopIndiDriverAll(drivers_list);
+        ConnectDriverList.clear();
+        return;
+    }
 
-                if (num > 10)
-                {
-                    Logger::Log("disconnectAllDevice | device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") disconnect failed.", LogLevel::WARNING, DeviceType::MAIN);
-                    break;
-                }
+    int deviceCount = client->GetDeviceCount();
+    if (deviceCount > 0)
+    {
+        for (int i = 0; i < deviceCount; i++)
+        {
+            INDI::BaseDevice *device = client->GetDeviceFromList(i);
+            if (device == nullptr)
+            {
+                Logger::Log("disconnectAllDevice | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+                continue;
             }
-            Logger::Log("disconnectAllDevice | device (" + QString::fromUtf8(dp[i]->getDeviceName()).toStdString() + ") disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
+
+            if (device->isConnected())
+            {
+                const char *devName = device->getDeviceName();
+                QString qName = devName ? QString::fromUtf8(devName) : QString("UnknownDevice");
+
+                client->disconnectDevice(devName ? devName : "");
+                int num = 0;
+                while (device->isConnected())
+                {
+                    Logger::Log("disconnectAllDevice | Waiting for disconnect device (" + qName.toStdString() + ") finish...", LogLevel::INFO, DeviceType::MAIN);
+                    sleep(1);
+                    num++;
+
+                    if (num > 10)
+                    {
+                        Logger::Log("disconnectAllDevice | device (" + qName.toStdString() + ") disconnect failed.", LogLevel::WARNING, DeviceType::MAIN);
+                        break;
+                    }
+                }
+                Logger::Log("disconnectAllDevice | device (" + qName.toStdString() + ") disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
+            }
         }
+    }
+    else
+    {
+        Logger::Log("disconnectIndiServer | no devices to disconnect (device count = 0)", LogLevel::INFO, DeviceType::MAIN);
     }
 
     Tools::stopIndiDriverAll(drivers_list);
@@ -4671,7 +4787,10 @@ void MainWindow::disconnectIndiServer(MyClient *client)
         Logger::Log("Waiting for server to disconnect...", LogLevel::INFO, DeviceType::MAIN);
     }
     Logger::Log("disconnectServer finished.", LogLevel::INFO, DeviceType::MAIN);
-    indi_Client->PrintDevices();
+    if (indi_Client != nullptr)
+    {
+        indi_Client->PrintDevices();
+    }
 }
 
 bool MainWindow::connectIndiServer(MyClient *client)
@@ -4909,9 +5028,12 @@ void MainWindow::InitPHD2()
             }
         }
         // 2) 系统级强杀（多种匹配方式）
+        // 注意：有的系统进程名是 phd2.bin，这里同时匹配 phd2 和 phd2.bin
         QProcess::execute("pkill", QStringList() << "-TERM" << "-x" << "phd2");
+        QProcess::execute("pkill", QStringList() << "-TERM" << "-x" << "phd2.bin");
         QThread::msleep(200);
         QProcess::execute("pkill", QStringList() << "-KILL" << "-x" << "phd2");
+        QProcess::execute("pkill", QStringList() << "-KILL" << "-x" << "phd2.bin");
         QThread::msleep(100);
         // 3) 宽匹配（包含路径/命令行）
         QProcess::execute("pkill", QStringList() << "-TERM" << "-f" << "phd2");
@@ -4926,6 +5048,33 @@ void MainWindow::InitPHD2()
                 int rc = QProcess::execute("pgrep", QStringList() << "-f" << "phd2");
                 if (rc != 0) break; // 无匹配
                 QThread::msleep(100);
+            }
+        }
+
+        // 5) 启动前清空 PHD2 日志目录，以规避“损坏/异常 GuidingLog 导致启动卡死”的问题
+        //    目标目录：/home/quarcs/Documents/PHD2
+        {
+            const QString phd2LogDirPath = QStringLiteral("/home/quarcs/Documents/PHD2");
+            QDir phd2LogDir(phd2LogDirPath);
+            if (phd2LogDir.exists())
+            {
+                // 递归删除整个日志目录及其内容，然后重新创建一个空目录
+                if (!phd2LogDir.removeRecursively())
+                {
+                    Logger::Log("InitPHD2 | failed to clear PHD2 log dir: " + phd2LogDirPath.toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
+            }
+            // 确保目录最终存在（即使之前不存在或被删除）
+            if (!phd2LogDir.mkpath("."))
+            {
+                Logger::Log("InitPHD2 | failed to recreate PHD2 log dir: " + phd2LogDirPath.toStdString(),
+                            LogLevel::WARNING, DeviceType::MAIN);
+            }
+            else
+            {
+                Logger::Log("InitPHD2 | PHD2 log dir cleared: " + phd2LogDirPath.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
             }
         }
         // 清理共享内存段（key=0x90）
@@ -5078,13 +5227,15 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
     QElapsedTimer t;
     t.start();
 
-    // 放宽首次连接等待时长，避免 PHD2 启动/初始化较慢导致的超时
-    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 3000)
+    // 放宽首次连接等待时长，避免 PHD2 在树莓派等设备上启动/初始化较慢导致的超时
+    // 最长等待 10 秒，让 PHD2 有充分时间写回版本信息
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 10000)
     {
         QThread::msleep(2);
     }
 
-    if (t.elapsed() >= 500)
+    // 如果超过 10 秒仍未收到响应，则认为超时
+    if (t.elapsed() >= 10000)
     {
         versionName = "";
         Logger::Log("call_phd_GetVersion | timeout", LogLevel::ERROR, DeviceType::MAIN);
@@ -6024,6 +6175,19 @@ void MainWindow::ShowPHDdata()
         useDepth = (uint16_t)bitDepth;
     }
 
+    // 记录原始/输出尺寸与缩放倍数，供坐标换算使用
+    glPHD_OrigImageSizeX = hasV2 ? (int)v2.origW : (int)currentPHDSizeX;
+    glPHD_OrigImageSizeY = hasV2 ? (int)v2.origH : (int)currentPHDSizeY;
+    glPHD_OutImageSizeX  = (int)dispW;
+    glPHD_OutImageSizeY  = (int)dispH;
+    {
+        double sx = (glPHD_OutImageSizeX  > 0) ? (double)glPHD_OrigImageSizeX / (double)glPHD_OutImageSizeX  : 1.0;
+        double sy = (glPHD_OutImageSizeY  > 0) ? (double)glPHD_OrigImageSizeY / (double)glPHD_OutImageSizeY  : 1.0;
+        int s = (int)std::lround((sx + sy) * 0.5);
+        if (s < 1) s = 1;
+        glPHD_ImageScale = s;
+    }
+
     // ---------- 跳过你原有的 3 个 int 字段（sdk_*） ----------
     if (!ensure(sizeof(int))) { sharedmemory_phd[kFlagOff]=0x00; return; }  mem_offset += sizeof(int);
     if (!ensure(sizeof(int))) { sharedmemory_phd[kFlagOff]=0x00; return; }  mem_offset += sizeof(int);
@@ -6106,40 +6270,60 @@ void MainWindow::ShowPHDdata()
     glPHD_isSelected         = isSelected;
     glPHD_StarX              = StarX;
     glPHD_StarY              = StarY;
-    glPHD_CurrentImageSizeX  = dispW;   // ★ 改成 dispW
-    glPHD_CurrentImageSizeY  = dispH;   // ★ 改成 dispH
+    glPHD_CurrentImageSizeX  = dispW;   // UI 显示尺寸（合并/缩放后）
+    glPHD_CurrentImageSizeY  = dispH;   // UI 显示尺寸（合并/缩放后）
     glPHD_LockPositionX      = LockedPositionX;
     glPHD_LockPositionY      = LockedPositionY;
     glPHD_ShowLockCross      = showLockedCross;
 
     glPHD_Stars.clear();
     emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+    const double mapRatioX = (glPHD_OrigImageSizeX > 0) ? (double)glPHD_OutImageSizeX / (double)glPHD_OrigImageSizeX : 1.0;
+    const double mapRatioY = (glPHD_OrigImageSizeY > 0) ? (double)glPHD_OutImageSizeY / (double)glPHD_OrigImageSizeY : 1.0;
     for (int i = 1; i < MultiStarNumber; i++) {
         if (i > 12) break;
-        QPoint p; p.setX(MultiStarX[i]); p.setY(MultiStarY[i]);
+        int outX = (int)std::lround(MultiStarX[i] * mapRatioX);
+        int outY = (int)std::lround(MultiStarY[i] * mapRatioY);
+        if (outX < 0) outX = 0;
+        if (outY < 0) outY = 0;
+        if (outX >= glPHD_OutImageSizeX) outX = glPHD_OutImageSizeX - 1;
+        if (outY >= glPHD_OutImageSizeY) outY = glPHD_OutImageSizeY - 1;
+        QPoint p; p.setX(outX); p.setY(outY);
         glPHD_Stars.push_back(p);
         emit wsThread->sendMessageToClient(
             "PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
-            QString::number(MultiStarX[i]) + ":" + QString::number(MultiStarY[i]));
+            QString::number(outX) + ":" + QString::number(outY));
     }
 
     if (glPHD_isSelected) {
         emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+        int outStarX = (int)std::lround(glPHD_StarX * mapRatioX);
+        int outStarY = (int)std::lround(glPHD_StarY * mapRatioY);
+        if (outStarX < 0) outStarX = 0;
+        if (outStarY < 0) outStarY = 0;
+        if (outStarX >= glPHD_OutImageSizeX) outStarX = glPHD_OutImageSizeX - 1;
+        if (outStarY >= glPHD_OutImageSizeY) outStarY = glPHD_OutImageSizeY - 1;
         emit wsThread->sendMessageToClient(
             "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
-            QString::number(glPHD_StarX) + ":" + QString::number(glPHD_StarY));
+            QString::number(outStarX) + ":" + QString::number(outStarY));
     } else {
         emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
     }
 
     if (glPHD_ShowLockCross) {
         emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
+        int outLockX = (int)std::lround(glPHD_LockPositionX * mapRatioX);
+        int outLockY = (int)std::lround(glPHD_LockPositionY * mapRatioY);
+        if (outLockX < 0) outLockX = 0;
+        if (outLockY < 0) outLockY = 0;
+        if (outLockX >= glPHD_OutImageSizeX) outLockX = glPHD_OutImageSizeX - 1;
+        if (outLockY >= glPHD_OutImageSizeY) outLockY = glPHD_OutImageSizeY - 1;
         emit wsThread->sendMessageToClient(
             "PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
-            QString::number(glPHD_LockPositionX) + ":" + QString::number(glPHD_LockPositionY));
+            QString::number(outLockX) + ":" + QString::number(outLockY));
     } else {
         emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
     }
@@ -6829,11 +7013,12 @@ bool MainWindow::TelescopeControl_Track()
     }
     return isTrack;
 }
-// TODO: 任务计划表数据解析
 void MainWindow::ScheduleTabelData(QString message)
 {
     ScheduleTargetNames.clear();
     m_scheduList.clear();
+    // 每次接收到新的任务计划表时，从第一条任务开始执行
+    schedule_currentNum = 0;
     schedule_currentShootNum = 0;
     QStringList ColDataList = message.split('[');
     for (int i = 1; i < ColDataList.size(); ++i)
@@ -6844,8 +7029,24 @@ void MainWindow::ScheduleTabelData(QString message)
         qDebug() << "ColData[" << i << "]:" << ColData;
 
         QStringList RowDataList = ColData.split(',');
+        if (RowDataList.size() <= 10)
+        {
+            Logger::Log(QString("ScheduleTabelData | row %1 has insufficient columns: %2").arg(i).arg(RowDataList.size()).toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+
         for (int j = 1; j <= 10; ++j)
         {
+            // 防御性检查：确保索引有效
+            if (j >= RowDataList.size())
+            {
+                Logger::Log(QString("ScheduleTabelData | row %1 column index %2 out of range (size=%3)")
+                                .arg(i).arg(j).arg(RowDataList.size()).toStdString(),
+                            LogLevel::WARNING, DeviceType::MAIN);
+                break;
+            }
+
             if (j == 1)
             {
                 rowData.shootTarget = RowDataList[j];
@@ -6862,13 +7063,31 @@ void MainWindow::ScheduleTabelData(QString message)
             else if (j == 2)
             {
                 QStringList parts = RowDataList[j].split(':');
+                if (parts.size() >= 2)
+                {
                 rowData.targetRa = Tools::RadToHour(parts[1].toDouble());
+                }
+                else
+                {
+                    rowData.targetRa = 0;
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid RA field: %2").arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
                 qDebug() << "Ra:" << rowData.targetRa;
             }
             else if (j == 3)
             {
                 QStringList parts = RowDataList[j].split(':');
+                if (parts.size() >= 2)
+                {
                 rowData.targetDec = Tools::RadToDegree(parts[1].toDouble());
+                }
+                else
+                {
+                    rowData.targetDec = 0;
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid Dec field: %2").arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
                 qDebug() << "Dec:" << rowData.targetDec;
             }
             else if (j == 4)
@@ -6879,8 +7098,18 @@ void MainWindow::ScheduleTabelData(QString message)
             else if (j == 5)
             {
                 QStringList parts = RowDataList[j].split(' ');
+                if (parts.isEmpty())
+                {
+                    rowData.exposureTime = 1000; // 默认 1s
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid exposure field: %2, fallback to 1000ms")
+                                    .arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                    qDebug() << "Exptime error, Exptime = 1000 ms";
+                    continue;
+                }
+
                 QString value = parts[0];
-                QString unit = parts[1];
+                QString unit = (parts.size() > 1) ? parts[1] : "s";
                 if (unit == "s")
                     rowData.exposureTime = value.toInt() * 1000; // Convert seconds to milliseconds
                 else if (unit == "ms")
@@ -6923,6 +7152,16 @@ void MainWindow::ScheduleTabelData(QString message)
             else if (j == 10)
             {
                 QStringList parts = RowDataList[j].split(' ');
+                if (parts.isEmpty())
+                {
+                    rowData.exposureDelay = 0;
+                    Logger::Log(QString("ScheduleTabelData | row %1 invalid exposure delay field: %2, fallback to 0")
+                                    .arg(i).arg(RowDataList[j]).toStdString(),
+                                LogLevel::WARNING, DeviceType::MAIN);
+                    qDebug() << "Exposure Delay error, use 0 ms";
+                    continue;
+                }
+
                 QString value = parts[0];
                 QString unit = parts.size() > 1 ? parts[1] : "s";
                 if (unit == "s")
@@ -6938,6 +7177,19 @@ void MainWindow::ScheduleTabelData(QString message)
         // scheduleTable.Data.push_back(rowData);
         m_scheduList.append(rowData);
     }
+
+    // 同步更新暂存的任务计划表数据，方便前端在刷新后通过 getStagingScheduleData 恢复当前计划
+    // 前端发送格式为 "ScheduleTabelData:[,Target,...[,...]]"，这里复用内容，仅替换成 StagingScheduleData 前缀
+    if (message.startsWith("ScheduleTabelData:"))
+    {
+        QString stagingMessage = message;
+        stagingMessage.replace(0,
+                               QString("ScheduleTabelData:").length(),
+                               "StagingScheduleData:");
+        isStagingScheduleData = true;
+        StagingScheduleData = stagingMessage;
+    }
+
     startSchedule();
 }
 void MainWindow::startSchedule()
@@ -6951,17 +7203,22 @@ void MainWindow::startSchedule()
         schedule_CFWpos = m_scheduList[schedule_currentNum].filterNumber.toInt();
         schedule_ExposureDelay = m_scheduList[schedule_currentNum].exposureDelay;
         StopSchedule = false;
+        isScheduleRunning = true;
+        // 通知前端：计划任务当前处于运行状态
+        emit wsThread->sendMessageToClient("ScheduleRunning:true");
         startTimeWaiting();
     }
     else
     {
         qDebug() << "Index out of range, Schedule is complete!";
         StopSchedule = true;
+        isScheduleRunning = false;
         schedule_currentNum = 0;
         call_phd_StopLooping();
         GuidingHasStarted = false;
         // 通知前端计划任务已完成，重置按钮状态
         emit wsThread->sendMessageToClient("ScheduleComplete");
+        emit wsThread->sendMessageToClient("ScheduleRunning:false");
         // 在实际应用中，你可能想要返回一个默认值或者处理索引超出范围的情况
         // 这里仅仅是一个简单的示例
         // return ScheduleData();
@@ -7001,6 +7258,13 @@ void MainWindow::startTimeWaiting()
             qDebug() << "Time Waiting Complete...";
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(1, 1.0);  // 步骤1完成：等待时间
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "wait:" +
+                "0:" +
+                "0:" +
+                "100");
 
             startMountGoto(m_scheduList[schedule_currentNum].targetRa, m_scheduList[schedule_currentNum].targetDec);
         } 
@@ -7017,6 +7281,13 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
     {
         m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 无赤道仪时直接跳到步骤2完成
         emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+        emit wsThread->sendMessageToClient(
+            "ScheduleStepState:" +
+            QString::number(schedule_currentNum) + ":" +
+            "mount:" +
+            "0:" +
+            "0:" +
+            "100");
         Logger::Log("startMountGoto | dpMount is NULL,goto failed!Skip to set CFW.", LogLevel::ERROR, DeviceType::MAIN);
         startSetCFW(schedule_CFWpos);
         return;
@@ -7054,6 +7325,21 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 
     sleep(2); // 赤道仪的状态更新有一定延迟
 
+    // 步骤2：赤道仪转动，明确发送“开始移动”的细分信号，方便前端显示循环进度条
+    // 这里将该步骤标记为进行中（本地进度 0.5），但 stepProgress 使用 0，表示刚开始。
+    m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 0.5);
+    emit wsThread->sendMessageToClient(
+        "UpdateScheduleProcess:" +
+        QString::number(schedule_currentNum) + ":" +
+        QString::number(m_scheduList[schedule_currentNum].progress));
+    emit wsThread->sendMessageToClient(
+        "ScheduleStepState:" +
+        QString::number(schedule_currentNum) + ":" +
+        "mount:" +
+        "0:" +
+        "0:" +
+        "0");
+
     // 启动等待赤道仪转动的定时器
     telescopeTimer.setSingleShot(true);
 
@@ -7090,6 +7376,13 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
                 qDebug() << "Mount Goto Complete...";
                 m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 步骤2完成：赤道仪转动
                 emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+                emit wsThread->sendMessageToClient(
+                    "ScheduleStepState:" +
+                    QString::number(schedule_currentNum) + ":" +
+                    "mount:" +
+                    "0:" +
+                    "0:" +
+                    "100");
                 startSetCFW(schedule_CFWpos);
             }
         } 
@@ -7229,11 +7522,25 @@ void MainWindow::startSetCFW(int pos)
             qDebug() << "schedule CFW pos:" << pos;
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 0.5);  // 步骤3进行中：开始设置滤镜
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "50");
             indi_Client->setCFWPosition(dpMainCamera, pos);
             qDebug() << "CFW Goto Complete...";
             startCapture(schedule_ExpTime);
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 步骤3完成：滤镜设置完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "100");
         }
         else
         {
@@ -7251,10 +7558,24 @@ void MainWindow::startSetCFW(int pos)
             qDebug() << "schedule CFW pos:" << pos;
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 0.5);  // 步骤3进行中：开始设置滤镜
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "50");
             indi_Client->setCFWPosition(dpCFW, pos);
             qDebug() << "CFW Goto Complete...";
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(3, 1.0);  // 步骤3完成：滤镜设置完成
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "filter:" +
+                "0:" +
+                "0:" +
+                "100");
             startCapture(schedule_ExpTime);
         }
         else
@@ -7282,6 +7603,14 @@ void MainWindow::startExposureDelay()
     
     // 使用可控制的定时器，每100ms检查一次
     exposureDelayTimer.setSingleShot(false);
+    // 向前端发送步骤状态：进入延时阶段
+    emit wsThread->sendMessageToClient(
+        "ScheduleStepState:" +
+        QString::number(schedule_currentNum) + ":" +
+        "delay:" +
+        "0:" +
+        "0:" +
+        "0");
     connect(&exposureDelayTimer, &QTimer::timeout, [this]() {
         // 首先检查是否已停止，必须在最开始检查
         // 这个检查必须在任何其他操作之前，确保能够立即响应停止信号
@@ -7317,6 +7646,20 @@ void MainWindow::startExposureDelay()
             return; // 立即返回，不执行任何后续操作
         }
         
+        // 向前端报告当前延迟阶段的进度（0-100）
+        if (schedule_ExposureDelay > 0)
+        {
+            int progress = static_cast<int>(
+                qMin(100.0, exposureDelayElapsed_ms * 100.0 / static_cast<double>(schedule_ExposureDelay)));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "delay:" +
+                "0:" +
+                "0:" +
+                QString::number(progress));
+        }
+        
         // 检查是否已经过了延迟时间
         if (exposureDelayElapsed_ms >= schedule_ExposureDelay)
         {
@@ -7324,6 +7667,13 @@ void MainWindow::startExposureDelay()
             exposureDelayTimer.disconnect();
             qDebug() << "Exposure delay complete, starting next capture";
             exposureDelayElapsed_ms = 0; // 重置已过去的时间
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "delay:" +
+                "0:" +
+                "0:" +
+                "100");
             startCapture(schedule_ExpTime);
         }
     });
@@ -7373,6 +7723,28 @@ void MainWindow::startCapture(int ExpTime)
             int currentStep = 3 + schedule_currentShootNum;
             m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(currentStep, 1.0);
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "exposure:" +
+                QString::number(schedule_currentShootNum) + ":" +
+                QString::number(schedule_RepeatNum) + ":" +
+                "100");
+
+            // 同步更新循环进度（loopDone）：每完成一张就回传当前已完成张数和总张数，
+            // 便于前端实时显示 “已拍/总拍” 的精细进度，而不是只在最后一次拍摄结束时一次性更新。
+            if (schedule_RepeatNum > 0)
+            {
+                int loopProgress = static_cast<int>(
+                    qMin(100.0, schedule_currentShootNum * 100.0 / static_cast<double>(schedule_RepeatNum)));
+                emit wsThread->sendMessageToClient(
+                    // 专用循环状态信号：ScheduleLoopState:row:loopDone:loopTotal:progress
+                    "ScheduleLoopState:" +
+                    QString::number(schedule_currentNum) + ":" +
+                    QString::number(schedule_currentShootNum) + ":" +
+                    QString::number(schedule_RepeatNum) + ":" +
+                    QString::number(loopProgress));
+            }
 
             if (schedule_currentShootNum < schedule_RepeatNum)
             {
@@ -7391,10 +7763,6 @@ void MainWindow::startCapture(int ExpTime)
             {
                 schedule_currentShootNum = 0;
 
-                // // next schedule...
-                // schedule_currentNum ++;
-                // qDebug() << "next schedule...";
-                // startSchedule();
                 m_scheduList[schedule_currentNum].progress=100;
                 emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));   
                 qDebug() << "Capture Goto Complete...";
@@ -7440,6 +7808,13 @@ void MainWindow::startCapture(int ExpTime)
                     qDebug() << "All captures completed or timeout, move to next schedule...";
                     m_scheduList[schedule_currentNum].progress = 100;
                     emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+                    emit wsThread->sendMessageToClient(
+                        // 专用循环状态信号收尾：全部完成时回传 100%
+                        "ScheduleLoopState:" +
+                        QString::number(schedule_currentNum) + ":" +
+                        QString::number(schedule_RepeatNum) + ":" +
+                        QString::number(schedule_RepeatNum) + ":" +
+                        "100");
                     nextSchedule();
                 }
                 return;
@@ -7457,6 +7832,13 @@ void MainWindow::startCapture(int ExpTime)
                      << ", currentStep:" << currentStep << ", shotProgress:" << shotProgress
                      << ", Capture Progress:" << m_scheduList[schedule_currentNum].progress;
             emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "exposure:" +
+                QString::number(schedule_currentShootNum) + ":" +
+                QString::number(schedule_RepeatNum) + ":" +
+                QString::number(static_cast<int>(shotProgress * 100.0)));
             captureTimer.start(1000);  // 继续等待
         } });
 
@@ -8325,6 +8707,33 @@ void MainWindow::getStagingScheduleData()
     {
         emit wsThread->sendMessageToClient(StagingScheduleData);
     }
+
+    // 将当前调度列表中的进度同步给前端，便于页面刷新后恢复每一行的执行进度
+    for (int i = 0; i < m_scheduList.size(); ++i)
+    {
+        int progress = m_scheduList[i].progress;
+        if (progress < 0)
+        {
+            progress = 0;
+        }
+        else if (progress > 100)
+        {
+            progress = 100;
+        }
+
+        // 仅对已有进度的行进行同步，避免干扰尚未使用的默认行
+        if (progress > 0)
+        {
+            emit wsThread->sendMessageToClient(
+                "UpdateScheduleProcess:" +
+                QString::number(i) + ":" +
+                QString::number(progress));
+        }
+    }
+
+    // 无论是否有暂存数据，都向前端同步当前计划运行状态
+    emit wsThread->sendMessageToClient(
+        QString("ScheduleRunning:%1").arg(isScheduleRunning ? "true" : "false"));
 }
 
 void MainWindow::getStagingGuiderData()
@@ -10195,6 +10604,18 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + DeviceType);
         return;
     }
+    if (DeviceType == "Guider")
+
+        {
+        // 停止导星
+        call_phd_StopLooping();
+        isGuiding = false;
+        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+        isGuiderLoopExp = false;
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+        sleep(3);
+    }
 
     Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") start...", LogLevel::INFO, DeviceType::MAIN);
     int num = 0;
@@ -10501,11 +10922,43 @@ void MainWindow::loadBindDeviceTypeList()
 void MainWindow::loadBindDeviceList(MyClient *client)
 {
     QString order = "BindDeviceList";
-    for (int i = 0; i < client->GetDeviceCount(); i++)
+
+    // 修复：防御性编程，防止空指针和非法访问导致段错误
+    if (client == nullptr)
     {
-        if (client->GetDeviceFromList(i)->isConnected() && client->GetDeviceFromList(i)->getDeviceName() != "")
+        Logger::Log("LoadBindDeviceList | client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient(order);
+        return;
+    }
+
+    int deviceCount = client->GetDeviceCount();
+    if (deviceCount <= 0)
+    {
+        Logger::Log("LoadBindDeviceList | no devices in client list", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient(order);
+        return;
+    }
+
+    for (int i = 0; i < deviceCount; i++)
+    {
+        INDI::BaseDevice *device = client->GetDeviceFromList(i);
+        if (device == nullptr)
         {
-            order += ":" + QString::fromUtf8(client->GetDeviceFromList(i)->getDeviceName()) + ":" + QString::number(i);
+            Logger::Log("LoadBindDeviceList | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+
+        const char *name = device->getDeviceName();
+        if (!name)
+        {
+            Logger::Log("LoadBindDeviceList | Device at index " + std::to_string(i) + " has null name pointer", LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+
+        QString qName = QString::fromUtf8(name);
+        if (device->isConnected() && !qName.isEmpty())
+        {
+            order += ":" + qName + ":" + QString::number(i);
         }
     }
 
@@ -10951,7 +11404,7 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     // 读取FITS文件
     Tools::readFits(filename.toLocal8Bit().constData(), image);
 
-    QList<FITSImage::Star> stars = Tools::FindStarsByQHYCCDSDK(true, true);
+    QList<FITSImage::Star> stars = Tools::FindStarsByFocusedCpp(true, true);
     currentSelectStarPosition = selectStar(stars);
 
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
@@ -10976,6 +11429,11 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         return;
     }
     Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(originalImage16.cols) + "x" + std::to_string(originalImage16.rows), LogLevel::INFO, DeviceType::FOCUSER);
+
+    // 中值滤波
+    Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
+    cv::medianBlur(originalImage16, originalImage16, 3);
+    Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
 
     cv::Mat image16;
     if (ProcessBin && glMainCameraBinning != 1)
@@ -11398,6 +11856,17 @@ void MainWindow::startAutoFocus()
         int savedCFWpos = schedule_CFWpos; // 保存当前任务的滤镜位置
         
         isAutoFocus = false;
+        // 如果是计划触发的自动对焦，向前端报告步骤完成（失败）
+        if (wasScheduleTriggered)
+        {
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "autofocus:" +
+                "0:" +
+                "0:" +
+                "100");
+        }
         isScheduleTriggeredAutoFocus = false; // 重置标志
         
         emit wsThread->sendMessageToClient("FitResult:Failed:拟合结果为水平线，未找到最佳焦点");
@@ -11460,6 +11929,18 @@ void MainWindow::startAutoFocus()
         
         // 结束阶段：统一清理自动对焦相关定时器与信号连接
         cleanupAutoFocusConnections();
+        
+        // 如果是计划触发的自动对焦，向前端报告步骤完成
+        if (wasScheduleTriggered)
+        {
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "autofocus:" +
+                "0:" +
+                "0:" +
+                "100");
+        }
         
         // 重置计划任务表触发标志
         isScheduleTriggeredAutoFocus = false;
@@ -11753,6 +12234,14 @@ void MainWindow::startScheduleAutoFocus()
     
     // 标记这是由计划任务表触发的自动对焦
     isScheduleTriggeredAutoFocus = true;
+    // 向前端发送步骤状态：当前行进入自动对焦阶段
+    emit wsThread->sendMessageToClient(
+        "ScheduleStepState:" +
+        QString::number(schedule_currentNum) + ":" +
+        "autofocus:" +
+        "0:" +
+        "0:" +
+        "0");
     
     // 调用通用的自动对焦启动函数
     Logger::Log("计划任务表自动对焦 | 开始执行自动对焦", LogLevel::INFO, DeviceType::MAIN);

@@ -301,6 +301,36 @@ class Tools : public QObject {
   static void saveCFWList(QString Name, QString List);
   static QString readCFWList(QString Name);
 
+  // ---------- Schedule presets (任务计划表预设) ----------
+  /**
+   * @brief 保存任务计划表预设到独立文件
+   * @param name  预设名称（作为文件名的一部分）
+   * @param data  任务计划表原始数据（不含前缀，如一串以 '[' 分隔的行）
+   *
+   * 路径示例：config/schedules/<name>.sched
+   */
+  static void saveSchedulePreset(const QString &name, const QString &data);
+
+  /**
+   * @brief 读取指定名称的任务计划表预设
+   * @param name  预设名称
+   * @return 成功返回任务计划表数据（与 StagingScheduleData: 后面的格式一致），失败返回空字符串
+   */
+  static QString readSchedulePreset(const QString &name);
+
+  /**
+   * @brief 列出所有已保存的任务计划表预设名称
+   * @return 名称列表（不含扩展名）
+   */
+  static QStringList listSchedulePresets();
+
+  /**
+   * @brief 删除指定名称的任务计划表预设
+   * @param name  预设名称
+   * @return 删除成功返回 true，失败或不存在返回 false
+   */
+  static bool deleteSchedulePreset(const QString &name);
+
   static void saveDSLRsInfo(DSLRsInfo DSLRsInfo);
   static DSLRsInfo readDSLRsInfo(QString Name);
 
@@ -322,6 +352,55 @@ class Tools : public QObject {
   static QString getFitsCaptureTime(const char* fileName);
 
   static int readFits_(const char* fileName, cv::Mat& image);
+
+  // ---------------- Focused star detection (C++ 实现，来自 findstars.py 的合焦算法) ----------------
+  struct FocusedStar {
+    double x;       // 星心 x（全图坐标）
+    double y;       // 星心 y（全图坐标）
+    double flux;    // 前景总光通量
+    double hfr;     // Half Flux Radius
+    double radius;  // 几何半径（像素）
+    int area;       // 像素个数
+    double snr;     // 信噪比
+    QString snrQuality; // 信噪比评价
+  };
+
+  /**
+   * @brief 检测合焦小星（完整C++实现，不依赖Python）
+   * @param image16  原始16位（或8/16/32F可兼容）单通道图像，cv::Mat
+   * @param kSigma   阈值倍数（默认 3.5）
+   * @param minArea  最小面积（默认 3）
+   * @param maxArea  最大面积（默认 200）
+   * @param minSNR   最小SNR阈值（默认 3.0）
+   * @param bgKsize  背景估计高斯核大小（默认 51，奇数）
+   * @param smoothSigma 前景轻微平滑sigma（默认 1.0）
+   * @param verbose  输出调试信息
+   * @return         通过噪声过滤与去重后的合焦星点列表
+   */
+  static std::vector<FocusedStar> DetectFocusedStars(const cv::Mat& image16,
+                                                     double kSigma = 3.5,
+                                                     int minArea = 3,
+                                                     int maxArea = 200,
+                                                     double minSNR = 3.0,
+                                                     int bgKsize = 51,
+                                                     double smoothSigma = 1.0,
+                                                     bool verbose = false);
+
+  /**
+   * @brief 从FITS文件直接检测合焦小星（C++实现）
+   * @param fileName FITS 文件路径（UTF-8 C字符串）
+   * @param outStars 输出星点列表
+   * @param verbose  输出调试信息
+   * @return 0 表示成功；非0为CFITSIO或读取错误码
+   */
+  static int DetectFocusedStarsFromFITS(const char* fileName,
+                                        std::vector<FocusedStar>& outStars,
+                                        bool verbose = false);
+
+  /**
+   * @brief 从星点集合计算中位数HFR（若为空返回0）
+   */
+  static double MedianHFR(const std::vector<FocusedStar>& stars);
 
   // QHYCCD Camera
   static void ConnectQHYCCDSDK();
@@ -368,6 +447,8 @@ class Tools : public QObject {
 
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
   static QList<FITSImage::Star> FindStarsByQHYCCDSDK(bool AllStars, bool runHFR);
+  // 基于C++合焦算法的星点识别（仿照上面两个接口）
+  static QList<FITSImage::Star> FindStarsByFocusedCpp(bool AllStars, bool runHFR);
   
   /**
    * @brief 从文件路径读取FITS图像并识别星点数量

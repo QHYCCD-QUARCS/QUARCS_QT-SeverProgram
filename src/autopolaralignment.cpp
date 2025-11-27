@@ -1738,28 +1738,84 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
                 std::to_string(targetRA) + ", " + std::to_string(targetDEC) + ")",
                 LogLevel::INFO, DeviceType::MAIN);
 
-    // —— 用固定目标计算东/北分量与球面距离（不再用 RA/DEC 线性差）——
+    // —— 用固定目标计算天球 EN 分量与球面距离（不再用 RA/DEC 线性差）——
     SingleShotGuide guide = delta_to_fixed_target(currentRA, currentDEC, targetRA, targetDEC);
 
-    // 这些"像 az/alt 偏差"的输出仅为兼容旧接口（单位：度），实义是 EN 分量
+    // 这些"像 az/alt 偏差"的输出仅为兼容旧接口（单位：度），实义是天球 EN 分量
     double east_deg  = guide.east_arcmin  / 60.0;
     double north_deg = guide.north_arcmin / 60.0;
     double total_deg = guide.distance_arcmin / 60.0;
 
     Logger::Log(
-        "PolarAlignment: 偏差 - 东 " + std::to_string(guide.east_arcmin) + "′, 北 " +
+        "PolarAlignment: 偏差(天球系) - 东 " + std::to_string(guide.east_arcmin) + "′, 北 " +
         std::to_string(guide.north_arcmin) + "′, 距离 " + std::to_string(guide.distance_arcmin) +
         "′, 方位(自北顺时针) " + std::to_string(guide.bearing_deg_from_north) + "°",
         LogLevel::INFO, DeviceType::MAIN
     );
 
-    // 生成指导文案（建议改为基于 EN 分量）
+    // === 新增：将天球 EN 偏差转换为当前地平系下的方位角/高度角偏差 ===
+    // 思路：
+    // 1) 把当前点/目标点从赤道坐标转为地平坐标 (Az,Alt)；
+    // 2) 在地平坐标对应的单位向量上建立 EN 基底；
+    // 3) 用同一个 log_map_2d 算出在地平切平面上的 EN 分量，即真正的方位/高度偏差。
+    double azimuthOffset_deg  = east_deg;    // 默认先用旧值，作为失败时的回退
+    double altitudeOffset_deg = north_deg;
+
+    double observerLat = 0.0, observerLon = 0.0, observerElev = 0.0;
+    if (getObserverLocation(observerLat, observerLon, observerElev)) {
+        // 1) 计算当前点/目标点的地平坐标
+        double curAz = 0.0, curAlt = 0.0;
+        double tgtAz = 0.0, tgtAlt = 0.0;
+
+        double curRA_hours = currentRA / 15.0;
+        double tgtRA_hours = targetRA  / 15.0;
+
+        if (convertRADECToHorizontal(curRA_hours, currentDEC, observerLat, observerLon, curAz, curAlt) &&
+            convertRADECToHorizontal(tgtRA_hours,  targetDEC,  observerLat, observerLon, tgtAz, tgtAlt)) {
+
+            auto horizToVec = [](double az_deg, double alt_deg) {
+                double az  = az_deg  * kDeg2Rad;
+                double alt = alt_deg * kDeg2Rad;
+                double x = std::sin(az) * std::cos(alt); // East
+                double y = std::cos(az) * std::cos(alt); // North
+                double z = std::sin(alt);                // Up
+                return Vec3{x, y, z};
+            };
+
+            Vec3 S_h = horizToVec(curAz, curAlt);
+            Vec3 T_h = horizToVec(tgtAz, tgtAlt);
+
+            // 2) 在地平系下，以当前指向 S_h 为切点建立 EN 基底
+            Vec3 Up_h = {0, 0, 1};
+            Vec3 north_h = normalize(cross(cross(S_h, Up_h), S_h)); // 朝更高高度（北）方向
+            Vec3 east_h  = normalize(cross(north_h, S_h));
+            TangentBasis B_h { east_h, north_h };                   // e1=东, e2=北
+
+            // 3) 计算地平切平面上的 EN 分量
+            auto [u_east_h, v_north_h] = log_map_2d(S_h, B_h, T_h);
+
+            azimuthOffset_deg  = u_east_h * kRad2Deg;   // + 向东 / - 向西
+            altitudeOffset_deg = v_north_h * kRad2Deg;  // + 向上 / - 向下
+
+            Logger::Log(
+                "PolarAlignment: 偏差(地平系) - 方位 " + std::to_string(azimuthOffset_deg) +
+                "°, 高度 " + std::to_string(altitudeOffset_deg) + "°",
+                LogLevel::INFO, DeviceType::MAIN
+            );
+        } else {
+            Logger::Log("PolarAlignment: EN -> 地平偏差转换失败，使用天球 EN 偏差作为回退", LogLevel::WARNING, DeviceType::MAIN);
+        }
+    } else {
+        Logger::Log("PolarAlignment: 获取观测者位置失败，使用天球 EN 偏差作为回退", LogLevel::WARNING, DeviceType::MAIN);
+    }
+
+    // 生成指导文案（内部使用 result.* 的极轴偏差，得到机械方位/高度调整提示）
     QString adjustmentRa, adjustmentDec;
     QString adjustmentGuide = generateAdjustmentGuide(adjustmentRa, adjustmentDec);
     Logger::Log("PolarAlignment: 调整指导: " + adjustmentGuide.toStdString(),
                 LogLevel::INFO, DeviceType::MAIN);
 
-    // 发信号给 UI：把 EN 分量通过原参数传出（或新增字段更清晰）
+    // 发信号给 UI：通过 offsetRa/offsetDec 输出当前需要调整的方位/高度偏差（度）
     saveAndEmitAdjustmentGuideData(
         currentRAPosition, currentDECPosition,
         currentSolveResult.RA_0, currentSolveResult.DEC_0,
@@ -1767,7 +1823,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         currentSolveResult.RA_2, currentSolveResult.DEC_2,
         currentSolveResult.RA_3, currentSolveResult.DEC_3,
         targetRA, targetDEC,         // 固定目标
-        east_deg, north_deg,         // 兼容旧"az/alt"槽位
+        azimuthOffset_deg, altitudeOffset_deg, // 当前需要调整的方位/高度偏差（度）
         adjustmentRa, adjustmentDec,
         cachedFakePolarRA, cachedFakePolarDEC,
         realPolarRA, realPolarDEC
