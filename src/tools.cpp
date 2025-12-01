@@ -6717,6 +6717,113 @@ int Tools::fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, f
     return 0; // 拟合成功
 }
 
+int Tools::fitQuadraticCurveForAutoFocus(const QVector<QPointF>& data, float& a, float& b, float& c) {
+    const int n = data.size();
+    const int kMinPoints = 5;
+    if (n < kMinPoints) {
+        return -1; // 数据点数量不足
+    }
+
+    // 内部 lambda：给定数据子集，做一次普通最小二乘二次拟合
+    auto fitWithSubset = [](const QVector<QPointF>& pts, float& outA, float& outB, float& outC) -> bool {
+        const int m = pts.size();
+        if (m < 3) {
+            return false;
+        }
+        cv::Mat A(m, 3, CV_32F);
+        cv::Mat B(m, 1, CV_32F);
+
+        for (int i = 0; i < m; ++i) {
+            const float x = pts[i].x();
+            const float y = pts[i].y();
+            A.at<float>(i, 0) = x * x;
+            A.at<float>(i, 1) = x;
+            A.at<float>(i, 2) = 1.0f;
+            B.at<float>(i, 0) = y;
+        }
+
+        cv::Mat X;
+        if (!cv::solve(A, B, X, cv::DECOMP_QR)) {
+            return false;
+        }
+
+        outA = X.at<float>(0, 0);
+        outB = X.at<float>(1, 0);
+        outC = X.at<float>(2, 0);
+        return std::isfinite(outA) && std::isfinite(outB) && std::isfinite(outC);
+    };
+
+    // 第一次拟合：使用全部点，获得初始曲线
+    float a0 = 0.0f, b0 = 0.0f, c0 = 0.0f;
+    if (!fitWithSubset(data, a0, b0, c0)) {
+        return -1;
+    }
+
+    // 计算残差，并根据标准差剔除离群点
+    QVector<double> residuals;
+    residuals.reserve(n);
+    double sumRes2 = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const double x = static_cast<double>(data[i].x());
+        const double y = static_cast<double>(data[i].y());
+        const double yFit = static_cast<double>(a0) * x * x +
+                            static_cast<double>(b0) * x +
+                            static_cast<double>(c0);
+        const double r = y - yFit;
+        residuals.append(r);
+        sumRes2 += r * r;
+    }
+
+    if (n <= 1) {
+        // 理论上不会发生，因为前面已经检查 n >= kMinPoints
+        a = a0;
+        b = b0;
+        c = c0;
+        return 0;
+    }
+
+    const double sigma = std::sqrt(sumRes2 / (n - 1));
+    // 若几乎无散布，直接使用全数据拟合结果即可
+    if (!std::isfinite(sigma) || sigma <= 0.0) {
+        a = a0;
+        b = b0;
+        c = c0;
+        return 0;
+    }
+
+    const double kSigmaThreshold = 2.5; // 超过 2.5σ 视为离群点
+    QVector<QPointF> inliers;
+    inliers.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        if (std::fabs(residuals[i]) <= kSigmaThreshold * sigma) {
+            inliers.append(data[i]);
+        }
+    }
+
+    // 如果剔除后剩余点太少或没有真正剔除任何点，则退回到原始拟合结果
+    if (inliers.size() < kMinPoints || inliers.size() == n) {
+        a = a0;
+        b = b0;
+        c = c0;
+        return 0;
+    }
+
+    // 使用内点重新拟合
+    float a1 = 0.0f, b1 = 0.0f, c1 = 0.0f;
+    if (!fitWithSubset(inliers, a1, b1, c1)) {
+        // 若内点拟合失败，则仍然使用初始拟合结果
+        a = a0;
+        b = b0;
+        c = c0;
+        return 0;
+    }
+
+    a = a1;
+    b = b1;
+    c = c1;
+    return 0; // 拟合成功（已剔除离群点）
+}
+
 double Tools::calculateRSquared(QVector<QPointF> data, float a, float b, float c) {
     double ssTotal = 0.0;
     double ssResidual = 0.0;
