@@ -1760,7 +1760,8 @@ void AutoFocus::performFineDataCollection()
 
             if (snrPoints.size() >= minPointsForFit) {
                 float a = 0.0f, b = 0.0f, c = 0.0f;
-                int fitCode = Tools::fitQuadraticCurve(snrPoints, a, b, c);
+                // 使用专门为自动对焦设计的二次曲线拟合（内部会剔除离群点）
+                int fitCode = Tools::fitQuadraticCurveForAutoFocus(snrPoints, a, b, c);
                 if (fitCode == 0) {
                     double r2 = Tools::calculateRSquared(snrPoints, a, b, c);
                     // 对焦时 SNR 在最佳位置应形成开口向下的抛物线，因此 a 需小于 0
@@ -2377,72 +2378,56 @@ FitResult AutoFocus::fitFocusData()
         }
     }
     
-    // 尝试多种拟合方法，选择最佳结果
-    FitResult bestResult;
-    double bestRSquared = -1.0;
-    
-    // 方法1：标准最小二乘法
-    FitResult result1 = performStandardLeastSquares(validData);
-    if (result1.bestPosition > 0) {
-        double rSquared1 = calculateRSquared(validData, result1, getDataMinPosition(validData));
-        log(QString("标准最小二乘法 R² = %1").arg(rSquared1));
-        if (rSquared1 > bestRSquared) {
-            bestResult = result1;
-            bestRSquared = rSquared1;
-        }
+    // 使用 Tools::fitQuadraticCurveForAutoFocus 对 HFR 数据做二次拟合（内部含离群点剔除）
+    QVector<QPointF> hfrPoints;
+    hfrPoints.reserve(validData.size());
+    for (const FocusDataPoint &p : validData) {
+        hfrPoints.append(QPointF(static_cast<double>(p.focuserPosition),
+                                 static_cast<double>(p.hfr)));
     }
-    
-    // 方法2：加权最小二乘法（给中心点更高权重）
-    FitResult result2 = performWeightedLeastSquares(validData);
-    if (result2.bestPosition > 0) {
-        double rSquared2 = calculateRSquared(validData, result2, getDataMinPosition(validData));
-        log(QString("加权最小二乘法 R² = %1").arg(rSquared2));
-        if (rSquared2 > bestRSquared) {
-            bestResult = result2;
-            bestRSquared = rSquared2;
-        }
-    }
-    
-    // 方法3：鲁棒拟合（使用Huber损失函数）
-    FitResult result3 = performRobustFitting(validData);
-    if (result3.bestPosition > 0) {
-        double rSquared3 = calculateRSquared(validData, result3, getDataMinPosition(validData));
-        log(QString("鲁棒拟合 R² = %1").arg(rSquared3));
-        if (rSquared3 > bestRSquared) {
-            bestResult = result3;
-            bestRSquared = rSquared3;
-        }
-    }
-    
-    // 检查最佳结果是否有效，优先使用拟合结果
-    if (bestResult.bestPosition > 0) {
-        if (bestRSquared > g_autoFocusConfig.minRSquared) {
-            log(QString("最佳拟合方法 R² = %1，质量良好，使用此结果").arg(bestRSquared));
-        } else {
-            log(QString("最佳拟合方法 R² = %1，质量一般但仍使用拟合结果（忽略识别出错的点）").arg(bestRSquared));                                                                             
-        }
-        result = bestResult;
-    } else {
-        log(QString("所有拟合方法都失败，使用插值方法（基于 HFR>0 的有效数据）"));
-        log(QString("拟合失败原因分析："));
-        log(QString("- 有效数据点数量: %1").arg(validData.size()));
-        log(QString("- 数据点范围: [%1, %2]").arg(getDataMinPosition(validData)).arg(getDataMaxPosition(validData)));
+
+    float a = 0.0f, b = 0.0f, c = 0.0f;
+    int fitCode = Tools::fitQuadraticCurveForAutoFocus(hfrPoints, a, b, c);
+    if (fitCode != 0) {
+        log(QString("Tools::fitQuadraticCurveForAutoFocus 拟合失败，使用插值方法（基于 HFR>0 的有效数据）"));
         return findBestPositionByInterpolation(validData);
     }
-    
-    // 验证最佳位置是否在合理范围内
+
+    // 计算拟合优度 R²（基于 HFR 数据）
+    double rSquared = Tools::calculateRSquared(hfrPoints, a, b, c);
+    log(QString("AutoFocus HFR 二次拟合：a=%1, b=%2, c=%3, R²=%4").arg(a).arg(b).arg(c).arg(rSquared));
+
+    // 对于 HFR 曲线，期望是开口向上的抛物线（最小值为最佳对焦），因此 a 应大于 0
+    if (!(rSquared > 0.0 && a > 0.0f)) {
+        log(QString("HFR 二次拟合质量不足或开口方向不正确（a=%1, R²=%2），使用插值方法").arg(a).arg(rSquared));
+        return findBestPositionByInterpolation(validData);
+    }
+
+    // 根据拟合系数求顶点位置（最佳对焦位置）
+    double vertexX = -static_cast<double>(b) / (2.0 * static_cast<double>(a));
+    if (!std::isfinite(vertexX)) {
+        log("HFR 二次拟合得到的顶点位置非有限值，使用插值方法");
+        return findBestPositionByInterpolation(validData);
+    }
+
+    // 将最佳位置限制在实际采样范围内
     double minPos = getDataMinPosition(validData);
     double maxPos = getDataMaxPosition(validData);
-    if (result.bestPosition < minPos || result.bestPosition > maxPos) {
-        log(QString("拟合的最佳位置超出数据范围，使用插值方法"));
-        return findBestPositionByInterpolation();
-    }
+    vertexX = std::clamp(vertexX, minPos, maxPos);
+
+    // 填充拟合结果
+    result.a = static_cast<double>(a);
+    result.b = static_cast<double>(b);
+    result.c = static_cast<double>(c);
+    result.bestPosition = vertexX;
+    result.minHFR = result.a * vertexX * vertexX +
+                    result.b * vertexX +
+                    result.c;
     
-    log(QString("改进的二次函数拟合成功: y = %1x² + %2x + %3")
-        .arg(result.a).arg(result.b).arg(result.c));
+    log(QString("改进的二次函数拟合成功: y = %1x² + %2x + %3").arg(result.a).arg(result.b).arg(result.c));
     log(QString("最佳位置: %1, 最小HFR: %2, R²: %3")
-        .arg(result.bestPosition).arg(result.minHFR).arg(bestRSquared));
-    
+        .arg(result.bestPosition).arg(result.minHFR).arg(rSquared));
+
     return result;
 }
 

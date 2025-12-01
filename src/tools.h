@@ -578,7 +578,11 @@ class Tools : public QObject {
 
   static StelObjectSelect getTargetRaDecFromStel(std::string SearchName);
 
+  // 通用二次曲线拟合（不做离群点剔除），供已有功能复用
   static int fitQuadraticCurve(const QVector<QPointF>& data, float& a, float& b, float& c);
+
+  // 专门用于自动对焦阶段的二次曲线拟合：在拟合前自动剔除离群点
+  static int fitQuadraticCurveForAutoFocus(const QVector<QPointF>& data, float& a, float& b, float& c);
 
   static double calculateRSquared(QVector<QPointF> data, float a, float b, float c);
 
