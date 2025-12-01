@@ -2043,7 +2043,7 @@ void MainWindow::initINDIClient()
                         // saveFitsAsPNG("/dev/shm/SOLVETEST.fits", true);
                         
                         // 如果自动保存开启，自动保存图像
-                        if (mainCameraAutoSave)
+                        if (mainCameraAutoSave && isScheduleRunning == false)
                         {
                             Logger::Log("Auto Save enabled, saving captured image...", LogLevel::INFO, DeviceType::MAIN);
                             CaptureImageSave();
@@ -2659,6 +2659,9 @@ MeridianStatus MainWindow::checkMeridianStatus()
 
 int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
 {
+    if (false){
+        fitsFileName = "/home/quarcs/workspace/QUARCS/testimage1/1.fits";
+    }
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     cv::Mat image;
     cv::Mat originalImage16;
@@ -3146,23 +3149,6 @@ void MainWindow::SelectIndiDevice(int systemNumber, int grounpNumber)
 
 bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
 {
-    // bool isExist;
-    // qDebug() << "call clearCheckDeviceExist:" << DriverName;
-    // uint32_t ret = clearCheckDeviceExist(DriverName, isExist);
-
-    // if (isExist == false)
-    // {
-    //     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DeviceIndiGroup = -1;
-    //     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DeviceIndiName = "";
-    //     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverFrom = "";
-    //     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = "";
-    //     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].isConnect = false;
-    //     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].dp = NULL;
-    //     systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "";
-    // }
-
-    // qDebug() << "\033[0m\033[1;35m"
-    // return isExist;
     switch (systemdevicelist.currentDeviceCode)
     {
     case 0:
@@ -3170,46 +3156,48 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
         if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Mount";
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+            Logger::Log("indi_Driver_Confirm | Mount | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         }
-        // emit wsThread->sendMessageToClient("AddDeviceType:Mount");
+        
         break;
     case 1:
         if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Guider";
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+            Logger::Log("indi_Driver_Confirm | Guider | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         }
-        // emit wsThread->sendMessageToClient("AddDeviceType:Guider");
         break;
     case 2:
         if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "PoleCamera";
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+            Logger::Log("indi_Driver_Confirm | PoleCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         }
-        // emit wsThread->sendMessageToClient("AddDeviceType:PoleCamera");
         break;
     case 20:
         if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "MainCamera";
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-        }
-        // emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
+            Logger::Log("indi_Driver_Confirm | MainCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
+        }   
         break;
     case 21:
         if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "CFW";
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+            Logger::Log("indi_Driver_Confirm | CFW | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         }
-        // emit wsThread->sendMessageToClient("AddDeviceType:CFW");
         break;
     case 22:
         if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Focuser";
             systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+            Logger::Log("indi_Driver_Confirm | Focuser | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         }
-        // emit wsThread->sendMessageToClient("AddDeviceType:Focuser");
         break;
 
     default:
+        Logger::Log("indi_Driver_Confirm | Invalid currentDeviceCode: " + std::to_string(systemdevicelist.currentDeviceCode), LogLevel::ERROR, DeviceType::MAIN);
         break;
     }
 
@@ -4333,6 +4321,16 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             indi_Client->disableDSLRLiveView(dpMainCamera);
             Logger::Log("Disabled DSLR Live View for Camera: " + QString::fromUtf8(dpMainCamera->getDeviceName()).toStdString(), LogLevel::INFO, DeviceType::MAIN);
         }
+
+        // 预先获取SDK的值为默认值
+        indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
+        emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
+        Logger::Log("CCD Offset - Value: " + std::to_string(glOffsetValue) + ", Min: " + std::to_string(glOffsetMin) + ", Max: " + std::to_string(glOffsetMax), LogLevel::INFO, DeviceType::MAIN);
+
+        indi_Client->getCCDGain(dpMainCamera, glGainValue, glGainMin, glGainMax);
+        Logger::Log("CCD Gain - Value: " + std::to_string(glGainValue) + ", Min: " + std::to_string(glGainMin) + ", Max: " + std::to_string(glGainMax), LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
+
         // 获取主相机所有参数
         getMainCameraParameters();
         NotSetDSLRsInfo = true;
@@ -4359,13 +4357,6 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         // 设置初始offset
         indi_Client->setCCDOffset(dpMainCamera,ImageOffset);
 
-        indi_Client->getCCDOffset(dpMainCamera, glOffsetValue, glOffsetMin, glOffsetMax);
-        emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax));
-        Logger::Log("CCD Offset - Value: " + std::to_string(glOffsetValue) + ", Min: " + std::to_string(glOffsetMin) + ", Max: " + std::to_string(glOffsetMax), LogLevel::INFO, DeviceType::MAIN);
-
-        indi_Client->getCCDGain(dpMainCamera, glGainValue, glGainMin, glGainMax);
-        Logger::Log("CCD Gain - Value: " + std::to_string(glGainValue) + ", Min: " + std::to_string(glGainMin) + ", Max: " + std::to_string(glGainMax), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax));
 
         int maxX, maxY;
         double pixelsize, pixelsizX, pixelsizY;
@@ -5442,6 +5433,95 @@ uint32_t MainWindow::call_phd_StartGuiding(void)
         Logger::Log("call_phd_StartGuiding success.", LogLevel::INFO, DeviceType::GUIDER);
         return true;
     }
+}
+
+uint32_t MainWindow::call_phd_StopGuiding(void)
+{
+    Logger::Log("call_phd_StopGuiding start ...", LogLevel::INFO, DeviceType::GUIDER);
+    // 修复：检查共享内存指针有效性
+    if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
+        Logger::Log("call_phd_StopGuiding | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
+        return false;
+    }
+
+    unsigned int vendcommand;
+    unsigned int baseAddress;
+
+    bzero(sharedmemory_phd, 1024); // 共享内存清空
+
+    baseAddress = 0x03;
+    vendcommand = 0x17; // 与 PHD2 端 myframe.cpp 中定义的“Stop Guiding Only”命令码保持一致
+
+    sharedmemory_phd[1] = Tools::MSB(vendcommand);
+    sharedmemory_phd[2] = Tools::LSB(vendcommand);
+
+    sharedmemory_phd[0] = 0x01; // enable command
+
+    QElapsedTimer t;
+    t.start();
+
+    while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
+    {
+        // QCoreApplication::processEvents();
+    }
+    if (t.elapsed() >= 500)
+    {
+        Logger::Log("call_phd_StopGuiding | timeout", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("call_phd_StopGuiding failed.", LogLevel::ERROR, DeviceType::GUIDER);
+        return false; // timeout
+    }
+    else
+    {
+        Logger::Log("call_phd_StopGuiding success.", LogLevel::INFO, DeviceType::GUIDER);
+        return true;
+    }
+}
+
+void MainWindow::pauseGuidingBeforeMountMove()
+{
+    // 仅在当前逻辑导星开关为 ON 时，才在移动前主动停止导星，并记录状态以便之后恢复
+    wasGuidingBeforeMountMove = false;
+
+    if (isGuiding)
+    {
+        Logger::Log("pauseGuidingBeforeMountMove | guiding is ON, stop guiding before mount move.",
+                    LogLevel::INFO, DeviceType::GUIDER);
+        wasGuidingBeforeMountMove = true;
+        // 仅停止导星，不关闭循环曝光，避免影响 PHD2 的 Loop 按钮语义
+        call_phd_StopGuiding();
+        // 这里不去强制修改 isGuiding / 循环开关，由 PHD2 端自身状态机与前端 UI 控制
+    }
+}
+
+void MainWindow::resumeGuidingAfterMountMove()
+{
+    if (!wasGuidingBeforeMountMove)
+    {
+        // 移动前没有在导星，无需恢复
+        return;
+    }
+
+    Logger::Log("resumeGuidingAfterMountMove | mount move finished, resume guiding.",
+                LogLevel::INFO, DeviceType::GUIDER);
+
+    // 参考 GuiderSwitch=true 的逻辑：如需清校准则先清，再根据是否已选星决定是否自动寻星，最后启动导星
+    if (ClearCalibrationData)
+    {
+        ClearCalibrationData = false;
+        call_phd_ClearCalibration();
+        Logger::Log("resumeGuidingAfterMountMove | clear calibration data before restart guiding.",
+                    LogLevel::INFO, DeviceType::GUIDER);
+    }
+
+    if (!glPHD_isSelected)
+    {
+        Logger::Log("resumeGuidingAfterMountMove | no selected star, call AutoFindStar before guiding.",
+                    LogLevel::INFO, DeviceType::GUIDER);
+        call_phd_AutoFindStar();
+    }
+
+    call_phd_StartGuiding();
+    emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
 }
 
 uint32_t MainWindow::call_phd_checkStatus(unsigned char &status)
@@ -7315,13 +7395,13 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
     //     CurrentRA_Degree, CurrentDEC_Degree,
     //     ra, dec,
     //     observatorylongitude,observatorylatitude) ;
+    // 在执行观测（GOTO）前，如当前处于导星状态，则暂时停止导星，待转动完成后再恢复
+    pauseGuidingBeforeMountMove();
+
     performObservation(
         lst, CurrentDEC_Degree,
         ra, dec,
         observatorylongitude, observatorylatitude);
-
-    call_phd_StopLooping();
-    GuidingHasStarted = false;
 
     sleep(2); // 赤道仪的状态更新有一定延迟
 
@@ -7357,7 +7437,6 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
 
             return;
         }
-        // 检查赤道仪状态
         if (WaitForTelescopeToComplete()) 
         {
             telescopeTimer.stop();  // 转动完成时停止定时器
@@ -7371,20 +7450,20 @@ void MainWindow::startMountGoto(double ra, double dec) // Ra:Hour, Dec:Degree
                 return;
             }
 
-            if(GuidingHasStarted == false)
-            {
-                qDebug() << "Mount Goto Complete...";
-                m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 步骤2完成：赤道仪转动
-                emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
-                emit wsThread->sendMessageToClient(
-                    "ScheduleStepState:" +
-                    QString::number(schedule_currentNum) + ":" +
-                    "mount:" +
-                    "0:" +
-                    "0:" +
-                    "100");
-                startSetCFW(schedule_CFWpos);
-            }
+            // 如果本次 GOTO 之前处于导星状态，则在赤道仪转动完成后恢复导星
+            resumeGuidingAfterMountMove();
+
+            qDebug() << "Mount Goto Complete...";
+            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(2, 1.0);  // 步骤2完成：赤道仪转动
+            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+            emit wsThread->sendMessageToClient(
+                "ScheduleStepState:" +
+                QString::number(schedule_currentNum) + ":" +
+                "mount:" +
+                "0:" +
+                "0:" +
+                "100");
+            startSetCFW(schedule_CFWpos);
         } 
         else 
         {
@@ -7826,12 +7905,14 @@ void MainWindow::startCapture(int ExpTime)
             // stepProgress = 当前曝光进度（0.0-1.0）
             int currentStep = 3 + schedule_currentShootNum;
             double shotProgress = qMin(expTime_ms / (double)schedule_ExpTime, 1.0);  // 限制在0.0-1.0之间
-            m_scheduList[schedule_currentNum].progress = calculateScheduleProgress(currentStep, shotProgress);
+
+            // 为避免曝光时间较长时频繁刷新“当前总进度”导致前端整体进度条跳动混乱，
+            // 这里不再在曝光进行过程中更新 m_scheduList[schedule_currentNum].progress，
+            // 仅通过 ScheduleStepState 将当前曝光的细粒度进度（0-100%）回传给前端用于单步倒计时显示。
             qDebug() << "expTime_ms:" << expTime_ms << ", schedule_ExpTime:" << schedule_ExpTime 
                      << ", currentShootNum:" << schedule_currentShootNum << ", RepeatNum:" << schedule_RepeatNum
-                     << ", currentStep:" << currentStep << ", shotProgress:" << shotProgress
-                     << ", Capture Progress:" << m_scheduList[schedule_currentNum].progress;
-            emit wsThread->sendMessageToClient("UpdateScheduleProcess:" + QString::number(schedule_currentNum) + ":" + QString::number(m_scheduList[schedule_currentNum].progress));
+                     << ", currentStep:" << currentStep << ", shotProgress:" << shotProgress;
+
             emit wsThread->sendMessageToClient(
                 "ScheduleStepState:" +
                 QString::number(schedule_currentNum) + ":" +
@@ -8875,6 +8956,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
         {
             // 停止拍摄定时器，表示拍摄任务完成
             captureTimer.stop();
+
             // 开始进行图像解析
             Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
 
@@ -8929,18 +9011,32 @@ void MainWindow::TelescopeControl_SolveSYNC()
                                 indi_Client->setTelescopeTrackEnable(dpMount, true);
                             }
                             emit wsThread->sendMessageToClient("TelescopeTrack:ON");
-                            // indi_Client->setTelescopeActionAfterPositionSet(dpMount, action);  // 设置望远镜的同步动作
-                            // 同步望远镜的当前位置到目标位置
-                            indi_Client->syncTelescopeJNow(dpMount, result.RA_Degree, result.DEC_Degree);
-                            Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
-                            // Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
 
-                            // indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree);  // 设置望远镜的目标位置
-                            // Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
-                            // double a, b;
-                            // indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
-                            // Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
-                            emit wsThread->sendMessageToClient("SolveImageSucceeded");
+                            // 解析结果 RA/DEC 为“度”，下发到 INDI 前需要转换为 RA 小时制
+                            double solvedRaHour = Tools::DegreeToHour(result.RA_Degree);
+                            double solvedDecDeg = result.DEC_Degree;
+
+                            // 同步望远镜的当前位置到目标位置（JNOW, RA:hour / DEC:deg）
+                            uint32_t syncResult = indi_Client->syncTelescopeJNow(dpMount, solvedRaHour, solvedDecDeg);
+                            if (syncResult != QHYCCD_SUCCESS)
+                            {
+                                Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow failed",
+                                            LogLevel::ERROR, DeviceType::MAIN);
+                                emit wsThread->sendMessageToClient("SolveImagefailed");
+                            }
+                            else
+                            {
+                                Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
+                                // Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
+
+                                // indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree);  // 设置望远镜的目标位置
+                                // Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
+                                // double a, b;
+                                // indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
+                                // Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
+                                emit wsThread->sendMessageToClient("SolveImageSucceeded");
+                            }
+
                             isSolveSYNC = false;
                             solveTimer.stop();  // 停止定时器
                         }
@@ -9040,6 +9136,9 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
     Logger::Log("MountGoto start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("MountGoto | RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
 
+    // 在执行 GOTO 之前，如当前处于导星状态，则暂时停止导星，待转动完成后再恢复
+    pauseGuidingBeforeMountMove();
+
     // 停止和清理先前的计时器
     telescopeTimer.stop();
     telescopeTimer.disconnect();
@@ -9053,15 +9152,17 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
 
     connect(&telescopeTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
             {
-        // 检查赤道仪状态
         if (WaitForTelescopeToComplete()) 
         {
             telescopeTimer.stop();  // 转动完成时停止定时器
             Logger::Log("MountGoto | Mount Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+
+            // 如果本次 GOTO 之前处于导星状态，则在赤道仪转动完成后恢复导星
+            resumeGuidingAfterMountMove();
             if (GotoThenSolve) // 判断是否进行解算
             {
                 Logger::Log("MountGoto | Goto Then Solve!", LogLevel::INFO, DeviceType::MAIN);
-                // *****************
+                // 启动一次解算同步流程
                 isSolveSYNC = true;
                 TelescopeControl_SolveSYNC(); // 开始拍摄解析
                 
@@ -9078,7 +9179,7 @@ void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
                     {
                         GotoOlveTimer->stop();
                         Logger::Log("MountGoto | Goto Then Solve Complete!", LogLevel::INFO, DeviceType::MAIN);
-                        // 重新goto
+                        // 解算同步完成后，仅再执行一次 Goto 回到目标坐标
                         TelescopeControl_Goto(Ra_Hour, Dec_Degree);
                     }else{
                         GotoOlveTimer->start(1000);
@@ -9120,6 +9221,9 @@ void MainWindow::MountOnlyGoto(double Ra_Hour, double Dec_Degree)
     Logger::Log("MountOnlyGoto start ...", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("MountOnlyGoto | RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
 
+    // 在执行 Goto 之前，如当前处于导星状态，则暂时停止导星，待转动完成后再恢复
+    pauseGuidingBeforeMountMove();
+
     // 停止和清理先前的计时器
     telescopeTimer.stop();
     telescopeTimer.disconnect();
@@ -9137,6 +9241,8 @@ void MainWindow::MountOnlyGoto(double Ra_Hour, double Dec_Degree)
         {
             telescopeTimer.stop();  // 转动完成时停止定时器
             Logger::Log("MountOnlyGoto | Mount Only Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
+            // 如果本次 Goto 之前处于导星状态，则在赤道仪转动完成后恢复导星
+            resumeGuidingAfterMountMove();
             emit wsThread->sendMessageToClient("MountOnlyGotoSuccess");  // 发送转到成功消息
         }
         else
@@ -10250,7 +10356,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                 int waitTime = 0;
                 bool connectState = false;
-                while (waitTime < 10)
+                while (waitTime < 15)
                 {
                     Logger::Log("ConnectDriver | Wait for Connect " + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
                     QThread::msleep(1000); // 等待1秒
@@ -10326,7 +10432,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                     int waitTime = 0;
                     bool connectState = false;
-                    while (waitTime < 10)
+                    while (waitTime < 15)
                     {
                         Logger::Log("ConnectDriver | Wait for Connect " + std::string(indi_Client->GetDeviceNameFromList(i).c_str()), LogLevel::INFO, DeviceType::MAIN);
                         QThread::msleep(1000); // 等待1秒

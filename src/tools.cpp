@@ -3854,30 +3854,56 @@ QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
 
 int Tools::FindStarsCountFromFile(QString fileName, bool AllStars, bool runHFR)
 {
-  Tools tempTool;
-  
+  Q_UNUSED(AllStars);
+  Q_UNUSED(runHFR);
+
+  // 使用与 FindStarsByFocusedCpp 相同的 C++ 合焦星点检测算法，
+  // 但基于传入的 fileName 进行统计，只返回星点数量。
+
   loadFitsResult result = loadFits(fileName);
-  
   if (!result.success)
   {
-    Logger::Log("Error in loading FITS file: " + fileName.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+    Logger::Log("FindStarsCountFromFile | Error in loading FITS file: " + fileName.toStdString(),
+                LogLevel::ERROR, DeviceType::MAIN);
     return -1;
   }
-  
-  FITSImage::Statistic imageStats = result.imageStats;
-  uint8_t *imageBuffer = result.imageBuffer;
-  QList<FITSImage::Star> stars = tempTool.FindStarsByStellarSolver_(AllStars, imageStats, imageBuffer, runHFR);
-  
-  int starCount = stars.size();
-  Logger::Log("Found " + std::to_string(starCount) + " stars in file: " + fileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-  
-  // 释放 imageBuffer 内存，避免内存泄漏
-  if (imageBuffer != nullptr)
+
+  const FITSImage::Statistic &st = result.imageStats;
+  const int width = st.width;
+  const int height = st.height;
+  const int channels = st.channels;
+  const int bppBytes = st.bytesPerPixel;
+
+  int cvType = (bppBytes == 2) ? CV_16UC(channels) : CV_8UC(channels);
+  cv::Mat src(height, width, cvType, result.imageBuffer);
+
+  cv::Mat gray;
+  if (channels == 1)
   {
-    delete[] imageBuffer;
-    imageBuffer = nullptr;
+    src.copyTo(gray);
   }
-  
+  else
+  {
+    cv::cvtColor(src, gray, cv::COLOR_RGB2GRAY);
+  }
+
+  // 直接使用 C++ 合焦算法检测星点，只关心星点数量
+  std::vector<Tools::FocusedStar> fs =
+      Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, true);
+
+  int starCount = static_cast<int>(fs.size());
+  Logger::Log("FindStarsCountFromFile | FocusedCpp detected " +
+              std::to_string(starCount) + " stars in file: " +
+              fileName.toStdString(),
+              LogLevel::INFO, DeviceType::MAIN);
+
+  // 释放 imageBuffer 内存，避免内存泄漏
+  if (result.imageBuffer != nullptr)
+  {
+    delete[] result.imageBuffer;
+    result.imageBuffer = nullptr;
+  }
+
   return starCount;
 }
 

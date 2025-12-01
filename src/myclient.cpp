@@ -415,6 +415,9 @@ uint32_t MyClient::setBaudRate(INDI::BaseDevice *dp, int baudRate)
         baudRateProperty[3].setState(ISS_OFF);
         baudRateProperty[4].setState(ISS_OFF);
         baudRateProperty[5].setState(ISS_ON);
+    }else{
+        Logger::Log("indi_client | setBaudRate | Invalid baud rate " + std::to_string(baudRate), LogLevel::ERROR, DeviceType::MAIN);
+        return QHYCCD_ERROR;
     }
     sendNewProperty(baudRateProperty);
     Logger::Log("indi_client | setBaudRate | " + std::to_string(baudRate), LogLevel::INFO, DeviceType::MAIN);
@@ -2237,28 +2240,75 @@ uint32_t MyClient::setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp, QStr
     //     qDebug()<<"ON_COORD_SET label :" <<property[i].getLabel();
     //     qDebug()<<"ON_COORD_SET state :" <<property[i].getState();
     //     qDebug()<<"ON_COORD_SET aux :" <<property[i].getAux();
-
     // }
+
+    // 按 name/label 自动识别 TRACK / SLEW / SYNC，而不是假定固定下标
+    int idxTrack = -1;
+    int idxSlew  = -1;
+    int idxSync  = -1;
+
+    for (int i = 0; i < property->count(); ++i)
+    {
+        QString name  = QString::fromStdString(property[i].getName()).toUpper();
+        QString label = QString::fromStdString(property[i].getLabel()).toUpper();
+
+        if (idxTrack == -1 && (name.contains("TRACK") || label.contains("TRACK")))
+            idxTrack = i;
+        else if (idxSlew == -1 && (name.contains("SLEW") || label.contains("SLEW")))
+            idxSlew = i;
+        else if (idxSync == -1 && (name.contains("SYNC") || label.contains("SYNC")))
+            idxSync = i;
+    }
+
+    // 若完全无法识别，打印一次详细信息，方便针对不同驱动（EQMod/OnStep等）调试
+    if (idxTrack == -1 && idxSlew == -1 && idxSync == -1)
+    {
+        Logger::Log("indi_client | setTelescopeActionAfterPositionSet | ON_COORD_SET entries not recognized, dump list:", LogLevel::WARNING, DeviceType::MOUNT);
+        for (int i = 0; i < property->count(); ++i)
+        {
+            std::string name  = property[i].getName();
+            std::string label = property[i].getLabel();
+            Logger::Log("  [" + std::to_string(i) + "] name=" + name + ", label=" + label,
+                        LogLevel::WARNING, DeviceType::MOUNT);
+        }
+        return QHYCCD_ERROR;
+    }
+
+    // 先全部置为 OFF
+    for (int i = 0; i < property->count(); ++i)
+        property[i].setState(ISS_OFF);
 
     if (action == "TRACK")
     {
-        property[0].setState(ISS_ON);
-        property[1].setState(ISS_OFF);
-        property[2].setState(ISS_OFF);
+        if (idxTrack == -1)
+        {
+            Logger::Log("indi_client | setTelescopeActionAfterPositionSet | TRACK entry not found in ON_COORD_SET",
+                        LogLevel::WARNING, DeviceType::MOUNT);
+            return QHYCCD_ERROR;
+        }
+        property[idxTrack].setState(ISS_ON);
         currentAction = "TRACK";
     }
     else if (action == "SLEW")
     {
-        property[0].setState(ISS_OFF);
-        property[1].setState(ISS_ON);
-        property[2].setState(ISS_OFF);
+        if (idxSlew == -1)
+        {
+            Logger::Log("indi_client | setTelescopeActionAfterPositionSet | SLEW entry not found in ON_COORD_SET",
+                        LogLevel::WARNING, DeviceType::MOUNT);
+            return QHYCCD_ERROR;
+        }
+        property[idxSlew].setState(ISS_ON);
         currentAction = "SLEW";
     }
     else if (action == "SYNC")
     {
-        property[0].setState(ISS_OFF);
-        property[1].setState(ISS_OFF);
-        property[2].setState(ISS_ON);
+        if (idxSync == -1)
+        {
+            Logger::Log("indi_client | setTelescopeActionAfterPositionSet | SYNC entry not found in ON_COORD_SET",
+                        LogLevel::WARNING, DeviceType::MOUNT);
+            return QHYCCD_ERROR;
+        }
+        property[idxSync].setState(ISS_ON);
         currentAction = "SYNC";
     }
 
@@ -2566,16 +2616,36 @@ uint32_t MyClient::slewTelescopeJNowNonBlock(INDI::BaseDevice *dp, double RA_Hou
 uint32_t MyClient::syncTelescopeJNow(INDI::BaseDevice *dp, double RA_Hours, double DEC_Degree)
 {
     Logger::Log("indi_client | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::CAMERA);
-    QString action = "SYNC";
 
-    setTelescopeActionAfterPositionSet(dp, action);
+    // 1. 将 ON_COORD_SET 设为 SYNC
+    uint32_t result = setTelescopeActionAfterPositionSet(dp, "SYNC");
+    if (result != QHYCCD_SUCCESS)
+    {
+        Logger::Log("indi_client | syncTelescopeJNow | setTelescopeActionAfterPositionSet(SYNC) failed",
+                    LogLevel::WARNING, DeviceType::MOUNT);
+        return result;
+    }
 
-    setTelescopeRADECJNOW(dp, RA_Hours, DEC_Degree);
+    // 2. 下发同步坐标（注意：RA_Hours 必须为小时制）
+    result = setTelescopeRADECJNOW(dp, RA_Hours, DEC_Degree);
+    if (result != QHYCCD_SUCCESS)
+    {
+        Logger::Log("indi_client | syncTelescopeJNow | setTelescopeRADECJNOW failed",
+                    LogLevel::WARNING, DeviceType::MOUNT);
+        return result;
+    }
 
-    action = "SLEW";
-    setTelescopeActionAfterPositionSet(dp, action);
+    // 3. 恢复为 SLEW，避免后续 GOTO 仍然处于 SYNC 模式
+    result = setTelescopeActionAfterPositionSet(dp, "SLEW");
+    if (result != QHYCCD_SUCCESS)
+    {
+        Logger::Log("indi_client | syncTelescopeJNow | setTelescopeActionAfterPositionSet(SLEW) failed",
+                    LogLevel::WARNING, DeviceType::MOUNT);
+        return result;
+    }
 
     Logger::Log("indi_client | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::CAMERA);
+    return QHYCCD_SUCCESS;
 }
 
 uint32_t MyClient::getTelescopetAZALT(INDI::BaseDevice *dp, double &AZ_DEGREE, double &ALT_DEGREE)
