@@ -536,6 +536,7 @@ public:
     uint32_t call_phd_StopLooping(void);       // 停止循环曝光
     uint32_t call_phd_AutoFindStar(void);      // 自动寻星
     uint32_t call_phd_StartGuiding(void);      // 开始导星
+    uint32_t call_phd_StopGuiding(void);       // 停止导星（不影响循环曝光）
     uint32_t call_phd_checkStatus(unsigned char &status); // 查询状态
     uint32_t call_phd_setExposureTime(unsigned int expTime); // 设置曝光
     uint32_t call_phd_whichCamera(std::string Camera);  // 选择相机
@@ -1098,6 +1099,16 @@ public:
     bool WaitForGuidingToComplete();
 
     /**
+     * @brief 赤道仪移动前，如当前在导星则暂时停止导星（记录状态，供结束后恢复）
+     */
+    void pauseGuidingBeforeMountMove();
+
+    /**
+     * @brief 赤道仪移动完成后，如移动前在导星则自动恢复导星
+     */
+    void resumeGuidingAfterMountMove();
+
+    /**
      * @brief 等待计时完成
      * @return 完成返回 true
      */
@@ -1140,7 +1151,11 @@ public:
 
     QString ScheduleTargetNames; // 调度目标集合名
 
-/**********************  文件/目录与 USB 相关  **********************/
+    // -------- 赤道仪移动与导星协调 --------
+    // 记录“赤道仪开始移动前是否处于导星状态”，用于移动完成后自动恢复导星
+    bool wasGuidingBeforeMountMove = false;
+
+    /**********************  文件/目录与 USB 相关  **********************/
 public:
     // 保存路径（保留原默认值与注释）
     std::string ImageSaveBasePath = "image"; // 默认保存路径

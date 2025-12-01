@@ -91,7 +91,7 @@ struct SystemDevice {
   QString DeviceIndiName{};  //"QHY CCD QHY268M-XXXX"
   QString DriverIndiName;    //"indi_qhy_ccd"  or "libqhyccd"
   QString DriverFrom{};      // INDI,ASCOM,NATIVE.
-  int BaudRate{};  // 9600,19200,38400,57600,115200,230400
+  int BaudRate{9600};  // 9600,19200,38400,57600,115200,230400
   INDI::BaseDevice *dp;
   bool isConnect = false;
   bool isBind = false;
@@ -562,7 +562,7 @@ class Tools : public QObject {
   static bool WaitForPlateSolveToComplete();
   static bool isSolveImageFinish();
   static bool isPlateSolveInProgress();
-  static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK, int mode = 0, double lastRA = 0.0, double lastDEC = 0.0);
+  static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK, int mode = 1, double lastRA = 0.0, double lastDEC = 0.0);
   // mode: 0=基础模式, 1=包含视场参数, 2=包含视场和位置参数
   // lastRA: 上次解析的赤经，单位为度 (0-360°)
   // lastDEC: 上次解析的赤纬，单位为度 (-90° to +90°)

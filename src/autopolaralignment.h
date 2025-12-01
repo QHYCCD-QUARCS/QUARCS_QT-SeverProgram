@@ -561,6 +561,12 @@ private:
     int selectOptimalSolveMode();
     
     /**
+     * @brief 根据本次解析结果更新解析模式统计信息
+     * @param solveSucceeded 本次解析是否成功
+     */
+    void updateSolveModeStatistics(bool solveSucceeded);
+    
+    /**
      * @brief 计算球面两点间的角距离
      * @param ra1 第一点的赤经（度）
      * @param dec1 第一点的赤纬（度）
@@ -1024,6 +1030,10 @@ private:
     bool secondCaptureAvoided;    // 是否进行了第二次拍摄避障
     bool thirdCaptureAvoided;    // 是否进行了第三次拍摄避障
     int captureAttemptCount;     // 遮挡检测时的拍摄尝试次数
+
+    // 解析模式状态
+    int lastSolveMode;                 // 上一次解析使用的模式（0=全局，1=视场，2=视场+RA/DEC）
+    int consecutiveMode2SolveFailures; // 在模式2下连续解析失败次数
 
     // 调整指导数据容器
     QVector<AdjustmentGuideData> adjustmentGuideDataHistory; // 调整指导数据历史记录
