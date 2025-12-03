@@ -1503,6 +1503,18 @@ void MainWindow::onMessageReceived(const QString &message)
         emit wsThread->sendMessageToClient("QTClientVersion:" + QString::fromStdString(QT_Client_Version));
     }
 
+    // 获取总版本号（来自环境变量 QUARCS_TOTAL_VERSION，格式 x.x.x）
+    else if (message == "getTotalVersion")
+    {
+        Logger::Log("getTotalVersion ...", LogLevel::DEBUG, DeviceType::MAIN);
+
+        // 从环境变量中读取总版本号，未设置时回退到 0.0.0
+        QByteArray envVersion = qgetenv("QUARCS_TOTAL_VERSION");
+        QString totalVersion = envVersion.isEmpty() ? "0.0.0" : QString::fromUtf8(envVersion);
+
+        emit wsThread->sendMessageToClient("TotalVersion:" + totalVersion);
+    }
+
     else if (message == "getHotspotName")
     {
         QString HostpotName = getHotspotName();
@@ -1516,6 +1528,13 @@ void MainWindow::onMessageReceived(const QString &message)
         QString HostpotName = parts[1].trimmed();
         editHotspotName(HostpotName);
         Logger::Log("editHotspotName finish!", LogLevel::DEBUG, DeviceType::MAIN);
+    }
+
+    else if (message == "restartHotspot10s")
+    {
+        Logger::Log("restartHotspot10s ...", LogLevel::DEBUG, DeviceType::MAIN);
+        restartHotspotWithDelay(10);
+        Logger::Log("restartHotspot10s finish (command issued)", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
     else if (parts.size() == 4 && parts[0].trimmed() == "DSLRCameraInfo")
@@ -1764,11 +1783,12 @@ void MainWindow::onMessageReceived(const QString &message)
     }
     else if (parts[0].trimmed() == "localMessage")
     {
-        if (parts.size() >= 4)
+        if (parts.size() >= 5)
         {
             Logger::Log("localMessage ...", LogLevel::DEBUG, DeviceType::MAIN);
             localLat = parts[1].trimmed();
             localLon = parts[2].trimmed();
+            localAppVersion = parts[4].trimmed();
             // Logger::Log("1-----------初始参数设置: " + localLat.toStdString() + "," + localLon.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
             if (parts[3].trimmed() == "zh")
             {
@@ -3424,6 +3444,33 @@ void MainWindow::continueConnectAllDeviceOnce()
         return;
     }
 
+    // 辅助函数：根据 INDI 设备找到对应的 SystemDevice 槽位，并返回应使用的波特率
+    auto getBaudRateForDeviceIndex = [this](INDI::BaseDevice *device, int deviceIndex) -> int
+    {
+        int defaultBaud = 9600;
+
+        // 先使用原来基于索引的逻辑（保持兼容性）
+        if (deviceIndex >= 0 && deviceIndex < systemdevicelist.system_devices.size())
+        {
+            defaultBaud = systemdevicelist.system_devices[deviceIndex].BaudRate;
+        }
+
+        if (device == nullptr)
+            return defaultBaud;
+
+        // 再尝试根据 driver 名称在 systemdevicelist 中精确匹配
+        QString driverExec = QString::fromUtf8(device->getDriverExec());
+        for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
+        {
+            if (systemdevicelist.system_devices[idx].DriverIndiName == driverExec)
+            {
+                return systemdevicelist.system_devices[idx].BaudRate;
+            }
+        }
+
+        return defaultBaud;
+    };
+
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
         // 修复：检查系统设备列表索引是否有效
@@ -3447,7 +3494,10 @@ void MainWindow::continueConnectAllDeviceOnce()
         
         Logger::Log("Start connecting devices:" + deviceName, LogLevel::INFO, DeviceType::MAIN);
 
-        indi_Client->setBaudRate(device, systemdevicelist.system_devices[i].BaudRate);
+        int baudRateToUse = getBaudRateForDeviceIndex(device, i);
+        Logger::Log("ConnectAllDeviceOnce | setBaudRate for device " + deviceName + " -> " + std::to_string(baudRateToUse),
+                    LogLevel::INFO, DeviceType::MAIN);
+        indi_Client->setBaudRate(device, baudRateToUse);
         indi_Client->connectDevice(deviceName.c_str());
 
         int waitTime = 0;
@@ -3517,7 +3567,10 @@ void MainWindow::continueConnectAllDeviceOnce()
             }
             // 修复：使用已检查的device指针和deviceName
             if (device != nullptr && !deviceName.empty()) {
-                indi_Client->setBaudRate(device, systemdevicelist.system_devices[i].BaudRate);
+                int retryBaudRate = getBaudRateForDeviceIndex(device, i);
+                Logger::Log("ConnectAllDeviceOnce | retry setBaudRate for device " + deviceName + " -> " + std::to_string(retryBaudRate),
+                            LogLevel::INFO, DeviceType::MAIN);
+                indi_Client->setBaudRate(device, retryBaudRate);
                 indi_Client->connectDevice(deviceName.c_str());
         
                 int waitTime = 0;
@@ -10103,6 +10156,70 @@ QString MainWindow::getHotspotName()
     return "N/A";
 }
 
+/**
+ * @brief 关闭当前热点指定秒数后再重新启动
+ *        实现方式：使用 nmcli 将指定连接 down，然后通过 QTimer 在 delaySeconds 秒后 up。
+ *        注意：该操作会在一段时间内中断当前 WiFi 热点和网络连接。
+ */
+void MainWindow::restartHotspotWithDelay(int delaySeconds)
+{
+    Logger::Log("restartHotspotWithDelay(" + std::to_string(delaySeconds) + ") start ...",
+                LogLevel::INFO, DeviceType::MAIN);
+
+    // 当前热点连接名称（与 getHotspotName 读取的配置文件一致）
+    const QString connectionName = "RaspBerryPi-WiFi";
+
+    // 先关闭当前热点
+    {
+        QString command = QString("echo 'quarcs' | sudo -S nmcli connection down '%1'").arg(connectionName);
+        Logger::Log("restartHotspotWithDelay | down command:" + command.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+
+        QProcess process;
+        process.start("bash", QStringList() << "-c" << command);
+        process.waitForFinished();
+
+        QString output = process.readAllStandardOutput();
+        QString errorOutput = process.readAllStandardError();
+        Logger::Log("restartHotspotWithDelay | down output:" + output.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+        if (!errorOutput.isEmpty())
+        {
+            Logger::Log("restartHotspotWithDelay | down error:" + errorOutput.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+
+    // 使用 QTimer 在 delaySeconds 秒后重新启动热点，避免阻塞主线程
+    int delayMs = std::max(0, delaySeconds) * 1000;
+
+    QTimer::singleShot(delayMs, this, [this, connectionName]() {
+        Logger::Log("restartHotspotWithDelay | starting hotspot again ...",
+                    LogLevel::INFO, DeviceType::MAIN);
+
+        QString command = QString("echo 'quarcs' | sudo -S nmcli connection up '%1'").arg(connectionName);
+        Logger::Log("restartHotspotWithDelay | up command:" + command.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+
+        QProcess process;
+        process.start("bash", QStringList() << "-c" << command);
+        process.waitForFinished();
+
+        QString output = process.readAllStandardOutput();
+        QString errorOutput = process.readAllStandardError();
+        Logger::Log("restartHotspotWithDelay | up output:" + output.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+        if (!errorOutput.isEmpty())
+        {
+            Logger::Log("restartHotspotWithDelay | up error:" + errorOutput.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+
+        Logger::Log("restartHotspotWithDelay | hotspot restart sequence finished",
+                    LogLevel::INFO, DeviceType::MAIN);
+    });
+}
+
 void MainWindow::SendDebugToVueClient(const QString &msg)
 {
     emit wsThread->sendMessageToClient("SendDebugMessage|" + msg);
@@ -10316,7 +10433,28 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     }
 
                     time = 0;
-                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                    // 根据 DriverName 和 DriverType 在 systemdevicelist 中找到对应的设备下标，用于获取正确的波特率
+                    int sysIndex = -1;
+                    for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
+                    {
+                        if (systemdevicelist.system_devices[idx].DriverIndiName == DriverName &&
+                            systemdevicelist.system_devices[idx].Description == DriverType)
+                        {
+                            sysIndex = idx;
+                            break;
+                        }
+                    }
+                    int baudRateToUse = 9600;
+                    if (sysIndex >= 0)
+                    {
+                        baudRateToUse = systemdevicelist.system_devices[sysIndex].BaudRate;
+                    }
+                    else
+                    {
+                        Logger::Log("ConnectDriver | Unable to find SystemDevice for Driver(" + DriverName.toStdString() + "), use default baud 9600",
+                                    LogLevel::WARNING, DeviceType::MAIN);
+                    }
+                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), baudRateToUse);
                     indi_Client->connectDevice(indi_Client->GetDeviceFromList(i)->getDeviceName());
                     while (!indi_Client->GetDeviceFromList(i)->isConnected() && time < 15)
                     {
@@ -10352,7 +10490,28 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is connecting...", LogLevel::INFO, DeviceType::MAIN);
 
-                indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                // 根据 DriverName 和 DriverType 在 systemdevicelist 中找到对应的设备下标，用于获取正确的波特率
+                int sysIndex = -1;
+                for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
+                {
+                    if (systemdevicelist.system_devices[idx].DriverIndiName == DriverName &&
+                        systemdevicelist.system_devices[idx].Description == DriverType)
+                    {
+                        sysIndex = idx;
+                        break;
+                    }
+                }
+                int baudRateToUse = 9600;
+                if (sysIndex >= 0)
+                {
+                    baudRateToUse = systemdevicelist.system_devices[sysIndex].BaudRate;
+                }
+                else
+                {
+                    Logger::Log("ConnectDriver | Unable to find SystemDevice for Driver(" + DriverName.toStdString() + "), use default baud 9600",
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
+                indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), baudRateToUse);
                 indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                 int waitTime = 0;
                 bool connectState = false;
@@ -10428,7 +10587,28 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         indi_Client->RemoveDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                         continue;
                     }
-                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), systemdevicelist.system_devices[i].BaudRate);
+                    // 根据 DriverName 和 DriverType 在 systemdevicelist 中找到对应的设备下标，用于获取正确的波特率
+                    int sysIndex = -1;
+                    for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
+                    {
+                        if (systemdevicelist.system_devices[idx].DriverIndiName == DriverName &&
+                            systemdevicelist.system_devices[idx].Description == DriverType)
+                        {
+                            sysIndex = idx;
+                            break;
+                        }
+                    }
+                    int baudRateToUse = 9600;
+                    if (sysIndex >= 0)
+                    {
+                        baudRateToUse = systemdevicelist.system_devices[sysIndex].BaudRate;
+                    }
+                    else
+                    {
+                        Logger::Log("ConnectDriver | Unable to find SystemDevice for Driver(" + DriverName.toStdString() + "), use default baud 9600",
+                                    LogLevel::WARNING, DeviceType::MAIN);
+                    }
+                    indi_Client->setBaudRate(indi_Client->GetDeviceFromList(i), baudRateToUse);
                     indi_Client->connectDevice(indi_Client->GetDeviceNameFromList(i).c_str());
                     int waitTime = 0;
                     bool connectState = false;

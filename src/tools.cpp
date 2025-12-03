@@ -785,7 +785,10 @@ void Tools::printSystemDeviceList(const SystemDeviceList& s){
                     if (!device.DriverIndiName.isEmpty()) {
                         try {
                             // 使用更安全的字符串操作
-                            QString logMessage = QString("printSystemDeviceList | %1 %2 %3 %4 %5 %6 %7 %8")
+                            // 字段顺序:
+                            // 0:index  1:DeviceIndiGroup  2:DriverFrom  3:DriverIndiName
+                            // 4:DeviceIndiName  5:Description  6:isConnect  7:dpName  8:BaudRate
+                            QString logMessage = QString("printSystemDeviceList | %1 %2 %3 %4 %5 %6 %7 %8 %9")
                                 .arg(i)
                                 .arg(device.DeviceIndiGroup)
                                 .arg(device.DriverFrom.isEmpty() ? "NULL" : device.DriverFrom)
@@ -793,7 +796,8 @@ void Tools::printSystemDeviceList(const SystemDeviceList& s){
                                 .arg(device.DeviceIndiName.isEmpty() ? "NULL" : device.DeviceIndiName)
                                 .arg(device.Description.isEmpty() ? "NULL" : device.Description)
                                 .arg(device.isConnect ? "true" : "false")
-                                .arg(dpName.isEmpty() ? "NULL" : dpName);
+                                .arg(dpName.isEmpty() ? "NULL" : dpName)
+                                .arg(device.BaudRate);
                             
                             Logger::Log(logMessage.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                         } catch (const std::exception& e) {

@@ -1665,34 +1665,36 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         return false;
     }
     
-    // 2. 拍摄完成后，先做星点识别检查
+    // 2. 拍摄完成后，先做星点质量（SNR）检查
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "正在检查星点质量...");
     
-    int starCount = Tools::FindStarsCountFromFile(lastCapturedImage, true, false);
+    bool ok = Tools::findMedianHFRByPython_Process(lastCapturedImage);
+    double starHFR = Tools::getLastMedianHFR();
     
-    if (starCount < 0) {
-        Logger::Log("PolarAlignment: 星点识别失败，跳过本次调整", LogLevel::WARNING, DeviceType::MAIN);
-        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点识别失败", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
-        return false;
+    // 如果 SNR 脚本没有正常执行，则仅记录日志并跳过质量判断，继续后续流程
+    if (!ok) {
+        Logger::Log("PolarAlignment: median_HFR 脚本执行失败，跳过星点质量判断，继续后续解析流程", LogLevel::WARNING, DeviceType::MAIN);
+        emit guidanceAdjustmentStepProgress(
+            GuidanceAdjustmentStep::CHECKING_STARS,
+            "median_HFR 脚本执行失败，跳过星点质量判断",
+            -1   // 不再使用星点数量做判断与展示
+        );
+    } else {
+        
+        Logger::Log(
+            "PolarAlignment: 图像星点质量 median_HFR = " + std::to_string(starHFR),
+            LogLevel::INFO,
+            DeviceType::MAIN
+        );
+        if (starHFR > 0.0) {
+            Logger::Log("PolarAlignment: 星点质量 median_HFR > 0.0，继续解析流程", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR > 0.0，继续解析流程", -1);
+        }else{
+            Logger::Log("PolarAlignment: 星点质量 median_HFR <= 0.0，跳过解析流程", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR <= 0.0，跳过解析流程", -1);
+            return false;
+        }
     }
-    
-    // 如果识别的星点数小于10，认为图像质量差，跳过解析阶段，直接进入下一次拍摄
-    if (starCount < 10) {
-        Logger::Log("PolarAlignment: 星点数量不足（" + std::to_string(starCount) + " < 10），图像质量差，跳过解析，直接进入下一次拍摄", 
-                    LogLevel::WARNING, DeviceType::MAIN);
-        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, 
-                                           QString("星点数量不足（%1 < 10），图像质量差，跳过解析").arg(starCount), 
-                                           starCount);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
-        return false;
-    }
-    
-    // 星点数量足够，记录日志
-    Logger::Log("PolarAlignment: 识别到 " + std::to_string(starCount) + " 颗星点，图像质量良好", LogLevel::INFO, DeviceType::MAIN);
-    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, 
-                                       QString("识别到 %1 颗星点，图像质量良好").arg(starCount), 
-                                       starCount);
     
     // 3. 星点数量足够，继续解析图像
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "正在解析图像...");

@@ -70,7 +70,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20251127"  // 手动指定版本号
+#define QT_Client_Version "20251202"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -1425,6 +1425,7 @@ public:
     QString localLat = "";      // 本地纬度字符串
     QString localLanguage = ""; // 本地语言
     QString localTime = "";     // 本地时区
+    QString localAppVersion = ""; // 本地应用版本
 
     /**
      * @brief 读取上次选择的设备
@@ -1442,6 +1443,12 @@ public:
      * @return 名称
      */
     QString getHotspotName();
+
+    /**
+     * @brief 关闭当前热点指定秒数后再重新启动
+     * @param delaySeconds 关闭时长（秒），默认 10 秒
+     */
+    void restartHotspotWithDelay(int delaySeconds = 10);
 
 /**********************  串口/设备路径  **********************/
 public:

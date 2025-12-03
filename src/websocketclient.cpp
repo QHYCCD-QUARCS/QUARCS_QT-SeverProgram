@@ -386,7 +386,8 @@ void WebSocketClient::onTextMessageReceived(QString message)
         QString lon = QString::number(messageObj["lon"].toDouble());
         QString language = messageObj["language"].toString();
         QString wifiName = messageObj["wifiname"].toString();
-        QString info = "localMessage:" + lat + ":" + lon + ":" + language + ":" + wifiName;
+        QString AppVersion = messageObj["appversion"].toString();
+        QString info = "localMessage:" + lat + ":" + lon + ":" + language + ":" + wifiName + ":" + AppVersion;
         emit messageReceived(info);
         // qDebug() << "发送app信息 received:" << info;
     }
