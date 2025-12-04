@@ -1783,12 +1783,15 @@ void MainWindow::onMessageReceived(const QString &message)
     }
     else if (parts[0].trimmed() == "localMessage")
     {
-        if (parts.size() >= 5)
+        if (parts.size() >= 4)
         {
             Logger::Log("localMessage ...", LogLevel::DEBUG, DeviceType::MAIN);
             localLat = parts[1].trimmed();
             localLon = parts[2].trimmed();
-            localAppVersion = parts[4].trimmed();
+            if (parts.size() >= 5)
+            {
+                localAppVersion = parts[4].trimmed();
+            }
             // Logger::Log("1-----------初始参数设置: " + localLat.toStdString() + "," + localLon.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
             if (parts[3].trimmed() == "zh")
             {
