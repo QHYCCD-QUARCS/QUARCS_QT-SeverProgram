@@ -1947,7 +1947,17 @@ void MainWindow::onMessageReceived(const QString &message)
     }else if (parts[0].trimmed() == "ClearBoxCache")
     {
         Logger::Log("ClearBoxCache ...", LogLevel::DEBUG, DeviceType::MAIN);
-        clearBoxCache();
+        bool clearCache = true;
+        bool clearUpdatePack = false;
+        bool clearBackup = false;
+        // 支持形如 ClearBoxCache:1:0:1 的扩展协议
+        if (parts.size() >= 4)
+        {
+            clearCache      = (parts[1].trimmed() != "0");
+            clearUpdatePack = (parts[2].trimmed() != "0");
+            clearBackup     = (parts[3].trimmed() != "0");
+        }
+        clearBoxCache(clearCache, clearUpdatePack, clearBackup);
         Logger::Log("ClearBoxCache finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }else if (parts[0].trimmed() == "loadSDKVersionAndUSBSerialPath")
     {
@@ -13143,7 +13153,7 @@ void MainWindow::clearLogs()
     if (wsThread) emit wsThread->sendMessageToClient("ClearLogs:Success");
 }
 
-void MainWindow::clearBoxCache()
+void MainWindow::clearBoxCache(bool clearCache, bool clearUpdatePack, bool clearBackup)
 {
     auto clearDirContents = [](const QString &dirPath)
     {
@@ -13166,47 +13176,62 @@ void MainWindow::clearBoxCache()
         }
     };
 
-    // 系统默认缓存 + 应用缓存 + 临时目录 + 常见垃圾箱目录
-    QStringList caches;
-    // 用户主目录缓存根（比单纯的 CacheLocation 更全面）
-    caches << (QDir::homePath() + "/.cache");
-    caches << QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
-           << QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
-           << QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    // XDG 垃圾箱（当前用户）常规路径与 XDG_DATA_HOME 路径
-    const QString trashBase = QDir::homePath() + "/.local/share/Trash";
-    caches << (trashBase + "/files") << (trashBase + "/info");
-    const QString xdgDataHome = qEnvironmentVariableIsSet("XDG_DATA_HOME")
-                                ? QString::fromLocal8Bit(qgetenv("XDG_DATA_HOME"))
-                                : (QDir::homePath() + "/.local/share");
-    caches << (xdgDataHome + "/Trash/files") << (xdgDataHome + "/Trash/info");
-    // 常见桌面环境的垃圾箱路径（可能存在）
-    caches << (QDir::homePath() + "/.Trash")
-           << (QDir::homePath() + "/.Trash-1000/files")
-           << (QDir::homePath() + "/.Trash-1000/info");
-
-    for (const QString &p : caches) clearDirContents(p);
-
-    // 尝试调用 gio 清空垃圾箱（若环境支持）
-    QProcess::execute("gio", QStringList() << "trash" << "--empty");
-
-    // 清空可移动介质等可能挂载点的垃圾箱（.Trash-UID 或 .Trash）
-    QString uidStr = QString::number(getuid());
-    QStringList mountRoots;
-    mountRoots << "/mnt" << "/media" << "/run/media";
-    for (const QString &root : mountRoots)
+    // 1. 清理系统/应用缓存与回收站
+    if (clearCache)
     {
-        QDir rootDir(root);
-        if (!rootDir.exists()) continue;
-        QFileInfoList subs = rootDir.entryInfoList(QDir::NoDotAndDotDot | QDir::Dirs);
-        for (const QFileInfo &fi : subs)
+        QStringList caches;
+        // 用户主目录缓存根（比单纯的 CacheLocation 更全面）
+        caches << (QDir::homePath() + "/.cache");
+        caches << QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
+               << QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+               << QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+        // XDG 垃圾箱（当前用户）常规路径与 XDG_DATA_HOME 路径
+        const QString trashBase = QDir::homePath() + "/.local/share/Trash";
+        caches << (trashBase + "/files") << (trashBase + "/info");
+        const QString xdgDataHome = qEnvironmentVariableIsSet("XDG_DATA_HOME")
+                                    ? QString::fromLocal8Bit(qgetenv("XDG_DATA_HOME"))
+                                    : (QDir::homePath() + "/.local/share");
+        caches << (xdgDataHome + "/Trash/files") << (xdgDataHome + "/Trash/info");
+        // 常见桌面环境的垃圾箱路径（可能存在）
+        caches << (QDir::homePath() + "/.Trash")
+               << (QDir::homePath() + "/.Trash-1000/files")
+               << (QDir::homePath() + "/.Trash-1000/info");
+
+        for (const QString &p : caches) clearDirContents(p);
+
+        // 尝试调用 gio 清空垃圾箱（若环境支持）
+        QProcess::execute("gio", QStringList() << "trash" << "--empty");
+
+        // 清空可移动介质等可能挂载点的垃圾箱（.Trash-UID 或 .Trash）
+        QString uidStr = QString::number(getuid());
+        QStringList mountRoots;
+        mountRoots << "/mnt" << "/media" << "/run/media";
+        for (const QString &root : mountRoots)
         {
-            const QString base = fi.absoluteFilePath();
-            clearDirContents(base + "/.Trash-" + uidStr + "/files");
-            clearDirContents(base + "/.Trash-" + uidStr + "/info");
-            clearDirContents(base + "/.Trash/files");
-            clearDirContents(base + "/.Trash/info");
+            QDir rootDir(root);
+            if (!rootDir.exists()) continue;
+            QFileInfoList subs = rootDir.entryInfoList(QDir::NoDotAndDotDot | QDir::Dirs);
+            for (const QFileInfo &fi : subs)
+            {
+                const QString base = fi.absoluteFilePath();
+                clearDirContents(base + "/.Trash-" + uidStr + "/files");
+                clearDirContents(base + "/.Trash-" + uidStr + "/info");
+                clearDirContents(base + "/.Trash/files");
+                clearDirContents(base + "/.Trash/info");
+            }
         }
+    }
+
+    // 2. 可选：清理更新包目录
+    if (clearUpdatePack)
+    {
+        clearDirContents("/var/www/update_pack");
+    }
+
+    // 3. 可选：清理备份目录
+    if (clearBackup)
+    {
+        clearDirContents("/home/quarcs/workspace/QUARCS/backup");
     }
 
     if (wsThread) emit wsThread->sendMessageToClient("ClearBoxCache:Success");
