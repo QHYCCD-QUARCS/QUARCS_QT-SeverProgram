@@ -1692,6 +1692,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         }else{
             Logger::Log("PolarAlignment: 星点质量 median_HFR <= 0.0，跳过解析流程", LogLevel::WARNING, DeviceType::MAIN);
             emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR <= 0.0，跳过解析流程", -1);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
             return false;
         }
     }
@@ -1702,7 +1703,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!solveImage(lastCapturedImage)) {
         Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析失败", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
         return false;
     }
     
@@ -1710,7 +1711,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!waitForSolveComplete()) {
         Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析超时", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
         updateSolveModeStatistics(false);
         return false;
     }
@@ -1723,7 +1724,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "解析结果无效", -1);
         updateSolveModeStatistics(false);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
         return false;
     }
     
