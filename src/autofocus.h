@@ -19,17 +19,18 @@
 
 // 自动对焦状态枚举
 enum class AutoFocusState {
-    IDLE,                   // 空闲状态
-    CHECKING_STARS,         // 检查星点
-    LARGE_RANGE_SEARCH,     // 大范围找星
-    COARSE_ADJUSTMENT,      // 粗调
-    FINE_ADJUSTMENT,        // 精调
-    SUPER_FINE_ADJUSTMENT,  // 更细致精调（基于HFR拟合）
-    COLLECTING_DATA,        // 收集数据
-    FITTING_DATA,           // 拟合数据
-    MOVING_TO_BEST_POSITION, // 移动到最佳位置
-    COMPLETED,              // 完成
-    ERROR                   // 错误状态
+    IDLE,                     // 空闲状态
+    CHECKING_STARS,           // 检查星点
+    LARGE_RANGE_SEARCH,       // 大范围找星
+    COARSE_ADJUSTMENT,        // 粗调
+    FINE_ADJUSTMENT,          // 精调（基于 SNR，用于完整自动对焦流程）
+    SUPER_FINE_ADJUSTMENT,    // 更细致精调（基于 HFR 拟合，用于完整自动对焦流程）
+    FINE_HFR_ADJUSTMENT_NEW,  // 新增：独立 HFR 精调模式（精调按钮触发）
+    COLLECTING_DATA,          // 收集数据
+    FITTING_DATA,             // 拟合数据
+    MOVING_TO_BEST_POSITION,  // 移动到最佳位置
+    COMPLETED,                // 完成
+    ERROR                     // 错误状态
 };
 
 // 对焦数据点结构
@@ -143,6 +144,9 @@ public:
     // 仅从当前位置启动 super-fine 精调（跳过粗调/精调的完整流程）
     void startSuperFineFromCurrentPosition();
 
+    // 仅从当前位置启动 HFR 精调（新模式，固定步长 100，采样 11 个 HFR 点）
+    void startFineHFRFromCurrentPosition();
+
     void getAutoFocusStep(); // 获取自动对焦步骤信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
     void getAutoFocusData(); // 获取自动对焦数据信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
 
@@ -218,12 +222,17 @@ private:
     int m_fineBestPosition;                // 精调阶段 SNR 最佳位置（super-fine 中心）
     bool m_coarseHasValidSNR;              // 粗调阶段是否存在至少一个 SNR>0 的位置
     
-// === 精调方向与反转逻辑（新增） ===
-int  m_fineDirection;       // +1: 向大的方向；-1: 向小的方向
-int  m_fineIncreaseCount;   // 连续"HFR变大"的计数
-bool m_fineReversed;        // 是否已经发生过一次改向
-int  m_fineCenter;          // 精调中心（粗调最优位置）
-               // 粗调最小HFR
+    // === 新：独立 HFR 精调模式的方向与采样控制参数 ===
+    int  m_fineDirection;                  // +1: 向大的方向；-1: 向小的方向
+    int  m_fineIncreaseCount;              // 连续“HFR 变大”的计数（前 3 点判定时使用）
+    bool m_fineReversed;                   // 是否已经发生过一次改向
+    int  m_fineCenter;                     // 精调中心（粗调最优位置或当前起始位置）
+    int  m_fineHFRStartPosition;           // 新 HFR 精调起始位置
+    int  m_fineHFRStepSize;                // 新 HFR 精调固定步长（固定为 100）
+    int  m_fineHFRTotalPoints;             // 新 HFR 精调总采样点数（固定为 11）
+    int  m_fineHFRCollectedPoints;         // 已采样点数
+    bool m_fineHFRReverseChecked;          // 是否已对前三个点做过“递增趋势”检查
+    int  m_fineHFRCurrentTargetPosition;   // 当前目标采样位置
 
     // 更细致精调（super-fine）扫描数据
     QVector<int> m_superFineScanPositions;   // super-fine 扫描位置序列
@@ -374,6 +383,9 @@ int  m_fineCenter;          // 精调中心（粗调最优位置）
     // 更细致精调流程
     void startSuperFineAdjustment();
     void processSuperFineAdjustment();
+
+    // 新 HFR 精调流程（从当前位置启动，仅 HFR 二次拟合）
+    void processFineHFRNewAdjustment();
     
     // 数据收集辅助方法
     void performCoarseDataCollection();

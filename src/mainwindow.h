@@ -741,6 +741,8 @@ public:
      * @brief 启动自动对焦流程
      */
     void startAutoFocus();
+    // 新：仅从当前位置执行 HFR 精调（固定步长 100、采样 11 点）
+    void startAutoFocusFineHFROnly();
     void startAutoFocusSuperFineOnly();
     
     /**
