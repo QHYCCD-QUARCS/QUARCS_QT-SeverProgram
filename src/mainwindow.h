@@ -189,7 +189,9 @@ public:
     /**
      * @brief 清除盒子缓存
      */
-    void clearBoxCache();
+    void clearBoxCache(bool clearCache = true,
+                       bool clearUpdatePack = false,
+                       bool clearBackup = false);
 
 /**********************  INDI 客户端/服务端 初始化与设备管理  **********************/
 public:
