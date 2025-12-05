@@ -507,6 +507,65 @@ void AutoFocus::startSuperFineFromCurrentPosition()
     log("super-fine 自动对焦流程已启动");
 }
 
+/**
+ * @brief 仅从当前位置开始 HFR 精调（新模式，固定步长100、采样11个点）
+ *
+ * 与完整自动对焦流程解耦：不会进入粗调/旧精调状态机，只复用拍摄与拟合能力。
+ */
+void AutoFocus::startFineHFRFromCurrentPosition()
+{
+    if (!initializeAutoFocusCommon()) {
+        return;
+    }
+
+    // 以当前位置作为 HFR 精调起始点
+    int currentPos = getCurrentFocuserPosition();
+    const int minPos = m_focuserMinPosition;
+    const int maxPos = m_focuserMaxPosition;
+    currentPos = std::clamp(currentPos, minPos, maxPos);
+
+    m_currentPosition = currentPos;
+    m_fineCenter = currentPos;
+
+    // 固定参数：步长 100，采样 11 个点
+    m_fineHFRStartPosition        = currentPos;
+    m_fineHFRStepSize             = 100;
+    m_fineHFRTotalPoints          = 11;
+    m_fineHFRCollectedPoints      = 0;
+    m_fineHFRReverseChecked       = false;
+    m_fineReversed                = false;
+    m_fineDirection               = +1;   // 默认向“变大”的方向移动，若前三点 HFR 单调增大则反向
+    m_fineIncreaseCount           = 0;
+    m_fineHFRCurrentTargetPosition = currentPos; // 第一个点就在起始位置
+
+    // 清理与 HFR 拟合相关的数据缓存，只影响本次精调
+    emit focusSeriesReset(QStringLiteral("super_fine"));
+    m_focusData.clear();
+    m_fineFocusData.clear();
+    m_superFineFocusData.clear();
+    m_dataCollectionCount = 0;
+
+    // 切换到独立的 HFR 精调状态
+    changeState(AutoFocusState::FINE_HFR_ADJUSTMENT_NEW);
+    updateAutoFocusStep(4, "Fine HFR adjustment in progress. The system is performing HFR-based fitting, please wait for the final best focus position.");
+
+    log(QString("从当前位置启动 HFR 精调新模式：startPos=%1, step=%2, points=%3")
+            .arg(m_fineHFRStartPosition)
+            .arg(m_fineHFRStepSize)
+            .arg(m_fineHFRTotalPoints));
+
+    // 启动状态机定时器
+    if (m_timer) {
+        m_timer->start(100);
+        log("定时器已启动，开始 HFR 精调新模式流程");
+    } else {
+        log("错误: 定时器对象为空");
+        m_isRunning = false;
+        emit errorOccurred("定时器初始化失败");
+        return;
+    }
+}
+
 void AutoFocus::stopAutoFocus()
 {
     try {
@@ -648,6 +707,11 @@ void AutoFocus::getAutoFocusStep()
     else if (m_currentState == AutoFocusState::FINE_ADJUSTMENT)
     {
         updateAutoFocusStep(3, "Fine adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the fine adjustment to complete");
+    }
+    else if (m_currentState == AutoFocusState::FINE_HFR_ADJUSTMENT_NEW)
+    {
+        // 新 HFR 精调模式：在 UI 上视为 step 4，与 super-fine 一致
+        updateAutoFocusStep(4, "Super fine adjustment in progress. The system is performing precise HFR-based fitting, please wait for the final best focus position.");
     }
     else if (m_currentState == AutoFocusState::SUPER_FINE_ADJUSTMENT
              || m_currentState == AutoFocusState::FITTING_DATA
@@ -1043,7 +1107,10 @@ void AutoFocus::processCurrentState()
         processFineAdjustment();             // 精调状态
         break;
     case AutoFocusState::SUPER_FINE_ADJUSTMENT:
-        processSuperFineAdjustment();        // 更细致精调状态
+        processSuperFineAdjustment();        // 更细致精调状态（完整自动对焦流程）
+        break;
+    case AutoFocusState::FINE_HFR_ADJUSTMENT_NEW:
+        processFineHFRNewAdjustment();       // 新：独立 HFR 精调状态（精调按钮触发）
         break;
     case AutoFocusState::COLLECTING_DATA:
         collectFocusData();                  // 收集数据状态
@@ -2125,6 +2192,139 @@ void AutoFocus::processSuperFineAdjustment()
         beginMoveTo(m_superFineScanPositions[m_superFineScanIndex], "super-fine 扫描下一个点");
     } else {
         log("super-fine 采样已完成，等待拟合阶段");
+    }
+}
+
+/**
+ * @brief 处理新 HFR 精调模式：使用 Python 计算 HFR，固定步长 100，采样 11 个点
+ *
+ * 逻辑与 super-fine 类似，但：
+ * - 不依赖粗调/旧精调的结果，从当前位置直接开始；
+ * - 电调每次移动固定 100 步（向前或向后）；
+ * - 采集到 11 个 HFR 点后进入统一的二次拟合阶段；
+ * - 若前三个 HFR 呈严格递增趋势，则回到起始位置并反向继续采样，
+ *   以保证拟合曲线在对称轴两侧都有采样点。
+ */
+void AutoFocus::processFineHFRNewAdjustment()
+{
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过 HFR 精调新模式");
+        return;
+    }
+
+    if (m_fineHFRCollectedPoints >= m_fineHFRTotalPoints) {
+        log(QString("HFR 精调采样完成（共%1点），进入拟合阶段").arg(m_fineHFRCollectedPoints));
+        changeState(AutoFocusState::FITTING_DATA);
+        return;
+    }
+
+    const int minPos = m_focuserMinPosition;
+    const int maxPos = m_focuserMaxPosition;
+
+    // 确保目标位置在合法范围内
+    m_fineHFRCurrentTargetPosition = std::clamp(m_fineHFRCurrentTargetPosition, minPos, maxPos);
+
+    const int current = getCurrentFocuserPosition();
+    if (!isPositionReached(current, m_fineHFRCurrentTargetPosition, g_autoFocusConfig.positionTolerance)) {
+        // 尚未到达目标位置，先移动到当前目标点
+        beginMoveTo(m_fineHFRCurrentTargetPosition,
+                    QString("HFR 精调新模式移动到第%1个采样点").arg(m_fineHFRCollectedPoints + 1));
+        return;
+    }
+
+    // 已到达当前采样位置，开始拍摄并计算 HFR
+    emit m_wsThread->sendMessageToClient("FocusPosition:" + QString::number(current) + ":" + QString::number(current));
+
+    if (!captureFullImage()) {
+        handleError("HFR 精调拍摄图像失败");
+        return;
+    }
+    if (!waitForCaptureComplete()) {
+        handleError("HFR 精调拍摄超时");
+        return;
+    }
+
+    double hfr = 0.0;
+    bool okHfr = detectMedianHFRByPython(hfr);
+    if (!okHfr) {
+        log("HFR 精调调用 Python median_HFR 失败，本点 HFR 记为 0，不参与拟合");
+        hfr = 0.0;
+        emit starDetectionResult(false, 0.0);
+    } else {
+        if (!std::isfinite(hfr) || hfr <= 0.0) {
+            log("HFR 精调 Python 返回的 median_HFR 无效或为 0，本点不参与拟合");
+            hfr = 0.0;
+            emit starDetectionResult(false, 0.0);
+        } else {
+            log(QString("HFR 精调位置检测到 median_HFR: %1").arg(hfr));
+            emit starDetectionResult(true, hfr);
+        }
+    }
+
+    // 记录 HFR 数据点（复用 super-fine 的数据结构与前端绘图逻辑）
+    FocusDataPoint dp(current, hfr);
+    m_superFineFocusData.append(dp);
+    m_focusData.append(dp);
+    m_fineFocusData.append(dp);
+    m_dataCollectionCount++;
+    m_fineHFRCollectedPoints++;
+
+    emit focusDataPointReady(current, hfr, QStringLiteral("super_fine"));
+
+    log(QString("HFR 精调数据点%1/%2：位置=%3，HFR=%4")
+            .arg(m_fineHFRCollectedPoints)
+            .arg(m_fineHFRTotalPoints)
+            .arg(current)
+            .arg(hfr));
+
+    // 前三个点采集完成后，检查是否严格递增
+    if (!m_fineHFRReverseChecked && m_fineHFRCollectedPoints >= 3) {
+        m_fineHFRReverseChecked = true;
+
+        if (m_superFineFocusData.size() >= 3) {
+            double h1 = m_superFineFocusData[0].hfr;
+            double h2 = m_superFineFocusData[1].hfr;
+            double h3 = m_superFineFocusData[2].hfr;
+
+            bool strictlyIncreasing = std::isfinite(h1) && std::isfinite(h2) && std::isfinite(h3)
+                                      && h1 > 0.0 && h2 > 0.0 && h3 > 0.0
+                                      && (h1 < h2) && (h2 < h3);
+
+            if (strictlyIncreasing) {
+                // 记录日志，方便后续调试
+                Logger::Log(QString("HFR 精调前三点呈严格递增趋势 (H1=%1, H2=%2, H3=%3)，回到起始位置并反向采样")
+                                .arg(h1).arg(h2).arg(h3).toStdString(),
+                            LogLevel::INFO,
+                            DeviceType::FOCUSER);
+
+                // 回到起始位置（该移动不计入额外采样点）
+                beginMoveTo(m_fineHFRStartPosition,
+                            QString("HFR 精调前三点递增，回到起始位置准备反向采样"));
+
+                // 反向后，从起点向相反方向继续采样
+                m_fineDirection = -m_fineDirection;
+                m_fineReversed  = true;
+
+                // 下一个采样目标 = 起点 +/- 步长
+                m_fineHFRCurrentTargetPosition =
+                    std::clamp(m_fineHFRStartPosition + m_fineDirection * m_fineHFRStepSize,
+                               minPos, maxPos);
+
+                return;
+            }
+        }
+    }
+
+    // 若未触发“反向”逻辑或已经完成前三点检查，按当前方向继续向前推进
+    if (m_fineHFRCollectedPoints < m_fineHFRTotalPoints) {
+        int nextTarget = current + m_fineDirection * m_fineHFRStepSize;
+        m_fineHFRCurrentTargetPosition = std::clamp(nextTarget, minPos, maxPos);
+        beginMoveTo(m_fineHFRCurrentTargetPosition,
+                    QString("HFR 精调新模式移动到下一个采样点（已采样 %1/%2）")
+                        .arg(m_fineHFRCollectedPoints)
+                        .arg(m_fineHFRTotalPoints));
+    } else {
+        log("HFR 精调采样已达到目标点数，等待进入拟合阶段");
     }
 }
 
