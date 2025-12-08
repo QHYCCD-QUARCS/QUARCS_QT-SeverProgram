@@ -4281,7 +4281,7 @@ void MainWindow::AfterDeviceConnect()
         // 获取驱动版本号
         QString MountSDKVersion = "null";
         indi_Client->getMountInfo(dpMount, MountSDKVersion);
-        emit wsThread->sendMessageToClient("getMountInfo:Mount:" + MountSDKVersion);
+        emit wsThread->sendMessageToClient("getMountInfo:" + MountSDKVersion);
         Logger::Log("Mount Info: " + MountSDKVersion.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         // indi_Client->setTelescopeHomeInit(dpMount, "SYNCHOME");
@@ -4608,7 +4608,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         // 获取驱动版本号
         QString MountSDKVersion = "null";
         indi_Client->getMountInfo(dpMount, MountSDKVersion);
-        emit wsThread->sendMessageToClient("getMountInfo:Mount:" + MountSDKVersion);
+        emit wsThread->sendMessageToClient("getMountInfo:" + MountSDKVersion);
         Logger::Log("Mount Info: " + MountSDKVersion.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
         // 设置home位置
@@ -11907,6 +11907,7 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     // 1) 边界与输入检查
     if (stars.size() <= 0) {
         Logger::Log("selectStar | no stars", LogLevel::INFO, DeviceType::FOCUSER);
+        roiAndFocuserInfo["SelectStarHFR"] = 0.0;
         return QPointF(CurrentPosition, 0);
     }
 
