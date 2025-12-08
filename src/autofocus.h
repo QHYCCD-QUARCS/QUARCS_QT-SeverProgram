@@ -97,6 +97,7 @@ public:
     void setInitialLargeRangeStep(double percentage);
     void setMinLargeRangeStep(double percentage);
     void setDefaultExposureTime(int exposureTime);  // 设置默认曝光时间
+    void setCoarseDivisionCount(int divisions);     // 设置粗调分段数（总行程 / 分段数）
     
     // 拍摄状态查询
     bool isCaptureEnd() const { return m_isCaptureEnd; }
@@ -169,6 +170,9 @@ signals:
     void focuserPositionChanged(int currentPosition); // 电调位置变化信号**xiugai
     void autoFocusStepChanged(int step, const QString &stepDescription); // 自动对焦步骤变化信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
 
+  // 各阶段拍摄进度：stage = "coarse" / "fine" / "super_fine"，current = 当前第几张，total = 总张数
+  void captureProgressChanged(const QString &stage, int current, int total);
+
 
 private slots:
     void onTimerTimeout();
@@ -215,8 +219,9 @@ private:
     int m_coarseScanIndex;                 // 粗调扫描索引
     QVector<int> m_fineScanPositions;      // 精调扫描位置序列
     int m_fineScanIndex;                   // 精调扫描索引
-    int m_coarseStepSpan;                  // 粗调步进（= (max-min)/10）
+    int m_coarseStepSpan;                  // 粗调步进（= 总行程 / m_coarseDivisionCount）
     int m_fineStepSpan;                    // 精调步进（= 粗调步进/10）
+    int m_coarseDivisionCount;             // 粗调分段数（默认 10）
     int m_coarseBestPosition;              // 粗调期望位置
     double m_coarseBestHFR;
     int m_fineBestPosition;                // 精调阶段 SNR 最佳位置（super-fine 中心）

@@ -174,6 +174,7 @@ AutoFocus::AutoFocus(MyClient *indiServer,
     , m_backlashCompensation(0)                    // 默认空程补偿值为0
 {
         m_hasLastPosition = false;
+        m_coarseDivisionCount = 10;
 // 验证传入的设备对象
     if (!m_dpMainCamera) {
         log(QString("警告: 主相机设备对象为空"));
@@ -791,6 +792,16 @@ void AutoFocus::setDefaultExposureTime(int exposureTime)
 {
     m_defaultExposureTime = exposureTime;
     log(QString("设置默认曝光时间: %1ms").arg(exposureTime));
+}
+
+void AutoFocus::setCoarseDivisionCount(int divisions)
+{
+    if (divisions <= 0)
+    {
+        divisions = 10;
+    }
+    m_coarseDivisionCount = divisions;
+    log(QString("设置粗调分段数: 总行程将被等分为 %1 份").arg(m_coarseDivisionCount));
 }
 
 
@@ -1606,35 +1617,33 @@ void AutoFocus::startCoarseAdjustment()
     m_coarseBestSNR = -1.0;
     m_coarseHasValidSNR = false;  // 粗调开始时尚未发现任何有效 SNR
 
-    // 从INI配置的最大、最小范围生成11个位置：从最大到最小
+    // 从 INI 配置的最大、最小范围生成一组粗调采样位置：从最大到最小
     const int minPos = m_focuserMinPosition;
     const int maxPos = m_focuserMaxPosition;
     if (maxPos <= minPos) {
         handleError("电调位置范围无效，无法进行粗调");
         return;
     }
-    m_coarseStepSpan = std::max(1, (maxPos - minPos) / 10);
+
+    const int totalRange = std::max(1, maxPos - minPos);
+    int divisions = (m_coarseDivisionCount > 0) ? m_coarseDivisionCount : 10;
+
+    // 粗调步长 = 总行程 / 分段数
+    m_coarseStepSpan = std::max(1, totalRange / divisions);
+
     m_coarseScanPositions.clear();
-    for (int i = 0; i <= 10; ++i) {
+    // 从最大位置开始，每次按 m_coarseStepSpan 向最小位置扫描，
+    // 使得粗调尽量覆盖完整量程。
+    for (int i = 0; i < divisions; ++i) {
         int p = maxPos - i * m_coarseStepSpan;
-        if (p < minPos) p = minPos;
-        if (p > maxPos) p = maxPos;
-        if (m_coarseScanPositions.isEmpty() || m_coarseScanPositions.last() != p)
+        p = std::clamp(p, minPos, maxPos);
+        if (m_coarseScanPositions.isEmpty() || m_coarseScanPositions.last() != p) {
             m_coarseScanPositions.push_back(p);
-    }
-    // 限制粗调总采样点数不超过 10 个
-    if (m_coarseScanPositions.size() > 10) {
-        QVector<int> limited;
-        int total = m_coarseScanPositions.size();
-        int desired = 10;
-        for (int i = 0; i < desired; ++i) {
-            int idx = static_cast<int>(std::round(i * (total - 1.0) / (desired - 1.0)));
-            idx = std::clamp(idx, 0, total - 1);
-            int p = m_coarseScanPositions[idx];
-            if (limited.isEmpty() || limited.last() != p)
-                limited.push_back(p);
         }
-        m_coarseScanPositions = limited;
+    }
+    // 确保最小位置被包含在最后一个采样点附近
+    if (m_coarseScanPositions.isEmpty() || m_coarseScanPositions.back() != minPos) {
+        m_coarseScanPositions.push_back(minPos);
     }
 
     m_coarseScanIndex = 0;
@@ -1757,6 +1766,11 @@ void AutoFocus::performCoarseDataCollection()
                           .arg(snr, 0, 'f', 6);
         emit m_wsThread->sendMessageToClient(msg);
     }
+
+  // 粗调阶段拍摄进度：当前第几张 / 总张数
+  emit captureProgressChanged(QStringLiteral("coarse"),
+                              m_coarseScanIndex + 1,
+                              m_coarseScanPositions.size());
 
     // 记录数据（此处 hfr 字段存放 SNR，仅用于日志与调试，不参与拟合）
     FocusDataPoint dp(target, snr);
@@ -1939,6 +1953,11 @@ void AutoFocus::performFineDataCollection()
         emit m_wsThread->sendMessageToClient(msg);
     }
 
+  // 精调阶段拍摄进度
+  emit captureProgressChanged(QStringLiteral("fine"),
+                              m_fineScanIndex + 1,
+                              m_fineScanPositions.size());
+
     // 记录数据点（在 fine 阶段 hfr 字段中暂存 SNR，只用于可视化）
     FocusDataPoint dp(target, snr);
     m_focusData.append(dp);
@@ -1976,10 +1995,16 @@ void AutoFocus::startFineAdjustment()
     // 以粗调找到的最优位置为精调中心
     m_fineCenter = std::clamp(m_coarseBestPosition, minPos, maxPos);
 
-    // 改进：更精细的步距，提高对焦精度
-    // 精调步距 = 总量程的 2%（至少 1 步），提高步长以加快精调速度
+    // 精调步距：根据粗调步长按比例缩小，保证用户调整粗调分段数时，
+    // 精调/超精细精调的步距也随之等比例变化。
     const int totalRange = std::max(1, maxPos - minPos);
-    m_fineStepSpan = std::max(1, static_cast<int>(std::round(totalRange * 0.02)));
+    if (m_coarseStepSpan > 0) {
+        // 这里固定采用 “粗调步长 / 5” 作为精调步长，可根据需要再调整比例
+        m_fineStepSpan = std::max(1, m_coarseStepSpan / 5);
+    } else {
+        // 兜底：当粗调步长尚未初始化时，回退到总行程 2%
+        m_fineStepSpan = std::max(1, static_cast<int>(std::round(totalRange * 0.02)));
+    }
 
     // 构造 11 个点：center, ±1*step, ±2*step, ..., ±5*step
     m_fineScanPositions.clear();
@@ -2024,7 +2049,7 @@ void AutoFocus::startFineAdjustment()
 
     m_fineScanIndex = 0;
 
-    log(QString("开始精调：中心=%1，步距=%2（=总量程2%%），计划采样点数=%3")
+    log(QString("开始精调：中心=%1，步距=%2（基于粗调步长/5），计划采样点数=%3")
         .arg(m_fineCenter).arg(m_fineStepSpan).arg(m_fineScanPositions.size()));
 
     if (!m_fineScanPositions.isEmpty()) {
@@ -2087,9 +2112,13 @@ void AutoFocus::startSuperFineAdjustment()
     center = std::clamp(center, minPos, maxPos);
 
     const int totalRange = std::max(1, maxPos - minPos);
-    // super-fine 步距：比精调更密，例如精调步距的一半
-    m_superFineStepSpan = std::max(1, m_fineStepSpan / 2);
-    if (m_superFineStepSpan <= 0) {
+    // super-fine 步距：比精调更密，例如精调步距的一半；
+    // 当精调步距无效时，退回到粗调步长 / 10 或总行程 1%。
+    if (m_fineStepSpan > 0) {
+        m_superFineStepSpan = std::max(1, m_fineStepSpan / 2);
+    } else if (m_coarseStepSpan > 0) {
+        m_superFineStepSpan = std::max(1, m_coarseStepSpan / 10);
+    } else {
         m_superFineStepSpan = std::max(1, static_cast<int>(std::round(totalRange * 0.01)));
     }
 
@@ -2186,6 +2215,11 @@ void AutoFocus::processSuperFineAdjustment()
     log(QString("super-fine 数据点%1/%2：位置=%3，HFR=%4")
         .arg(m_superFineScanIndex+1).arg(m_superFineScanPositions.size()).arg(target).arg(hfr));
 
+  // 超精细精调阶段拍摄进度
+  emit captureProgressChanged(QStringLiteral("super_fine"),
+                              m_superFineScanIndex + 1,
+                              m_superFineScanPositions.size());
+
     // 下一个点
     ++m_superFineScanIndex;
     if (m_superFineScanIndex < m_superFineScanPositions.size()) {
@@ -2270,6 +2304,12 @@ void AutoFocus::processFineHFRNewAdjustment()
     m_fineHFRCollectedPoints++;
 
     emit focusDataPointReady(current, hfr, QStringLiteral("super_fine"));
+
+    // 新增：HFR 精调独立模式下，同样向前端报告“超精细精调”阶段的拍摄进度，
+    // 以保持与完整自动对焦流程 UI 一致（显示“第 X / Y 张”以及动画）。
+    emit captureProgressChanged(QStringLiteral("super_fine"),
+                                m_fineHFRCollectedPoints,
+                                m_fineHFRTotalPoints);
 
     log(QString("HFR 精调数据点%1/%2：位置=%3，HFR=%4")
             .arg(m_fineHFRCollectedPoints)

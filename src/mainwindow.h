@@ -647,6 +647,7 @@ public:
     int focuserMinPosition = -1;   // 行程下限
     int autofocusBacklashCompensation = 0; // 自动对焦空程补偿值
     int autoFocusExposureTime = 1000;      // 自动对焦曝光时间(ms)，仅作用于自动对焦流程
+    int autoFocusCoarseDivisions = 10;     // 粗调分段数（总行程 / 此值），默认 10
 
     // 固定步数移动状态与看门狗
     bool isStepMoving = false;         // 是否正在执行一次固定步数移动

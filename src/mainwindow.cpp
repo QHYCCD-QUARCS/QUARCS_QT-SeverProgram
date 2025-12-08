@@ -424,6 +424,17 @@ void MainWindow::onMessageReceived(const QString &message)
             autofocusBacklashCompensation = Backlash;
         }
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "Coarse Step Divisions")
+    {
+        Logger::Log("Coarse Step Divisions:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        int divisions = parts[1].trimmed().toInt();
+        if (divisions <= 0)
+        {
+            divisions = 10;
+        }
+        autoFocusCoarseDivisions = divisions;
+        Tools::saveParameter("Focuser", "coarseStepDivisions", QString::number(divisions));
+    }
     else if (parts.size() == 2 && parts[0].trimmed() == "AutoFocus Exposure Time (ms)")
     {
         QString valueStr = parts[1].trimmed();
@@ -475,12 +486,14 @@ void MainWindow::onMessageReceived(const QString &message)
 
         if (mode.isEmpty() || mode == "Yes" || mode == "Coarse") {
             // 完整自动对焦流程：粗调 + 精调 + super-fine
-            emit wsThread->sendMessageToClient("AutoFocusStarted:自动对焦已开始");
+            // 增加模式标记：full，便于前端区分不同自动对焦模式的 UI 行为
+            emit wsThread->sendMessageToClient("AutoFocusStarted:full:自动对焦已开始");
             startAutoFocus();
         }
         else if (mode == "Fine") {
             // 新：仅从当前位置执行 HFR 精调（固定步长 100，采样 11 点）
-            emit wsThread->sendMessageToClient("AutoFocusStarted:自动对焦已开始");
+            // 增加模式标记：fine（仅精调模式）
+            emit wsThread->sendMessageToClient("AutoFocusStarted:fine:自动对焦已开始");
             startAutoFocusFineHFROnly();
         }
         else { // No 或未知模式，视为取消
@@ -12054,6 +12067,7 @@ void MainWindow::startAutoFocus()
     }
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
+    autoFocus->setCoarseDivisionCount(autoFocusCoarseDivisions);
     autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
     autoFocus->setUseVirtualData(false);      // 使用虚拟数据
     
@@ -12215,6 +12229,17 @@ void MainWindow::startAutoFocus()
         emit wsThread->sendMessageToClient(QString("AutoFocusStepChanged:%1:%2").arg(step).arg(description));
     }));
 
+  // 连接自动对焦拍摄进度信号：将各阶段拍摄进度转发到前端
+  autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::captureProgressChanged,
+                                         this, [this](const QString &stage, int current, int total)
+                                         {
+    Logger::Log(QString("自动对焦拍摄进度: 阶段=%1, 当前=%2, 总数=%3")
+                .arg(stage).arg(current).arg(total).toStdString(),
+                LogLevel::INFO, DeviceType::FOCUSER);
+    emit wsThread->sendMessageToClient(
+          QString("AutoFocusCaptureProgress:%1:%2:%3").arg(stage).arg(current).arg(total));
+  }));
+
     // 连接自动对焦完成信号
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::autoFocusCompleted, this, [this](bool success, double bestPosition, double minHFR)
             {
@@ -12318,6 +12343,7 @@ void MainWindow::startAutoFocusFineHFROnly()
     // 与常规自动对焦保持一致的参数配置
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
+    autoFocus->setCoarseDivisionCount(autoFocusCoarseDivisions);
     autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
     autoFocus->setUseVirtualData(false);      // 使用实时数据
 
@@ -12515,6 +12541,7 @@ void MainWindow::startAutoFocusSuperFineOnly()
     // 与常规自动对焦保持一致的参数配置
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
+    autoFocus->setCoarseDivisionCount(autoFocusCoarseDivisions);
     autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
     autoFocus->setUseVirtualData(false);      // 使用虚拟数据
 
@@ -13455,6 +13482,15 @@ void MainWindow::getFocuserParameters()
     int emptyStep = parameters.contains("Backlash") ? parameters["Backlash"].toInt() : 0;
     autofocusBacklashCompensation = emptyStep;
     emit wsThread->sendMessageToClient("Backlash:" + QString::number(emptyStep));
+    
+    // 粗调分段数（总行程 / 分段数）
+    int coarseDivisions = parameters.contains("coarseStepDivisions") ? parameters["coarseStepDivisions"].toInt() : 10;
+    if (coarseDivisions <= 0)
+    {
+        coarseDivisions = 10;
+    }
+    autoFocusCoarseDivisions = coarseDivisions;
+    emit wsThread->sendMessageToClient("Coarse Step Divisions:" + QString::number(autoFocusCoarseDivisions));
 
 }
 
