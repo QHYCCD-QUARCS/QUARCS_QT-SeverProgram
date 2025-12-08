@@ -118,9 +118,8 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
 
     m_thread = new QThread;
     m_threadTimer = new QTimer;
-    m_threadTimer->setInterval(10);
+    m_threadTimer->setInterval(200);
     m_threadTimer->moveToThread(m_thread);
-    connect(m_thread, &QThread::started, m_threadTimer, qOverload<>(&QTimer::start));
     connect(m_threadTimer, &QTimer::timeout, this, &MainWindow::onTimeout);
     connect(m_thread, &QThread::finished, m_threadTimer, &QTimer::stop);
     connect(m_thread, &QThread::destroyed, m_threadTimer, &QTimer::deleteLater);
@@ -128,9 +127,8 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
 
     PHDControlGuide_thread = new QThread;
     PHDControlGuide_threadTimer = new QTimer;
-    PHDControlGuide_threadTimer->setInterval(5);
+    PHDControlGuide_threadTimer->setInterval(200);
     PHDControlGuide_threadTimer->moveToThread(PHDControlGuide_thread);
-    connect(PHDControlGuide_thread, &QThread::started, PHDControlGuide_threadTimer, qOverload<>(&QTimer::start));
     connect(PHDControlGuide_threadTimer, &QTimer::timeout, this, &MainWindow::onPHDControlGuideTimeout);
     connect(PHDControlGuide_thread, &QThread::finished, PHDControlGuide_threadTimer, &QTimer::stop);
     connect(PHDControlGuide_thread, &QThread::destroyed, PHDControlGuide_threadTimer, &QTimer::deleteLater);
@@ -1093,6 +1091,10 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("GuiderSwitch ...", LogLevel::INFO, DeviceType::GUIDER);
         if (isGuiding && parts[1].trimmed() == "false")
         {
+            // 关闭导星：停止高频定时器，减少空闲状态 CPU 占用
+            QMetaObject::invokeMethod(m_threadTimer, "stop", Qt::QueuedConnection);
+            QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "stop", Qt::QueuedConnection);
+
             isGuiding = false;
             call_phd_StopLooping();
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
@@ -1104,6 +1106,10 @@ void MainWindow::onMessageReceived(const QString &message)
         }
         else if (!isGuiding && parts[1].trimmed() == "true")
         {
+            // 打开导星：启动高频定时器，由共享内存数据驱动 UI 和控制读取
+            QMetaObject::invokeMethod(m_threadTimer, "start", Qt::QueuedConnection);
+            QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "start", Qt::QueuedConnection);
+
             isGuiding = true;
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             if (ClearCalibrationData)
@@ -1146,6 +1152,10 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             if (isGuiderLoopExp && parts[1].trimmed() == "false")
             {
+                // 关闭循环曝光：停止高频定时器
+                QMetaObject::invokeMethod(m_threadTimer, "stop", Qt::QueuedConnection);
+                QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "stop", Qt::QueuedConnection);
+
                 Logger::Log("Stop GuiderLoopExp ...", LogLevel::INFO, DeviceType::GUIDER);
                 isGuiderLoopExp = false;
                 isGuiding = false;
@@ -1158,6 +1168,10 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 Logger::Log("Start GuiderLoopExp ...", LogLevel::INFO, DeviceType::GUIDER);
                 isGuiderLoopExp = true;
+                // 开启循环曝光：启动高频定时器
+                QMetaObject::invokeMethod(m_threadTimer, "start", Qt::QueuedConnection);
+                QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "start", Qt::QueuedConnection);
+
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
                 call_phd_StartLooping();
@@ -1189,6 +1203,11 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("PHD2Recalibrate ...", LogLevel::DEBUG, DeviceType::GUIDER);
         call_phd_ClearCalibration();
         call_phd_StartLooping();
+
+        // 重新标定也会开启循环曝光，这里确保高频定时器已启动
+        QMetaObject::invokeMethod(m_threadTimer, "start", Qt::QueuedConnection);
+        QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "start", Qt::QueuedConnection);
+
         sleep(1);
 
         call_phd_AutoFindStar();
@@ -5368,7 +5387,8 @@ uint32_t MainWindow::call_phd_StartLooping(void)
 
     while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
     {
-        // QCoreApplication::processEvents();
+        // 避免忙等占满 CPU，增加适度休眠
+        QThread::msleep(100);
     }
     if (t.elapsed() >= 500)
     {
@@ -5410,7 +5430,8 @@ uint32_t MainWindow::call_phd_StopLooping(void)
 
     while (sharedmemory_phd[0] == 0x01 && t.elapsed() < 500)
     {
-        // QCoreApplication::processEvents();
+        // 避免忙等占满 CPU，增加适度休眠
+        QThread::msleep(100);
     }
     if (t.elapsed() >= 500)
     {

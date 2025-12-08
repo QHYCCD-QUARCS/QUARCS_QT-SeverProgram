@@ -370,7 +370,7 @@ class Tools : public QObject {
    * @param image16  原始16位（或8/16/32F可兼容）单通道图像，cv::Mat
    * @param kSigma   阈值倍数（默认 3.5）
    * @param minArea  最小面积（默认 3）
-   * @param maxArea  最大面积（默认 200）
+   * @param maxArea  最大面积（默认 200，若 <=0 则表示不限制最大面积）
    * @param minSNR   最小SNR阈值（默认 3.0）
    * @param bgKsize  背景估计高斯核大小（默认 51，奇数）
    * @param smoothSigma 前景轻微平滑sigma（默认 1.0）

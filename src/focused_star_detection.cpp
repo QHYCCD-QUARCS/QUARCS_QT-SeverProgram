@@ -363,7 +363,7 @@ static std::vector<Tools::FocusedStar> detectSmallStarsFocused(const cv::Mat& fg
 	std::vector<Tools::FocusedStar> stars;
 	for (int lab = 1; lab < numLabels; ++lab) {
 		int area = stats.at<int>(lab, cv::CC_STAT_AREA);
-		if (area <= 30) { // 排除超小噪点（对齐Python逻辑）
+		if (area <= 10) { // 排除超小噪点（对齐Python逻辑）
 			if (verbose) {
 				std::string msg = "[Focused][Detect] 丢弃连通域 label=" +
 				                  std::to_string(lab) +
@@ -372,12 +372,16 @@ static std::vector<Tools::FocusedStar> detectSmallStarsFocused(const cv::Mat& fg
 			}
 			continue;
 		}
-		if (area < minArea || area > maxArea) {
+		// 若 maxArea <= 0，则不做“最大面积”限制，仅限制最小面积；
+		// 若 maxArea > 0，则要求 area 落在 [minArea, maxArea] 区间内
+		if (area < minArea || (maxArea > 0 && area > maxArea)) {
 			if (verbose) {
 				std::string msg = "[Focused][Detect] 丢弃连通域 label=" +
 				                  std::to_string(lab) +
-				                  " 原因: area 不在[" + std::to_string(minArea) + "," +
-				                  std::to_string(maxArea) + "] area=" + std::to_string(area);
+				                  " 原因: area 不在允许范围; minArea=" +
+				                  std::to_string(minArea) +
+				                  " maxArea=" + std::to_string(maxArea) +
+				                  " area=" + std::to_string(area);
 				Logger::Log(msg, LogLevel::DEBUG, DeviceType::MAIN);
 			}
 			continue;
@@ -507,7 +511,8 @@ int Tools::DetectFocusedStarsFromFITS(const char* fileName,
 	cv::Mat img;
 	int status = Tools::readFits(fileName, img);
 	if (status != 0) return status;
-	outStars = Tools::DetectFocusedStars(img, 3.5, 3, 200, 3.0, 51, 1.0, verbose);
+	// 这里将 maxArea 设为 0，表示“不限制最大面积”，仅由 minArea 等参数约束
+	outStars = Tools::DetectFocusedStars(img, 3.5, 3, 0, 3.0, 51, 1.0, verbose);
 	return 0;
 }
 
