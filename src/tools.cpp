@@ -3810,7 +3810,7 @@ QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
   }
   // 使用C++合焦算法检测
   // 为了调试ROI/星点识别过程，这里开启 verbose=true，打印每一步过滤信息
-  std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, true);
+  std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, false);
   // 转换为 FITSImage::Star
   for (const auto &s : fs)
   {
