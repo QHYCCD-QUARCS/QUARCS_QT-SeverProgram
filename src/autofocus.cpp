@@ -22,7 +22,7 @@
 // 来循环模拟粗调/精调阶段的 SNR 计算，把下面这一行保持为 1。
 // 如果要恢复正常模式（使用实时拍摄的 /dev/shm/ccd_simulator.fits），
 // 请将 AUTOFOCUS_SNR_TEST_MODE 改为 0 后重新编译。
-#define AUTOFOCUS_SNR_TEST_MODE 0
+#define AUTOFOCUS_SNR_TEST_MODE 1
 
 // ==================== 自动对焦配置结构体 ====================
 struct AutoFocusConfig {
@@ -703,11 +703,13 @@ void AutoFocus::getAutoFocusStep()
     }
     else if (m_currentState == AutoFocusState::COARSE_ADJUSTMENT)
     {
-        updateAutoFocusStep(2, "Coarse adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the coarse adjustment to complete");
+        // 原“粗调”阶段：UI 文案改为“找星”
+        updateAutoFocusStep(2, "Star finding in progress, please observe if the focuser has started moving. If it has started moving, please wait for the star finding to complete");
     }
     else if (m_currentState == AutoFocusState::FINE_ADJUSTMENT)
     {
-        updateAutoFocusStep(3, "Fine adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the fine adjustment to complete");
+        // 原“精调”阶段：UI 文案改为“粗调”
+        updateAutoFocusStep(3, "Coarse adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the coarse adjustment to complete");
     }
     else if (m_currentState == AutoFocusState::FINE_HFR_ADJUSTMENT_NEW)
     {
@@ -1611,7 +1613,8 @@ void AutoFocus::startCoarseAdjustment()
     emit focusSeriesReset(QStringLiteral("coarse"));
 
     changeState(AutoFocusState::COARSE_ADJUSTMENT);
-    updateAutoFocusStep(2, "Coarse adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the coarse adjustment to complete"); // [AUTO_FOCUS_UI_ENHANCEMENT]
+    // 原“粗调”阶段：UI 文案改为“找星”
+    updateAutoFocusStep(2, "Star finding in progress, please observe if the focuser has started moving. If it has started moving, please wait for the star finding to complete"); // [AUTO_FOCUS_UI_ENHANCEMENT]
     m_focusData.clear();
     m_dataCollectionCount = 0;
     m_coarseBestSNR = -1.0;
@@ -1984,7 +1987,8 @@ void AutoFocus::startFineAdjustment()
     emit focusSeriesReset(QStringLiteral("fine"));
 
     changeState(AutoFocusState::FINE_ADJUSTMENT);
-    updateAutoFocusStep(3, "Fine adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the fine adjustment to complete"); // [AUTO_FOCUS_UI_ENHANCEMENT]
+    // 原“精调”阶段：UI 文案改为“粗调”
+    updateAutoFocusStep(3, "Coarse adjustment in progress, please observe if the focuser has started moving. If it has started moving, please wait for the coarse adjustment to complete"); // [AUTO_FOCUS_UI_ENHANCEMENT]
     m_focusData.clear();
     m_dataCollectionCount = 0;
     m_fineBestSNR = -1.0;
@@ -2154,7 +2158,7 @@ void AutoFocus::startSuperFineAdjustment()
 }
 
 /**
- * @brief 处理更细致精调阶段：使用 StellarSolver 计算 HFR 并收集拟合数据
+ * @brief 处理更细致精调阶段：在每个位置拍摄多张图像，计算 HFR 中位数并收集拟合数据
  */
 void AutoFocus::processSuperFineAdjustment()
 {
@@ -2180,28 +2184,66 @@ void AutoFocus::processSuperFineAdjustment()
     // 发送电调位置同步信号
     emit m_wsThread->sendMessageToClient("FocusPosition:" + QString::number(current) + ":" + QString::number(current));
 
-    // 拍摄并等待完成
-    if (!captureFullImage()) { handleError("super-fine 拍摄图像失败"); return; }
-    if (!waitForCaptureComplete()) { handleError("super-fine 拍摄超时"); return; }
+    // 在每个 super-fine 位置拍摄多张（目前固定 3 张）图像，并使用 HFR 中位数作为该位置最终 HFR
+    const int shotsPerPosition = 3;
+    QVector<double> validHfrValues;
+    validHfrValues.reserve(shotsPerPosition);
 
-    // 使用 calculatestars.py 计算 median_HFR，替代 StellarSolver HFR
+    for (int i = 0; i < shotsPerPosition; ++i) {
+        // 拍摄并等待完成
+        if (!captureFullImage()) {
+            log(QString("super-fine 第 %1/%2 张拍摄图像失败，本次拍摄丢弃，继续后续拍摄")
+                    .arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+        if (!waitForCaptureComplete()) {
+            log(QString("super-fine 第 %1/%2 张拍摄超时，本次拍摄丢弃，继续后续拍摄")
+                    .arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+
+        // 使用 calculatestars.py 计算当前帧的 median_HFR
+        double hfrFrame = 0.0;
+        bool okHfr = detectMedianHFRByPython(hfrFrame);
+
+        if (!okHfr) {
+            // 严重错误（例如图像文件无效），记录日志但不加入有效集合
+            log(QString("super-fine 第 %1/%2 张调用 Python median_HFR 失败，本次 HFR 不参与中位数计算")
+                    .arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+
+        if (!std::isfinite(hfrFrame) || hfrFrame <= 0.0) {
+            log(QString("super-fine 第 %1/%2 张 Python 返回的 median_HFR 无效或为 0，本次 HFR 不参与中位数计算")
+                    .arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+
+        validHfrValues.append(hfrFrame);
+    }
+
     double hfr = 0.0;
-    bool okHfr = detectMedianHFRByPython(hfr);
-
-    if (!okHfr) {
-        // 严重错误（例如图像文件无效），记录日志，但本点 HFR 记为 0，继续流程
-        log("super-fine 阶段调用 Python median_HFR 失败，本点 HFR 记为 0，不参与拟合");
-        hfr = 0.0;
+    if (validHfrValues.isEmpty()) {
+        // 三张都失败或无效：保持与原逻辑一致，记为 0，不参与拟合
+        log("super-fine 当前位置三张图像均未得到有效 HFR，本点 HFR 记为 0，不参与拟合");
         emit starDetectionResult(false, 0.0);
     } else {
-        if (!std::isfinite(hfr) || hfr <= 0.0) {
-            log("super-fine 阶段 Python 返回的 median_HFR 无效或为 0，本点不参与拟合");
-            hfr = 0.0;
-            emit starDetectionResult(false, 0.0);
+        std::sort(validHfrValues.begin(), validHfrValues.end());
+
+        if (validHfrValues.size() == 1) {
+            hfr = validHfrValues[0];
+        } else if (validHfrValues.size() == 2) {
+            hfr = 0.5 * (validHfrValues[0] + validHfrValues[1]);
         } else {
-            log(QString("super-fine 位置检测到 median_HFR: %1").arg(hfr));
-            emit starDetectionResult(true, hfr);
+            // 三张及以上：取排序后的中间值作为中位数
+            int midIndex = validHfrValues.size() / 2;
+            hfr = validHfrValues[midIndex];
         }
+
+        log(QString("super-fine 位置多帧 HFR 中位数: %1（有效样本数=%2）")
+                .arg(hfr)
+                .arg(validHfrValues.size()));
+        emit starDetectionResult(true, hfr);
     }
 
     // 记录 super-fine 数据点，并通知前端绘制

@@ -311,8 +311,10 @@ def process_file(filename):
     if len(stars_all) == 0:
         median_hfr = 0.0
         print("没有找到满足条件的星点，median_HFR 记为 0.0")
-        print(f"{filename}: median_HFR = {median_hfr:.4f} 像素（基于 0 个星点）")
-        return median_hfr
+        print(f"{filename}: median_HFR = {median_hfr * DOWNSAMPLE:.4f} 像素（基于 0 个星点）")
+        # return median_hfr
+        # # 返回值按 downsample 因子换算回原始像素
+        return median_hfr * DOWNSAMPLE
 
     # 计算并输出所有星点 HFR 的中位数（保持原有 HFR 逻辑不变）
     hfr_all = np.array([s.get("hfr", 0.0) for s in stars_all], dtype=float)
@@ -322,9 +324,10 @@ def process_file(filename):
         print("所有星点的 HFR 均无效，median_HFR 记为 0.0")
     else:
         median_hfr = float(np.median(hfr_valid))
-    print(f"{filename}: median_HFR = {median_hfr:.4f} 像素（基于 {hfr_valid.size} 个星点）")
-
-    return median_hfr
+    print(f"{filename}: median_HFR = {median_hfr * DOWNSAMPLE:.4f} 像素（基于 {hfr_valid.size} 个星点）")
+    # return median_hfr
+    # 返回值按 downsample 因子换算回原始像素
+    return median_hfr * DOWNSAMPLE
 
 
 def main():
