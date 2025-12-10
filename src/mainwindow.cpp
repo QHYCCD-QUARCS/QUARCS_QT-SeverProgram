@@ -123,6 +123,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(m_threadTimer, &QTimer::timeout, this, &MainWindow::onTimeout);
     connect(m_thread, &QThread::finished, m_threadTimer, &QTimer::stop);
     connect(m_thread, &QThread::destroyed, m_threadTimer, &QTimer::deleteLater);
+    connect(m_thread, &QThread::started, m_threadTimer, QOverload<>::of(&QTimer::start));
     m_thread->start();
 
     PHDControlGuide_thread = new QThread;
@@ -132,6 +133,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(PHDControlGuide_threadTimer, &QTimer::timeout, this, &MainWindow::onPHDControlGuideTimeout);
     connect(PHDControlGuide_thread, &QThread::finished, PHDControlGuide_threadTimer, &QTimer::stop);
     connect(PHDControlGuide_thread, &QThread::destroyed, PHDControlGuide_threadTimer, &QTimer::deleteLater);
+    connect(PHDControlGuide_thread, &QThread::started, PHDControlGuide_threadTimer, QOverload<>::of(&QTimer::start)); // 新增
     PHDControlGuide_thread->start();
     // getConnectedSerialPorts();
 
@@ -1091,9 +1093,6 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("GuiderSwitch ...", LogLevel::INFO, DeviceType::GUIDER);
         if (isGuiding && parts[1].trimmed() == "false")
         {
-            // 关闭导星：停止高频定时器，减少空闲状态 CPU 占用
-            QMetaObject::invokeMethod(m_threadTimer, "stop", Qt::QueuedConnection);
-            QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "stop", Qt::QueuedConnection);
 
             isGuiding = false;
             call_phd_StopLooping();
@@ -1106,9 +1105,6 @@ void MainWindow::onMessageReceived(const QString &message)
         }
         else if (!isGuiding && parts[1].trimmed() == "true")
         {
-            // 打开导星：启动高频定时器，由共享内存数据驱动 UI 和控制读取
-            QMetaObject::invokeMethod(m_threadTimer, "start", Qt::QueuedConnection);
-            QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "start", Qt::QueuedConnection);
 
             isGuiding = true;
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
@@ -1884,9 +1880,21 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             Logger::Log("ResetAutoPolarAlignment: polarAlignment is nullptr", LogLevel::WARNING, DeviceType::MAIN);
         }
+
         bool isSuccess = initPolarAlignment();
         if (isSuccess)
         {
+            // 启动自动极轴校准前，先关闭赤道仪跟踪
+            bool trackingDisabled = false;
+            if (indi_Client != nullptr && dpMount != nullptr)
+            {
+                indi_Client->setTelescopeTrackEnable(dpMount, false);
+                emit wsThread->sendMessageToClient("TelescopeTrack:OFF");
+                Logger::Log("StartAutoPolarAlignment: Telescope tracking disabled for polar alignment",
+                            LogLevel::INFO, DeviceType::MAIN);
+                trackingDisabled = true;
+            }
+
             if (polarAlignment->startPolarAlignment())
             {
                 Logger::Log("StartAutoPolarAlignment: Started successfully", LogLevel::INFO, DeviceType::MAIN);
@@ -1895,6 +1903,19 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 Logger::Log("StartAutoPolarAlignment: Failed to start polar alignment", LogLevel::ERROR, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment");
+
+                // 启动失败时恢复之前的跟踪状态
+                if (trackingDisabled && indi_Client != nullptr && dpMount != nullptr)
+                {
+                    indi_Client->setTelescopeTrackEnable(dpMount, true);
+
+                    bool isTrack = false;
+                    indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+                    emit wsThread->sendMessageToClient(isTrack ? "TelescopeTrack:ON"
+                                                               : "TelescopeTrack:OFF");
+                    Logger::Log("StartAutoPolarAlignment: Restore telescope tracking because start failed",
+                                LogLevel::INFO, DeviceType::MAIN);
+                }
             }
         }
         else
@@ -2357,7 +2378,7 @@ void MainWindow::onTimeout()
     {
         if (dpMount->isConnected())
         {
-            if (mountDisplayCounter >= 200)
+            if (mountDisplayCounter >= 5)
             {
                 double RA_HOURS, DEC_DEGREE;
                 indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
@@ -2459,7 +2480,7 @@ void MainWindow::onTimeout()
     MainCameraStatusCounter++;
     if (dpMainCamera != NULL)
     {
-        if (MainCameraStatusCounter >= 100)
+        if (MainCameraStatusCounter >= 5)
         {
             emit wsThread->sendMessageToClient("MainCameraStatus:" + glMainCameraStatu);
             MainCameraStatusCounter = 0;
@@ -13164,6 +13185,27 @@ bool MainWindow::initPolarAlignment()
                                                         QString::number(static_cast<int>(state)) + ":" +
                                                         message + ":" +
                                                         QString::number(percentage));
+
+                // 极轴校准结束/停止后，自动恢复赤道仪跟踪
+                if (state == PolarAlignmentState::IDLE ||
+                    state == PolarAlignmentState::COMPLETED ||
+                    state == PolarAlignmentState::FAILED ||
+                    state == PolarAlignmentState::USER_INTERVENTION)
+                {
+                    if (indi_Client != nullptr && dpMount != nullptr)
+                    {
+                        indi_Client->setTelescopeTrackEnable(dpMount, true);
+
+                        bool isTrack = false;
+                        indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+                        emit this->wsThread->sendMessageToClient(isTrack ? "TelescopeTrack:ON"
+                                                                         : "TelescopeTrack:OFF");
+
+                        Logger::Log("PolarAlignment: Telescope tracking restored after polar alignment",
+                                    LogLevel::INFO, DeviceType::MAIN);
+                    }
+                    emit this->wsThread->sendMessageToClient("PolarAlignmentState:false:0:极轴校准已停止:0");
+                }
             });
 
             connect(polarAlignment, &PolarAlignment::adjustmentGuideData,
