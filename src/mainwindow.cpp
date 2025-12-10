@@ -12529,7 +12529,8 @@ void MainWindow::startAutoFocusFineHFROnly()
         }
     }));
 
-    autoFocus->startFineHFRFromCurrentPosition();
+    // 仅精调(Fine)：从当前位置直接进入 super-fine 精调流程
+    autoFocus->startSuperFineFromCurrentPosition();
     isAutoFocus = true;
     autoFocusStep = 0;
 }
