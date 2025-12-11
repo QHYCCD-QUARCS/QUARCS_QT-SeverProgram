@@ -1461,7 +1461,7 @@ public:
 
     /**
      * @brief 获取当前连接的串口列表
-     * @return 串口名列表
+     * @return 串口设备路径列表（如 /dev/ttyUSB0）
      */
     QStringList getConnectedSerialPorts();
 
@@ -1520,6 +1520,15 @@ public:
      * @brief 综合 by-id 与 tty 名称对端口进行打分
      */
     int scorePortForType(const QString &ttyDevice, const QStringList &byIdLinks, const QString &driverType);
+
+    /**
+     * @brief 向前端发送指定驱动类型的串口候选列表及当前已保存的串口
+     * @param driverType 驱动类型（"Mount" / "Focuser"）
+     *
+     * 消息格式：
+     *   SerialPortOptions:<driverType>:<savedPort>:<port1>:<port2>:...
+     */
+    void sendSerialPortOptions(const QString &driverType);
 
 /**********************  调试/日志 & 前端交互  **********************/
 public:
