@@ -770,22 +770,40 @@ void MainWindow::onMessageReceived(const QString &message)
         // 手动设置串口路径，仅针对 Mount / Focuser
         QString devType = parts[1].trimmed();
         QString portPath = parts[2].trimmed();
-        Logger::Log("SetSerialPort | " + devType.toStdString() + " -> " + portPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-        if (devType == "Mount" || devType == "Focuser")
+        // 特殊值 "default" 或空字符串：表示回到自动匹配模式，不强制指定串口
+        bool isDefault =
+            portPath.trimmed().isEmpty() ||
+            portPath.trimmed().compare("default", Qt::CaseInsensitive) == 0;
+
+        if (devType == "Mount")
         {
-            // 保存到配置文件，供下次启动或重连时使用
-            Tools::saveParameter(devType, "SerialPort", portPath);
+            mountSerialPortOverride = isDefault ? QString() : portPath;
+        }
+        else if (devType == "Focuser")
+        {
+            focuserSerialPortOverride = isDefault ? QString() : portPath;
+        }
 
-            // 若设备已存在，则立即更新其串口端口
-            if (devType == "Mount" && dpMount != nullptr)
-            {
-                indi_Client->setDevicePort(dpMount, portPath);
-            }
-            else if (devType == "Focuser" && dpFocuser != nullptr)
-            {
-                indi_Client->setDevicePort(dpFocuser, portPath);
-            }
+        if (isDefault)
+        {
+            Logger::Log("SetSerialPort | " + devType.toStdString() + " -> <default(auto-detect)>",
+                        LogLevel::INFO, DeviceType::MAIN);
+            // 不立即修改设备端口，后续连接时走自动识别/重新匹配逻辑
+            return;
+        }
+
+        Logger::Log("SetSerialPort | " + devType.toStdString() + " -> " + portPath.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+
+        // 若设备已存在，则立即更新其串口端口（仅修改内存状态，不做持久化）
+        if (devType == "Mount" && dpMount != nullptr)
+        {
+            indi_Client->setDevicePort(dpMount, portPath);
+        }
+        else if (devType == "Focuser" && dpFocuser != nullptr)
+        {
+            indi_Client->setDevicePort(dpFocuser, portPath);
         }
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "Self Exposure Time (ms)")
@@ -3584,6 +3602,38 @@ void MainWindow::continueConnectAllDeviceOnce()
         
         Logger::Log("Start connecting devices:" + deviceName, LogLevel::INFO, DeviceType::MAIN);
 
+        // 在正式连接前，仅在用户手动选择串口时应用覆盖设置；默认模式不改端口
+        // 根据 driverExec 在 systemdevicelist 中查找对应的 DriverType（Mount / Focuser）
+        QString driverExec = QString::fromUtf8(device->getDriverExec());
+        QString driverType;
+        for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
+        {
+            if (systemdevicelist.system_devices[idx].DriverIndiName == driverExec)
+            {
+                driverType = systemdevicelist.system_devices[idx].Description;
+                break;
+            }
+        }
+        if (driverType == "Focuser" && !focuserSerialPortOverride.isEmpty())
+        {
+            indi_Client->setDevicePort(device, focuserSerialPortOverride);
+            Logger::Log("ConnectAllDeviceOnce | Focuser initial Port set to: " + focuserSerialPortOverride.toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+
+            // 在根据覆盖值设置串口后，同步当前串口与候选列表到前端
+            // 这样前端的串口下拉框会立刻显示实际使用/覆盖的端口
+            sendSerialPortOptions(driverType);
+        }
+        else if (driverType == "Mount" && !mountSerialPortOverride.isEmpty())
+        {
+            indi_Client->setDevicePort(device, mountSerialPortOverride);
+            Logger::Log("ConnectAllDeviceOnce | Mount initial Port set to: " + mountSerialPortOverride.toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+
+            // 在根据覆盖值设置串口后，同步当前串口与候选列表到前端
+            sendSerialPortOptions(driverType);
+        }
+
         int baudRateToUse = getBaudRateForDeviceIndex(device, i);
         Logger::Log("ConnectAllDeviceOnce | setBaudRate for device " + deviceName + " -> " + std::to_string(baudRateToUse),
                     LogLevel::INFO, DeviceType::MAIN);
@@ -3628,7 +3678,12 @@ void MainWindow::continueConnectAllDeviceOnce()
                         if (!realFocuserPort.isEmpty())
                         {
                             indi_Client->setDevicePort(device, realFocuserPort);
+                            // 同步更新覆盖值，保证后续连接与前端显示一致
+                            focuserSerialPortOverride = realFocuserPort;
                             Logger::Log("ConnectDriver | Focuser Device (" + std::string(device->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+                            // 自动纠正串口后，同步当前串口与候选列表到前端
+                            sendSerialPortOptions(DriverType);
                         }
                         else
                         {
@@ -3643,7 +3698,12 @@ void MainWindow::continueConnectAllDeviceOnce()
                         if (!realMountPort.isEmpty())
                         {
                             indi_Client->setDevicePort(device, realMountPort);
+                            // 同步更新覆盖值，保证后续连接与前端显示一致
+                            mountSerialPortOverride = realMountPort;
                             Logger::Log("ConnectDriver | Mount Device (" + std::string(device->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+                            // 自动纠正串口后，同步当前串口与候选列表到前端
+                            sendSerialPortOptions(DriverType);
                         }
                         else
                         {
@@ -10536,6 +10596,21 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             break;
                         }
                     }
+
+                    // 在正式连接前，仅在用户手动选择串口时应用覆盖设置；默认模式不改端口
+                    if (DriverType == "Focuser" && !focuserSerialPortOverride.isEmpty())
+                    {
+                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), focuserSerialPortOverride);
+                        Logger::Log("ConnectDriver | Focuser initial Port set to: " + focuserSerialPortOverride.toStdString(),
+                                    LogLevel::INFO, DeviceType::MAIN);
+                    }
+                    else if (DriverType == "Mount" && !mountSerialPortOverride.isEmpty())
+                    {
+                        indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), mountSerialPortOverride);
+                        Logger::Log("ConnectDriver | Mount initial Port set to: " + mountSerialPortOverride.toStdString(),
+                                    LogLevel::INFO, DeviceType::MAIN);
+                    }
+
                     int baudRateToUse = 9600;
                     if (sysIndex >= 0)
                     {
@@ -10593,6 +10668,20 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         break;
                     }
                 }
+                // 在正式连接前，仅在用户手动选择串口时应用覆盖设置；默认模式不改端口
+                if (DriverType == "Focuser" && !focuserSerialPortOverride.isEmpty())
+                {
+                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), focuserSerialPortOverride);
+                    Logger::Log("ConnectDriver | Focuser initial Port set to: " + focuserSerialPortOverride.toStdString(),
+                                LogLevel::INFO, DeviceType::MAIN);
+                }
+                else if (DriverType == "Mount" && !mountSerialPortOverride.isEmpty())
+                {
+                    indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), mountSerialPortOverride);
+                    Logger::Log("ConnectDriver | Mount initial Port set to: " + mountSerialPortOverride.toStdString(),
+                                LogLevel::INFO, DeviceType::MAIN);
+                }
+
                 int baudRateToUse = 9600;
                 if (sysIndex >= 0)
                 {
@@ -10637,6 +10726,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             if (!realFocuserPort.isEmpty())
                             {
                                 indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realFocuserPort);
+                                // 将自动匹配到的端口同步到覆盖值，保证后续连接与前端显示一致
+                                focuserSerialPortOverride = realFocuserPort;
                                 Logger::Log("ConnectDriver | Focuser Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realFocuserPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                             }
                             else
@@ -10661,6 +10752,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             if (!realMountPort.isEmpty())
                             {
                                 indi_Client->setDevicePort(indi_Client->GetDeviceFromList(i), realMountPort);
+                                // 将自动匹配到的端口同步到覆盖值，保证后续连接与前端显示一致
+                                mountSerialPortOverride = realMountPort;
                                 Logger::Log("ConnectDriver | Mount Device (" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") Port is updated to: " + realMountPort.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                             }
                             else
@@ -10723,15 +10816,11 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         Logger::Log("ConnectDriver | Device (" + std::string(indi_Client->GetDeviceNameFromList(i).c_str()) + ") is not connected,try to update port", LogLevel::WARNING, DeviceType::MAIN);
 
-                        // 若为 Mount/Focuser 串口设备，并且尚未保存串口路径，则提示前端弹出串口选择界面
+                        // 若为 Mount/Focuser 串口设备，连接失败时提示前端弹出串口选择界面
                         if (DriverType == "Mount" || DriverType == "Focuser")
                         {
-                            QMap<QString, QString> parameters = Tools::readParameters(DriverType);
-                            if (!parameters.contains("SerialPort") || parameters.value("SerialPort").isEmpty())
-                            {
-                                sendSerialPortOptions(DriverType);
-                                emit wsThread->sendMessageToClient("RequestSerialPortSelection:" + DriverType);
-                            }
+                            sendSerialPortOptions(DriverType);
+                            emit wsThread->sendMessageToClient("RequestSerialPortSelection:" + DriverType);
                         }
 
                         emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str()));
@@ -11440,22 +11529,37 @@ void MainWindow::sendSerialPortOptions(const QString &driverType)
     if (driverType != "Mount" && driverType != "Focuser")
         return;
 
-    // 当前可用串口路径列表
+    // 当前可用串口路径列表（全部是真实存在的串口节点）
     QStringList ports = getConnectedSerialPorts();
 
-    // 已保存的串口路径（来自 config/config.ini）
-    QMap<QString, QString> parameters = Tools::readParameters(driverType);
-    QString savedPort = parameters.contains("SerialPort") ? parameters.value("SerialPort") : QString();
-
-    // 若已保存串口不在当前可用列表中，也插入进去，保证下拉中能选到
-    if (!savedPort.isEmpty() && !ports.contains(savedPort))
+    // 当前设备正在使用的串口（若已连接），或前端最近一次选择的覆盖串口
+    QString currentPort;
+    if (driverType == "Mount")
     {
-        ports.prepend(savedPort);
+        if (dpMount != nullptr)
+        {
+            indi_Client->getDevicePort(dpMount, currentPort);
+        }
+        if (currentPort.isEmpty())
+        {
+            currentPort = mountSerialPortOverride;
+        }
+    }
+    else if (driverType == "Focuser")
+    {
+        if (dpFocuser != nullptr)
+        {
+            indi_Client->getDevicePort(dpFocuser, currentPort);
+        }
+        if (currentPort.isEmpty())
+        {
+            currentPort = focuserSerialPortOverride;
+        }
     }
 
     // 组装带“真实路径 -> 友好名称(by-id)”的项：
     // 每一项格式为：<portPath>-><displayName>，前端再解析
-    QString payload = "SerialPortOptions:" + driverType + ":" + savedPort;
+    QString payload = "SerialPortOptions:" + driverType + ":" + currentPort;
     for (const QString &p : ports)
     {
         QString displayName = p;
@@ -11621,15 +11725,11 @@ void MainWindow::disconnectDevice(const QString &deviceName, const QString &desc
             emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
             emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
 
-            // 若为赤道仪或电调，并且尚未保存串口路径，则在断开后提示前端弹出串口选择 UI
+            // 若为赤道仪或电调，在断开后提示前端弹出串口选择 UI，方便下次连接前重新匹配
             if (description == "Mount" || description == "Focuser")
             {
-                QMap<QString, QString> parameters = Tools::readParameters(description);
-                if (!parameters.contains("SerialPort") || parameters.value("SerialPort").isEmpty())
-                {
-                    sendSerialPortOptions(description);
-                    emit wsThread->sendMessageToClient("RequestSerialPortSelection:" + description);
-                }
+                sendSerialPortOptions(description);
+                emit wsThread->sendMessageToClient("RequestSerialPortSelection:" + description);
             }
             break;
         }

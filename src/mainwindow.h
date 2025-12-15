@@ -70,7 +70,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20251204"  // 手动指定版本号
+#define QT_Client_Version "20251215"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -1458,6 +1458,10 @@ public:
 /**********************  串口/设备路径  **********************/
 public:
     SerialDeviceDetector detector; // 串口设备检测器
+
+    // 前端手动选择的串口（仅保存在内存中，不写入配置）
+    QString mountSerialPortOverride;
+    QString focuserSerialPortOverride;
 
     /**
      * @brief 获取当前连接的串口列表
