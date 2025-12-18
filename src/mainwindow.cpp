@@ -7305,6 +7305,8 @@ void MainWindow::ScheduleTabelData(QString message)
     // 每次接收到新的任务计划表时，从第一条任务开始执行
     schedule_currentNum = 0;
     schedule_currentShootNum = 0;
+    // 新任务计划表开始时，重置 Refocus 触发记录，避免旧任务残留导致本次不触发
+    schedule_refocusTriggeredIndex = -1;
     QStringList ColDataList = message.split('[');
     for (int i = 1; i < ColDataList.size(); ++i)
     {
@@ -7788,10 +7790,14 @@ void MainWindow::startSetCFW(int pos)
     
     // 检查是否需要自动对焦（Refocus为ON）
     if (schedule_currentNum >= 0 && schedule_currentNum < m_scheduList.size() && 
-        m_scheduList[schedule_currentNum].resetFocusing)
+        m_scheduList[schedule_currentNum].resetFocusing &&
+        schedule_refocusTriggeredIndex != schedule_currentNum)
     {
         qDebug() << "Refocus is ON, starting autofocus before setting CFW...";
-        Logger::Log("计划任务表: Refocus为ON，在执行拍摄前先执行自动对焦", LogLevel::INFO, DeviceType::MAIN);
+        Logger::Log("计划任务表: Refocus为ON，在执行拍摄前先执行自动对焦（仅最后一步精调）", LogLevel::INFO, DeviceType::MAIN);
+        
+        // 先记录本行已触发过一次 Refocus，避免 AutoFocus 完成回调再次进入 startSetCFW 时无限重入
+        schedule_refocusTriggeredIndex = schedule_currentNum;
         
         // 启动自动对焦（startScheduleAutoFocus会设置isScheduleTriggeredAutoFocus标志）
         startScheduleAutoFocus();
@@ -13002,8 +13008,9 @@ void MainWindow::startScheduleAutoFocus()
         "0");
     
     // 调用通用的自动对焦启动函数
-    Logger::Log("计划任务表自动对焦 | 开始执行自动对焦", LogLevel::INFO, DeviceType::MAIN);
-    startAutoFocus();
+    Logger::Log("计划任务表自动对焦 | Refocus=ON：开始执行自动对焦最后一步精调(super-fine)", LogLevel::INFO, DeviceType::MAIN);
+    // 仅触发自动对焦的最后一步精调：从当前位置进入 super-fine 精调（跳过粗调/精调）
+    startAutoFocusSuperFineOnly();
 }
 
 void MainWindow::cleanupAutoFocusConnections()
