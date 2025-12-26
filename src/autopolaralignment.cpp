@@ -1653,7 +1653,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!captureImage(exposureTime)) {
         Logger::Log("PolarAlignment: 图像拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄失败", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
@@ -1661,41 +1661,41 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!waitForCaptureComplete()) {
         Logger::Log("PolarAlignment: 拍摄超时", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄超时", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(2000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
     // 2. 拍摄完成后，先做星点质量（SNR）检查
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "正在检查星点质量...");
     
-    bool ok = Tools::findMedianHFRByPython_Process(lastCapturedImage);
-    double starHFR = Tools::getLastMedianHFR();
+    // bool ok = Tools::findMedianHFRByPython_Process(lastCapturedImage);
+    // double starHFR = Tools::getLastMedianHFR();
     
-    // 如果 SNR 脚本没有正常执行，则仅记录日志并跳过质量判断，继续后续流程
-    if (!ok) {
-        Logger::Log("PolarAlignment: median_HFR 脚本执行失败，跳过星点质量判断，继续后续解析流程", LogLevel::WARNING, DeviceType::MAIN);
-        emit guidanceAdjustmentStepProgress(
-            GuidanceAdjustmentStep::CHECKING_STARS,
-            "median_HFR 脚本执行失败，跳过星点质量判断",
-            -1   // 不再使用星点数量做判断与展示
-        );
-    } else {
+    // // 如果 SNR 脚本没有正常执行，则仅记录日志并跳过质量判断，继续后续流程
+    // if (!ok) {
+    //     Logger::Log("PolarAlignment: median_HFR 脚本执行失败，跳过星点质量判断，继续后续解析流程", LogLevel::WARNING, DeviceType::MAIN);
+    //     emit guidanceAdjustmentStepProgress(
+    //         GuidanceAdjustmentStep::CHECKING_STARS,
+    //         "median_HFR 脚本执行失败，跳过星点质量判断",
+    //         -1   // 不再使用星点数量做判断与展示
+    //     );
+    // } else {
         
-        Logger::Log(
-            "PolarAlignment: 图像星点质量 median_HFR = " + std::to_string(starHFR),
-            LogLevel::INFO,
-            DeviceType::MAIN
-        );
-        if (starHFR > 0.0) {
-            Logger::Log("PolarAlignment: 星点质量 median_HFR > 0.0，继续解析流程", LogLevel::WARNING, DeviceType::MAIN);
-            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR > 0.0，继续解析流程", -1);
-        }else{
-            Logger::Log("PolarAlignment: 星点质量 median_HFR <= 0.0，跳过解析流程", LogLevel::WARNING, DeviceType::MAIN);
-            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR <= 0.0，跳过解析流程", -1);
-            if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
-            return false;
-        }
-    }
+    //     Logger::Log(
+    //         "PolarAlignment: 图像星点质量 median_HFR = " + std::to_string(starHFR),
+    //         LogLevel::INFO,
+    //         DeviceType::MAIN
+    //     );
+    //     if (starHFR > 0.0) {
+    //         Logger::Log("PolarAlignment: 星点质量 median_HFR > 0.0，继续解析流程", LogLevel::WARNING, DeviceType::MAIN);
+    //         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR > 0.0，继续解析流程", -1);
+    //     }else{
+    //         Logger::Log("PolarAlignment: 星点质量 median_HFR <= 0.0，跳过解析流程", LogLevel::WARNING, DeviceType::MAIN);
+    //         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR <= 0.0，跳过解析流程", -1);
+    //         if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
+    //         return false;
+    //     }
+    // }
     
     // 3. 星点数量足够，继续解析图像
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "正在解析图像...");
@@ -1703,7 +1703,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!solveImage(lastCapturedImage)) {
         Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析失败", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
@@ -1711,7 +1711,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!waitForSolveComplete()) {
         Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析超时", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         updateSolveModeStatistics(false);
         return false;
     }
@@ -1724,7 +1724,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "解析结果无效", -1);
         updateSolveModeStatistics(false);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     

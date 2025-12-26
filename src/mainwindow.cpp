@@ -2455,6 +2455,13 @@ void MainWindow::onTimeout()
 
                 bool isTrack = false;
                 indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+
+                if (polarAlignment->isRunning() && isTrack) {
+                    indi_Client->setTelescopeTrackEnable(dpMount, false);
+                    sleep(1);
+                    indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+                }               
+
                 emit wsThread->sendMessageToClient(isTrack ? "TelescopeTrack:ON" 
                                                            : "TelescopeTrack:OFF");
 
@@ -13390,6 +13397,7 @@ bool MainWindow::initPolarAlignment()
                     if (indi_Client != nullptr && dpMount != nullptr)
                     {
                         indi_Client->setTelescopeTrackEnable(dpMount, true);
+
 
                         bool isTrack = false;
                         indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
