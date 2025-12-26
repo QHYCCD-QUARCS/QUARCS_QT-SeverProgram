@@ -1027,6 +1027,9 @@ public:
     int schedule_RepeatNum = 0;      // 任务重复次数
     int schedule_ExposureDelay = 0;  // 当前任务曝光延迟（ms）
     int schedule_currentShootNum = 0;// 已拍张数
+    // 计划任务表：避免 Refocus=ON 时在 startSetCFW <-> AutoFocus 回调之间无限重入
+    // 语义：记录“已经为哪个 schedule_currentNum 行触发过一次 Refocus（自动对焦）”
+    int schedule_refocusTriggeredIndex = -1;
     int expTime_ms = 0;              // 当前拍摄时间（ms）
     int exposureDelayElapsed_ms = 0; // 曝光延迟已过去的时间（ms）
 
