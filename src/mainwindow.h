@@ -74,6 +74,7 @@ namespace fs = std::filesystem;
 #include "autopolaralignment.h"
 #include "autofocus.h"
 #include "SerialDeviceDetector.h"
+#include "guiding/GuiderCore.h"
 #include <stellarsolver.h>
 
 #include "sdks/SdkSerialExecutor.h"
@@ -847,12 +848,30 @@ public:
     int guiderExpMs = 1000;
 
 private:
+    // 内置导星核心；未初始化时保持为空，相关逻辑自动降级为仅取图/显示。
+    GuiderCore *guiderCore = nullptr;
     // 导星循环曝光定时器（singleShot：收到一帧后再触发下一帧，避免重入）
     QTimer *guiderLoopTimer = nullptr;
     bool guiderExposureInFlight = false;
+    // 用于像素尺度换算（arcsec/px）的导星相机/镜筒参数缓存。
+    double guiderPixelSizeUm = 0.0;
+    double guiderFocalLengthMm = 0.0;
+    bool guiderScaleHintSent = false;
+    // 导星 UI 叠加层缓存（供前端复用既有 PHD2Box/Cross/MultiStar 协议）。
+    int glPHD_CurrentImageSizeX = 0;
+    int glPHD_CurrentImageSizeY = 0;
+    bool guiderMultiStarSecondaryPtsPending = false;
+    bool guiderPhaseGuiding = false;
+    bool guiderDirectionDetectActive = false;
+    QVector<QPointF> guiderMultiStarSecondaryPtsPx;
 
 private Q_SLOTS:
     void onGuiderLoopTimeout();
+    void PersistGuidingFits(const QString& sourceFitsPath);
+
+public:
+    void ControlGuide(int Direction, int Duration);
+    void ControlGuideEx(int Direction, int Duration, const QString& source);
 
 /**********************  对焦/电调控制与自动对焦  **********************/
 public:
