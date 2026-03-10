@@ -1,6 +1,7 @@
 #include "myclient.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -96,12 +97,13 @@ void MyClient::updateProperty(INDI::Property property)
             auto filepath = tvp->findWidgetByName("FILE_PATH");
             if (filepath)
             {
-                Logger::Log("indi_client | updateProperty | New Capture Image Save To" + QString(filepath->getText()).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+                // 循环曝光会高频刷这些日志：降为 DEBUG（默认关闭 DEBUG）避免刷屏
+                Logger::Log("indi_client | updateProperty | New Capture Image Save To" + QString(filepath->getText()).toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
                 // qDebug() << "\033[32m" << "New Capture Image Save To" << QString(filepath->getText()) << "\033[0m";
                 // qInfo() << "New Capture Image Save To" << QString(filepath->getText());
 
                 CaptureTestTime = CaptureTestTimer.elapsed();
-                Logger::Log("indi_client | updateProperty | Exposure completed:" + std::to_string(CaptureTestTime) + "ms", LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("indi_client | updateProperty | Exposure completed:" + std::to_string(CaptureTestTime) + "ms", LogLevel::DEBUG, DeviceType::CAMERA);
                 CaptureTestTimer.invalidate();
 
                 QString devname_;
@@ -109,7 +111,7 @@ void MyClient::updateProperty(INDI::Property property)
                 std::string devname = devname_.toStdString();
 
                 receiveImage(QString(filepath->getText()).toStdString(), devname);
-                Logger::Log("indi_client | updateProperty | receiveImage | " + QString(filepath->getText()).toStdString() + ", " + devname, LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("indi_client | updateProperty | receiveImage | " + QString(filepath->getText()).toStdString() + ", " + devname, LogLevel::DEBUG, DeviceType::CAMERA);
             }
         }
     }
@@ -587,23 +589,55 @@ uint32_t MyClient::disableDSLRLiveView(INDI::BaseDevice *dp)
 
 uint32_t MyClient::takeExposure(INDI::BaseDevice *dp, double seconds)
 {
+    if (!dp)
+        return QHYCCD_ERROR;
 
+    const char *devNameC = dp->getDeviceName();
+    const std::string devName = devNameC ? std::string(devNameC) : std::string("UnknownDevice");
 
-    INDI::PropertyNumber ccdExposure = dp->getProperty("CCD_EXPOSURE");
-
-    if (!ccdExposure.isValid())
+    if (!dp->isConnected())
     {
-        Logger::Log("indi_client | takeExposure | Error: unable to find CCD Simulator CCD_EXPOSURE property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | takeExposure | device not connected: " + devName, LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
+    // 标准 CCD: CCD_EXPOSURE
+    INDI::PropertyNumber exposure = dp->getProperty("CCD_EXPOSURE");
+
+    // 兼容：部分驱动/双芯片设备会把导星头曝光命名为 GUIDER_EXPOSURE
+    if (!exposure.isValid())
+        exposure = dp->getProperty("GUIDER_EXPOSURE");
+
+    // 兜底：打印所有包含 EXPOSURE 的 Number 属性，便于现场快速定位真实属性名
+    if (!exposure.isValid())
+    {
+        std::string candidates;
+        for (const auto &p : dp->getProperties())
+        {
+            if (!p) continue;
+            if (p->getType() != INDI_NUMBER) continue;
+            std::string pn = p->getName() ? std::string(p->getName()) : std::string();
+            std::string pnUpper = pn;
+            std::transform(pnUpper.begin(), pnUpper.end(), pnUpper.begin(),
+                           [](unsigned char c){ return std::toupper(c); });
+            if (pnUpper.find("EXPOS") != std::string::npos)
+            {
+                if (!candidates.empty()) candidates += ", ";
+                candidates += pn;
+            }
+        }
+
+        Logger::Log("indi_client | takeExposure | unable to find exposure property on device: " + devName +
+                        " (tried: CCD_EXPOSURE, GUIDER_EXPOSURE). Candidates: [" + candidates + "]",
+                    LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
     CaptureTestTimer.start();
-    Logger::Log("indi_client | takeExposure | Exposure start.", LogLevel::DEBUG, DeviceType::CAMERA);
-
-    // Take a 1 second exposure
-    Logger::Log("indi_client | takeExposure | Taking a " + std::to_string(seconds) + " second exposure.", LogLevel::DEBUG, DeviceType::CAMERA);
-    ccdExposure[0].setValue(seconds);
-    sendNewProperty(ccdExposure);
+    Logger::Log("indi_client | takeExposure | " + devName + " taking a " + std::to_string(seconds) + " second exposure.",
+                LogLevel::DEBUG, DeviceType::CAMERA);
+    exposure[0].setValue(seconds);
+    sendNewProperty(exposure);
     return QHYCCD_SUCCESS;
 }
 
@@ -1313,7 +1347,12 @@ uint32_t MyClient::setAUXENCODERS(INDI::BaseDevice *dp)
 
     if (!encoders.isValid())
     {
-        Logger::Log("indi_client | setAUXENCODERS | Error: unable to find  AUXENCODER property...", LogLevel::WARNING, DeviceType::MOUNT);
+        // Some mounts/drivers do not provide AUXENCODER. Avoid spamming WARNING on periodic calls.
+        static std::atomic<bool> warned{false};
+        const bool first = !warned.exchange(true);
+        Logger::Log("indi_client | setAUXENCODERS | Error: unable to find AUXENCODER property...",
+                    first ? LogLevel::WARNING : LogLevel::DEBUG,
+                    DeviceType::MOUNT);
         return QHYCCD_ERROR;
     }
 
@@ -1329,7 +1368,12 @@ uint32_t MyClient::getTelescopeInfo(INDI::BaseDevice *dp, double &telescope_aper
 
     if (!property.isValid())
     {
-        Logger::Log("indi_client | getTelescopeInfo | Error: unable to find  TELESCOPE_INFO property...", LogLevel::WARNING, DeviceType::MOUNT);
+        // TELESCOPE_INFO is optional for many drivers. Warn once, then downgrade to DEBUG.
+        static std::atomic<bool> warned{false};
+        const bool first = !warned.exchange(true);
+        Logger::Log("indi_client | getTelescopeInfo | Error: unable to find TELESCOPE_INFO property...",
+                    first ? LogLevel::WARNING : LogLevel::DEBUG,
+                    DeviceType::MOUNT);
         return QHYCCD_ERROR;
     }
 
@@ -2221,6 +2265,43 @@ uint32_t MyClient::setTelescopeGuideWE(INDI::BaseDevice *dp, int dir, int time_g
         mountState.isGuiding = false;
     }
     sendNewProperty(property);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::getTelescopeGuideRate(INDI::BaseDevice *dp, double &raRate, double &decRate)
+{
+    raRate = 0.0;
+    decRate = 0.0;
+
+    INDI::PropertyNumber property = dp->getProperty("GUIDE_RATE");
+    if (!property.isValid())
+    {
+        Logger::Log("indi_client | getTelescopeGuideRate | Error: unable to find GUIDE_RATE property...", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+
+    // Heuristic: match by widget name/label
+    for (int i = 0; i < property.count(); ++i)
+    {
+        const QString name = QString::fromStdString(property[i].getName()).toUpper();
+        const QString label = QString::fromStdString(property[i].getLabel()).toUpper();
+        const double v = property[i].getValue();
+
+        if ((name.contains("RA") || label.contains("RA") || name.contains("WE") || label.contains("WE")) && raRate <= 0.0)
+            raRate = v;
+        else if ((name.contains("DEC") || label.contains("DEC") || name.contains("NS") || label.contains("NS")) && decRate <= 0.0)
+            decRate = v;
+    }
+
+    // Fallback: if still empty and property has >=2 widgets, take first two
+    if ((raRate <= 0.0 || decRate <= 0.0) && property.count() >= 2)
+    {
+        if (raRate <= 0.0) raRate = property[0].getValue();
+        if (decRate <= 0.0) decRate = property[1].getValue();
+    }
+
+    Logger::Log("indi_client | getTelescopeGuideRate | RA=" + std::to_string(raRate) + " DEC=" + std::to_string(decRate),
+                LogLevel::INFO, DeviceType::MOUNT);
     return QHYCCD_SUCCESS;
 }
 

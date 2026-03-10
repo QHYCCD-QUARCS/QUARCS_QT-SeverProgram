@@ -52,6 +52,7 @@
 #include <math.h>
 #include <QElapsedTimer>
 #include <functional>
+#include <memory>
 
 #include <filesystem>
 #include <filesystem>  //（按原文件保留重复包含）
@@ -67,6 +68,9 @@ namespace fs = std::filesystem;
 #include "autofocus.h"
 #include "SerialDeviceDetector.h"
 #include <stellarsolver.h>
+
+class GuiderCore;
+namespace guiding { class SimGuiderFrameSource; }
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
@@ -514,8 +518,16 @@ public:
      */
     int process_fixed(); // 20*20xbinning
 
-/**********************  PHD2 导星控制/共享内存  **********************/
+// 外部 PHD2 集成开关：
+// - 2026-03 起默认关闭（工程改为内置导星 GuiderCore，不再依赖外部 PHD2 进程/共享内存）。
+// - 若未来需要恢复外部 PHD2，可在编译时定义 QUARCS_ENABLE_EXTERNAL_PHD2=1。
+#ifndef QUARCS_ENABLE_EXTERNAL_PHD2
+#define QUARCS_ENABLE_EXTERNAL_PHD2 0
+#endif
+
+/**********************  PHD2 导星控制/共享内存（已弃用）  **********************/
 public:
+#if QUARCS_ENABLE_EXTERNAL_PHD2
     /**
      * @brief 初始化并启动 PHD2
      */
@@ -559,16 +571,21 @@ public:
     void ShowPHDdata();
 
     /**
-     * @brief 发送导星脉冲
-     * @param Direction 方向
-     * @param Duration 持续时间（ms）
-     */
-    void ControlGuide(int Direction, int Duration);
-
-    /**
      * @brief 解析并获取 PHD2 控制指令
      */
     void GetPHD2ControlInstruct();
+#endif // QUARCS_ENABLE_EXTERNAL_PHD2
+
+    /**
+     * @brief 发送导星脉冲（INDI Timed Guide）
+     * @param Direction 方向（0=SOUTH, 1=NORTH, 2=EAST, 3=WEST）
+     * @param Duration 持续时间（ms）
+     */
+    void ControlGuide(int Direction, int Duration);
+    /**
+     * @brief 发送导星脉冲（带来源标记，用于日志区分：内置导星/PHD2/手动等）
+     */
+    void ControlGuideEx(int Direction, int Duration, const QString& source);
 
     /**
      * @brief 记录当前时间戳（调试/统计）
@@ -578,6 +595,7 @@ public:
 
     int glExpTime = 1000;               // 默认曝光时间（ms）
     bool isGuideCapture = true;         // 是否导星模式采集
+#if QUARCS_ENABLE_EXTERNAL_PHD2
     char *sharedmemory_phd = nullptr;   // PHD 共享内存指针
     int key_phd = 0;                    // 共享内存 key
     int shmid_phd = -1;                 // 共享内存 id
@@ -587,6 +605,7 @@ public:
     char phd_direction = 0;             // 指令方向
     int phd_step = 0;                   // 步长
     double phd_dist = 0;                // 距离
+#endif // QUARCS_ENABLE_EXTERNAL_PHD2
 
     QVector<QPoint> glPHD_Stars;        // 星点列表
     QVector<QPointF> glPHD_rmsdate;     // RMS 数据
@@ -609,13 +628,54 @@ public:
     bool isGuiding = false;             // 导星中
     bool isGuiderLoopExp = false;       // 导星循环曝光
 
+#if QUARCS_ENABLE_EXTERNAL_PHD2
     QThread *PHDControlGuide_thread = nullptr;  // 导星控制线程
     QTimer  *PHDControlGuide_threadTimer = nullptr; // 导星控制定时器
     std::mutex receiveMutex;                     // 接收互斥
+#endif // QUARCS_ENABLE_EXTERNAL_PHD2
+
+    /**********************  内置导星（替代 PHD2）  **********************/
+public:
+    // 内置导星核心（状态机）
+    GuiderCore* guiderCore = nullptr;
+
+    // 内置导星：用于把漂移速度从 px/s 换算到 arcsec/s（像素尺度 = 206.265 * 像元(um) / 焦距(mm)）
+    double guiderFocalLengthMm = 0.0;
+    double guiderPixelSizeUm = 0.0;
+
+    // 内置导星：将 /dev/shm/guiding.fits 落盘到与主相机一致的目录（固定文件名 guiding.fits）
+    void PersistGuidingFits(const QString& sourceFitsPath);
+
+    // 内置导星：曝光失败/未连接的抑制计数（避免刷屏）
+    int guiderExposureFailCount = 0;
+    bool guiderExposureNotReadyReported = false;
+    bool guiderScaleHintSent = false; // 未获取像素尺度/焦距时的提示只发一次，避免刷屏
+    // 导星曲线 X 轴（点序号，秒级 1Hz）
+    qint64 guiderLineX = 0;
+
+    // 内置导星：用于在导星画面上标记“校准/导星的那颗星”
+    bool guiderLockValid = false;
+    QPointF guiderLockPosPx{0.0, 0.0};
+    // 内置导星：当前阶段（用于在图像上绘制不同颜色的锁星标记）
+    bool guiderPhaseCalibrating = false;
+    bool guiderPhaseGuiding = false;
+    bool guiderDirectionDetectActive = false;
+
+    // 内置导星：多星导星副星点（用于前端绿色圆圈显示，类似 PHD2）
+    QVector<QPointF> guiderMultiStarSecondaryPtsPx;
+    bool guiderMultiStarSecondaryPtsPending = false;
+
+#if defined(QUARCS_SIM_GUIDER) && QUARCS_SIM_GUIDER
+    // 模拟导星：合成帧源与曝光定时器（无需真实导星相机/赤道仪）
+    std::unique_ptr<guiding::SimGuiderFrameSource> simGuider;
+    QTimer* simGuiderExposureTimer = nullptr;
+    int simGuiderNextExposureMs = 1000;
+#endif
 
     /**
      * @brief 导星控制定时器回调（槽）
      */
+#if QUARCS_ENABLE_EXTERNAL_PHD2
     Q_SLOT void onPHDControlGuideTimeout();
 
     // PHD2 进程监控与恢复
@@ -627,6 +687,7 @@ public:
     void cleanupPhd2Shm();
     void promptFrontendPhd2Restart();
     void disconnectFocuserIfConnected();
+#endif // QUARCS_ENABLE_EXTERNAL_PHD2
 
 /**********************  对焦/电调控制与自动对焦  **********************/
 public:

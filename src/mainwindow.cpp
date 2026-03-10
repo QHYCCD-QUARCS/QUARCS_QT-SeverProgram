@@ -1,7 +1,11 @@
 #include "mainwindow.h"
 
+#include "guiding/GuiderCore.h"
+#include "guiding/SimGuiderFrameSource.h"
+
 #include <cstdint>
 #include <cstddef>
+#include <cerrno>
 #include <cstring>
 #include <memory>
 #include <algorithm>
@@ -94,13 +98,525 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     wsThread->start();
     Logger::wsThread = wsThread;
 
+    // 内置导星核心（先接入“循环曝光→新帧→继续曝光”的链路）
+    guiderCore = new GuiderCore(this);
+
+    // 让 queued connection 能传递导星相关自定义类型（修复 Cannot queue arguments 警告）
+    qRegisterMetaType<guiding::PulseCommand>("guiding::PulseCommand");
+    qRegisterMetaType<guiding::CalibrationResult>("guiding::CalibrationResult");
+
+#if defined(QUARCS_SIM_GUIDER) && QUARCS_SIM_GUIDER
+    // 模拟导星：初始化帧源与曝光计时器（单次计时触发生成下一帧）
+    simGuider = std::make_unique<guiding::SimGuiderFrameSource>();
+    if (simGuider)
+    {
+        // 让模拟模式更容易覆盖“校准 → DEC回差测量 → 导星”的完整链路
+        auto sp = simGuider->params();
+        // 模拟星场：降低固有漂移，避免“漂移 + 温和导星参数”导致 RA 残差过大，
+        // 影响你验证闭环是否正确收敛。
+        // （需要更极端工况时再调大 driftPxPerSec）
+        sp.driftPxPerSec = QPointF(0.06, -0.04);
+        sp.raMsPerPixel = 120.0;
+        sp.decMsPerPixel = 120.0;
+        sp.enableDecBacklash = true;
+        sp.decBacklashMs = 400; // 与离线测试一致，便于对照
+        simGuider->setParams(sp);
+    }
+    simGuiderExposureTimer = new QTimer(this);
+    simGuiderExposureTimer->setSingleShot(true);
+    connect(simGuiderExposureTimer, &QTimer::timeout, this, [this]() {
+        if (!guiderCore || !simGuider)
+            return;
+        // 若已停止/错误则不再生成帧，避免停止后仍继续刷帧
+        const guiding::State s = guiderCore->state();
+        if (s == guiding::State::Stopped || s == guiding::State::Idle || s == guiding::State::Error)
+            return;
+
+        const QString fitsPath = simGuider->generateNextFrame(simGuiderNextExposureMs);
+        if (fitsPath.isEmpty())
+            return;
+
+        // 让导星核心处理新帧（内部会 requestPersistGuidingFits 并继续 requestExposure）
+        QMetaObject::invokeMethod(guiderCore, "onNewFrame", Qt::QueuedConnection,
+                                  Q_ARG(QString, fitsPath));
+    });
+
+    // 模拟导星：让导星更“温和”，避免画面抖动/过冲（只影响模拟模式）
+    if (guiderCore)
+    {
+        auto gp = guiderCore->params();
+        // 模拟模式默认用于验证闭环“可稳定收敛”，因此不要太保守，否则会出现较大的稳态残差（尤其 RA）。
+        gp.exposureMs = 1000;
+        gp.raAggression = 0.70;
+        gp.decAggression = 0.70;
+        gp.deadbandPx = 0.20;
+        gp.maxPulseMs = 1200;
+        // 模拟模式下：加快 DEC 回差测量完成（否则 20px 目标会比较慢）
+        gp.decBacklashNorthPulseMs = 800;
+        gp.decBacklashProbeStepMs = 100;
+        guiderCore->setParams(gp);
+    }
+#endif
+    connect(guiderCore, &GuiderCore::requestExposure, this, [this](int exposureMs) {
+#if defined(QUARCS_SIM_GUIDER) && QUARCS_SIM_GUIDER
+        // 模拟模式：不依赖 dpGuider，按曝光时间延迟生成下一帧（1s/帧由 exposureMs 控制，默认 GuidingParams=1000ms）
+        simGuiderNextExposureMs = exposureMs;
+        if (simGuiderExposureTimer)
+            simGuiderExposureTimer->start(exposureMs);
+        return;
+#else
+        if (!dpGuider)
+        {
+            // 只报一次，避免刷屏
+            if (!guiderExposureNotReadyReported)
+            {
+                guiderExposureNotReadyReported = true;
+                Logger::Log("GuiderCore | requestExposure ignored: dpGuider is NULL", LogLevel::WARNING, DeviceType::GUIDER);
+                emit wsThread->sendMessageToClient("GuiderCoreError:GuiderNotConnected");
+            }
+            if (guiderCore) guiderCore->stopLoop();
+            return;
+        }
+        double sec = static_cast<double>(exposureMs) / 1000.0;
+        uint32_t ret = indi_Client->takeExposure(dpGuider, sec);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            guiderExposureFailCount++;
+            if (guiderExposureFailCount == 1 || guiderExposureFailCount % 5 == 0)
+                Logger::Log("GuiderCore | takeExposure failed (ret!=" + std::to_string(QHYCCD_SUCCESS) + "), count=" + std::to_string(guiderExposureFailCount),
+                            LogLevel::WARNING, DeviceType::GUIDER);
+            // 连续失败则停止循环，避免无穷重试刷屏
+            if (guiderExposureFailCount >= 10 && guiderCore)
+            {
+                emit wsThread->sendMessageToClient("GuiderCoreError:ExposureFailed");
+                guiderCore->stopLoop();
+            }
+        }
+        else
+        {
+            guiderExposureFailCount = 0;
+            guiderExposureNotReadyReported = false;
+        }
+#endif
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::requestPersistGuidingFits, this, &MainWindow::PersistGuidingFits, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::requestPulse, this, [this](const guiding::PulseCommand& cmd) {
+#if defined(QUARCS_SIM_GUIDER) && QUARCS_SIM_GUIDER
+        if (simGuider)
+            simGuider->injectPulse(cmd);
+#else
+        const QString reqDir =
+            (cmd.dir == guiding::GuideDir::North) ? "NORTH" :
+            (cmd.dir == guiding::GuideDir::South) ? "SOUTH" :
+            (cmd.dir == guiding::GuideDir::East)  ? "EAST"  :
+            (cmd.dir == guiding::GuideDir::West)  ? "WEST"  : "UNK";
+
+        // 关键修复：INDI 挂载在 Tracking=OFF 时会拒绝导星脉冲（日志：Can not guide if not tracking）
+        if (!indi_Client || !dpMount)
+        {
+            Logger::Log("GuidePulse | src=BuiltInGuider | ABORT (mount not connected) | dir=" + reqDir.toStdString() +
+                            " durationMs=" + std::to_string(cmd.durationMs),
+                        LogLevel::WARNING, DeviceType::GUIDER);
+            emit wsThread->sendMessageToClient("GuiderCoreError:MountNotConnected");
+            if (guiderCore)
+            {
+                guiderCore->stopGuiding();
+                guiderCore->stopLoop();
+            }
+            return;
+        }
+
+        bool isTrack = false;
+        uint32_t ret = indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            Logger::Log("GuidePulse | src=BuiltInGuider | ABORT (track state unavailable) | dir=" + reqDir.toStdString() +
+                            " durationMs=" + std::to_string(cmd.durationMs),
+                        LogLevel::WARNING, DeviceType::GUIDER);
+            emit wsThread->sendMessageToClient("GuiderCoreError:TrackStateUnavailable");
+            if (guiderCore)
+            {
+                guiderCore->stopGuiding();
+                guiderCore->stopLoop();
+            }
+            return;
+        }
+
+        if (!isTrack)
+        {
+            Logger::Log("GuidePulse | src=BuiltInGuider | tracking OFF, enabling before pulse | dir=" + reqDir.toStdString() +
+                            " durationMs=" + std::to_string(cmd.durationMs),
+                        LogLevel::WARNING, DeviceType::GUIDER);
+            uint32_t ret2 = indi_Client->setTelescopeTrackEnable(dpMount, true);
+            if (ret2 != QHYCCD_SUCCESS)
+            {
+                Logger::Log("GuidePulse | src=BuiltInGuider | ABORT (track enable failed) | dir=" + reqDir.toStdString() +
+                                " durationMs=" + std::to_string(cmd.durationMs),
+                            LogLevel::WARNING, DeviceType::GUIDER);
+                emit wsThread->sendMessageToClient("GuiderCoreError:TrackEnableFailed");
+                if (guiderCore)
+                {
+                    guiderCore->stopGuiding();
+                    guiderCore->stopLoop();
+                }
+                return;
+            }
+
+            // 不在 UI 线程里 busy-wait。给驱动一点时间切换到 tracking，然后再发脉冲。
+            // 若 tracking 仍未生效，驱动可能拒绝 timed guide，GuiderCore 会通过 PulseNoEffect/质检警告提示。
+            const guiding::PulseCommand cmdCopy = cmd;
+            QTimer::singleShot(300, this, [this, cmdCopy]() {
+                this->ControlGuideEx(static_cast<int>(cmdCopy.dir), cmdCopy.durationMs, QStringLiteral("BuiltInGuider"));
+            });
+            return;
+        }
+
+        this->ControlGuideEx(static_cast<int>(cmd.dir), cmd.durationMs, QStringLiteral("BuiltInGuider"));
+#endif
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::stateChanged, this, [this](guiding::State s) {
+        emit wsThread->sendMessageToClient(QString("GuiderCoreState:%1").arg(static_cast<int>(s)));
+
+        // 计划任务/内部流程：用内置导星状态同步 InGuiding（替代旧 PHD2 共享内存字段）
+        InGuiding = (s == guiding::State::Guiding);
+
+        // 复用旧 PHD2 协议：校准=黄，导星=绿
+        if (s == guiding::State::Selecting)
+        {
+            // 进入选星：强制清理上次锁星显示，确保本次从当前画面重新选星/校准
+            guiderLockValid = false;
+            guiderLockPosPx = QPointF();
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
+            emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
+            // 清理多星圆圈，避免显示上次的副星点
+            guiderMultiStarSecondaryPtsPx.clear();
+            guiderMultiStarSecondaryPtsPending = false;
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+        }
+        else if (s == guiding::State::Calibrating)
+        {
+            guiderPhaseCalibrating = true;
+            guiderPhaseGuiding = false;
+            guiderDirectionDetectActive = false;
+
+            // 预防性处理：校准开始前确保支架 Tracking=ON
+            // 说明：很多 INDI Mount 会在 Tracking=OFF 时拒绝 timed guide（表现为脉冲无效/校准位移不足）
+            if (indi_Client && dpMount)
+            {
+                bool isTrack = false;
+                uint32_t ret = indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
+                if (ret == QHYCCD_SUCCESS && !isTrack)
+                {
+                    Logger::Log("GuiderCore | pre-calibration: tracking OFF, enabling now", LogLevel::WARNING, DeviceType::GUIDER);
+                    (void)indi_Client->setTelescopeTrackEnable(dpMount, true);
+                }
+
+                // 同步 GUIDE_RATE（用于 PHD2 风格校准步长计算与诊断日志）
+                if (guiderCore)
+                {
+                    double raRate = 0.0, decRate = 0.0;
+                    if (indi_Client->getTelescopeGuideRate(dpMount, raRate, decRate) == QHYCCD_SUCCESS)
+                    {
+                        const double v = (raRate > 0.0) ? raRate : decRate;
+                        if (v > 0.0)
+                        {
+                            auto p = guiderCore->params();
+                            p.guideSpeedSidereal = v;
+                            guiderCore->setParams(p);
+                            Logger::Log("BuiltInGuider | guideSpeedSidereal=" + std::to_string(p.guideSpeedSidereal),
+                                        LogLevel::INFO, DeviceType::GUIDER);
+                        }
+                    }
+                }
+            }
+
+            emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            // 校准阶段不显示多星圆圈
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+        }
+        else if (s == guiding::State::Guiding)
+        {
+            guiderPhaseCalibrating = false;
+            guiderPhaseGuiding = true;
+            // 如果正在快速方向检测，不要立即发送 InGuiding，让 directionDetectionStateChanged 信号处理
+            // directionDetectionStateChanged(false) 会在检测完成后发送 InGuiding
+            if (!guiderCore || !guiderCore->isQuickDirectionDetecting())
+            {
+                emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            }
+        }
+        else if (s == guiding::State::Stopped || s == guiding::State::Idle || s == guiding::State::Error)
+        {
+            guiderPhaseCalibrating = false;
+            guiderPhaseGuiding = false;
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+
+            // 停止/异常时：清理锁星，避免下次启动仍沿用上次星点
+            guiderLockValid = false;
+            guiderLockPosPx = QPointF();
+
+            // 同时关闭前端覆盖层（避免显示旧框/旧十字）
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
+            emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+#if defined(QUARCS_SIM_GUIDER) && QUARCS_SIM_GUIDER
+            if (simGuiderExposureTimer)
+                simGuiderExposureTimer->stop();
+#endif
+        }
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::errorOccurred, this, [this](const QString& msg) {
+        emit wsThread->sendMessageToClient("GuiderCoreError:" + msg);
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::infoMessage, this, [this](const QString& msg) {
+        Logger::Log("GuiderCore | " + msg.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+        // 同步推送到前端（用于提示/日志窗口）
+        emit wsThread->sendMessageToClient("GuiderCoreInfo:" + msg);
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::calibrationResultChanged, this, [this](const guiding::CalibrationResult& r) {
+        // 以 PHD2 风格字段上报（便于前端直接显示）
+        emit wsThread->sendMessageToClient(QString("GuiderCalibration:cameraAngleDeg=%1:orthoErrDeg=%2:raRatePxPerSec=%3:decRatePxPerSec=%4:raMsPerPixel=%5:decMsPerPixel=%6")
+                                           .arg(r.cameraAngleDeg, 0, 'f', 6)
+                                           .arg(r.orthoErrDeg, 0, 'f', 6)
+                                           .arg(r.raRatePxPerSec, 0, 'f', 6)
+                                           .arg(r.decRatePxPerSec, 0, 'f', 6)
+                                           .arg(r.raMsPerPixel, 0, 'f', 6)
+                                           .arg(r.decMsPerPixel, 0, 'f', 6));
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::paramsChanged, this, [this]() {
+        // 当导星参数改变时，检查方向是否改变，如果改变则通知前端同步 UI
+        if (!guiderCore) return;
+        const auto p = guiderCore->params();
+        
+        // 检查 RA 方向
+        QString raDirStr;
+        if (p.autoRaGuideDir)
+        {
+            // AUTO 模式：显示当前选择的方向（如果有）
+            if (p.allowedRaDirs.size() == 1)
+            {
+                if (p.allowedRaDirs.count(guiding::GuideDir::East))
+                    raDirStr = "AUTO (EAST)";
+                else if (p.allowedRaDirs.count(guiding::GuideDir::West))
+                    raDirStr = "AUTO (WEST)";
+                else
+                    raDirStr = "AUTO";
+            }
+            else
+            {
+                raDirStr = "AUTO";
+            }
+        }
+        else if (p.allowedRaDirs.size() == 1)
+        {
+            if (p.allowedRaDirs.count(guiding::GuideDir::East))
+                raDirStr = "EAST";
+            else if (p.allowedRaDirs.count(guiding::GuideDir::West))
+                raDirStr = "WEST";
+        }
+        else if (p.allowedRaDirs.size() == 2)
+        {
+            raDirStr = "BOTH";
+        }
+        
+        if (!raDirStr.isEmpty())
+        {
+            emit wsThread->sendMessageToClient(QString("Configure:GuiderRaGuideDir:%1").arg(raDirStr));
+        }
+        
+        // 检查 DEC 方向
+        QString decDirStr;
+        if (p.autoDecGuideDir)
+        {
+            // AUTO 模式：显示当前选择的方向（如果有）
+            if (p.allowedDecDirs.size() == 1)
+            {
+                if (p.allowedDecDirs.count(guiding::GuideDir::North))
+                    decDirStr = "AUTO (NORTH)";
+                else if (p.allowedDecDirs.count(guiding::GuideDir::South))
+                    decDirStr = "AUTO (SOUTH)";
+                else
+                    decDirStr = "AUTO";
+            }
+            else
+            {
+                decDirStr = "AUTO";
+            }
+        }
+        else if (p.allowedDecDirs.size() == 1)
+        {
+            if (p.allowedDecDirs.count(guiding::GuideDir::North))
+                decDirStr = "NORTH";
+            else if (p.allowedDecDirs.count(guiding::GuideDir::South))
+                decDirStr = "SOUTH";
+        }
+        else if (p.allowedDecDirs.size() == 2)
+        {
+            decDirStr = "BOTH";
+        }
+        
+        if (!decDirStr.isEmpty())
+        {
+            emit wsThread->sendMessageToClient(QString("Configure:GuiderDecGuideDir:%1").arg(decDirStr));
+        }
+    }, Qt::QueuedConnection);
+
+    // 内置导星：锁定星点位置（用于在导星画面上画框/十字线）
+    connect(guiderCore, &GuiderCore::lockPositionChanged, this, [this](const QPointF& lockPosPx) {
+        guiderLockValid = true;
+        guiderLockPosPx = lockPosPx;
+
+        // 立即下发一次（若当前还未拿到 image size，会在 PersistGuidingFits 中再次刷新）
+        if (glPHD_CurrentImageSizeX > 0 && glPHD_CurrentImageSizeY > 0)
+        {
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+            emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
+            emit wsThread->sendMessageToClient(
+                "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+                QString::number(glPHD_CurrentImageSizeY) + ":" +
+                QString::number(static_cast<int>(std::lround(lockPosPx.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(lockPosPx.y()))));
+            emit wsThread->sendMessageToClient(
+                "PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+                QString::number(glPHD_CurrentImageSizeY) + ":" +
+                QString::number(static_cast<int>(std::lround(lockPosPx.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(lockPosPx.y()))));
+        }
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::lockStarSelected, this, [this](double x, double y, double snr, double hfd) {
+        // 选星成功时，向前端发送“导星目标星点”信息（仿 PHD2）
+        emit wsThread->sendMessageToClient(QString("GuiderStarSelected:x=%1:y=%2:snr=%3:hfd=%4")
+                                           .arg(x, 0, 'f', 2)
+                                           .arg(y, 0, 'f', 2)
+                                           .arg(snr, 0, 'f', 1)
+                                           .arg(hfd, 0, 'f', 2));
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
+        // 导星中：用"当前质心"刷新 PHD2StarBoxPosition，让前端框始终跟随星点
+        if (glPHD_CurrentImageSizeX > 0 && glPHD_CurrentImageSizeY > 0)
+        {
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+            emit wsThread->sendMessageToClient(
+                "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+                QString::number(glPHD_CurrentImageSizeY) + ":" +
+                QString::number(static_cast<int>(std::lround(centroidPx.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(centroidPx.y()))));
+        }
+    }, Qt::QueuedConnection);
+
+    // 内置导星：多星副星点（前端绿色圆圈，复用 PHD2MultiStarsPosition / ClearPHD2MultiStars）
+    connect(guiderCore, &GuiderCore::multiStarSecondaryPointsChanged, this, [this](const QVector<QPointF>& ptsPx) {
+        guiderMultiStarSecondaryPtsPx = ptsPx;
+        guiderMultiStarSecondaryPtsPending = true;
+
+        // 只在真正进入 InGuiding（十字线变绿）时才下发；否则先缓存，等进入 InGuiding 再发
+        if (guiderPhaseGuiding && !guiderDirectionDetectActive
+            && glPHD_CurrentImageSizeX > 0 && glPHD_CurrentImageSizeY > 0)
+        {
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+            for (int i = 0; i < guiderMultiStarSecondaryPtsPx.size(); ++i)
+            {
+                if (i >= 8) break; // 最多 8 颗副星（总计 9 颗含主星）
+                const auto& p = guiderMultiStarSecondaryPtsPx[i];
+                emit wsThread->sendMessageToClient(
+                    "PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+                    QString::number(glPHD_CurrentImageSizeY) + ":" +
+                    QString::number(static_cast<int>(std::lround(p.x()))) + ":" +
+                    QString::number(static_cast<int>(std::lround(p.y()))));
+            }
+            guiderMultiStarSecondaryPtsPending = false;
+        }
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::directionDetectionStateChanged, this, [this](bool active) {
+        // 快速方向检测状态变化：用于前端显示蓝色UI
+        guiderDirectionDetectActive = active;
+        if (active)
+        {
+            emit wsThread->sendMessageToClient("GuiderStatus:InDirectionDetection");
+            // 判向阶段不显示多星圆圈
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+        }
+        else
+        {
+            // 方向检测完成，恢复正常导星状态
+            if (guiderPhaseGuiding)
+            {
+                emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            }
+            // 若多星点待下发，在进入 InGuiding 时补发
+            if (guiderPhaseGuiding && guiderMultiStarSecondaryPtsPending
+                && glPHD_CurrentImageSizeX > 0 && glPHD_CurrentImageSizeY > 0)
+            {
+                emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+                for (int i = 0; i < guiderMultiStarSecondaryPtsPx.size(); ++i)
+                {
+                    if (i >= 8) break;
+                    const auto& p = guiderMultiStarSecondaryPtsPx[i];
+                    emit wsThread->sendMessageToClient(
+                        "PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+                        QString::number(glPHD_CurrentImageSizeY) + ":" +
+                        QString::number(static_cast<int>(std::lround(p.x()))) + ":" +
+                        QString::number(static_cast<int>(std::lround(p.y()))));
+                }
+                guiderMultiStarSecondaryPtsPending = false;
+            }
+        }
+    }, Qt::QueuedConnection);
+    connect(guiderCore, &GuiderCore::guidePulseIssued, this, [this](const guiding::PulseCommand& cmd, double raErrPx, double decErrPx) {
+        const QString dirStr =
+            (cmd.dir == guiding::GuideDir::North) ? "NORTH" :
+            (cmd.dir == guiding::GuideDir::South) ? "SOUTH" :
+            (cmd.dir == guiding::GuideDir::East)  ? "EAST"  :
+            (cmd.dir == guiding::GuideDir::West)  ? "WEST"  : "UNK";
+        const QString raStr = std::isnan(raErrPx) ? "N/A" : QString::number(raErrPx, 'f', 3);
+        const QString decStr = std::isnan(decErrPx) ? "N/A" : QString::number(decErrPx, 'f', 3);
+
+        Logger::Log("GuiderCore | pulse issued | dir=" + dirStr.toStdString() +
+                        " durationMs=" + std::to_string(cmd.durationMs) +
+                        " raErrPx=" + raStr.toStdString() +
+                        " decErrPx=" + decStr.toStdString(),
+                    LogLevel::INFO, DeviceType::GUIDER);
+
+        emit wsThread->sendMessageToClient(QString("GuiderPulse:%1:%2:raErrPx=%3:decErrPx=%4")
+                                           .arg(dirStr)
+                                           .arg(cmd.durationMs)
+                                           .arg(raStr)
+                                           .arg(decStr));
+    }, Qt::QueuedConnection);
+
+    // 导星曲线：每帧误差（连续输出）
+    connect(guiderCore, &GuiderCore::guideErrorUpdated, this, [this](double raErrPx, double decErrPx) {
+        // 前端折线图协议是 AddLineChartData:x:ra:dec（App.vue 会转成两条曲线数据）
+        guiderLineX++;
+        const qint64 x = guiderLineX;
+        emit wsThread->sendMessageToClient(QString("AddLineChartData:%1:%2:%3")
+                                           .arg(x)
+                                           .arg(raErrPx, 0, 'f', 3)
+                                           .arg(decErrPx, 0, 'f', 3));
+
+        // 自动滚动 x 轴窗口（默认显示 50 个点）
+        if (x <= 50)
+            emit wsThread->sendMessageToClient("SetLineChartRange:0:50");
+        else
+            emit wsThread->sendMessageToClient(QString("SetLineChartRange:%1:%2").arg(x - 50).arg(x));
+
+        // 散点图：前端支持 AddScatterChartData:x:y
+        emit wsThread->sendMessageToClient(QString("AddScatterChartData:%1:%2")
+                                           .arg(-raErrPx, 0, 'f', 3)
+                                           .arg(-decErrPx, 0, 'f', 3));
+    }, Qt::QueuedConnection);
+
     // 记住当前实例
     instance = this;
 
     // 安装自定义的消息处理器
     // qInstallMessageHandler(customMessageHandler);
 
-    InitPHD2();
+    // 已弃用 PHD2：导星功能改为内置导星（GuiderCore）
+    // InitPHD2();
 
     initINDIServer();
     initINDIClient();
@@ -126,15 +642,16 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(m_thread, &QThread::started, m_threadTimer, QOverload<>::of(&QTimer::start));
     m_thread->start();
 
-    PHDControlGuide_thread = new QThread;
-    PHDControlGuide_threadTimer = new QTimer;
-    PHDControlGuide_threadTimer->setInterval(200);
-    PHDControlGuide_threadTimer->moveToThread(PHDControlGuide_thread);
-    connect(PHDControlGuide_threadTimer, &QTimer::timeout, this, &MainWindow::onPHDControlGuideTimeout);
-    connect(PHDControlGuide_thread, &QThread::finished, PHDControlGuide_threadTimer, &QTimer::stop);
-    connect(PHDControlGuide_thread, &QThread::destroyed, PHDControlGuide_threadTimer, &QTimer::deleteLater);
-    connect(PHDControlGuide_thread, &QThread::started, PHDControlGuide_threadTimer, QOverload<>::of(&QTimer::start)); // 新增
-    PHDControlGuide_thread->start();
+    // 已弃用 PHD2：关闭 PHD 控制线程（共享内存控制协议）
+    // PHDControlGuide_thread = new QThread;
+    // PHDControlGuide_threadTimer = new QTimer;
+    // PHDControlGuide_threadTimer->setInterval(200);
+    // PHDControlGuide_threadTimer->moveToThread(PHDControlGuide_thread);
+    // connect(PHDControlGuide_threadTimer, &QTimer::timeout, this, &MainWindow::onPHDControlGuideTimeout);
+    // connect(PHDControlGuide_thread, &QThread::finished, PHDControlGuide_threadTimer, &QTimer::stop);
+    // connect(PHDControlGuide_thread, &QThread::destroyed, PHDControlGuide_threadTimer, &QTimer::deleteLater);
+    // connect(PHDControlGuide_thread, &QThread::started, PHDControlGuide_threadTimer, QOverload<>::of(&QTimer::start)); // 新增
+    // PHDControlGuide_thread->start();
     // getConnectedSerialPorts();
 
     // 电调控制初始化
@@ -522,14 +1039,9 @@ void MainWindow::onMessageReceived(const QString &message)
     }
     else if (message == "RestartPHD2" || message == "PHD2RestartConfirm")
     {
-        Logger::Log("Frontend requested to restart PHD2", LogLevel::INFO, DeviceType::GUIDER);
-        // 先断开导星设备（均为已有接口，不新增函数）
-        if (dpGuider && dpGuider->isConnected()) {
-            DisconnectDevice(indi_Client, dpGuider->getDeviceName(), "Guider");
-        }
-        // 重启 PHD2
-        InitPHD2();
-        emit wsThread->sendMessageToClient("PHD2Restarting");
+        // 外部 PHD2 已弃用：导星由内置 GuiderCore 实现
+        Logger::Log("Frontend requested to restart PHD2, but external PHD2 is disabled.", LogLevel::INFO, DeviceType::GUIDER);
+        emit wsThread->sendMessageToClient("PHD2Disabled:外部PHD2已移除/禁用，请使用内置导星");
     }
     else if (message == "connectAllDevice")
     {
@@ -1137,7 +1649,11 @@ void MainWindow::onMessageReceived(const QString &message)
         {
 
             isGuiding = false;
-            call_phd_StopLooping();
+            if (guiderCore)
+            {
+                guiderCore->stopGuiding();
+                guiderCore->stopLoop();
+            }
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
             isGuiderLoopExp = false;
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
@@ -1148,23 +1664,26 @@ void MainWindow::onMessageReceived(const QString &message)
         else if (!isGuiding && parts[1].trimmed() == "true")
         {
 
+            if (dpGuider == NULL || !dpGuider->isConnected())
+            {
+                emit wsThread->sendMessageToClient("GuiderCoreError:GuiderNotConnected");
+                emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+                return;
+            }
+            if (dpMount == NULL || !dpMount->isConnected())
+            {
+                emit wsThread->sendMessageToClient("GuiderCoreError:MountNotConnected");
+                emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+                return;
+            }
+
             isGuiding = true;
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
-            if (ClearCalibrationData)
-            {
-                ClearCalibrationData = false;
-                call_phd_ClearCalibration();
-            }
-            Logger::Log("clear calibration data finish!", LogLevel::INFO, DeviceType::GUIDER);
-
-            // call_phd_StartLooping();
-            // sleep(1);
-            if (glPHD_isSelected == false)
-            {
-                Logger::Log("AutoFindStar is not selected, start AutoFindStar ...", LogLevel::INFO, DeviceType::GUIDER);
-                call_phd_AutoFindStar();
-            }
-            call_phd_StartGuiding();
+            // 内置导星：自动选星 → 校准 → 导星（单向门控）
+            if (guiderCore)
+                guiderCore->startGuiding();
+            isGuiderLoopExp = true;
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
             emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
             Logger::Log("Start GuiderSwitch finish!", LogLevel::INFO, DeviceType::GUIDER);
         }
@@ -1190,14 +1709,31 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             if (isGuiderLoopExp && parts[1].trimmed() == "false")
             {
-                // 关闭循环曝光：停止高频定时器
-                QMetaObject::invokeMethod(m_threadTimer, "stop", Qt::QueuedConnection);
-                QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "stop", Qt::QueuedConnection);
-
                 Logger::Log("Stop GuiderLoopExp ...", LogLevel::INFO, DeviceType::GUIDER);
                 isGuiderLoopExp = false;
                 isGuiding = false;
-                call_phd_StopLooping();
+                if (guiderCore)
+                {
+                    // 修复：仅 stopLoop() 不会把 GuiderCore 从 Guiding/Calibrating 退到 Stopped，
+                    // 会导致后续 startLoop() 被认为“仍在导星/校准中”而被忽略。
+                    // 先 stopGuiding() 再 stopLoop()，确保状态机彻底停止并触发前端覆盖层清理。
+                    guiderCore->stopGuiding();
+                    guiderCore->stopLoop();
+                }
+
+                // 兜底：强制清理导星覆盖层残留（避免十字线/方框停留在画面上）
+                glPHD_isSelected = false;
+                glPHD_ShowLockCross = false;
+                guiderLockValid = false;
+                guiderLockPosPx = QPointF();
+                guiderPhaseCalibrating = false;
+                guiderPhaseGuiding = false;
+                guiderDirectionDetectActive = false;
+                guiderMultiStarSecondaryPtsPx.clear();
+                guiderMultiStarSecondaryPtsPending = false;
+                emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
+                emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
+                emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
                 Logger::Log("Stop GuiderLoopExp finish!", LogLevel::INFO, DeviceType::GUIDER);
@@ -1206,13 +1742,10 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 Logger::Log("Start GuiderLoopExp ...", LogLevel::INFO, DeviceType::GUIDER);
                 isGuiderLoopExp = true;
-                // 开启循环曝光：启动高频定时器
-                QMetaObject::invokeMethod(m_threadTimer, "start", Qt::QueuedConnection);
-                QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "start", Qt::QueuedConnection);
-
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
-                call_phd_StartLooping();
+                if (guiderCore)
+                    guiderCore->startLoop();
                 Logger::Log("Start GuiderLoopExp finish!", LogLevel::INFO, DeviceType::GUIDER);
             }
             else
@@ -1238,19 +1771,13 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (message == "PHD2Recalibrate")
     {
-        Logger::Log("PHD2Recalibrate ...", LogLevel::DEBUG, DeviceType::GUIDER);
-        call_phd_ClearCalibration();
-        call_phd_StartLooping();
-
-        // 重新标定也会开启循环曝光，这里确保高频定时器已启动
-        QMetaObject::invokeMethod(m_threadTimer, "start", Qt::QueuedConnection);
-        QMetaObject::invokeMethod(PHDControlGuide_threadTimer, "start", Qt::QueuedConnection);
-
-        sleep(1);
-
-        call_phd_AutoFindStar();
-        call_phd_StartGuiding();
-        Logger::Log("PHD2Recalibrate finish!", LogLevel::DEBUG, DeviceType::GUIDER);
+        Logger::Log("GuiderRecalibrate ...", LogLevel::DEBUG, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            guiderCore->stopGuiding();
+            guiderCore->startGuidingForceCalibrate();
+        }
+        Logger::Log("GuiderRecalibrate finish!", LogLevel::DEBUG, DeviceType::GUIDER);
         // emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
 
         // call_phd_StarClick(641,363);
@@ -1259,7 +1786,13 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderExpTimeSwitch")
     {
         Logger::Log("GuiderExpTimeSwitch :" + std::to_string(parts[1].toInt()), LogLevel::DEBUG, DeviceType::GUIDER);
-        call_phd_setExposureTime(parts[1].toInt());
+        glExpTime = parts[1].toInt();
+        if (guiderCore)
+        {
+            auto p = guiderCore->params();
+            p.exposureMs = glExpTime;
+            guiderCore->setParams(p);
+        }
         Logger::Log("GuiderExpTimeSwitch finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
@@ -1554,17 +2087,125 @@ void MainWindow::onMessageReceived(const QString &message)
 
         Logger::Log("GuiderCanvasClick:" + std::to_string(CanvasWidth) + "," + std::to_string(CanvasHeight) + "," + std::to_string(Click_X) + "," + std::to_string(Click_Y), LogLevel::DEBUG, DeviceType::MAIN);
 
-        if (glPHD_CurrentImageSizeX != 0 && glPHD_CurrentImageSizeY != 0)
+        // 内置导星：手动选星（仅允许在循环曝光、未开始校准/导星前）
+        if (!guiderCore)
         {
-            Logger::Log("PHD2ImageSize:" + std::to_string(glPHD_CurrentImageSizeX) + "," + std::to_string(glPHD_CurrentImageSizeY), LogLevel::DEBUG, DeviceType::MAIN);
-            double ratioZoomX = (double)glPHD_CurrentImageSizeX / CanvasWidth;
-            double ratioZoomY = (double)glPHD_CurrentImageSizeY / CanvasHeight;
-            Logger::Log("ratioZoom:" + std::to_string(ratioZoomX) + "," + std::to_string(ratioZoomY), LogLevel::DEBUG, DeviceType::MAIN);
-            double PHD2Click_X = (double)Click_X * ratioZoomX*glPHD_ImageScale;
-            double PHD2Click_Y = (double)Click_Y * ratioZoomY*glPHD_ImageScale;
-            Logger::Log("PHD2Click:" + std::to_string(PHD2Click_X) + "," + std::to_string(PHD2Click_Y), LogLevel::DEBUG, DeviceType::MAIN);
-            call_phd_StarClick(PHD2Click_X, PHD2Click_Y);
+            emit wsThread->sendMessageToClient("GuiderCoreError:CoreNotReady");
+            return;
         }
+        // 规则：Selecting/Calibrating/Guiding（含丢星恢复等子阶段）禁止点击切换星点
+        // 只有在 Looping 时允许手动选星
+        if (guiderCore->state() != guiding::State::Looping)
+        {
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:当前导星已锁定，如需更换星点请先停止导星或使用“更换星点”");
+            return;
+        }
+        if (glPHD_CurrentImageSizeX <= 0 || glPHD_CurrentImageSizeY <= 0 || CanvasWidth <= 0 || CanvasHeight <= 0)
+        {
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:当前导星画面尺寸未知，无法手动选星");
+            return;
+        }
+
+        const double ratioX = (double)glPHD_CurrentImageSizeX / (double)CanvasWidth;
+        const double ratioY = (double)glPHD_CurrentImageSizeY / (double)CanvasHeight;
+        const double xPx = (double)Click_X * ratioX * (double)glPHD_ImageScale;
+        const double yPx = (double)Click_Y * ratioY * (double)glPHD_ImageScale;
+
+        Logger::Log("BuiltInGuider | ManualStarClick x=" + std::to_string(xPx) + " y=" + std::to_string(yPx),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        // 注意：点击仅“选中星点”，不启动校准/导星；用户需再点击“开始导星”
+        guiderCore->setManualLock(xPx, yPx);
+        emit wsThread->sendMessageToClient("GuiderCoreInfo:已选择导星星点，点击开始导星以继续");
+    }
+
+    // 内置导星：更换星点向导入口（后端协议，不影响旧的 GuiderSwitch/Loop 协议）
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderChangeStarWizard")
+    {
+        // 持久状态：向导式“Begin->(click)->Confirm/ForceCalibrate”
+        static bool wizardActive = false;
+        const QString action = parts[1].trimmed();
+
+        if (!guiderCore)
+        {
+            emit wsThread->sendMessageToClient("GuiderCoreError:CoreNotReady");
+            return;
+        }
+
+        if (action == "Begin")
+        {
+            wizardActive = true;
+
+            // 停止导星闭环，但保持/打开循环曝光
+            isGuiding = false;
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+
+            guiderCore->stopGuiding();      // 会触发状态机清理覆盖层（Stopped）
+            guiderCore->clearManualLock();  // 确保锁点清空
+
+            // 为了允许 GuiderCanvasClick 生效，需要让状态回到 Looping
+            isGuiderLoopExp = true;
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            guiderCore->startLoop();
+
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:更换星点：请在画面中点击新的导星星点");
+            return;
+        }
+        else if (action == "Cancel")
+        {
+            wizardActive = false;
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:已取消更换星点");
+            return;
+        }
+        else if (action == "Confirm")
+        {
+            if (!wizardActive)
+            {
+                emit wsThread->sendMessageToClient("GuiderCoreInfo:未处于更换星点流程");
+                return;
+            }
+            if (!guiderLockValid)
+            {
+                emit wsThread->sendMessageToClient("GuiderCoreInfo:请先在画面中点击选择导星星点");
+                return;
+            }
+            wizardActive = false;
+
+            isGuiding = true;
+            isGuiderLoopExp = true;
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+
+            guiderCore->startGuiding(); // 内部会做“校准复用有效性检查”
+            return;
+        }
+        else if (action == "ForceCalibrate")
+        {
+            if (!wizardActive)
+            {
+                emit wsThread->sendMessageToClient("GuiderCoreInfo:未处于更换星点流程");
+                return;
+            }
+            if (!guiderLockValid)
+            {
+                emit wsThread->sendMessageToClient("GuiderCoreInfo:请先在画面中点击选择导星星点");
+                return;
+            }
+            wizardActive = false;
+
+            isGuiding = true;
+            isGuiderLoopExp = true;
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+
+            guiderCore->startGuidingForceCalibrate();
+            return;
+        }
+
+        emit wsThread->sendMessageToClient("GuiderCoreError:ChangeStarWizardUnknownAction");
+        return;
     }
 
     else if (message == "getQTClientVersion")
@@ -1662,7 +2303,16 @@ void MainWindow::onMessageReceived(const QString &message)
         int FocalLength = parts[1].trimmed().toInt();
         Logger::Log("Set Guider Focal Length to " + std::to_string(FocalLength), LogLevel::DEBUG, DeviceType::MAIN);
 
-        call_phd_FocalLength(FocalLength);
+        // 内置导星：更新像素尺度（arcsec/px）
+        guiderFocalLengthMm = static_cast<double>(FocalLength);
+        if (guiderCore && guiderFocalLengthMm > 0.0 && guiderPixelSizeUm > 0.0)
+        {
+            auto p = guiderCore->params();
+            p.pixelScaleArcsecPerPixel = (guiderPixelSizeUm * 206.265) / guiderFocalLengthMm;
+            guiderCore->setParams(p);
+            Logger::Log("BuiltInGuider | pixelScaleArcsecPerPixel=" + std::to_string(p.pixelScaleArcsecPerPixel),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
     }
 
     else if (message == "RestartRaspberryPi")
@@ -1682,8 +2332,260 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         bool isMultiStar = (parts[1].trimmed() == "true");
         Logger::Log("Set Multi Star Guider to" + std::to_string(isMultiStar), LogLevel::DEBUG, DeviceType::MAIN);
+    }
 
-        call_phd_MultiStarGuider(isMultiStar);
+    // ===== 内置导星：单向导星方向配置（RA/DEC）=====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderRaGuideDir")
+    {
+        QString dir = parts[1].trimmed().toUpper();
+        Logger::Log("Set Guider RA guide direction to " + dir.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            auto p = guiderCore->params();
+            // 选项A：RA 永远双向 —— 忽略 AUTO/单向请求，强制 EAST+WEST
+            p.autoRaGuideDir = false;
+            p.allowedRaDirs.clear();
+            p.allowedRaDirs.insert(guiding::GuideDir::East);
+            p.allowedRaDirs.insert(guiding::GuideDir::West);
+            Logger::Log("Guider RA mode is forced to BIDIR (EAST+WEST).", LogLevel::INFO, DeviceType::GUIDER);
+            guiderCore->setParams(p);
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderDecGuideDir")
+    {
+        QString dir = parts[1].trimmed().toUpper();
+        Logger::Log("Set Guider DEC single guide direction to " + dir.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            auto p = guiderCore->params();
+            // 处理 "AUTO (NORTH)" 或 "AUTO (SOUTH)" 格式
+            if (dir.startsWith("AUTO"))
+            {
+                // 启用自动漂移判定
+                p.autoDecGuideDir = true;
+                // 如果包含括号，提取方向（用于快速方向检测的初始方向）
+                if (dir.contains("(") && dir.contains(")"))
+                {
+                    int start = dir.indexOf("(");
+                    int end = dir.indexOf(")");
+                    if (start < end)
+                    {
+                        QString dirInParen = dir.mid(start + 1, end - start - 1).trimmed();
+                        if (dirInParen == "NORTH")
+                            p.allowedDecDirs = {guiding::GuideDir::North};
+                        else if (dirInParen == "SOUTH")
+                            p.allowedDecDirs = {guiding::GuideDir::South};
+                    }
+                }
+            }
+            else
+            {
+                // 手动指定：关闭自动模式，不允许自动调整
+                p.autoDecGuideDir = false;
+                p.allowedDecDirs.clear();
+                p.allowedDecDirs.insert((dir == "SOUTH") ? guiding::GuideDir::South : guiding::GuideDir::North);
+            }
+            guiderCore->setParams(p);
+        }
+    }
+
+    // ===== 内置导星：DEC 单向策略参数（两种情况）=====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderDecUniCollectFrames")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set Guider DEC uni collect frames to " + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            auto p = guiderCore->params();
+            p.decUniCollectFrames = v;
+            guiderCore->setParams(p);
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderDecUniInitialFrames")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set Guider DEC uni initial frames to " + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            auto p = guiderCore->params();
+            p.decUniInitialFrames = v;
+            guiderCore->setParams(p);
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderDecUniLargeMoveRmsPx")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set Guider DEC uni large-move RMS threshold (px) to " + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            auto p = guiderCore->params();
+            p.decUniLargeMoveRmsPx = v;
+            guiderCore->setParams(p);
+        }
+    }
+
+    // ===== 内置导星：RA Hysteresis（滞后）算法参数 =====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderEnableRaHysteresis")
+    {
+        const bool v = (parts[1].trimmed().toLower() == "true");
+        Logger::Log("Set BuiltInGuider enableRaHysteresis=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.enableRaHysteresis = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderRaHysteresis")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider raHysteresis=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.raHysteresis = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderRaMinMovePx")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider raMinMovePx=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.raMinMovePx = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderRaMaxStepMsPerFrame")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider raMaxStepMsPerFrame=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.raMaxStepMsPerFrame = v; guiderCore->setParams(p); }
+    }
+
+    // ===== 内置导星：校准质量门槛（硬失败） =====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderCalibMaxOrthoErrDeg")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider calibMaxOrthoErrDeg=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.calibMaxOrthoErrDeg = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderCalibMinAxisMovePx")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider calibMinAxisMovePx=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.calibMinAxisMovePx = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderCalibMinMsPerPixel")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider calibMinMsPerPixel=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.calibMinMsPerPixel = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderCalibMaxMsPerPixel")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider calibMaxMsPerPixel=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.calibMaxMsPerPixel = v; guiderCore->setParams(p); }
+    }
+
+    // ===== 内置导星：丢星恢复 =====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderMaxConsecutiveCentroidFails")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider maxConsecutiveCentroidFails=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.maxConsecutiveCentroidFails = v; guiderCore->setParams(p); }
+    }
+
+    // ===== 内置导星：脉冲有效性检测 =====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderEnablePulseEffectCheck")
+    {
+        const bool v = (parts[1].trimmed().toLower() == "true");
+        Logger::Log("Set BuiltInGuider enablePulseEffectCheck=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.enablePulseEffectCheck = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPulseEffectWindowFrames")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider pulseEffectWindowFrames=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.pulseEffectWindowFrames = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPulseEffectMinImprovePx")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider pulseEffectMinImprovePx=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.pulseEffectMinImprovePx = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPulseEffectMinStartAbsErrPx")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider pulseEffectMinStartAbsErrPx=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.pulseEffectMinStartAbsErrPx = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPulseEffectMaxFailures")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider pulseEffectMaxFailures=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.pulseEffectMaxFailures = v; guiderCore->setParams(p); }
+    }
+
+    // ===== 内置导星：RMS 诊断 =====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderRmsWindowFrames")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider rmsWindowFrames=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.rmsWindowFrames = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderRmsEmitEveryFrames")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider rmsEmitEveryFrames=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.rmsEmitEveryFrames = v; guiderCore->setParams(p); }
+    }
+
+    // ===== 内置导星：脉冲/曝光时序与限幅 =====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderSettleMsAfterPulse")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider settleMsAfterPulse=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.settleMsAfterPulse = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderInterPulseDelayMs")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider interPulseDelayMs=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.interPulseDelayMs = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderEnableMultiAxisPulses")
+    {
+        const bool v = (parts[1].trimmed().toLower() == "true");
+        Logger::Log("Set BuiltInGuider enableMultiAxisPulses=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.enableMultiAxisPulses = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderMaxPulseStepPerFrameMs")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider maxPulseStepPerFrameMs=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.maxPulseStepPerFrameMs = v; guiderCore->setParams(p); }
+    }
+
+    // ===== 内置导星：基础控制参数（与 PHD2 的同名命令区分开）=====
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderDeadbandPx")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider deadbandPx=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.deadbandPx = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderRaAggression")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider raAggression=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.raAggression = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderDecAggression")
+    {
+        const double v = parts[1].trimmed().toDouble();
+        Logger::Log("Set BuiltInGuider decAggression=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.decAggression = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderMinPulseMs")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider minPulseMs=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.minPulseMs = v; guiderCore->setParams(p); }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderMaxPulseMs")
+    {
+        const int v = parts[1].trimmed().toInt();
+        Logger::Log("Set BuiltInGuider maxPulseMs=" + std::to_string(v), LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore) { auto p = guiderCore->params(); p.maxPulseMs = v; guiderCore->setParams(p); }
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPixelSize")
@@ -1691,39 +2593,40 @@ void MainWindow::onMessageReceived(const QString &message)
         double PixelSize = parts[1].trimmed().toDouble();
         Logger::Log("Set Guider Pixel Size to" + std::to_string(PixelSize), LogLevel::DEBUG, DeviceType::MAIN);
 
-        call_phd_CameraPixelSize(PixelSize);
+        // 内置导星：更新像素尺度（arcsec/px）
+        guiderPixelSizeUm = PixelSize;
+        if (guiderCore && guiderFocalLengthMm > 0.0 && guiderPixelSizeUm > 0.0)
+        {
+            auto p = guiderCore->params();
+            p.pixelScaleArcsecPerPixel = (guiderPixelSizeUm * 206.265) / guiderFocalLengthMm;
+            guiderCore->setParams(p);
+            Logger::Log("BuiltInGuider | pixelScaleArcsecPerPixel=" + std::to_string(p.pixelScaleArcsecPerPixel),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderGain")
     {
         int Gain = parts[1].trimmed().toInt();
         Logger::Log("Set Guider Gain to" + std::to_string(Gain), LogLevel::DEBUG, DeviceType::MAIN);
-
-        call_phd_CameraGain(Gain);
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "CalibrationDuration")
     {
         int StepSize = parts[1].trimmed().toInt();
         Logger::Log("Set Calibration Duration to" + std::to_string(StepSize), LogLevel::DEBUG, DeviceType::MAIN);
-
-        call_phd_CalibrationDuration(StepSize);
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "RaAggression")
     {
         int Aggression = parts[1].trimmed().toInt();
         Logger::Log("Set Ra Aggression to" + std::to_string(Aggression), LogLevel::DEBUG, DeviceType::MAIN);
-
-        call_phd_RaAggression(Aggression);
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "DecAggression")
     {
         int Aggression = parts[1].trimmed().toInt();
         Logger::Log("Set Dec Aggression to" + std::to_string(Aggression), LogLevel::DEBUG, DeviceType::MAIN);
-
-        call_phd_DecAggression(Aggression);
     }
     else if (parts.size() == 3 && parts[0].trimmed() == "ConnectDriver")
     {
@@ -2091,7 +2994,15 @@ void MainWindow::initINDIServer()
     // connect(glIndiServer, &QProcess::readyReadStandardOutput, this, &MainWindow::handleIndiServerOutput);
     // connect(glIndiServer, &QProcess::readyReadStandardError, this, &MainWindow::handleIndiServerError);
 
-    glIndiServer->start("indiserver -f /tmp/myFIFO -v -p 7624");
+    // 已知部分驱动会在 verbose 模式下刷屏输出（例如 CCD_TEMPERATURE/CCD_COOLER_POWER 不存在）
+    // 这里关闭 -v，并把输出重定向到文件，避免终端持续打印。
+    glIndiServer->setProcessChannelMode(QProcess::MergedChannels);
+    glIndiServer->setStandardOutputFile("/tmp/indiserver.log", QIODevice::Append);
+    glIndiServer->setStandardErrorFile("/tmp/indiserver.log", QIODevice::Append);
+
+    glIndiServer->setProgram("indiserver");
+    glIndiServer->setArguments(QStringList() << "-f" << "/tmp/myFIFO" << "-p" << "7624");
+    glIndiServer->start();
     Logger::Log("initINDIServer finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
@@ -2187,6 +3098,21 @@ void MainWindow::initINDIClient()
                     // Logger::Log("拍摄完成，图像保存完成 finish!", LogLevel::INFO, DeviceType::MAIN);
                 }
             }
+
+            // 导星相机曝光完成（内置导星）
+            if (dpGuider != NULL)
+            {
+                if (dpGuider->getDeviceName() == devname)
+                {
+                    const QString fitsPath = QString::fromStdString(filename);
+                    // 跨线程安全：把新帧事件投递到 guiderCore 所在线程（Main thread）
+                    if (guiderCore)
+                    {
+                        QMetaObject::invokeMethod(guiderCore, "onNewFrame", Qt::QueuedConnection,
+                                                  Q_ARG(QString, fitsPath));
+                    }
+                }
+            }
         });
     Logger::Log("indi_Client->setImageReceivedCallback finish!", LogLevel::INFO, DeviceType::MAIN);
 
@@ -2231,7 +3157,11 @@ void MainWindow::initINDIClient()
             else
             {
                 DeviceType deviceType = getDeviceTypeFromPartialString(messageStr.toStdString());
-                Logger::Log("[INDI SERVER] " + messageStr.toStdString(), LogLevel::INFO, deviceType);
+                // 导星循环曝光会高频刷 “Image saved to /dev/shm/guiding.fits” ：降为 DEBUG（默认关闭 DEBUG）避免刷屏
+                if (messageStr.contains("Image saved to /dev/shm/guiding.fits"))
+                    Logger::Log("[INDI SERVER] " + messageStr.toStdString(), LogLevel::DEBUG, deviceType);
+                else
+                    Logger::Log("[INDI SERVER] " + messageStr.toStdString(), LogLevel::INFO, deviceType);
             }
 
             std::regex regexPattern(R"(OnStep slew/syncError:\s*(.*))");
@@ -2307,9 +3237,18 @@ void MainWindow::exportGPIO(const char *pin)
         return;
     }
     snprintf(buf, sizeof(buf), "%s", pin);
-    if (write(fd, buf, strlen(buf)) != strlen(buf))
+    errno = 0;
+    if (write(fd, buf, strlen(buf)) != (ssize_t) strlen(buf))
     {
-        Logger::Log("Failed to write to export file", LogLevel::INFO, DeviceType::MAIN);
+        // EBUSY usually means the GPIO is already exported (common on restart) — not a fatal error.
+        if (errno == EBUSY)
+        {
+            Logger::Log(std::string("GPIO already exported: pin=") + pin, LogLevel::DEBUG, DeviceType::MAIN);
+        }
+        else
+        {
+            Logger::Log(std::string("Failed to write to export file: ") + strerror(errno), LogLevel::WARNING, DeviceType::MAIN);
+        }
         close(fd);
         return;
     }
@@ -2330,9 +3269,10 @@ void MainWindow::setGPIODirection(const char *pin, const char *direction)
         Logger::Log("Failed to open GPIO direction file for writing", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
-    if (write(fd, direction, strlen(direction) + 1) != strlen(direction) + 1)
+    errno = 0;
+    if (write(fd, direction, strlen(direction)) != (ssize_t) strlen(direction))
     {
-        Logger::Log("Failed to set GPIO direction", LogLevel::INFO, DeviceType::MAIN);
+        Logger::Log(std::string("Failed to set GPIO direction: ") + strerror(errno), LogLevel::WARNING, DeviceType::MAIN);
         close(fd);
         return;
     }
@@ -2352,9 +3292,10 @@ void MainWindow::setGPIOValue(const char *pin, const char *value)
         Logger::Log("Failed to open GPIO value file for writing", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
-    if (write(fd, value, strlen(value) + 1) != strlen(value) + 1)
+    errno = 0;
+    if (write(fd, value, strlen(value)) != (ssize_t) strlen(value))
     {
-        Logger::Log("Failed to write to GPIO value", LogLevel::INFO, DeviceType::MAIN);
+        Logger::Log(std::string("Failed to write to GPIO value: ") + strerror(errno), LogLevel::WARNING, DeviceType::MAIN);
         close(fd);
         return;
     }
@@ -2412,7 +3353,8 @@ void MainWindow::getGPIOsStatus()
 
 void MainWindow::onTimeout()
 {
-    ShowPHDdata();
+    // 已弃用 PHD2：不再周期读取共享内存绘制导星图
+    // ShowPHDdata();
 
     // 显示赤道仪指向
     mountDisplayCounter++;
@@ -2447,6 +3389,21 @@ void MainWindow::onTimeout()
                     if (indi_Client->mountState.isMovingNow() == false) {
                         emit wsThread->sendMessageToClient("FlipStatus:success");
                         TelescopePierSide = NewTelescopePierSide;
+
+                        // ===== 内置导星：翻转后强制重新校准（PHD2 常规做法）=====
+                        // 翻转会改变力学状态，且可能导致相机/视场变化；继续使用旧校准容易越导越偏。
+                        if (guiderCore)
+                        {
+                            const guiding::State gs = guiderCore->state();
+                            if (gs == guiding::State::Guiding || gs == guiding::State::Calibrating)
+                            {
+                                Logger::Log("BuiltInGuider | pier side changed, force recalibrate after meridian flip.",
+                                            LogLevel::INFO, DeviceType::GUIDER);
+                                emit wsThread->sendMessageToClient("GuiderCoreInfo:MeridianFlipDetected:Recalibrating");
+                                guiderCore->stopGuiding();
+                                guiderCore->startGuiding();
+                            }
+                        }
                     }
                 }
                 emit wsThread->sendMessageToClient("TelescopePierSide:" + NewTelescopePierSide);
@@ -3020,43 +3977,44 @@ cv::Mat MainWindow::colorImage(cv::Mat img16)
 }
 void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
 {
-    Logger::Log("Starting to save guider image as JPG...", LogLevel::INFO, DeviceType::GUIDER);
+    // 循环曝光会高频触发：降为 DEBUG（默认关闭 DEBUG）避免刷屏
+    Logger::Log("Starting to save guider image as JPG...", LogLevel::DEBUG, DeviceType::GUIDER);
 
     // 生成唯一ID
     QString uniqueId = QUuid::createUuid().toString();
-    Logger::Log("Generated unique ID for new guider image: " + uniqueId.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+    Logger::Log("Generated unique ID for new guider image: " + uniqueId.toStdString(), LogLevel::DEBUG, DeviceType::GUIDER);
 
     // 列出所有以"GuiderImage"为前缀的文件
     QDir directory(QString::fromStdString(vueDirectoryPath));
     QStringList filters;
     filters << "GuiderImage*.jpg"; // 使用通配符来筛选以"GuiderImage"为前缀的jpg文件
     QStringList fileList = directory.entryList(filters, QDir::Files);
-    Logger::Log("Listed existing guider images for deletion.", LogLevel::INFO, DeviceType::GUIDER);
+    Logger::Log("Listed existing guider images for deletion.", LogLevel::DEBUG, DeviceType::GUIDER);
 
     // 删除所有匹配的文件
     for (const auto &file : fileList)
     {
         QString filePath = QString::fromStdString(vueDirectoryPath) + file;
         QFile::remove(filePath);
-        Logger::Log("Deleted guider image file: " + filePath.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log("Deleted guider image file: " + filePath.toStdString(), LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
     // 删除前一张图像文件
     if (PriorGuiderImage != "NULL")
     {
         QFile::remove(QString::fromStdString(PriorGuiderImage));
-        Logger::Log("Deleted previous guider image file: " + PriorGuiderImage, LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log("Deleted previous guider image file: " + PriorGuiderImage, LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
     // 保存新的图像带有唯一ID的文件名
     std::string fileName = "GuiderImage_" + uniqueId.toStdString() + ".jpg";
     std::string filePath = vueDirectoryPath + fileName;
     bool saved = cv::imwrite(filePath, Image);
-    Logger::Log("Attempted to save new guider image.", LogLevel::INFO, DeviceType::GUIDER);
+    Logger::Log("Attempted to save new guider image.", LogLevel::DEBUG, DeviceType::GUIDER);
 
     std::string Command = "sudo ln -sf " + filePath + " " + vueImagePath + fileName;
     system(Command.c_str());
-    Logger::Log("Created symbolic link for new guider image.", LogLevel::INFO, DeviceType::GUIDER);
+    Logger::Log("Created symbolic link for new guider image.", LogLevel::DEBUG, DeviceType::GUIDER);
 
     PriorGuiderImage = vueImagePath + fileName;
 
@@ -3064,7 +4022,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     {
         emit wsThread->sendMessageToClient(QString("GuideSize:%1:%2").arg(Image.cols).arg(Image.rows));
         emit wsThread->sendMessageToClient("SaveGuiderImageSuccess:" + QString::fromStdString(fileName));
-        Logger::Log("Guider image saved successfully and client notified.", LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log("Guider image saved successfully and client notified.", LogLevel::DEBUG, DeviceType::GUIDER);
     }
     else
     {
@@ -3847,10 +4805,15 @@ void MainWindow::continueConnectAllDeviceOnce()
                 if (systemdevicelist.system_devices.size() > 1) {
                     systemdevicelist.system_devices[1].isConnect = true;
                 }
-                indi_Client->disconnectDevice(device->getDeviceName());
-                sleep(1);
-                call_phd_whichCamera(device->getDeviceName());
-                // PHD2 connect status
+                // 内置导星：不要再走旧 PHD2 流程（会把设备断开导致循环曝光无图）
+                // 确保设备已连接
+                if (!device->isConnected())
+                {
+                    indi_Client->connectDevice(device->getDeviceName());
+                    int waitSec = 0;
+                    while (!device->isConnected() && waitSec++ < 6)
+                        sleep(1);
+                }
                 AfterDeviceConnect(dpGuider);
             }
         }
@@ -4018,12 +4981,16 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
     {
         Logger::Log("Binding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpGuider = device;
-        indi_Client->disconnectDevice(device->getDeviceName());
-        Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
-        sleep(1);
-        call_phd_whichCamera(device->getDeviceName());
-        sleep(2);
-        Logger::Log("Call PHD2 Guider Connect", LogLevel::INFO, DeviceType::MAIN);
+        // 内置导星：绑定时不要断开设备/不要调用 PHD2 选择相机（否则导星循环曝光时会是未连接状态）
+        // 若当前未连接，则主动连接并等待短暂完成
+        if (!device->isConnected())
+        {
+            Logger::Log("Binding Guider Device | device not connected, connecting ...", LogLevel::INFO, DeviceType::MAIN);
+            indi_Client->connectDevice(device->getDeviceName());
+            int waitSec = 0;
+            while (!device->isConnected() && waitSec++ < 6)
+                sleep(1);
+        }
         if (systemdevicelist.system_devices.size() > 1) {
             systemdevicelist.system_devices[1].isConnect = true;
             systemdevicelist.system_devices[1].isBind = true;
@@ -4094,7 +5061,12 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     if (DeviceType == "Guider")
     {
         Logger::Log("UnBinding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
-        call_phd_StopLooping();
+        // 外部 PHD2 已弃用：停止内置导星循环曝光/导星
+        if (guiderCore)
+        {
+            guiderCore->stopGuiding();
+            guiderCore->stopLoop();
+        }
         isGuiding = false;
         emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
         isGuiderLoopExp = false;
@@ -4359,6 +5331,37 @@ void MainWindow::AfterDeviceConnect()
         indi_Client->getTelescopeInfo(dpMount, a, b, c, d);
         Logger::Log("Telescope Info - A: " + std::to_string(a) + ", B: " + std::to_string(b) + ", C: " + std::to_string(c) + ", D: " + std::to_string(d), LogLevel::INFO, DeviceType::MAIN);
 
+        // 内置导星：优先尝试从 INDI 的 TELESCOPE_INFO 读取 guider_focal（D）
+        if (d > 0.0)
+        {
+            guiderFocalLengthMm = d;
+            if (guiderCore)
+            {
+                auto p = guiderCore->params();
+                p.guiderFocalLengthMm = guiderFocalLengthMm;
+                if (p.pixelScaleArcsecPerPixel <= 0.0 && guiderPixelSizeUm > 0.0)
+                {
+                    const double bin = std::max(1, p.guiderBinning);
+                    p.pixelScaleArcsecPerPixel = 206.265 * (guiderPixelSizeUm * bin) / guiderFocalLengthMm;
+                }
+                guiderCore->setParams(p);
+                if (p.pixelScaleArcsecPerPixel > 0.0)
+                {
+                    Logger::Log("BuiltInGuider | pixelScaleArcsecPerPixel=" + std::to_string(p.pixelScaleArcsecPerPixel),
+                                LogLevel::INFO, DeviceType::GUIDER);
+                }
+            }
+        }
+        else
+        {
+            if (guiderCore && !guiderScaleHintSent)
+            {
+                emit wsThread->sendMessageToClient(QStringLiteral("GuiderCoreInfo:当前未获取导星焦距，误差以像素显示"));
+                emit wsThread->sendMessageToClient(QStringLiteral("GuiderCoreInfo:若提供焦距，可显示 arcsec RMS"));
+                guiderScaleHintSent = true;
+            }
+        }
+
         indi_Client->getTelescopeRADECJ2000(dpMount, a, b);
         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
 
@@ -4488,8 +5491,73 @@ void MainWindow::AfterDeviceConnect()
         ConnectedDevices.push_back({"Guider", QString::fromUtf8(dpGuider->getDeviceName())});
         Logger::Log("Guider connected successfully.", LogLevel::INFO, DeviceType::MAIN);
 
+        // 内置导星：配置导星相机上传到本地固定路径 /dev/shm/guiding.fits
+        indi_Client->setBLOBMode(B_ALSO, dpGuider->getDeviceName(), nullptr);
+        indi_Client->enableDirectBlobAccess(dpGuider->getDeviceName(), nullptr);
+        indi_Client->setCCDUploadModeToLacal(dpGuider);
+        indi_Client->setCCDUpload(dpGuider, "/dev/shm", "guiding");
+
+        // 内置导星：自动读取导星相机像元尺寸/binning（能读到就填，读不到就降级）
+        {
+            int maxX = 0, maxY = 0, bitDepth = 0;
+            double pixelSize = 0.0, pixelSizeX = 0.0, pixelSizeY = 0.0;
+            const uint32_t ret = indi_Client->getCCDBasicInfo(dpGuider, maxX, maxY, pixelSize, pixelSizeX, pixelSizeY, bitDepth);
+            if (ret == QHYCCD_SUCCESS && pixelSize > 0.0)
+            {
+                guiderPixelSizeUm = pixelSize;
+                Logger::Log("BuiltInGuider | guiderPixelSizeUm=" + std::to_string(guiderPixelSizeUm), LogLevel::INFO, DeviceType::GUIDER);
+            }
+
+            int binX = 1, binY = 1, binXMax = 1, binYMax = 1;
+            const uint32_t retBin = indi_Client->getCCDBinning(dpGuider, binX, binY, binXMax, binYMax);
+            if (retBin == QHYCCD_SUCCESS && binX >= 1)
+            {
+                // 只取 X binning 作为导星 binning（大多数相机 x/y 一致）
+                if (guiderCore)
+                {
+                    auto p = guiderCore->params();
+                    p.guiderBinning = binX;
+                    guiderCore->setParams(p);
+                }
+            }
+
+            if (guiderCore)
+            {
+                auto p = guiderCore->params();
+                p.guiderPixelSizeUm = guiderPixelSizeUm;
+                p.guiderFocalLengthMm = guiderFocalLengthMm;
+                // 若已具备像元+焦距，推导 pixelScale（arcsec/px）
+                if (p.pixelScaleArcsecPerPixel <= 0.0 && guiderPixelSizeUm > 0.0 && guiderFocalLengthMm > 0.0)
+                {
+                    const double bin = std::max(1, p.guiderBinning);
+                    p.pixelScaleArcsecPerPixel = 206.265 * (guiderPixelSizeUm * bin) / guiderFocalLengthMm;
+                }
+                guiderCore->setParams(p);
+
+                if (p.pixelScaleArcsecPerPixel > 0.0)
+                {
+                    Logger::Log("BuiltInGuider | pixelScaleArcsecPerPixel=" + std::to_string(p.pixelScaleArcsecPerPixel),
+                                LogLevel::INFO, DeviceType::GUIDER);
+                }
+                else if (!guiderScaleHintSent)
+                {
+                    emit wsThread->sendMessageToClient(QStringLiteral("GuiderCoreInfo:当前未获取导星焦距，误差以像素显示"));
+                    emit wsThread->sendMessageToClient(QStringLiteral("GuiderCoreInfo:若提供焦距，可显示 arcsec RMS"));
+                    guiderScaleHintSent = true;
+                }
+            }
+        }
+
         systemdevicelist.system_devices[1].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
         systemdevicelist.system_devices[1].isBind = true;
+        
+        // 发送初始 AUTO 配置到前端
+        if (guiderCore)
+        {
+            emit wsThread->sendMessageToClient("Configure:GuiderRaGuideDir:AUTO");
+            emit wsThread->sendMessageToClient("Configure:GuiderDecGuideDir:AUTO");
+        }
+        
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpGuider, SDKVERSION);
         emit wsThread->sendMessageToClient("getSDKVersion:Guider:" + SDKVERSION);
@@ -4685,6 +5753,40 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->getTelescopeInfo(dpMount, a, b, c, d);
         Logger::Log("Telescope Info - a: " + std::to_string(a) + ", b: " + std::to_string(b) + ", c: " + std::to_string(c) + ", d: " + std::to_string(d), LogLevel::INFO, DeviceType::MAIN);
 
+        // 内置导星：优先尝试从 INDI 的 TELESCOPE_INFO 读取 guider_focal（d）
+        // - 读不到不阻断流程；后续 RMS 将以 px 显示
+        if (d > 0.0)
+        {
+            guiderFocalLengthMm = d;
+            if (guiderCore)
+            {
+                auto p = guiderCore->params();
+                p.guiderFocalLengthMm = guiderFocalLengthMm;
+                // 若尚未有 pixelScale，则尝试用像元+焦距推导（arcsec/px）
+                if (p.pixelScaleArcsecPerPixel <= 0.0 && guiderPixelSizeUm > 0.0)
+                {
+                    const double bin = std::max(1, p.guiderBinning);
+                    p.pixelScaleArcsecPerPixel = 206.265 * (guiderPixelSizeUm * bin) / guiderFocalLengthMm;
+                }
+                guiderCore->setParams(p);
+                if (p.pixelScaleArcsecPerPixel > 0.0)
+                {
+                    Logger::Log("BuiltInGuider | pixelScaleArcsecPerPixel=" + std::to_string(p.pixelScaleArcsecPerPixel),
+                                LogLevel::INFO, DeviceType::GUIDER);
+                }
+            }
+        }
+        else
+        {
+            if (guiderCore && !guiderScaleHintSent)
+            {
+                // UI 明确提示：未获取导星焦距时无法换算角秒
+                emit wsThread->sendMessageToClient(QStringLiteral("GuiderCoreInfo:当前未获取导星焦距，误差以像素显示"));
+                emit wsThread->sendMessageToClient(QStringLiteral("GuiderCoreInfo:若提供焦距，可显示 arcsec RMS"));
+                guiderScaleHintSent = true;
+            }
+        }
+
         indi_Client->getTelescopeRADECJ2000(dpMount, a, b);
         Logger::Log("Telescope RA/DEC J2000 - RA: " + std::to_string(a) + ", DEC: " + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
         indi_Client->getTelescopeRADECJNOW(dpMount, a, b);
@@ -4809,8 +5911,23 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         
         ConnectedDevices.push_back({"Guider", QString::fromUtf8(dpGuider->getDeviceName())});
         Logger::Log("Guider connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+
+        // 内置导星：配置导星相机上传到本地固定路径 /dev/shm/guiding.fits
+        indi_Client->setBLOBMode(B_ALSO, dpGuider->getDeviceName(), nullptr);
+        indi_Client->enableDirectBlobAccess(dpGuider->getDeviceName(), nullptr);
+        indi_Client->setCCDUploadModeToLacal(dpGuider);
+        indi_Client->setCCDUpload(dpGuider, "/dev/shm", "guiding");
+
         systemdevicelist.system_devices[1].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
         systemdevicelist.system_devices[1].isBind = true;
+        
+        // 发送初始 AUTO 配置到前端
+        if (guiderCore)
+        {
+            emit wsThread->sendMessageToClient("Configure:GuiderRaGuideDir:AUTO");
+            emit wsThread->sendMessageToClient("Configure:GuiderDecGuideDir:AUTO");
+        }
+        
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpGuider, SDKVERSION);
         emit wsThread->sendMessageToClient("getSDKVersion:Guider:" + SDKVERSION);
@@ -5191,6 +6308,7 @@ void MainWindow::FocusingLooping()
 
 
 
+#if QUARCS_ENABLE_EXTERNAL_PHD2
 void MainWindow::InitPHD2()
 {
     Logger::Log("InitPHD2 start ...", LogLevel::INFO, DeviceType::MAIN);
@@ -5976,7 +7094,9 @@ uint32_t MainWindow::call_phd_StarClick(int x, int y)
     Logger::Log("call_phd_StarClick | x:" + std::to_string(x) + ", y:" + std::to_string(y), LogLevel::INFO, DeviceType::MAIN);
     // 修复：检查共享内存指针有效性
     if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
-        Logger::Log("call_phd_StarClick | shared memory not ready", LogLevel::ERROR, DeviceType::MAIN);
+        // 说明：当前工程已默认使用内置导星（GuiderCore），模拟导星/不启动PHD2时这里会被前端误触发。
+        // 为避免干扰导星日志，这里降级为 WARNING。
+        Logger::Log("call_phd_StarClick | shared memory not ready (PHD2 not running?)", LogLevel::WARNING, DeviceType::MAIN);
         return false;
     }
 
@@ -6389,6 +7509,9 @@ static bool rle_decompress_16(const uint8_t* src, size_t n, uint16_t* dst, size_
 // ====== 完整的读取函数（在你的 MainWindow 类内）=====
 void MainWindow::ShowPHDdata()
 {
+    // 已弃用 PHD2：保留函数签名以减少改动，但不再读取共享内存，避免刷屏日志。
+    return;
+
     // 修复：增强共享内存指针安全检查
     // 早退：共享内存可用且帧完成
     if (!sharedmemory_phd || sharedmemory_phd == (char*)-1) {
@@ -6613,48 +7736,61 @@ void MainWindow::ShowPHDdata()
         emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
     }
 
-    // ---------- 导星状态/曲线（保持你的逻辑） ----------
+    // ---------- 导星状态/曲线 ----------
+    // 不要用 (dRa/dDec != 0) 判断“是否有新导星数据”：
+    // - 误差为 0 是完全合法的（导星很稳时经常出现），此时 RMS/曲线也应持续更新。
+    // - shared memory 中 guideDataIndicator 用来标记“本帧有新导星数据”，读取后会被清零。
     if (sharedmemory_phd[kFlagOff] == 0x02 && bitDepth > 0 && currentPHDSizeX > 0 && currentPHDSizeY > 0) {
         unsigned char phdstatu;
         call_phd_checkStatus(phdstatu);
 
-        Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec),
+        Logger::Log("ShowPHDdata | dRa:" + std::to_string(dRa) + ", dDec:" + std::to_string(dDec) +
+                    ", guideDataIndicator:" + std::to_string((int)guideDataIndicator),
                     LogLevel::DEBUG, DeviceType::GUIDER);
 
-        if (dRa != 0 || dDec != 0) {
-            QPointF tmp; tmp.setX(-dRa * PixelRatio); tmp.setY(dDec * PixelRatio);
-            glPHD_rmsdate.append(tmp);
-            emit wsThread->sendMessageToClient("AddScatterChartData:" +
-                QString::number(-dRa * PixelRatio) + ":" + QString::number(-dDec * PixelRatio));
-
-            if (InGuiding) {
-                emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
-                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
-            } else {
-                emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
-                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
-            }
-
-            if (StarLostAlert) {
-                Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert",
-                            LogLevel::DEBUG, DeviceType::GUIDER);
-                emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
-                emit wsThread->sendMessageToClient("GuiderUpdateStatus:2");
-            }
-
-            emit wsThread->sendMessageToClient("AddRMSErrorData:" +
-                QString::number(RMSErrorX, 'f', 3) + ":" + QString::number(RMSErrorX, 'f', 3));
+        // 状态可以每帧刷新（不依赖是否有新点）
+        if (InGuiding) {
+            emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+        } else {
+            emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
         }
 
-        for (int i = 0; i < glPHD_rmsdate.size(); i++) {
-            if (i == glPHD_rmsdate.size() - 1) {
-                emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" +
-                    QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
-                if (i > 50)
-                    emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
-                else
-                    emit wsThread->sendMessageToClient("SetLineChartRange:0:50");
-            }
+        if (StarLostAlert) {
+            Logger::Log("ShowPHDdata | send GuiderStatus:StarLostAlert",
+                        LogLevel::DEBUG, DeviceType::GUIDER);
+            emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:2");
+        }
+
+        // 仅在确实有新导星数据时追加点并推送，避免重复发送同一帧旧值导致 UI “看起来不更新”
+        if (guideDataIndicator != 0x00) {
+            const double raErrPx = -dRa * PixelRatio;
+            const double decErrPx = -dDec * PixelRatio;
+
+            QPointF tmp;
+            tmp.setX(raErrPx);
+            tmp.setY(decErrPx);
+            glPHD_rmsdate.append(tmp);
+
+            emit wsThread->sendMessageToClient("AddScatterChartData:" +
+                QString::number(raErrPx) + ":" + QString::number(decErrPx));
+
+            // RMS 诊断数据：RA / DEC / Total
+            emit wsThread->sendMessageToClient("AddRMSErrorData:" +
+                QString::number(RMSErrorX, 'f', 3) + ":" +
+                QString::number(RMSErrorY, 'f', 3) + ":" +
+                QString::number(RMSErrorTotal, 'f', 3));
+
+            const int idx = glPHD_rmsdate.size() - 1;
+            emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(idx) + ":" +
+                QString::number(glPHD_rmsdate[idx].x()) + ":" + QString::number(glPHD_rmsdate[idx].y()));
+
+            if (idx > 50)
+                emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(idx - 50) + ":" + QString::number(idx));
+            else
+                emit wsThread->sendMessageToClient("SetLineChartRange:0:50");
         }
     }
 
@@ -6747,69 +7883,68 @@ void MainWindow::ShowPHDdata()
 
 
 
+#endif // QUARCS_ENABLE_EXTERNAL_PHD2
+
 void MainWindow::ControlGuide(int Direction, int Duration)
 {
-    Logger::Log("ControlGuide start ...", LogLevel::INFO, DeviceType::GUIDER);
-    switch (Direction)
-    {
-    case 1:
-    {
-        if (dpMount != NULL)
-        {
-            if (isMeridianFlipped)
-            {
-                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:0, Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
-                indi_Client->setTelescopeGuideNS(dpMount, 0, Duration);
-            }
-            else
-            {
-                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
-                indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
-            }
-        }
-        break;
-    }
-    case 0:
-    {
-        if (dpMount != NULL)
-        {
-            if (isMeridianFlipped)
-            {
-                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:1, Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
-                indi_Client->setTelescopeGuideNS(dpMount, 1, Duration);
-            }
-            else
-            {
-                Logger::Log("ControlGuide | setTelescopeGuideNS Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
-                indi_Client->setTelescopeGuideNS(dpMount, Direction, Duration);
-            }
-        }
-        break;
-    }
-    case 2:
-    {
-        if (dpMount != NULL)
-        {
-            Logger::Log("ControlGuide | setTelescopeGuideWE Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
-            indi_Client->setTelescopeGuideWE(dpMount, Direction, Duration);
-        }
-        break;
-    }
-    case 3:
-    {
-        if (dpMount != NULL)
-        {
-            Logger::Log("ControlGuide | setTelescopeGuideWE Direction:" + std::to_string(Direction) + ", Duration:" + std::to_string(Duration), LogLevel::INFO, DeviceType::GUIDER);
-            indi_Client->setTelescopeGuideWE(dpMount, Direction, Duration);
-        }
-        break;
-    }
-    default:
-        break; //
-    }
-    Logger::Log("ControlGuide finish!", LogLevel::INFO, DeviceType::GUIDER);
+    ControlGuideEx(Direction, Duration, QStringLiteral("Legacy/Unknown"));
 }
 
+static inline std::string GuideDirNameFromInt(int dir)
+{
+    switch (dir)
+    {
+    case 0: return "SOUTH";
+    case 1: return "NORTH";
+    case 2: return "EAST";
+    case 3: return "WEST";
+    default: return "UNK";
+    }
+}
+
+void MainWindow::ControlGuideEx(int Direction, int Duration, const QString& source)
+{
+    const std::string reqDir = GuideDirNameFromInt(Direction);
+
+    if (!dpMount || !indi_Client)
+    {
+        Logger::Log("GuidePulse TX | src=" + source.toStdString() + " | ABORT (mount/client null) | dir=" + reqDir +
+                        " durationMs=" + std::to_string(Duration),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        return;
+    }
+
+    // meridian flip: 仅对 NS 做方向映射（按原逻辑保持）
+    int actualDir = Direction;
+    if (isMeridianFlipped && (Direction == 0 || Direction == 1))
+        actualDir = (Direction == 0) ? 1 : 0;
+
+    const std::string actualDirStr = GuideDirNameFromInt(actualDir);
+    const std::string axis = (Direction == 0 || Direction == 1) ? "NS" : (Direction == 2 || Direction == 3) ? "WE" : "UNK";
+
+    Logger::Log("GuidePulse TX | src=" + source.toStdString() +
+                    " | dir=" + reqDir +
+                    " durationMs=" + std::to_string(Duration) +
+                    " | axis=" + axis +
+                    " meridianFlipped=" + std::string(isMeridianFlipped ? "1" : "0") +
+                    " mappedDir=" + actualDirStr + "(" + std::to_string(actualDir) + ")",
+                LogLevel::INFO, DeviceType::GUIDER);
+
+    uint32_t ret = QHYCCD_ERROR;
+    if (axis == "NS")
+        ret = indi_Client->setTelescopeGuideNS(dpMount, actualDir, Duration);
+    else if (axis == "WE")
+        ret = indi_Client->setTelescopeGuideWE(dpMount, actualDir, Duration);
+
+    if (ret != QHYCCD_SUCCESS)
+    {
+        Logger::Log("GuidePulse TX | src=" + source.toStdString() + " | FAILED ret=" + std::to_string(ret) +
+                        " | dir=" + reqDir + " durationMs=" + std::to_string(Duration),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+    }
+}
+
+#if QUARCS_ENABLE_EXTERNAL_PHD2
 void MainWindow::getTimeNow(int index)
 {
     // 获取当前时间点
@@ -6874,7 +8009,7 @@ void MainWindow::GetPHD2ControlInstruct()
     }
     if (sdk_duration != 0)
     {
-        MainWindow::ControlGuide(sdk_direction, sdk_duration);
+        MainWindow::ControlGuideEx(sdk_direction, sdk_duration, QStringLiteral("PHD2"));
 
         memcpy(sharedmemory_phd + mem_offset_sdk_num, &zero, sizeof(int));
         // Logger::Log("GetPHD2ControlInstruct | set ControlInstruct to 0", LogLevel::DEBUG, DeviceType::MAIN);
@@ -6883,6 +8018,43 @@ void MainWindow::GetPHD2ControlInstruct()
     // Logger::Log("GetPHD2ControlInstruct finish!", LogLevel::DEBUG, DeviceType::MAIN);
 }
 
+
+#endif // QUARCS_ENABLE_EXTERNAL_PHD2
+
+#if !QUARCS_ENABLE_EXTERNAL_PHD2
+void MainWindow::pauseGuidingBeforeMountMove()
+{
+    // 仅用于“赤道仪移动前暂停导星”，避免移动期间导星脉冲干扰 goto/解算
+    wasGuidingBeforeMountMove = isGuiding;
+    if (!wasGuidingBeforeMountMove || !guiderCore)
+        return;
+
+    Logger::Log("BuiltInGuider | pauseGuidingBeforeMountMove", LogLevel::INFO, DeviceType::GUIDER);
+    guiderCore->stopGuiding();
+    guiderCore->stopLoop();
+    isGuiding = false;
+    isGuiderLoopExp = false;
+    InGuiding = false;
+    emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+    emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+    emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+}
+
+void MainWindow::resumeGuidingAfterMountMove()
+{
+    if (!wasGuidingBeforeMountMove || !guiderCore)
+        return;
+
+    Logger::Log("BuiltInGuider | resumeGuidingAfterMountMove", LogLevel::INFO, DeviceType::GUIDER);
+    wasGuidingBeforeMountMove = false;
+    guiderCore->startGuiding();
+    isGuiding = true;
+    isGuiderLoopExp = true;
+    emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+    emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+    emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+}
+#endif
 
 void MainWindow::HandleFocuserMovementDataPeriodically()
 {
@@ -7501,7 +8673,12 @@ void MainWindow::startSchedule()
         StopSchedule = true;
         isScheduleRunning = false;
         schedule_currentNum = 0;
-        call_phd_StopLooping();
+        // 外部 PHD2 已弃用：停止内置导星（若在运行）
+        if (guiderCore)
+        {
+            guiderCore->stopGuiding();
+            guiderCore->stopLoop();
+        }
         GuidingHasStarted = false;
         // 通知前端计划任务已完成，重置按钮状态
         emit wsThread->sendMessageToClient("ScheduleComplete");
@@ -7750,10 +8927,10 @@ void MainWindow::startGuiding()
     guiderTimer.disconnect();
 
     GuidingHasStarted = true;
-    call_phd_StartLooping();
-    sleep(2);
-    call_phd_AutoFindStar();
-    call_phd_StartGuiding();
+    // 外部 PHD2 已弃用：使用内置导星（自动选星→校准→导星）
+    InGuiding = false;
+    if (guiderCore)
+        guiderCore->startGuiding();
 
     // 启动等待赤道仪转动的定时器
     guiderTimer.setSingleShot(true);
@@ -7763,7 +8940,11 @@ void MainWindow::startGuiding()
         if (StopSchedule)
         {
             StopSchedule = false;
-            call_phd_StopLooping();
+            if (guiderCore)
+            {
+                guiderCore->stopGuiding();
+                guiderCore->stopLoop();
+            }
             qDebug("Schedule is stop!");
             return;
         }
@@ -8270,6 +9451,82 @@ int MainWindow::CaptureImageSave()
     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
     Logger::Log("CaptureImageSave | File saved successfully: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     return 0;
+}
+
+void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
+{
+    if (sourceFitsPath.isEmpty())
+        return;
+    if (!QFile::exists(sourceFitsPath))
+        return;
+
+    // 按需求：导星循环曝光只需更新 /dev/shm/guiding.fits（不再额外复制到 CaptureImage/<date>/guiding.fits）
+    const QString guidingShmPath = QStringLiteral("/dev/shm/guiding.fits");
+    const QString effectiveFitsPath = (sourceFitsPath == guidingShmPath) ? sourceFitsPath : guidingShmPath;
+
+    // 若 INDI 返回的路径不是 /dev/shm/guiding.fits，则覆盖同步到该固定路径
+    if (sourceFitsPath != guidingShmPath)
+    {
+        QFile dst(guidingShmPath);
+        if (dst.exists())
+            dst.remove();
+        if (!QFile::copy(sourceFitsPath, guidingShmPath))
+        {
+            Logger::Log("PersistGuidingFits | copy to /dev/shm/guiding.fits failed", LogLevel::WARNING, DeviceType::GUIDER);
+            return;
+        }
+    }
+
+    // 同步生成前端导星 JPG（沿用既有 SaveGuiderImageSuccess 消息协议）
+    cv::Mat img;
+    if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img) == 0 && !img.empty())
+    {
+        // 内置导星也维护“当前导星图像尺寸”，用于前端 PHD2Box/Cross 覆盖层计算
+        glPHD_CurrentImageSizeX = img.cols;
+        glPHD_CurrentImageSizeY = img.rows;
+
+        // 若多星副星点等待下发（例如图像尺寸尚未拿到），在真正进入 InGuiding 时补发一次
+        if (guiderMultiStarSecondaryPtsPending && wsThread
+            && guiderPhaseGuiding && !guiderDirectionDetectActive)
+        {
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+            for (int i = 0; i < guiderMultiStarSecondaryPtsPx.size(); ++i)
+            {
+                if (i >= 8) break;
+                const auto& p = guiderMultiStarSecondaryPtsPx[i];
+                emit wsThread->sendMessageToClient(
+                    "PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+                    QString::number(glPHD_CurrentImageSizeY) + ":" +
+                    QString::number(static_cast<int>(std::lround(p.x()))) + ":" +
+                    QString::number(static_cast<int>(std::lround(p.y()))));
+            }
+            guiderMultiStarSecondaryPtsPending = false;
+        }
+
+        double minV = 0.0, maxV = 0.0;
+        cv::minMaxLoc(img, &minV, &maxV);
+
+        uint16_t B = 0;
+        uint16_t W = (img.depth() == CV_8U) ? 255 : 65535;
+        if (AutoStretch)
+            Tools::GetAutoStretch(img, 0, B, W);
+
+        // 兜底：避免 W<=B 造成全黑
+        if (W <= B)
+            W = B + 1;
+
+        // 循环曝光每帧都会走这里：降为 DEBUG（默认关闭 DEBUG）避免刷屏
+        Logger::Log("PersistGuidingFits | fits=" + effectiveFitsPath.toStdString() +
+                        " depth=" + std::to_string(img.depth()) +
+                        " min=" + std::to_string(minV) + " max=" + std::to_string(maxV) +
+                        " B=" + std::to_string(B) + " W=" + std::to_string(W),
+                    LogLevel::DEBUG, DeviceType::GUIDER);
+
+        cv::Mat img8(img.rows, img.cols, CV_8UC1);
+        Tools::Bit16To8_Stretch(img, img8, B, W);
+
+        saveGuiderImageAsJPG(img8);
+    }
 }
 
 int MainWindow::ScheduleImageSave(QString name, int num)
@@ -10937,10 +12194,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 if (systemdevicelist.system_devices.size() > 1) {
                     systemdevicelist.system_devices[1].isConnect = true;
                 }
-                indi_Client->disconnectDevice(device->getDeviceName());
-                sleep(1);
-                call_phd_whichCamera(device->getDeviceName());
-                // PHD2 connect status
                 AfterDeviceConnect(dpGuider);
             }
             else if (SelectedCameras[0] == "PoleCamera")
@@ -11095,7 +12348,11 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
 
         {
         // 停止导星
-        call_phd_StopLooping();
+        if (guiderCore)
+        {
+            guiderCore->stopGuiding();
+            guiderCore->stopLoop();
+        }
         isGuiding = false;
         emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
         isGuiderLoopExp = false;
@@ -11767,8 +13024,11 @@ void MainWindow::disconnectDriver(QString Driver)
             {
                 if (isGuiderLoopExp)
                 {
-                    call_phd_StopLooping();
-                    InitPHD2();
+                    if (guiderCore)
+                    {
+                        guiderCore->stopGuiding();
+                        guiderCore->stopLoop();
+                    }
                 }
                 systemdevicelist.system_devices[1].isConnect = false;
                 systemdevicelist.system_devices[1].DeviceIndiName = "";

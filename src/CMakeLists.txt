@@ -6,6 +6,10 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# ---------------- Sim guider test mode (compile-time) ----------------
+# When enabled, the built-in guider can run without real guider camera / mount.
+option(QUARCS_SIM_GUIDER "Use simulated guider (test guiding with synthetic star frames)" OFF)
+
 set(QT_COMPONENTS
   Core
   Gui
@@ -29,6 +33,16 @@ add_executable(client
   main.cpp
   websocketclient.h websocketclient.cpp
   mainwindow.h mainwindow.cpp
+  guiding/GuiderTypes.h
+  guiding/GuiderCore.h guiding/GuiderCore.cpp
+  guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
+  guiding/phd2/Phd2MountGuiding.h guiding/phd2/Phd2MountGuiding.cpp
+  guiding/phd2/Phd2GuideAlgorithms.h
+  guiding/phd2/Phd2MountCalibration.h guiding/phd2/Phd2MountCalibration.cpp
+  guiding/CentroidUtils.h guiding/CentroidUtils.cpp
+  guiding/MultiStarTracker.h guiding/MultiStarTracker.cpp
+  guiding/DecBacklashEstimator.h guiding/DecBacklashEstimator.cpp
+  guiding/SimGuiderFrameSource.h guiding/SimGuiderFrameSource.cpp
   tools.h tools.cpp
   focused_star_detection.cpp
   myclient.h myclient.cpp
@@ -39,6 +53,54 @@ add_executable(client
   starsimulator.h starsimulator.cpp
   mountstate.h
   SerialDeviceDetector.h SerialDeviceDetector.cpp
+)
+
+if(QUARCS_SIM_GUIDER)
+  target_compile_definitions(client PRIVATE QUARCS_SIM_GUIDER=1)
+else()
+  target_compile_definitions(client PRIVATE QUARCS_SIM_GUIDER=0)
+endif()
+
+# 离线导星算法测试（不依赖相机/赤道仪）
+add_executable(guiding_offline_test
+  tests/guiding_offline_test.cpp
+  guiding/GuiderTypes.h
+  guiding/GuiderCore.h guiding/GuiderCore.cpp
+  guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
+  guiding/phd2/Phd2MountGuiding.h guiding/phd2/Phd2MountGuiding.cpp
+  guiding/phd2/Phd2GuideAlgorithms.h
+  guiding/phd2/Phd2MountCalibration.h guiding/phd2/Phd2MountCalibration.cpp
+  guiding/CentroidUtils.h guiding/CentroidUtils.cpp
+  guiding/MultiStarTracker.h guiding/MultiStarTracker.cpp
+  guiding/DecBacklashEstimator.h guiding/DecBacklashEstimator.cpp
+  focused_star_detection.cpp
+  tools.h tools.cpp
+  Logger.h Logger.cpp
+  websocketthread.h websocketthread.cpp
+  websocketclient.h websocketclient.cpp
+  mountstate.h
+)
+
+target_include_directories(guiding_offline_test PUBLIC
+  /usr/include/libindi
+  /usr/local/include/libstellarsolver
+  /usr/local/include
+)
+
+target_link_libraries(guiding_offline_test PRIVATE
+  ${OpenCV_LIBS}
+  -lcfitsio
+  Qt5::Core
+  Qt5::Gui
+  Qt5::Widgets
+  Qt5::Network
+  Qt5::WebSockets
+  indiclient
+  ${ZLIB_LIBRARY}
+  ${NOVA_LIBRARIES}
+  qhyccd
+  stellarsolver
+  ${StellarSolver_LIBS}
 )
 
 target_link_libraries(client PRIVATE

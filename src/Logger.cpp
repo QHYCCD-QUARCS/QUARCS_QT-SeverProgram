@@ -1,5 +1,7 @@
 #include "Logger.h"
 #include <mutex>
+#include <cerrno>
+#include <cstring>
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -14,7 +16,7 @@
 std::map<DeviceType, std::unique_ptr<std::ofstream>> Logger::logFiles;
 const unsigned int Logger::maxLogSize = 104857600; // 设定最大日志文件大小为100MB
 std::mutex Logger::logMutex;  // 添加一个静态互斥锁
-bool Logger::shouldLogDebug = true; // 初始化默认不记录 DEBUG 日志
+bool Logger::shouldLogDebug = false; // 默认不记录/不显示 DEBUG 日志（避免循环曝光刷屏）
 bool Logger::readyToFlush = false;
 std::mutex Logger::readyMutex;
 std::condition_variable Logger::logCond;
@@ -105,6 +107,10 @@ void Logger::Log(const std::string& message, LogLevel level, DeviceType device) 
     }
 
     std::string logEntry = BuildLogEntry(message, level, device);
+    // IMPORTANT: always terminate each log entry with '\n' so log files are line-based.
+    // Without this, multiple entries get glued into a single line, making debugging and parsing hard.
+    if (logEntry.empty() || logEntry.back() != '\n')
+        logEntry.push_back('\n');
     errno = 0;  // 重置 errno
     qDebug() << logEntry.c_str();
     std::string levelStr;

@@ -3162,8 +3162,21 @@ void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
     Logger::Log("GetAutoStretch | unsupported image depth: " + std::to_string(img_raw16.depth()) + ", using 16-bit default", LogLevel::WARNING, DeviceType::MAIN);
   }
 
+  // 特殊情况：std=0 代表整幅图是常量（比如全白/全灰）。
+  // 这时用 mean±std 的算法会得到 B==W，进而把像素全映射为 0（显示全黑）。
+  // 直接返回全量程拉伸，保证常量图能正确显示（全白就显示白）。
+  if (std.val[0] <= 1e-9) {
+    B = 0;
+    W = maxValue;
+    return;
+  }
+
   if (bx < 0) bx = 0;
-  if (wx > 65535) wx = 65535;
+  // 注意：不同位深使用不同上限，否则可能导致 W 溢出/拉伸异常（表现为全黑）
+  if (wx > maxValue) wx = maxValue;
+
+  // 兜底：确保区间有效
+  if (wx <= bx) wx = bx + 1;
 
   B = (uint16_t)bx;
   W = (uint16_t)wx;
@@ -3172,7 +3185,7 @@ void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
   // full saturated
   if (B == maxValue && W == maxValue) {
     B = 0;
-    W = 65535;
+    W = maxValue;
   }
   #ifdef ImageDebug
   Logger::Log("getAutoStretch |mean std B W" + std::to_string(mean.val[0]) + " " + std::to_string(std.val[0]) + " " + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
