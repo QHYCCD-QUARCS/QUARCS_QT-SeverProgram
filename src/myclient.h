@@ -128,6 +128,10 @@ class MyClient : public INDI::BaseClient
         uint32_t setTelescopeMoveNS(INDI::BaseDevice *dp,QString command);
         uint32_t setTelescopeGuideNS(INDI::BaseDevice* dp, int dir, int time_guide);
         uint32_t setTelescopeGuideWE(INDI::BaseDevice* dp, int dir, int time_guide);
+
+        // GUIDE_RATE (guide speed as fraction of sidereal)
+        // Typical INDI property: GUIDE_RATE with two numbers (RA/DEC or WE/NS)
+        uint32_t getTelescopeGuideRate(INDI::BaseDevice *dp, double &raRate, double &decRate);
         uint32_t setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp,QString action)  ;
         uint32_t getTelescopeRADECJ2000(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)  ;
         uint32_t setTelescopeRADECJ2000(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree);
@@ -222,7 +226,7 @@ class MyClient : public INDI::BaseClient
     // 收到图像并触发回调
     void receiveMessage(const std::string& message) {
         // 触发回调函数
-        if (imageReceivedCallback) {
+        if (messageReceivedCallback) {
           messageReceivedCallback(message);
         }
     }

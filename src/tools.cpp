@@ -2683,6 +2683,7 @@ void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
   if (B >= maxValue && W >= maxValue) {
     B = 0;
     W = maxValue;
+    W = maxValue;
   }
   #ifdef ImageDebug
   Logger::Log("getAutoStretch |mean std B W" + std::to_string(mean.val[0]) + " " + std::to_string(std.val[0]) + " " + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);

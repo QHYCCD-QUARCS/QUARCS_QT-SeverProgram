@@ -22,7 +22,7 @@
 // 来循环模拟粗调/精调阶段的 SNR 计算，把下面这一行保持为 1。
 // 如果要恢复正常模式（使用实时拍摄的 /dev/shm/ccd_simulator.fits），
 // 请将 AUTOFOCUS_SNR_TEST_MODE 改为 0 后重新编译。
-#define AUTOFOCUS_SNR_TEST_MODE 1
+#define AUTOFOCUS_SNR_TEST_MODE 0
 
 // ==================== 自动对焦配置结构体 ====================
 struct AutoFocusConfig {

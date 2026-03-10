@@ -1677,6 +1677,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 图像拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄失败", -1);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
@@ -1684,6 +1685,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!waitForCaptureComplete()) {
         Logger::Log("PolarAlignment: 拍摄超时", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄超时", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
@@ -1700,6 +1702,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析失败", -1);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
@@ -1707,6 +1710,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!waitForSolveComplete()) {
         Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析超时", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         updateSolveModeStatistics(false);
         return false;
@@ -1720,6 +1724,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "解析结果无效", -1);
         updateSolveModeStatistics(false);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }

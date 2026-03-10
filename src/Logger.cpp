@@ -1,5 +1,7 @@
 #include "Logger.h"
 #include <mutex>
+#include <cerrno>
+#include <cstring>
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -110,6 +112,10 @@ void Logger::Log(const std::string& message, LogLevel level, DeviceType device) 
     }
 
     std::string logEntry = BuildLogEntry(message, level, device);
+    // IMPORTANT: always terminate each log entry with '\n' so log files are line-based.
+    // Without this, multiple entries get glued into a single line, making debugging and parsing hard.
+    if (logEntry.empty() || logEntry.back() != '\n')
+        logEntry.push_back('\n');
     errno = 0;  // 重置 errno
     qDebug() << logEntry.c_str();
     std::string levelStr;
