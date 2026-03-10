@@ -23,35 +23,41 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QFile>
 #include <QFileInfo>
 #include <QDir>
+#include <QTextStream>
 
 #include <fitsio.h>
 
-#include <sys/types.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
 #include <sys/statvfs.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <climits>
+#include <mutex>
+#include <atomic>
+#include <memory>
+#include <unordered_set>
 
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <string>
+#include <memory>
 #include <set>
 #include <unordered_set>
 #include <algorithm>
 #include <regex>
+#include <array>
 #include <thread>
 #include <chrono>
 #include <cmath>
 #include <math.h>
 #include <QElapsedTimer>
 #include <functional>
+#include <atomic>
 
 #include <filesystem>
 #include <filesystem>  //（按原文件保留重复包含）
@@ -62,15 +68,20 @@ namespace fs = std::filesystem;
 #include "myclient.h"
 #include "tools.h"
 #include "websocketthread.h"
+#include <QHash>
+#include <QQueue>
 #include "Logger.h"
 #include "autopolaralignment.h"
 #include "autofocus.h"
 #include "SerialDeviceDetector.h"
 #include <stellarsolver.h>
 
+#include "sdks/SdkSerialExecutor.h"
+#include "sdks/SdkCommon.h"  // SDK 通用类型（SdkFrameData, SdkChipInfo, SdkAreaInfo 等）
+
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20251215"  // 手动指定版本号
+#define QT_Client_Version "20260310"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -78,9 +89,6 @@ namespace fs = std::filesystem;
 #define GPIO_PIN_1 "516"
 #define GPIO_PIN_2 "527"
 #define BIN_SIZE 20 // 图像固定 bin 尺寸
-
-// PHD 共享内存大小（原值保留）
-#define BUFSZ_PHD 16590848
 
 /**********************  前置类型（来自工程其它头）  **********************/
 // 注：以下类型在工程其它头中定义，这里仅使用：
@@ -252,6 +260,48 @@ public:
     bool indi_Driver_Clear();
 
     /**
+     * @brief 🆕 获取指定设备类型当前使用的 SDK 驱动名（完全自动化）
+     * @param deviceType 设备类型（"MainCamera", "GuideCamera", "Focuser"等）
+     * @return SDK 驱动名（如 "QHYCCD", "ASI"），如果未设置或不支持则返回空字符串
+     * 
+     * 功能：自动从 SdkDriverRegistry 查询 DriverIndiName 对应的 SDK 驱动名
+     * 
+     * 使用示例：
+     * @code
+     * QString sdkDriver = getSDKDriverName("MainCamera");
+     * if (!sdkDriver.isEmpty()) {
+     *     // 使用 sdkDriver.toStdString() 调用 SdkManager
+     * }
+     * @endcode
+     */
+    QString getSDKDriverName(const QString& deviceType);
+
+    /**
+     * @brief 判断主相机是否为 SDK 模式
+     * @return SDK 模式返回 true，INDI 模式返回 false
+     */
+    bool isMainCameraSDK();
+
+    /**
+     * @brief 判断主相机是否已连接（支持 SDK 和 INDI 两种模式）
+     * @return 已连接返回 true，否则返回 false
+     */
+    bool isMainCameraConnected();
+
+    /**
+     * @brief 判断电调是否为 SDK 模式
+     * @return SDK 模式返回 true，INDI 模式返回 false
+     */
+    bool isFocuserSDK();
+
+    /**
+     * @brief 判断赤道仪是否为 SDK 模式
+     * @return SDK 模式返回 true，INDI 模式返回 false
+     * @note TODO: 需要实现赤道仪SDK模式的支持，目前仅预留接口
+     */
+    bool isMountSDK();
+
+    /**
      * @brief INDI 设备确认
      * @param DeviceName 设备名
      * @param DriverName 驱动名
@@ -367,6 +417,14 @@ public:
     void loadSelectedDriverList();
 
     /**
+     * @brief 判断设备类型是否支持 SDK 连接模式
+     * @param description 设备描述（如 "MainCamera"）
+     * @param driverName 驱动名称
+     * @return 支持返回 true
+     */
+    bool isDeviceTypeSupportSDK(const QString &description, const QString &driverName);
+
+    /**
      * @brief 读取绑定设备列表
      * @param client 客户端
      */
@@ -426,6 +484,66 @@ public:
     void INDI_Capture(int Exp_times);
 
     /**
+     * @brief SDK Burst 拍摄（仅 QHYCCD SDK 支持）
+     * @param Exp_ms 每帧曝光时间（毫秒）
+     * @param frames 采集帧数（建议 1~1024）
+     *
+     * Burst 模式基于 QHYCCD Live 模式（SetStreamMode=1 + BeginLive/GetLiveFrame/StopLive），
+     * 内部会对多帧做均值叠加输出为 1 张图（仍走现有 FITS/PNG/JPG 链路）。
+     */
+    void SDK_BurstCapture(int Exp_ms, int frames);
+
+    // 主相机采集模式：
+    // - Single：单帧（StreamMode=0，走 ExpQHYCCDSingleFrame/GetSingleFrame）
+    // - Live：连续取帧（StreamMode=1 + BeginLive + 循环 GetLiveFrame）
+    // - Burst：Burst 子模式（EnableBurstMode(true) + Live + SetBurstIDLE/ReleaseBurstIDLE）
+    enum class MainCameraCaptureMode { Single, Live, Burst };
+
+    // 当前主相机采集模式（默认 Single）
+    MainCameraCaptureMode mainCameraCaptureMode = MainCameraCaptureMode::Single;
+
+    // SDK 主相机“已应用”的采集模式（用于判断是否发生了模式切换）
+    // 说明：QHYCCD SDK 的 StreamMode/ReadMode 往往需要在 InitQHYCCD 之前设置；
+    // 因此在模式切换时，我们会 Close->Open->按 Demo 顺序重新 Init。
+    bool sdkMainAppliedModeValid = false;
+    MainCameraCaptureMode sdkMainAppliedMode = MainCameraCaptureMode::Single;
+
+    // SDK Burst（连接模式子模式）状态：表示“已在连接阶段完成 EnableBurstMode+Live+IDLE 初始化”
+    std::atomic_bool sdkMainBurstModeReady{false};
+    std::atomic_bool sdkMainLiveReady{false};
+
+    // SDK Live（主相机）循环取帧：切到 Live 模式时启用，切出时停止
+    QTimer *sdkMainLiveTimer = nullptr;
+    std::atomic_bool sdkMainLiveLoopOn{false};
+    std::atomic_bool sdkMainLiveFrameInFlight{false};
+    // SDK Live（主相机）后处理定时器（主线程）：从“最新帧邮箱”取最新帧，按限帧刷新前端（FITS->PNG/瓦片）
+    QTimer *sdkMainLiveProcessTimer = nullptr;
+    // Live 拉帧退避（ms since epoch）：用于在 BeginLive 初期/失败时降低 GetLiveFrame 频率，避免刷爆驱动
+    std::atomic<long long> sdkMainLiveNextPollMs{0};
+    // Live 图像处理（FITS->PNG/瓦片）是否正在进行：用于在处理过慢时丢弃中间帧，避免卡顿/积压
+    std::atomic_bool sdkMainLiveProcessingBusy{false};
+    // Live“处理链路”限帧：高帧率下只处理部分帧（其余帧仅取到即丢弃），避免主线程被瓦片/IO压死、WS不稳定
+    // - 仅影响后处理链路（SaveQhyFrameDataToFits/saveFitsAsPNG/TileGPM），不影响 SDK 拉帧与 FPS 统计
+    std::atomic<long long> sdkMainLiveLastProcessMs{0};
+    int sdkMainLiveMaxProcessFps = 5; // 建议 3~5；过高会导致前端请求风暴与跳帧
+
+    // Live 最新帧序号（用于“是否有新帧”判断）
+    std::atomic_uint64_t sdkMainLiveLatestSeq{0};
+    std::atomic_uint64_t sdkMainLiveProcessedSeq{0};
+
+    // Live 最新帧邮箱（进程内）：避免每帧 memcpy 到 /dev/shm 再读回，降低 CPU/内存带宽占用。
+    // - 取帧线程（sdkCamExec）写入 latestFrame，并递增 sdkMainLiveLatestSeq
+    // - 主线程（sdkMainLiveProcessTimer）读取并处理；处理慢会自然丢弃中间帧（只取最新）
+    mutable std::mutex sdkMainLiveLatestFrameMutex;
+    std::shared_ptr<SdkFrameData> sdkMainLiveLatestFrame;
+
+    // Live 共享内存（/dev/shm 文件 mmap）：对外提供“最新一帧”原始像素（可能被覆盖）
+    int    sdkMainLiveShmFd{-1};
+    void*  sdkMainLiveShmPtr{nullptr};
+    size_t sdkMainLiveShmSize{0};
+    size_t sdkMainLiveShmFrameBytes{0};
+
+    /**
      * @brief 终止 INDI 拍摄
      */
     void INDI_AbortCapture();
@@ -434,6 +552,70 @@ public:
      * @brief 聚焦回路（循环）
      */
     void FocusingLooping();
+    
+    /**
+     * @brief 保存 SDK 模式下获取的 SdkFrameData 为 FITS 文件
+     * @param frame SDK 相机帧数据
+     * @param filepath FITS 文件保存路径
+     */
+    void SaveQhyFrameDataToFits(const SdkFrameData& frame, const std::string& filepath);
+    
+    // SDK 曝光定时器相关
+    QTimer *sdkExposureTimer = nullptr;           // SDK 曝光图像获取定时器
+    qint64 sdkExposureStartTime = 0;              // SDK 曝光开始时间戳（毫秒）
+    int sdkExposureExpectedDuration = 0;          // SDK 预期曝光时长（毫秒）
+    bool sdkExposureIsROI = false;                // SDK 当前曝光是否为 ROI 模式
+
+    // SDK Burst（QHY Live）相关：不走 sdkExposureTimer 轮询，而是在 sdkCamExec 中串行抓帧
+    std::atomic_bool sdkBurstActive{false};               // Burst 是否在执行
+    std::atomic_bool sdkBurstCancelRequested{false};      // Burst 是否请求取消（abortExposure）
+
+    // 根据主相机采集模式初始化/释放（连接后或模式切换时调用）
+    void applySdkMainCameraCaptureMode();
+
+    // SDK 主相机 Live 循环取帧回调
+    void onSdkMainLiveTimerTimeout();
+    // SDK 主相机 Live 后处理回调（主线程）
+    void onSdkMainLiveProcessTimerTimeout();
+
+    // Live “最新帧共享内存”维护
+    void cleanupSdkMainLiveShm();
+    bool ensureSdkMainLiveShm(size_t frameBytes);
+    void writeSdkMainLiveShm(const SdkFrameData& frame, uint64_t seq);
+
+    // SDK 导星相机（Guider）循环曝光相关：独立于主相机 SDK 曝光，避免互相抢占定时器/状态
+    QTimer *sdkGuiderExposureTimer = nullptr;     // SDK 导星曝光图像获取定时器
+    qint64 sdkGuiderExposureStartTime = 0;        // SDK 导星曝光开始时间戳（毫秒）
+    int sdkGuiderExposureExpectedDuration = 0;    // SDK 导星预期曝光时长（毫秒）
+
+    // SDK 串行执行线程：避免在主线程执行阻塞式 SDK 调用
+    // 注意：相机与电调分开，避免相机读帧阻塞导致电调命令排队延迟
+    std::unique_ptr<SdkSerialExecutor> sdkCamExec;
+    std::unique_ptr<SdkSerialExecutor> sdkFocuserExec;
+    std::atomic_bool sdkFrameTaskInFlight{false};           // 相机读帧任务是否在执行
+    std::atomic_bool sdkGuiderFrameTaskInFlight{false};     // 导星相机读帧任务是否在执行（SDK）
+    std::atomic_bool sdkFocuserPeriodicTaskInFlight{false}; // 电调周期任务是否在执行
+    std::atomic_bool sdkFocuserPosTaskInFlight{false};      // 单次位置刷新任务是否在执行（用于合并请求）
+    std::atomic_int  sdkFocuserPosCache{0};                 // SDK 电调位置缓存（避免主线程阻塞串口）
+    std::atomic_bool sdkFocuserPosValid{false};             // 位置缓存是否有效
+    // 电调操作代际号：用于让“旧任务”（尤其是位置读取/旧移动）在 SDK 线程中快速失效，
+    // 避免 stop 末尾的定时器位置读取队列占满串口，导致后续 move/abort 被长期排队。
+    std::atomic_uint64_t sdkFocuserOpEpoch{0};
+
+    // 请求一次“电调位置刷新”（异步）：在 SDK 线程读取真实位置，回主线程更新缓存/可选推送 WS
+    void requestSdkFocuserPositionUpdate(bool emitWs = false);
+    // 请求一次“电调版本刷新”（异步）：避免在主线程触碰 QSerialPort（否则会触发 QSocketNotifier 跨线程警告）
+    void requestSdkFocuserVersionUpdate(bool emitWs = true);
+    
+    /**
+     * @brief SDK 曝光定时器回调：轮询获取图像
+     */
+    void onSdkExposureTimerTimeout();
+
+    /**
+     * @brief SDK 导星曝光定时器回调：轮询获取导星图像（用于 GuiderLoopExpSwitch）
+     */
+    void onSdkGuiderExposureTimerTimeout();
 
     /**
      * @brief 保存 FITS 为 JPG
@@ -449,6 +631,149 @@ public:
      * @return 0 成功，非 0 失败
      */
     int saveFitsAsPNG(QString fitsFileName, bool ProcessBin);
+    // 实际执行（可能耗时）的实现：由 saveFitsAsPNG() 异步调度调用
+    int saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin);
+
+    // 视口驱动的瓦片生成（按当前 zoom/位置优先生成视口内 z/x/y）
+    void scheduleViewportTileGeneration();
+    void generateViewportTiles_Once(quint64 epoch, int budgetMs);
+    static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
+
+    /**
+     * @brief 瓦片金字塔全局处理元数据 (GPM - Global Processing Metadata)
+     * 包含整幅图像的统计信息，用于前端统一处理参数
+     */
+    struct TileGPM {
+        int imageWidth;           // 原图宽度
+        int imageHeight;          // 原图高度
+        // 兼容：前端仍需要一套“用于解析/预览保存”的尺寸信息（可能做过软件 bin），用于对照调试
+        // - previewWidth/previewHeight: 预览/解析保存用图像（image16）的尺寸
+        // - previewBinningFactor: 生成 image16 时使用的软件 bin 因子（1/2/4/8/16）
+        // 说明：imageWidth/imageHeight 始终表示瓦片金字塔基准层（z=maxZoomLevel）的尺寸（当前版本由 originalImage16 构建）
+        int previewWidth = 0;
+        int previewHeight = 0;
+        int previewBinningFactor = 1;
+        int tileSize;             // 瓦片尺寸 (默认512)
+        int maxZoomLevel;         // 最大缩放层级 (z=0为最高分辨率)
+        double globalMin;         // 全局最小值
+        double globalMax;         // 全局最大值
+        double globalMean;        // 全局均值
+        double globalStdDev;      // 全局标准差
+        uint16_t blackLevel;      // 自动拉伸黑点
+        uint16_t whiteLevel;      // 自动拉伸白点
+        QString cfa;              // CFA模式 (RGGB, BGGR, GRBG, GBRG, 空=Mono)
+        double gainR;             // R通道增益
+        double gainB;             // B通道增益
+        QString sessionId;        // 会话ID (用于瓦片缓存)
+        quint64 frameId = 0;      // 帧ID（与 tilePyramidEpoch/epoch 对齐，用于前后端丢弃旧帧/防错帧）
+
+        // 直方图（用于前端拉伸/显示）
+        int histogramBins = 0;                 // bin 数（建议 256）
+        uint64_t histogramTotal = 0;           // 总像素数
+        std::vector<uint32_t> histogram;       // bin 计数
+    };
+
+
+    /**
+     * @brief 生成瓦片金字塔
+     * @param image16 16位原始图像
+     * @param sessionId 会话ID
+     * @param cfa CFA模式
+     * @param maxMergeFactor 最低精度层的合并倍数（2^N，范围建议[1,16]）。例如 16 表示生成 16x16->...->1x1 共 5 层。
+     * @param enableHistogram 是否统计直方图（用于前端拉伸/显示）；默认 false 以减少大图耗时
+     * @return 生成的GPM元数据
+     */
+    TileGPM generateTilePyramid(const cv::Mat& image16, const QString& sessionId, const QString& cfa, int maxMergeFactor = 16, bool enableHistogram = false);
+
+    /**
+     * @brief 计算图像全局处理元数据
+     * @param image16 16位原始图像
+     * @param cfa CFA模式
+     * @param maxMergeFactor 最低精度层的合并倍数（2^N，范围建议[1,16]）
+     * @param enableHistogram 是否统计直方图（为 false 时仅计算 min/max/mean/stdDev/blackLevel/whiteLevel）；默认 false
+     * @return GPM元数据
+     */
+    TileGPM calculateGPM(const cv::Mat& image16, const QString& cfa, int maxMergeFactor = 16, bool enableHistogram = false);
+
+    /**
+     * @brief 计算白平衡增益（基于灰度世界算法）
+     * @param image16 16位原始图像
+     * @param cfa CFA模式
+     * @return QPair<gainR, gainB> R和B通道的增益值
+     */
+    QPair<double, double> calculateWhiteBalanceGains(const cv::Mat& image16, const QString& cfa);
+
+    /**
+     * @brief 保存单个瓦片
+     * @param tile 瓦片数据
+     * @param z 缩放层级
+     * @param x 列索引
+     * @param y 行索引
+     * @param sessionId 会话ID
+     * @param border 瓦片边界扩展像素数（用于前端局部 Bayer 转换避免接缝；前端渲染时会裁剪掉该边界）
+     */
+    void saveTile(const cv::Mat& tile, int z, int x, int y, const QString& sessionId, int border = 0);
+
+    /** 内部使用：写入瓦片文件，假定目录已存在（避免每个瓦片都 mkpath，配合目录预创建使用） */
+    void saveTileFast_NoMkdir(const cv::Mat& tile, const QString& tileFilePath, int border);
+
+    /**
+     * @brief 发送GPM元数据到前端
+     * @param gpm GPM元数据
+     */
+    void sendGPMToClient(const TileGPM& gpm);
+
+    /**
+     * @brief 发送直方图数据到前端（与 TileGPM 分开，避免破坏既有解析）
+     * @param gpm GPM（包含 sessionId 与 histogram 字段）
+     */
+    void sendHistogramToClient(const TileGPM& gpm);
+
+    /**
+     * @brief 清理旧的直方图文件
+     * @param keepCount 保留最近的文件数量（默认5个）
+     */
+    void cleanupOldHistogramFiles(int keepCount = 5);
+
+    // 瓦片相关配置
+    int tilePyramidTileSize = 512;                    // 瓦片尺寸
+    // 瓦片与直方图放在 tmpfs，避免 SD 卡频繁写/删；nginx 需 alias /img/capture-tiles/ -> 本目录
+    std::string tilePyramidPath = "/dev/shm/capture-tiles/";
+
+    // 瓦片生成性能/节流（目标：前端首次可见内容在 <100ms 内到达；完整金字塔后台补齐）
+    std::atomic_uint64_t tilePyramidEpoch{0};         // 每次新帧生成 ++，用于取消旧任务
+    int tilePyramidFastBudgetMs = 100;                // 同步阶段预算（毫秒）
+    int tilePyramidFastSyncMaxZ = 1;                  // 同步生成的最大层级（z=0 为最低精度）；其余后台生成
+    bool tilePyramidFastEnableMedianBlur = false;     // 同步阶段是否做 medianBlur（大图可能超时）
+
+    // 前端视口参数（来自 Vue_Command: sendVisibleArea:x:y:scale）
+    std::atomic<double> tileViewportX{0.0};           // 视口中心 X（原图像素）
+    std::atomic<double> tileViewportY{0.0};           // 视口中心 Y（原图像素）
+    std::atomic<double> tileViewportScale{1.0};       // 缩放比例（0.1~1.0；越小越放大）
+    double tileViewportAspect = 16.0 / 9.0;           // 视口宽高比（与前端 CanvasWidth/CanvasHeight 一致；默认 16:9）
+
+    // 最新一帧的瓦片源图与元数据（用于“拖动/缩放时按需补瓦片”，避免反复 readFits）
+    struct TileFrameState {
+        quint64 epoch = 0;
+        QString sessionId;
+        int imageWidth = 0;
+        int imageHeight = 0;
+        int tileSize = 512;
+        int maxZoomLevel = 0;
+        QString cfa;
+    };
+    mutable std::mutex tileFrameMutex;
+    TileFrameState tileFrame;
+    std::shared_ptr<cv::Mat> tileFrameImage16;        // CV_16UC1 原图（maxZoomLevel层）
+
+    std::atomic_bool tileViewportGenInFlight{false};
+    std::atomic_bool tileViewportGenPending{false};
+
+    // “已生成瓦片”去重（同一 epoch 内避免重复写同一 z/x/y）
+    mutable std::mutex tileGenDoneMutex;
+    quint64 tileGenDoneEpoch = 0;
+    std::unordered_set<uint64_t> tileGenDoneKeys;
+
 
     /**
      * @brief 保存导星图像为 JPG
@@ -514,119 +839,20 @@ public:
      */
     int process_fixed(); // 20*20xbinning
 
-/**********************  PHD2 导星控制/共享内存  **********************/
+    /**********************  导星相机（INDI 直出图，替代 PHD2）  **********************/
 public:
-    /**
-     * @brief 初始化并启动 PHD2
-     */
-    void InitPHD2();
+    // 导星循环曝光开关（用于导星相机预览/取图，不涉及 PHD2）
+    bool isGuiderLoopExp = false;
+    // 导星相机曝光时间（ms）
+    int guiderExpMs = 1000;
 
-    /**
-     * @brief 连接 PHD2
-     * @return 成功返回 true
-     */
-    bool connectPHD(void);
+private:
+    // 导星循环曝光定时器（singleShot：收到一帧后再触发下一帧，避免重入）
+    QTimer *guiderLoopTimer = nullptr;
+    bool guiderExposureInFlight = false;
 
-    /**
-     * @brief 获取 PHD 版本
-     * @param versionName 输出版本
-     * @return 状态码
-     */
-    bool call_phd_GetVersion(QString &versionName);
-
-    uint32_t call_phd_StartLooping(void);      // 开始循环曝光
-    uint32_t call_phd_StopLooping(void);       // 停止循环曝光
-    uint32_t call_phd_AutoFindStar(void);      // 自动寻星
-    uint32_t call_phd_StartGuiding(void);      // 开始导星
-    uint32_t call_phd_StopGuiding(void);       // 停止导星（不影响循环曝光）
-    uint32_t call_phd_checkStatus(unsigned char &status); // 查询状态
-    uint32_t call_phd_setExposureTime(unsigned int expTime); // 设置曝光
-    uint32_t call_phd_whichCamera(std::string Camera);  // 选择相机
-    uint32_t call_phd_ChackControlStatus(int sdk_num);  // 检查控制权限
-    uint32_t call_phd_ClearCalibration(void);           // 清除标定
-    uint32_t call_phd_StarClick(int x, int y);          // 选择星点
-    uint32_t call_phd_FocalLength(int FocalLength);     // 设置焦距
-    uint32_t call_phd_MultiStarGuider(bool isMultiStar);// 多星导星开关
-    uint32_t call_phd_CameraPixelSize(double PixelSize);// 设置像元尺寸
-    uint32_t call_phd_CameraGain(int Gain);             // 设置增益
-    uint32_t call_phd_CalibrationDuration(int StepSize);// 标定步长
-    uint32_t call_phd_RaAggression(int Aggression);     // 赤经纠正力度
-    uint32_t call_phd_DecAggression(int Aggression);    // 赤纬纠正力度
-
-    /**
-     * @brief 显示 PHD 数据（调试/可视化）
-     */
-    void ShowPHDdata();
-
-    /**
-     * @brief 发送导星脉冲
-     * @param Direction 方向
-     * @param Duration 持续时间（ms）
-     */
-    void ControlGuide(int Direction, int Duration);
-
-    /**
-     * @brief 解析并获取 PHD2 控制指令
-     */
-    void GetPHD2ControlInstruct();
-
-    /**
-     * @brief 记录当前时间戳（调试/统计）
-     * @param index 索引
-     */
-    void getTimeNow(int index);
-
-    int glExpTime = 1000;               // 默认曝光时间（ms）
-    bool isGuideCapture = true;         // 是否导星模式采集
-    char *sharedmemory_phd = nullptr;   // PHD 共享内存指针
-    int key_phd = 0;                    // 共享内存 key
-    int shmid_phd = -1;                 // 共享内存 id
-    QProcess *cmdPHD2 = nullptr;        // PHD2 进程
-    bool phd2ExpectedRunning = false;   // 期望 PHD2 处于运行状态（用于判定异常退出）
-
-    char phd_direction = 0;             // 指令方向
-    int phd_step = 0;                   // 步长
-    double phd_dist = 0;                // 距离
-
-    QVector<QPoint> glPHD_Stars;        // 星点列表
-    QVector<QPointF> glPHD_rmsdate;     // RMS 数据
-    bool glPHD_isSelected = false;      // 是否已选星
-    double glPHD_StarX = 0;             // 星点 X
-    double glPHD_StarY = 0;             // 星点 Y
-    int glPHD_CurrentImageSizeX = 0;    // 当前图像宽
-    int glPHD_CurrentImageSizeY = 0;    // 当前图像高
-    int glPHD_OrigImageSizeX = 0;       // 原始图像宽（未合并/缩放前）
-    int glPHD_OrigImageSizeY = 0;       // 原始图像高（未合并/缩放前）
-    int glPHD_OutImageSizeX  = 0;       // 实际输出到UI的图像宽（合并/缩放后）
-    int glPHD_OutImageSizeY  = 0;       // 实际输出到UI的图像高（合并/缩放后）
-    int glPHD_ImageScale     = 1;       // 合并/缩放倍数（例如 NEAREST 下的 scale）
-    double glPHD_LockPositionX = 0;     // 锁定位置 X
-    double glPHD_LockPositionY = 0;     // 锁定位置 Y
-    bool glPHD_ShowLockCross = false;   // 是否显示锁定十字
-    bool glPHD_StartGuide = false;      // 是否开始导星
-
-    bool ClearCalibrationData = true;   // 是否清除校准
-    bool isGuiding = false;             // 导星中
-    bool isGuiderLoopExp = false;       // 导星循环曝光
-
-    QThread *PHDControlGuide_thread = nullptr;  // 导星控制线程
-    QTimer  *PHDControlGuide_threadTimer = nullptr; // 导星控制定时器
-    std::mutex receiveMutex;                     // 接收互斥
-
-    /**
-     * @brief 导星控制定时器回调（槽）
-     */
-    Q_SLOT void onPHDControlGuideTimeout();
-
-    // PHD2 进程监控与恢复
-    Q_SLOT void onPhd2Exited(int exitCode, QProcess::ExitStatus exitStatus);
-    Q_SLOT void onPhd2Error(QProcess::ProcessError error);
-
-    // 强制结束 PHD2 及清理共享内存（用于启动前和异常恢复）
-    void forceKillPhd2AndCleanupShm();
-    void cleanupPhd2Shm();
-    void promptFrontendPhd2Restart();
-    void disconnectFocuserIfConnected();
+private Q_SLOTS:
+    void onGuiderLoopTimeout();
 
 /**********************  对焦/电调控制与自动对焦  **********************/
 public:
@@ -1004,6 +1230,7 @@ public:
     void RecoverySloveResul();
 
     int glFocalLength = 0;           // 全局焦距
+    int glExpTime = 1000;            // 主相机曝光时间（ms）
     double glCameraSize_width = 0;   // 相机感光面宽（mm）
     double glCameraSize_height = 0;  // 相机感光面高（mm）
     int glTelescopeTotalSlewRate = 0;// 赤道仪总速率
@@ -1162,9 +1389,11 @@ public:
 
     /**********************  文件/目录与 USB 相关  **********************/
 public:
-    // 保存路径（保留原默认值与注释）
-    std::string ImageSaveBasePath = "image"; // 默认保存路径
-    QString     ImageSaveBaseDirectory = "image"; // 当前保存路径
+    // 图像保存根目录（运行时在构造函数中初始化）
+    // 默认：系统家目录下的 ~/images
+    // 可通过环境变量覆盖：QUARCS_IMAGE_SAVE_ROOT="/path/to/images"
+    std::string ImageSaveBasePath = "";        // e.g. /home/user/images
+    QString     ImageSaveBaseDirectory = "";   // 与 ImageSaveBasePath 一致（QString 版本）
     QMap<QString, QString> usbMountPointsMap; // U盘映射表：U盘名 -> U盘路径
     QString saveMode = "local"; // 保存模式：local=本地，其它为U盘名代码U盘模式
 
@@ -1233,10 +1462,7 @@ public:
      */
     bool isFileExists(const QString &filePath);
 
-    /**
-     * @brief 获取缓存图像（从共享/临时区）
-     */
-    void getStagingImage();
+
 
     bool isStagingScheduleData = false; // 是否有缓存调度数据
     QString StagingScheduleData;        // 缓存调度数据
@@ -1265,6 +1491,15 @@ public:
     int glMainCameraBinning = 1;   // 主相机 bin
 
     bool isFilterOnCamera = false; // 滤镜是否内置相机
+    QString sdkMainCameraId;       // SDK 主相机 cameraId（用于 CFWList 等稳定 key；避免依赖 INDI 的 FILTER_NAME）
+
+    /**
+     * @brief 清理 QHYCCD SDK 句柄池并释放 SDK 全局资源（适用于"断开全部/断开指定驱动"等场景）
+     * @param reason 清理原因（用于日志记录）
+     * @param deviceType 要清理的设备类型："All"（清理所有）、"MainCamera"（仅主相机）、"Focuser"（仅电调）、"CameraPool"（仅相机池，不清理主相机绑定）
+     * @note 不会修改 systemdevicelist 里的 isSDKConnect（保留用户模式选择），只会清理 isConnect/isBind/DeviceIndiName
+     */
+    void cleanupQhySdkPoolAndResource(const QString& reason, const QString& deviceType = "All");
 
     /**
      * @brief 赤道仪转到坐标（别名）
@@ -1319,7 +1554,7 @@ public:
      * @brief 移动图像到 U 盘（并删除原始）
      * @param RemoveImgPath 路径列表
      */
-    void RemoveImageToUsb(QStringList RemoveImgPath, QString usbName = "");
+    void CopyImagesToUsb(QStringList RemoveImgPath, QString usbName = "");
 
     /**
      * @brief 判断挂载点是否只读
@@ -1629,6 +1864,7 @@ public:
     double CameraTemperature = 16;         // 当前相机温度
     int glOffsetValue = 0, glOffsetMin = 0, glOffsetMax = 0; // 偏置范围
     int glGainValue = 0, glGainMin = 0, glGainMax = 0;       // 增益范围
+    int glUsbTrafficValue = 0, glUsbTrafficMin = 0, glUsbTrafficMax = 0, glUsbTrafficStep = 1; // USB_TRAFFIC 范围（可选）
 
     bool glIsFocusingLooping = false;     // 对焦循环开关
     QString glMainCameraStatu;            // 主相机状态
@@ -1644,6 +1880,10 @@ public:
 
     std::string vueDirectoryPath = "/dev/shm/"; // 前端共享目录
  
+    // Web 前端静态资源目录（URL /img 的真实根目录）
+    // - 部署环境：通常为 /var/www/html/img/
+    // - 开发环境：apps/web-frontend 的 server.py 从 dist/ 提供静态文件，此时 /img 映射到 dist/img
+    //   推荐通过环境变量 QUARCS_WEB_IMG_ROOT 覆盖（见 mainwindow.cpp），而不是改这里。
     std::string vueImagePath = "/var/www/html/img/";
 
     // std::string vueImagePath = "/home/quarcs/workspace/QUARCS/QUARCS_stellarium-web-engine/apps/web-frontend/dist/img/";

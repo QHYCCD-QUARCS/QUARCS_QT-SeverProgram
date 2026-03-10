@@ -824,6 +824,12 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp, int &offsetX, int &offsetY, Q
 
 uint32_t MyClient::getCCDSDKVersion(INDI::BaseDevice *dp, QString &version)
 {
+    if (!dp)
+    {
+        Logger::Log("indi_client | getCCDSDKVersion | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
     INDI::PropertyText ccdCFA = dp->getProperty("SDK_VERSION");
 
     if (!ccdCFA.isValid())
@@ -841,70 +847,227 @@ uint32_t MyClient::getCCDSDKVersion(INDI::BaseDevice *dp, QString &version)
     return QHYCCD_SUCCESS;
 }
 
+int MyClient::FindNumberWidgetIndexByNameOrLabelUpper(const INDI::PropertyNumber &prop,
+                                                      const QStringList &exactUpper,
+                                                      const QStringList &containsUpper)
+{
+    if (!prop.isValid())
+        return -1;
+
+    // 1) exact match first
+    for (int i = 0; i < prop.size(); i++)
+    {
+        const QString nameU  = QString::fromStdString(prop[i].getName()).toUpper();
+        const QString labelU = QString::fromStdString(prop[i].getLabel()).toUpper();
+        for (const auto &ex : exactUpper)
+        {
+            if (nameU == ex || labelU == ex)
+                return i;
+        }
+    }
+
+    // 2) substring match
+    for (int i = 0; i < prop.size(); i++)
+    {
+        const QString nameU  = QString::fromStdString(prop[i].getName()).toUpper();
+        const QString labelU = QString::fromStdString(prop[i].getLabel()).toUpper();
+        for (const auto &token : containsUpper)
+        {
+            if (nameU.contains(token) || labelU.contains(token))
+                return i;
+        }
+    }
+
+    return -1;
+}
+
+bool MyClient::ResolveCcdGainWidget(INDI::BaseDevice *dp, INDI::PropertyNumber &prop, int &idx)
+{
+    if (!dp)
+        return false;
+
+    // Preferred canonical property.
+    prop = dp->getProperty("CCD_GAIN");
+    if (prop.isValid() && prop.size() > 0)
+    {
+        idx = 0;
+        return true;
+    }
+
+    // Compatibility for many drivers (e.g. ZWO ASI): Gain often lives in CCD_CONTROLS.
+    prop = dp->getProperty("CCD_CONTROLS");
+    if (prop.isValid() && prop.size() > 0)
+    {
+        idx = FindNumberWidgetIndexByNameOrLabelUpper(
+            prop,
+            /*exact*/ {"GAIN", "CCD_GAIN", "ASI_GAIN", "CONTROL_GAIN"},
+            /*contains*/ {"GAIN"});
+        return idx >= 0;
+    }
+
+    return false;
+}
+
+bool MyClient::ResolveCcdOffsetWidget(INDI::BaseDevice *dp, INDI::PropertyNumber &prop, int &idx)
+{
+    if (!dp)
+        return false;
+
+    // Preferred canonical property.
+    prop = dp->getProperty("CCD_OFFSET");
+    if (prop.isValid() && prop.size() > 0)
+    {
+        idx = 0;
+        return true;
+    }
+
+    // Compatibility: Offset/BlackLevel/Brightness are commonly exposed inside CCD_CONTROLS.
+    // Notes:
+    // - ZWO ASI often uses Offset, but some stacks effectively map "Brightness" to black level/offset.
+    prop = dp->getProperty("CCD_CONTROLS");
+    if (prop.isValid() && prop.size() > 0)
+    {
+        idx = FindNumberWidgetIndexByNameOrLabelUpper(
+            prop,
+            /*exact*/ {"OFFSET", "CCD_OFFSET", "ASI_OFFSET", "CONTROL_OFFSET", "BLACKLEVEL", "BLACK_LEVEL", "BRIGHTNESS"},
+            /*contains*/ {"OFFSET", "BLACK", "BRIGHTNESS"});
+        return idx >= 0;
+    }
+
+    return false;
+}
+
 uint32_t MyClient::getCCDGain(INDI::BaseDevice *dp, int &value, int &min, int &max)
 {
-    INDI::PropertyNumber ccdgain = dp->getProperty("CCD_GAIN");
-
-    if (!ccdgain.isValid())
+    if (!dp)
     {
-        Logger::Log("indi_client | getCCDGain | Error: unable to find  CCD_GAIN property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | getCCDGain | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    value = ccdgain->np[0].value;
-    min = ccdgain->np[0].min;
-    max = ccdgain->np[0].max;
+    INDI::PropertyNumber prop = dp->getProperty("CCD_GAIN");
+    int idx = -1;
+    if (!ResolveCcdGainWidget(dp, prop, idx))
+    {
+        Logger::Log("indi_client | getCCDGain | Error: unable to find Gain in CCD_GAIN nor CCD_CONTROLS...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
 
-    Logger::Log("indi_client | getCCDGain | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
+    value = static_cast<int>(prop[idx].getValue());
+    min = static_cast<int>(prop[idx].getMin());
+    max = static_cast<int>(prop[idx].getMax());
+
+    Logger::Log("indi_client | getCCDGain | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max) +
+                    " (" + prop.getName() + "/" + prop[idx].getName() + ")",
+                LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
 uint32_t MyClient::setCCDGain(INDI::BaseDevice *dp, int value)
 {
-    INDI::PropertyNumber ccdgain = dp->getProperty("CCD_GAIN");
-
-    if (!ccdgain.isValid())
+    if (!dp)
     {
-        Logger::Log("indi_client | setCCDGain | Error: unable to find  CCD_BINNING property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | setCCDGain | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    ccdgain[0].setValue(value);
-    sendNewProperty(ccdgain);
+    INDI::PropertyNumber prop = dp->getProperty("CCD_GAIN");
+    int idx = -1;
+    if (!ResolveCcdGainWidget(dp, prop, idx))
+    {
+        Logger::Log("indi_client | setCCDGain | Error: unable to find Gain in CCD_GAIN nor CCD_CONTROLS...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
 
+    prop[idx].setValue(value);
+    sendNewProperty(prop);
+    Logger::Log("indi_client | setCCDGain | " + std::to_string(value) + " (" + prop.getName() + "/" + prop[idx].getName() + ")",
+                LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
 uint32_t MyClient::getCCDOffset(INDI::BaseDevice *dp, int &value, int &min, int &max)
 {
-    INDI::PropertyNumber ccdoffset = dp->getProperty("CCD_OFFSET");
-
-    if (!ccdoffset.isValid())
+    if (!dp)
     {
-        Logger::Log("indi_client | getCCDOffset | Error: unable to find  CCD_OFFSET property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | getCCDOffset | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    value = ccdoffset->np[0].value;
-    min = ccdoffset->np[0].min;
-    max = ccdoffset->np[0].max;
+    INDI::PropertyNumber prop = dp->getProperty("CCD_OFFSET");
+    int idx = -1;
+    if (!ResolveCcdOffsetWidget(dp, prop, idx))
+    {
+        Logger::Log("indi_client | getCCDOffset | Error: unable to find Offset in CCD_OFFSET nor CCD_CONTROLS...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
 
-    Logger::Log("indi_client | getCCDOffset | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
+    value = static_cast<int>(prop[idx].getValue());
+    min = static_cast<int>(prop[idx].getMin());
+    max = static_cast<int>(prop[idx].getMax());
+
+    Logger::Log("indi_client | getCCDOffset | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max) +
+                    " (" + prop.getName() + "/" + prop[idx].getName() + ")",
+                LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;
 }
 
 uint32_t MyClient::setCCDOffset(INDI::BaseDevice *dp, int value)
 {
-    INDI::PropertyNumber ccdoffset = dp->getProperty("CCD_OFFSET");
-
-    if (!ccdoffset.isValid())
+    if (!dp)
     {
-        Logger::Log("indi_client | setCCDOffset | Error: unable to find  CCD_OFFSET property...", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("indi_client | setCCDOffset | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
 
-    ccdoffset[0].setValue(value);
-    sendNewProperty(ccdoffset);
+    INDI::PropertyNumber prop = dp->getProperty("CCD_OFFSET");
+    int idx = -1;
+    if (!ResolveCcdOffsetWidget(dp, prop, idx))
+    {
+        Logger::Log("indi_client | setCCDOffset | Error: unable to find Offset in CCD_OFFSET nor CCD_CONTROLS...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
+    prop[idx].setValue(value);
+    sendNewProperty(prop);
+    Logger::Log("indi_client | setCCDOffset | " + std::to_string(value) + " (" + prop.getName() + "/" + prop[idx].getName() + ")",
+                LogLevel::INFO, DeviceType::CAMERA);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::getCCDUsbTraffic(INDI::BaseDevice *dp, int &value, int &min, int &max, int &step)
+{
+    INDI::PropertyNumber usbTraffic = dp->getProperty("USB_TRAFFIC");
+
+    if (!usbTraffic.isValid())
+    {
+        Logger::Log("indi_client | getCCDUsbTraffic | Error: unable to find USB_TRAFFIC property...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
+    value = static_cast<int>(usbTraffic->np[0].value);
+    min = static_cast<int>(usbTraffic->np[0].min);
+    max = static_cast<int>(usbTraffic->np[0].max);
+    step = static_cast<int>(usbTraffic->np[0].step);
+    if (step <= 0) step = 1;
+
+    Logger::Log("indi_client | getCCDUsbTraffic | " + std::to_string(value) + ", " + std::to_string(min) + ", " + std::to_string(max) + ", step " + std::to_string(step),
+                LogLevel::INFO, DeviceType::CAMERA);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::setCCDUsbTraffic(INDI::BaseDevice *dp, int value)
+{
+    INDI::PropertyNumber usbTraffic = dp->getProperty("USB_TRAFFIC");
+
+    if (!usbTraffic.isValid())
+    {
+        Logger::Log("indi_client | setCCDUsbTraffic | Error: unable to find USB_TRAFFIC property...", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
+    usbTraffic[0].setValue(value);
+    sendNewProperty(usbTraffic);
 
     return QHYCCD_SUCCESS;
 }
@@ -1049,6 +1212,12 @@ uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 
 uint32_t MyClient::getMountInfo(INDI::BaseDevice *dp, QString &version)
 {
+    if (!dp)
+    {
+        Logger::Log("indi_client | getMountInfo | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::MOUNT);
+        return QHYCCD_ERROR;
+    }
+
     INDI::PropertyText mountInfo = dp->getProperty("DRIVER_INFO");
     if (!mountInfo.isValid() || mountInfo->ntp <= 0)
     {
@@ -2869,6 +3038,12 @@ uint32_t MyClient::getTelescopeStatus(INDI::BaseDevice *dp, QString &statu)
 
 uint32_t MyClient::getFocuserSDKVersion(INDI::BaseDevice *dp, QString &version)
 {
+    if (!dp)
+    {
+        Logger::Log("indi_client | getFocuserSDKVersion | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::FOCUSER);
+        return QHYCCD_ERROR;
+    }
+
     INDI::PropertyNumber focuserSDKVersion = dp->getProperty("FOCUS_VERSION");
     if (!focuserSDKVersion.isValid() || focuserSDKVersion->nnp <= 0)
     {
@@ -3341,6 +3516,12 @@ uint32_t MyClient::setCFWSlotName(INDI::BaseDevice *dp, QString name)
 ***************************************************************************************/
 uint32_t MyClient::getDevicePort(INDI::BaseDevice *dp, QString &Device_Port) // add by CJQ 2023.3.3
 {
+    if (!dp)
+    {
+        Logger::Log("indi_client | getDevicePort | Error: BaseDevice is nullptr", LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
     INDI::PropertyText property = dp->getProperty("DEVICE_PORT");
 
     if (!property.isValid())

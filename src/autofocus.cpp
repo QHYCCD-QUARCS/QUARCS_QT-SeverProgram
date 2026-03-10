@@ -94,16 +94,22 @@ static AutoFocusConfig g_autoFocusConfig;
  * - 不再进行复杂的星点跟踪
  */
 
-AutoFocus::AutoFocus(MyClient *indiServer, 
-                     INDI::BaseDevice *dpFocuser, 
-                     INDI::BaseDevice *dpMainCamera, 
+AutoFocus::AutoFocus(MyClient *indiServer,
+                     INDI::BaseDevice *dpFocuser,
+                     INDI::BaseDevice *dpMainCamera,
                      WebSocketThread *wsThread,
+                     bool useSdkMainCamera,
+                     bool useSdkFocuser,
+                     SdkDeviceHandle sdkFocuserHandle,
                      QObject *parent)
     : QObject(parent)
     , m_indiServer(indiServer)                       // INDI客户端对象
     , m_dpFocuser(dpFocuser)                         // 电调设备对象
     , m_dpMainCamera(dpMainCamera)                   // 主相机设备对象
     , m_wsThread(wsThread)                           // 网络线程
+    , m_useSdkMainCamera(useSdkMainCamera)
+    , m_useSdkFocuser(useSdkFocuser)
+    , m_sdkFocuserHandle(sdkFocuserHandle)
     , m_currentState(AutoFocusState::IDLE)           // 初始状态为空闲
     , m_timer(new QTimer(this))                      // 创建定时器用于状态处理
     , m_moveCheckTimer(new QTimer(this))             // 创建移动检查定时器
@@ -175,12 +181,12 @@ AutoFocus::AutoFocus(MyClient *indiServer,
 {
         m_hasLastPosition = false;
         m_coarseDivisionCount = 10;
-// 验证传入的设备对象
-    if (!m_dpMainCamera) {
-        log(QString("警告: 主相机设备对象为空"));
+// 验证传入的设备对象（SDK 为“单设备连接”，不以 dp 指针是否为空作为全局判断）
+    if (!m_dpMainCamera && !m_useSdkMainCamera) {
+        log(QString("警告: 主相机设备对象为空（且未启用 SDK 主相机）"));
     }
-    if (!m_dpFocuser) {
-        log(QString("警告: 电调设备对象为空"));
+    if (!m_dpFocuser && !(m_useSdkFocuser && m_sdkFocuserHandle != nullptr)) {
+        log(QString("警告: 电调设备对象为空（且未启用 SDK 电调）"));
     }
     if (!m_indiServer) {
         log(QString("警告: INDI客户端对象为空"));
@@ -211,7 +217,10 @@ bool AutoFocus::validateDevices()
 {
     auto now = QDateTime::currentMSecsSinceEpoch();
     if (now - m_lastDeviceCheck > g_autoFocusConfig.deviceCheckInterval) {
-        m_devicesValid = (m_dpMainCamera && m_dpFocuser && m_indiServer);
+        const bool hasCamera = (m_useSdkMainCamera || m_dpMainCamera != nullptr);
+        const bool hasFocuser = ((m_useSdkFocuser && m_sdkFocuserHandle != nullptr) || m_dpFocuser != nullptr);
+        // 目前算法与部分流程仍依赖 m_indiServer（例如部分设备操作/日志），因此保留该约束
+        m_devicesValid = (hasCamera && hasFocuser && m_indiServer);
         m_lastDeviceCheck = now;
         
         if (!m_devicesValid) {
@@ -231,8 +240,9 @@ bool AutoFocus::validateDevices()
  */
 void AutoFocus::executeFocuserMove(int targetPosition, const QString& moveReason)
 {
-    if (!m_dpFocuser) {
-        log(QString("错误: 电调设备对象为空，无法执行移动"));
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    if (!m_dpFocuser && !hasSdkFocuser) {
+        log(QString("错误: 电调不可用（INDI 指针为空且 SDK 句柄无效），无法执行移动"));
         return;
     }
     
@@ -263,9 +273,24 @@ void AutoFocus::executeFocuserMove(int targetPosition, const QString& moveReason
     m_moveStartTime = QDateTime::currentMSecsSinceEpoch();
     m_lastPosition = m_currentPosition;
     
-    // 发送移动命令
-    m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
-    m_indiServer->moveFocuserSteps(m_dpFocuser, absSteps);
+    // 发送移动命令（按“单设备SDK连接”分别走 INDI 或 SDK）
+    if (hasSdkFocuser) {
+        SdkCommand cmd;
+        cmd.type = SdkCommandType::Custom;
+        cmd.name = "MoveAbsolute";
+        cmd.payload = targetPosition;
+        SdkResult res = SdkManager::instance().callByHandle(m_sdkFocuserHandle, cmd);
+        if (!res.success) {
+            log(QString("%1: SDK MoveAbsolute 失败: %2")
+                .arg(moveReason)
+                .arg(QString::fromStdString(res.message)));
+            m_isFocuserMoving = false;
+            return;
+        }
+    } else {
+        m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+        m_indiServer->moveFocuserSteps(m_dpFocuser, absSteps);
+    }
     
     // 初始化参数
     initializeFocuserMoveParameters();
@@ -345,14 +370,15 @@ bool AutoFocus::initializeAutoFocusCommon()
     }
 
     // 检查设备对象是否有效
-    if (!m_dpFocuser) {
-        log(QString("错误: 电调设备对象为空，无法开始自动对焦"));
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    if (!m_dpFocuser && !hasSdkFocuser) {
+        log(QString("错误: 电调设备不可用（INDI 指针为空且 SDK 句柄无效），无法开始自动对焦"));
         emit errorOccurred("电调设备未连接");
         return false;
     }
     
-    if (!m_dpMainCamera) {
-        log(QString("错误: 主相机设备对象为空，无法开始自动对焦"));
+    if (!m_dpMainCamera && !m_useSdkMainCamera) {
+        log(QString("错误: 主相机设备不可用（INDI 指针为空且未启用 SDK 主相机），无法开始自动对焦"));
         emit errorOccurred("主相机设备未连接");
         return false;
     }
@@ -424,10 +450,8 @@ bool AutoFocus::initializeAutoFocusCommon()
         log(QString("电调位置范围: %1 - %2").arg(m_focuserMinPosition).arg(m_focuserMaxPosition));
     }
     
-    // 获取当前电调位置
-    int currentPos;
-    m_indiServer->getFocuserAbsolutePosition(m_dpFocuser, currentPos);
-    m_currentPosition = currentPos;
+    // 获取当前电调位置（SDK/INDI 统一入口）
+    m_currentPosition = getCurrentFocuserPosition();
     log(QString("当前电调位置: %1").arg(m_currentPosition));
 
     return true;
@@ -632,20 +656,32 @@ void AutoFocus::stopAutoFocus()
         // 再次强制处理事件，确保所有停止操作完成
         QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         
-        // 立即停止电调移动
-        if (m_dpFocuser && m_isFocuserMoving) {
+        // 立即停止电调移动（按“单设备SDK连接”分别走 INDI 或 SDK）
+        if (m_isFocuserMoving) {
             log("正在停止电调移动...");
-            // 发送停止命令给电调
-            m_indiServer->abortFocuserMove(m_dpFocuser);
-            log("电调停止命令已发送");
+            if (m_useSdkFocuser && m_sdkFocuserHandle != nullptr) {
+                SdkCommand abortCmd;
+                abortCmd.type = SdkCommandType::Custom;
+                abortCmd.name = "Abort";
+                abortCmd.payload = std::any();
+                SdkManager::instance().callByHandle(m_sdkFocuserHandle, abortCmd);
+                log("SDK 电调停止命令已发送");
+            } else if (m_dpFocuser) {
+                m_indiServer->abortFocuserMove(m_dpFocuser);
+                log("INDI 电调停止命令已发送");
+            }
         }
         
-        // 立即停止拍摄
-        if (m_dpMainCamera && !m_isCaptureEnd) {
+        // 立即停止拍摄（SDK 主相机由 MainWindow 统一入口处理）
+        if (!m_isCaptureEnd) {
             log("正在停止拍摄...");
-            // 发送停止拍摄命令
-            m_indiServer->setCCDAbortExposure(m_dpMainCamera);
-            log("拍摄停止命令已发送");
+            if (m_useSdkMainCamera) {
+                emit requestAbortCapture();
+                log("已触发 requestAbortCapture()");
+            } else if (m_dpMainCamera) {
+                m_indiServer->setCCDAbortExposure(m_dpMainCamera);
+                log("INDI 拍摄停止命令已发送");
+            }
         }
         
         // 重置电调移动状态（不清空参数，避免回调访问导致段错误）
@@ -1215,8 +1251,15 @@ Q_UNUSED(this);
 // - 若目标==当前（或被夹紧后相等），返回 false，调用方可直接拍照或调整策略
 bool AutoFocus::beginMoveTo(int targetPosition, const QString& reason)
 {
-    if (!m_dpFocuser || !m_indiServer) {
+    // 检查电调设备是否可用（支持SDK和INDI模式）
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    if (!m_dpFocuser && !hasSdkFocuser) {
         handleError("电调设备连接已断开");
+        return false;
+    }
+    // INDI模式需要检查m_indiServer
+    if (m_dpFocuser && !m_indiServer) {
+        handleError("INDI客户端未连接");
         return false;
     }
 
@@ -1247,14 +1290,21 @@ bool AutoFocus::beginMoveTo(int targetPosition, const QString& reason)
     m_moveWaitCount   = 0;
     m_moveLastPosition = current;
 
-    // ---- 下发方向与步数 ----
-    m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
-    m_indiServer->moveFocuserSteps(m_dpFocuser, steps);
+    // ---- 下发方向与步数（支持SDK和INDI模式）----
+    if (hasSdkFocuser) {
+        // SDK模式：使用executeFocuserMove，它会调用MoveAbsolute
+        executeFocuserMove(targetPosition, reason);
+    } else {
+        // INDI模式：使用原有的方式
+        m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+        m_indiServer->moveFocuserSteps(m_dpFocuser, steps);
+    }
 
     // ---- 初始化移动判断参数（速度/停滞等）----
     initializeFocuserMoveParameters();
 
-    log(QString("开始移动：%1 → %2，方向=%3，步数=%4，原因=%5")
+    log(QString("开始移动(%1)：%2 → %3，方向=%4，步数=%5，原因=%6")
+        .arg(hasSdkFocuser ? "SDK" : "INDI")
         .arg(current)
         .arg(targetPosition)
         .arg(isInward ? "向内" : "向外")
@@ -2555,14 +2605,15 @@ void AutoFocus::processMovingToBestPosition()
     log(QString("开始移动到最佳位置: 当前位置=%1, 目标位置=%2").arg(currentPos).arg(bestPosition));
     
     // 检查电调设备状态
-    if (!m_dpFocuser) {
-        log("错误: 电调设备对象为空，无法移动到最佳位置");
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    if (!m_dpFocuser && !hasSdkFocuser) {
+        log("错误: 电调不可用（INDI 指针为空且 SDK 句柄无效），无法移动到最佳位置");
         completeAutoFocus(false);
         return;
     }
-    
-    if (!m_dpFocuser->isConnected()) {
-        log("错误: 电调设备未连接，无法移动到最佳位置");
+    // INDI 电调才检查连接状态；SDK 电调由命令返回判断
+    if (m_dpFocuser && !m_dpFocuser->isConnected()) {
+        log("错误: INDI 电调设备未连接，无法移动到最佳位置");
         completeAutoFocus(false);
         return;
     }
@@ -2873,12 +2924,29 @@ bool AutoFocus::captureImage(int exposureTime, bool useROI)
     
     log(QString("拍摄图像，曝光时间 %1ms，使用ROI: %2").arg(exposureTime).arg(useROI ? "是" : "否"));
     
-    // 检查相机设备对象是否有效
+    // SDK 主相机：通过 MainWindow 的统一入口拍摄（不要求 m_dpMainCamera）
+    if (m_useSdkMainCamera)
+    {
+        // SDK 兼容：当前先走全幅（ROI 参数在 SDK 拍摄链路中不生效）
+        if (useROI)
+            log(QString("SDK 主相机拍摄：当前版本先按全幅拍摄（ROI 暂未在 AutoFocus SDK 通路中对接）"));
+
+        // 复位完成标志（由 MainWindow 在曝光完成时调用 setCaptureComplete 置为 true）
+        m_isCaptureEnd = false;
+        m_lastCapturedImage = "/dev/shm/ccd_simulator.fits";
+        emit roiInfoChanged(QRect(0, 0, 0, 0));
+
+        emit requestCapture(exposureTime);
+        log(QString("已触发 requestCapture(%1ms)，等待 MainWindow 回调 setCaptureComplete").arg(exposureTime));
+        return true;
+    }
+
+    // INDI 主相机
     if (!m_dpMainCamera) {
         log(QString("错误: 主相机设备对象为空，无法拍摄"));
         return false;
     }
-    
+
     // 检查INDI客户端是否有效
     if (!m_indiServer) {
         log(QString("错误: INDI客户端不可用"));
@@ -3145,9 +3213,9 @@ double hfr = m_lastHFR;
  */
 void AutoFocus::moveFocuser(int steps)
 {
-    // 检查电调设备对象是否有效
-    if (!m_dpFocuser) {
-        log(QString("错误: 电调设备对象为空，无法移动"));
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    if (!m_dpFocuser && !hasSdkFocuser) {
+        log(QString("错误: 电调不可用（INDI 指针为空且 SDK 句柄无效），无法移动"));
         return;
     }
     
@@ -3184,8 +3252,24 @@ void AutoFocus::moveFocuser(int steps)
     m_lastPosition = m_currentPosition;
     
     // 设置移动方向并发送移动命令
-    m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
-    m_indiServer->moveFocuserSteps(m_dpFocuser, moveSteps);
+    if (hasSdkFocuser) {
+        SdkFocuserRelMoveParam p;
+        p.outward = !isInward;
+        p.steps = moveSteps;
+        SdkCommand cmd;
+        cmd.type = SdkCommandType::Custom;
+        cmd.name = "MoveRelative";
+        cmd.payload = p;
+        SdkResult res = SdkManager::instance().callByHandle(m_sdkFocuserHandle, cmd);
+        if (!res.success) {
+            log(QString("SDK MoveRelative 失败: %1").arg(QString::fromStdString(res.message)));
+            m_isFocuserMoving = false;
+            return;
+        }
+    } else {
+        m_indiServer->setFocuserMoveDiretion(m_dpFocuser, isInward);
+        m_indiServer->moveFocuserSteps(m_dpFocuser, moveSteps);
+    }
     
     // 初始化电调判断参数
     initializeFocuserMoveParameters();
@@ -3210,17 +3294,48 @@ void AutoFocus::moveFocuser(int steps)
  */
 int AutoFocus::getCurrentFocuserPosition()
 {
-    // 检查电调对象是否有效
-    if (!m_dpFocuser) {
+    // SDK 电调：走 SdkManager GetPosition
+    if (m_useSdkFocuser && m_sdkFocuserHandle != nullptr)
+    {
+        SdkCommand cmd;
+        cmd.type = SdkCommandType::Custom;
+        cmd.name = "GetPosition";
+        cmd.payload = std::any();
+
+        SdkResult res = SdkManager::instance().callByHandle(m_sdkFocuserHandle, cmd);
+        if (res.success)
+        {
+            try
+            {
+                const int pos = std::any_cast<int>(res.payload);
+                m_currentPosition = pos;
+                log(QString("SDK 获取电调位置: %1").arg(pos));
+            }
+            catch (const std::bad_any_cast &)
+            {
+                log(QString("SDK GetPosition 回包类型不匹配，使用缓存位置: %1").arg(m_currentPosition));
+            }
+        }
+        else
+        {
+            log(QString("SDK GetPosition 失败，使用缓存位置: %1，原因: %2")
+                    .arg(m_currentPosition)
+                    .arg(QString::fromStdString(res.message)));
+        }
+        return m_currentPosition;
+    }
+
+    // INDI 电调
+    if (!m_dpFocuser)
+    {
         log(QString("错误: 电调对象为空，无法获取位置"));
         return m_currentPosition; // 返回缓存的位置
     }
-    
+
     int currentPosition;
-    int success = m_indiServer->getFocuserAbsolutePosition(m_dpFocuser,currentPosition);
-    if(success == 0 && currentPosition != INT_MAX)
+    int success = m_indiServer->getFocuserAbsolutePosition(m_dpFocuser, currentPosition);
+    if (success == 0 && currentPosition != INT_MAX)
     {
-        // 获取成功，更新缓存的位置
         m_currentPosition = currentPosition;
         log(QString("成功获取电调位置: %1").arg(currentPosition));
     }
@@ -3228,7 +3343,7 @@ int AutoFocus::getCurrentFocuserPosition()
     {
         log(QString("错误: 获取当前电调位置失败，使用缓存位置: %1").arg(m_currentPosition));
     }
-    return m_currentPosition; // 返回缓存的位置
+    return m_currentPosition;
 }
 
 /**
@@ -3246,9 +3361,9 @@ int AutoFocus::getCurrentFocuserPosition()
  */
 void AutoFocus::setFocuserPosition(int position)
 {
-    // 检查电调对象是否有效
-    if (!m_dpFocuser) {
-        log(QString("错误: 电调对象为空，无法设置位置"));
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    if (!m_dpFocuser && !hasSdkFocuser) {
+        log(QString("错误: 电调不可用（INDI 指针为空且 SDK 句柄无效），无法设置位置"));
         return;
     }
     
@@ -3281,22 +3396,26 @@ void AutoFocus::setFocuserPosition(int position)
  */
 bool AutoFocus::isFocuserConnected()
 {
-    // 检查电调对象是否有效
+    // SDK 电调：能读到位置即认为已连接
+    if (m_useSdkFocuser && m_sdkFocuserHandle != nullptr)
+    {
+        SdkCommand cmd;
+        cmd.type = SdkCommandType::Custom;
+        cmd.name = "GetPosition";
+        cmd.payload = std::any();
+        SdkResult res = SdkManager::instance().callByHandle(m_sdkFocuserHandle, cmd);
+        return res.success;
+    }
+
+    // INDI 电调
     if (!m_dpFocuser) {
         log(QString("错误: 电调对象为空"));
         return false;
     }
 
     int position;
-    int success = m_indiServer->getFocuserAbsolutePosition(m_dpFocuser,position);
-    if(success == 0 && position != INT_MAX)
-    {
-        return true;
-    }
-    else
-    {
-        return false;
-    }
+    int success = m_indiServer->getFocuserAbsolutePosition(m_dpFocuser, position);
+    return (success == 0 && position != INT_MAX);
     
 }
 
@@ -4158,17 +4277,26 @@ void AutoFocus::resetCaptureStatus()
  */
 void AutoFocus::startFocuserMove(int targetPosition)
 {
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    if (hasSdkFocuser)
+    {
+        // SDK 电调：直接复用 executeFocuserMove（内部会发 MoveAbsolute 并初始化等待参数）
+        m_currentPosition = getCurrentFocuserPosition();
+        executeFocuserMove(targetPosition, "startFocuserMove(SDK)");
+        return;
+    }
+
     if (!m_dpFocuser) {
         log(QString("错误: 电调设备对象为空，无法移动"));
         return;
     }
-    
-    // 检查电调设备连接状态
+
+    // 检查电调设备连接状态（仅 INDI）
     if (!m_dpFocuser->isConnected()) {
         log(QString("错误: 电调设备未连接，无法移动"));
         return;
     }
-    
+
     log(QString("电调设备状态: 连接=%1, 设备名称=%2")
         .arg(m_dpFocuser->isConnected() ? "是" : "否")
         .arg(m_dpFocuser->getDeviceName()));
@@ -4232,12 +4360,12 @@ bool AutoFocus::checkFocuserMoveComplete()
     
     log(QString("检查电调移动状态: 目标位置=%1").arg(m_targetFocuserPosition));
     
-    // 获取当前位置
-    int currentPosition;
-    int success = m_indiServer->getFocuserAbsolutePosition(m_dpFocuser, currentPosition);
+    // 获取当前位置（SDK/INDI 统一入口）
+    const bool hasSdkFocuser = (m_useSdkFocuser && m_sdkFocuserHandle != nullptr);
+    const int currentPosition = getCurrentFocuserPosition();
 
-    log(QString("获取电调位置: 成功=%1, 当前位置=%2, 目标位置=%3, 移动计数=%4")
-        .arg(success == 0 ? "是" : "否")
+    log(QString("获取电调位置(%1): 当前位置=%2, 目标位置=%3, 移动计数=%4")
+        .arg(hasSdkFocuser ? "SDK" : "INDI")
         .arg(currentPosition)
         .arg(m_targetFocuserPosition)
         .arg(m_moveWaitCount));
@@ -4296,9 +4424,16 @@ void AutoFocus::stopFocuserMove()
     log(QString("停止电调移动，发送停止命令"));
     
     // 发送真正的电调停止命令
-    if (m_dpFocuser) {
+    if (m_useSdkFocuser && m_sdkFocuserHandle != nullptr) {
+        SdkCommand abortCmd;
+        abortCmd.type = SdkCommandType::Custom;
+        abortCmd.name = "Abort";
+        abortCmd.payload = std::any();
+        SdkManager::instance().callByHandle(m_sdkFocuserHandle, abortCmd);
+        log("SDK 电调停止命令已发送");
+    } else if (m_dpFocuser) {
         m_indiServer->abortFocuserMove(m_dpFocuser);
-        log("电调停止命令已发送");
+        log("INDI 电调停止命令已发送");
     } else {
         log("警告: 电调设备对象为空，无法发送停止命令");
     }

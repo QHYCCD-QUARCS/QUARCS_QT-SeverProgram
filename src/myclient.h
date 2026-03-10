@@ -9,6 +9,7 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
+#include <QStringList>
 
 #include "Logger.h"
 #include "mountstate.h"
@@ -78,6 +79,9 @@ class MyClient : public INDI::BaseClient
         uint32_t setCCDGain(INDI::BaseDevice *dp,int value);
         uint32_t getCCDOffset(INDI::BaseDevice *dp,int &value,int &min,int &max);
         uint32_t setCCDOffset(INDI::BaseDevice *dp,int value);
+        // USB Traffic (部分相机/驱动可能不存在该属性，调用方需判断返回值)
+        uint32_t getCCDUsbTraffic(INDI::BaseDevice *dp,int &value,int &min,int &max,int &step);
+        uint32_t setCCDUsbTraffic(INDI::BaseDevice *dp,int value);
         uint32_t getCCDReadMode(INDI::BaseDevice *dp,int &value,int &min,int &max);
         uint32_t setCCDReadMode(INDI::BaseDevice *dp,int value);
 
@@ -232,6 +236,16 @@ class MyClient : public INDI::BaseClient
         void newProperty(INDI::Property property) override;
         void updateProperty(INDI::Property property);
     private:
+        // -------- INDI property compatibility utils --------
+        // 兼容不同 INDI CCD 驱动的 Gain/Offset 属性位置：
+        // - 优先 CCD_GAIN / CCD_OFFSET
+        // - 回退 CCD_CONTROLS，并按 member 的 name/label 匹配 Gain/Offset/BlackLevel/Brightness 等
+        static int FindNumberWidgetIndexByNameOrLabelUpper(const INDI::PropertyNumber &prop,
+                                                          const QStringList &exactUpper,
+                                                          const QStringList &containsUpper);
+        static bool ResolveCcdGainWidget(INDI::BaseDevice *dp, INDI::PropertyNumber &prop, int &idx);
+        static bool ResolveCcdOffsetWidget(INDI::BaseDevice *dp, INDI::PropertyNumber &prop, int &idx);
+
         INDI::BaseDevice mSimpleCCD;
 
         // 存储设备的列表

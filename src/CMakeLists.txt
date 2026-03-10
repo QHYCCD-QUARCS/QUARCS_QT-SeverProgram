@@ -30,6 +30,15 @@ add_executable(client
   websocketclient.h websocketclient.cpp
   mainwindow.h mainwindow.cpp
   tools.h tools.cpp
+  sdks/SdkCommon.h
+  sdks/SdkDriver.h
+  sdks/SdkManager.h sdks/SdkManager.cpp
+  sdks/SdkDriverRegistry.h sdks/SdkDriverRegistry.cpp
+  sdks/SdkSerialExecutor.h sdks/SdkSerialExecutor.cpp
+  sdks/SdkDevice.h sdks/SdkDevice.cpp
+  sdks/LoggerAdapter.h
+  sdks/QHYCCD/QHYCCD.h sdks/QHYCCD/QHYCCD.cpp
+  sdks/QHYCCD/QHYFocuser.h sdks/QHYCCD/QHYFocuser.cpp
   focused_star_detection.cpp
   myclient.h myclient.cpp
   websocketthread.h websocketthread.cpp
@@ -94,3 +103,5 @@ target_link_libraries(client PRIVATE
 # 复制配置文件到构建目录
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/../qhyccd.ini
      DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
+

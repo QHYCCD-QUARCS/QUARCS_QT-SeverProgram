@@ -63,6 +63,10 @@ void WebSocketClient::onHttpsConnected()
                 this, &WebSocketClient::onTextMessageReceived);
         isHttpsConnected = true;
     }
+    
+    // 关键修复：Qt 端可能在 WebSocket 连接建立之前就发送了消息（例如 ServerInitSuccess），
+    // 这些消息会进入 pendingMessages 队列。连接一旦建立，应该立刻尝试冲刷队列。
+    flushPending();
 
     // 修复：简化条件判断逻辑
     if (isHttpsConnected && (httpUrl.isEmpty() || isHttpConnected)) {
@@ -108,6 +112,9 @@ void WebSocketClient::onHttpConnected()
                 this, &WebSocketClient::onTextMessageReceived);
         isHttpConnected = true;
     }
+    
+    // 关键修复：连接建立后立刻冲刷 pending 队列，确保启动早期消息不会丢失
+    flushPending();
     
     // 修复：简化条件判断逻辑
     if (isHttpConnected && (httpsUrl.isEmpty() || isHttpsConnected)) {

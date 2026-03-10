@@ -1,5 +1,6 @@
 #include "tools.h"
 #include <vector>
+#include <cstdio>
 #include <QFile>
 #include <QString>
 #include <qdebug.h>
@@ -13,6 +14,13 @@
 #include <filesystem>
 #include <QObject>
 #include <QDebug>
+#include <QElapsedTimer>
+#include <QThread>
+#include <atomic>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
 
 // #define ImageDebug
 
@@ -29,6 +37,20 @@ qhyccd_handle* guiderhandle_;
 qhyccd_handle* polerhandle_;
 qhyccd_handle* fpgahandle_;
 qhyccd_handle* maincamhandle_;
+
+// INDI FIFO 写入熔断：当 /tmp/myFIFO 没有读端/不存在时，避免在断开流程里反复尝试写入
+std::atomic_bool g_indiFifoDisabled{false};
+std::atomic_bool g_indiFifoDisableLogged{false};
+
+static inline void disableIndiFifoOnce(const QString &why)
+{
+    g_indiFifoDisabled.store(true);
+    // 只打印一次，避免刷屏
+    if (!g_indiFifoDisableLogged.exchange(true))
+    {
+        Logger::Log("INDI FIFO disabled: " + why.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+    }
+}
 }  // namespace
 
 Tools* Tools::instance_ = new Tools();
@@ -338,105 +360,7 @@ DriversList& Tools::driversList() { return driversList_; }
 
 SystemDeviceList& Tools::systemDeviceList() { return systemDeviceList_; }
 
-bool Tools::LoadSystemListFromXml(const QString& fileName) {
-  // clean list ,otherwise it will be append on the end of previous
-  systemDeviceList_.system_devices.clear();
 
-  QFile file(fileName);
-  if (file.open(QIODevice::ReadOnly)) {
-    QXmlStreamReader xmlReader(&file);
-    while (!xmlReader.atEnd()) {
-      xmlReader.readNext();
-      if (xmlReader.isStartElement()) {
-        if (xmlReader.name() == "SystemDeviceList") {
-          systemDeviceList_.currentDeviceCode =
-              xmlReader.attributes().value("currentDeviceCode").toInt();
-        } else if (xmlReader.name() == "SystemDevice") {
-          SystemDevice systemDevice;
-          xmlReader.readNext();
-          while (!(xmlReader.isEndElement() &&
-                   xmlReader.name() == "SystemDevice")) {
-            if (xmlReader.isStartElement()) {
-              if (xmlReader.name() == "Description") {
-                systemDevice.Description = xmlReader.readElementText();
-              } else if (xmlReader.name() == "DeviceIndiGroup") {
-                systemDevice.DeviceIndiGroup =
-                    xmlReader.readElementText().toInt();
-              } else if (xmlReader.name() == "DeviceIndiName") {
-                systemDevice.DeviceIndiName = xmlReader.readElementText();
-              } else if (xmlReader.name() == "DriverIndiName") {
-                systemDevice.DriverIndiName = xmlReader.readElementText();
-              } else if (xmlReader.name() == "DriverFrom") {
-                systemDevice.DriverFrom = xmlReader.readElementText();
-              }
-            }
-            xmlReader.readNext();
-          }
-          systemDeviceList_.system_devices.push_back(systemDevice);
-        }
-      }
-    }
-    file.close();
-
-    if (xmlReader.hasError()) {
-      Logger::Log("loadSystemListFromXml | xmlRead has ERROR", LogLevel::ERROR, DeviceType::MAIN);
-      return false;
-    }
-
-  } else {
-    Logger::Log("loadSystemListFromXml | ERROR: Can not open file", LogLevel::ERROR, DeviceType::MAIN);
-    return false;
-  }
-
-  // Come from SelectQHYCCDSDKDevice
-  // 修复：确保数组有足够的元素，避免越界访问
-  // 需要至少24个元素（索引0-5和20-23）
-  const size_t requiredSize = 24;
-  if (systemDeviceList_.system_devices.size() < requiredSize) {
-    systemDeviceList_.system_devices.resize(requiredSize);
-    Logger::Log("loadSystemListFromXml | Resized system_devices to " + std::to_string(requiredSize) + " elements", LogLevel::INFO, DeviceType::MAIN);
-  }
-
-  // 现在可以安全地访问这些索引
-  systemDeviceList_.system_devices[0].Description = "Mount";
-  systemDeviceList_.system_devices[1].Description = "Guider";
-  systemDeviceList_.system_devices[2].Description = "PoleCamera";
-  systemDeviceList_.system_devices[3].Description = "";
-  systemDeviceList_.system_devices[4].Description = "";
-  systemDeviceList_.system_devices[5].Description = "";
-  systemDeviceList_.system_devices[20].Description = "Main Camera #1";
-  systemDeviceList_.system_devices[21].Description = "CFW #1";
-  systemDeviceList_.system_devices[22].Description = "Focuser #1";
-  systemDeviceList_.system_devices[23].Description = "Lens Cover #1";
-
-  return true;
-}
-
-void Tools::SaveSystemListToXml(const QString& fileName) {
-  QFile file(fileName);
-  if (file.open(QIODevice::WriteOnly)) {
-    QXmlStreamWriter xmlWriter(&file);
-    xmlWriter.setAutoFormatting(true);
-    xmlWriter.writeStartDocument();
-    xmlWriter.writeStartElement("SystemDeviceList");
-    xmlWriter.writeAttribute(
-        "currentDeviceCode",
-        QString::number(systemDeviceList_.currentDeviceCode));
-    for (const auto& systemDevice : systemDeviceList_.system_devices) {
-      xmlWriter.writeStartElement("SystemDevice");
-      xmlWriter.writeTextElement("Description", systemDevice.Description);
-      xmlWriter.writeTextElement("DeviceIndiGroup",
-                                 QString::number(systemDevice.DeviceIndiGroup));
-      xmlWriter.writeTextElement("DeviceIndiName", systemDevice.DeviceIndiName);
-      xmlWriter.writeTextElement("DriverIndiName", systemDevice.DriverIndiName);
-      xmlWriter.writeTextElement("DriverFrom", systemDevice.DriverFrom);
-      xmlWriter.writeEndElement();
-    }
-    xmlWriter.writeEndElement();
-    xmlWriter.writeEndDocument();
-    file.close();
-  }
-}
 
 void Tools::InitSystemDeviceList() {
   // pre-define 32 devices
@@ -448,6 +372,7 @@ void Tools::InitSystemDeviceList() {
   dev.DeviceIndiName = "";
   dev.DriverFrom = "";
   dev.isConnect = false;
+   dev.isSDKConnect = false;
   dev.dp = NULL;
 
   for (int i = 0; i < 32; i++) {
@@ -880,55 +805,34 @@ void Tools::makeConfigFile() {
 }
 
 void Tools::makeImageFolder() {
-    std::string directory = "image"; // 要创建的文件夹名
-
-    // 如果目录不存在，则创建
-    if (!std::filesystem::exists(directory))
+    // 默认图像根目录：~/images（可用 QUARCS_IMAGE_SAVE_ROOT 覆盖）
+    std::string directory = (QDir::homePath() + "/images").toStdString();
+    if (const char *env = std::getenv("QUARCS_IMAGE_SAVE_ROOT"))
     {
-        if (std::filesystem::create_directory(directory))
-        {
-            Logger::Log("makeImageFolder | Image folder created successfully: " + directory, LogLevel::INFO, DeviceType::MAIN);
-
-            // 创建子文件夹 CaptureImage
-            std::string captureDirectory = directory + "/CaptureImage";
-            if (std::filesystem::create_directory(captureDirectory))
-            {
-                Logger::Log("makeImageFolder | Subfolder created successfully: " + captureDirectory, LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
-            {
-                Logger::Log("makeImageFolder | Error occurred while creating CaptureImage subfolders.", LogLevel::ERROR, DeviceType::MAIN);
-            }
-
-            // 创建子文件夹 ScheduleImage
-            std::string scheduleDirectory = directory + "/ScheduleImage";
-            if (std::filesystem::create_directory(scheduleDirectory))
-            {
-                Logger::Log("makeImageFolder | Subfolder created successfully: " + scheduleDirectory, LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
-            {
-                Logger::Log("makeImageFolder | Error occurred while creating ScheduleImage subfolders.", LogLevel::ERROR, DeviceType::MAIN);
-            }
-             // 创建子文件夹 solveFailedImage
-            std::string solveFailedDirectory = directory + "/solveFailedImage";
-            if (std::filesystem::create_directory(solveFailedDirectory))
-            {
-                Logger::Log("makeImageFolder | Subfolder created successfully: " + solveFailedDirectory, LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
-            {
-                Logger::Log("makeImageFolder | Error occurred while creating solveFailedImage subfolders.", LogLevel::ERROR, DeviceType::MAIN);
-            }
-        }
-        else
-        {
-            Logger::Log("makeImageFolder | An error occurred while creating the image folder.", LogLevel::ERROR, DeviceType::MAIN);
-        }
+        const std::string v(env);
+        if (!v.empty())
+            directory = v;
     }
-    else
+
+    try
     {
-        Logger::Log("makeImageFolder | The image folder already exists: " + directory, LogLevel::INFO, DeviceType::MAIN);
+        const std::filesystem::path root = std::filesystem::path(directory);
+        const std::filesystem::path captureDirectory = root / "CaptureImage";
+        const std::filesystem::path scheduleDirectory = root / "ScheduleImage";
+        const std::filesystem::path solveFailedDirectory = root / "solveFailedImage";
+        const std::filesystem::path downloadsDirectory = root / "downloads";
+
+        // create_directories：目录已存在时不报错；不存在则递归创建
+        std::filesystem::create_directories(captureDirectory);
+        std::filesystem::create_directories(scheduleDirectory);
+        std::filesystem::create_directories(solveFailedDirectory);
+        std::filesystem::create_directories(downloadsDirectory);
+
+        Logger::Log("makeImageFolder | Image root ensured: " + root.string(), LogLevel::INFO, DeviceType::MAIN);
+    }
+    catch (const std::exception &e)
+    {
+        Logger::Log(std::string("makeImageFolder | Exception: ") + e.what(), LogLevel::ERROR, DeviceType::MAIN);
     }
 }
 
@@ -1001,6 +905,7 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
         outfile << "DriverIndiName=" << driverIndiNameUtf8.constData() << "\n";
         outfile << "DriverFrom=" << driverFromUtf8.constData() << "\n";
         outfile << "isConnect=" << (device.isConnect ? "true" : "false") << "\n";
+        outfile << "isSDKConnect=" << (device.isSDKConnect ? "true" : "false") << "\n";
         outfile << "\n";  // 每个设备之间空一行，便于阅读
     }
     outfile << "(End of device list)\n\n";
@@ -1047,6 +952,23 @@ SystemDeviceList Tools::readSystemDeviceList() {
                     currentDevice.dp = NULL;
                     currentDevice.isConnect = false;
                     currentDevice.isBind = false;
+
+                    // 迁移/修复旧配置：历史文件里可能没有写 DriverFrom，
+                    // 但 QHY 驱动（indi_qhy_ccd/indi_qhy_ccd2/libqhyccd）应被视为支持 SDK。
+                    if (currentDevice.DriverFrom.trimmed().isEmpty()) {
+                        const QString d = currentDevice.DriverIndiName.toLower();
+                        if (d == "indi_qhy_ccd" || d == "indi_qhy_ccd2" || d == "libqhyccd") {
+                            currentDevice.DriverFrom = "QHYCCDSDK";
+                        }
+                    }
+
+                    auto itSDK = sectionData.find("isSDKConnect");
+                    if (itSDK != sectionData.end()) {
+                        currentDevice.isSDKConnect = (itSDK->second == "true");
+                    } else {
+                        // 兼容旧配置：根据 DriverFrom 推导
+                        currentDevice.isSDKConnect = currentDevice.DriverFrom.contains("SDK", Qt::CaseInsensitive);
+                    }
 
                     // 将当前设备添加到设备列表
                     deviceList.system_devices.push_back(currentDevice);
@@ -1820,8 +1742,7 @@ void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
     Logger::Log("clearSystemDeviceListItem | index:" + std::to_string(index), LogLevel::INFO, DeviceType::MAIN);
     if (s.system_devices.empty()) {
         Logger::Log("clearSystemDeviceListItem | s.system_devices is nullptr", LogLevel::INFO, DeviceType::MAIN);
-    }
-    else {
+    } else {
         s.system_devices[index].Description="";
         s.system_devices[index].DeviceIndiGroup=-1;
         s.system_devices[index].DeviceIndiName="";
@@ -1829,6 +1750,7 @@ void Tools::clearSystemDeviceListItem(SystemDeviceList &s,int index){
         s.system_devices[index].DriverFrom="";
         s.system_devices[index].DriverIndiName="";
         s.system_devices[index].isConnect=false;
+        s.system_devices[index].isSDKConnect=false;
         Logger::Log("clearSystemDeviceListItem | SystemDeviceListItem already cleared.", LogLevel::INFO, DeviceType::MAIN);
     }
 }
@@ -1840,8 +1762,9 @@ void Tools::initSystemDeviceList(SystemDeviceList &s){
     dev.DeviceIndiName="";
     dev.DeviceIndiGroup=-1;
     dev.DeviceIndiName="";
-    dev.DriverFrom="";      //DriverFrom 用于存储驱动类型。如果来自于INDI，则是"INDI"  如果来自于QHYCCD SDK  则是"QHYCCDSDK"
+    dev.DriverFrom="";      //DriverFrom 用于存储驱动类型。如果来自于INDI，则是"INDI"  如果来自于任何厂商的 SDK，则是"SDK"
     dev.isConnect=false;
+    dev.isSDKConnect=false;
     dev.dp=NULL;
 
     for(int i=0;i<32;i++){
@@ -1871,6 +1794,7 @@ void Tools::cleanSystemDeviceListConnect(SystemDeviceList &s){
     for (int i=0;i<s.system_devices.size();i++){
         s.system_devices[i].isConnect=false;
         s.system_devices[i].dp=NULL;
+        // 不修改 isSDKConnect，这个标记由配置或上层逻辑决定连接方式
     }
 }
 
@@ -1895,29 +1819,107 @@ uint32_t Tools::getIndexFromSystemDeviceListByName(const SystemDeviceList& s,QSt
     }
 }
 
+void Tools::resetIndiFifoState()
+{
+    g_indiFifoDisabled.store(false);
+    g_indiFifoDisableLogged.store(false);
+}
+
 void Tools::startIndiDriver(QString driver_name)
 {
-    QString s;
-    s = "echo ";
-    s.append("\"start ");
-    s.append(driver_name);
-    s.append("\"");
-    s.append("> /tmp/myFIFO");
-    system(s.toUtf8().constData());
-    // qDebug() << "startIndiDriver" << driver_name;
-    Logger::Log("startIndiDriver | Start Connecting INDI Driver : " + driver_name.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    if (g_indiFifoDisabled.load())
+        return;
+
+    // 重要：不要用 `echo ... > /tmp/myFIFO` 这种 shell 重定向写 FIFO。
+    // 当 indiserver 没有打开 FIFO 读端时，写端 open() 会永久阻塞，导致断开/重启流程卡死。
+    const QString fifoPath = "/tmp/myFIFO";
+    const QString cmd = "start " + driver_name + "\n";
+
+    QElapsedTimer t;
+    t.start();
+    bool ok = false;
+    QString lastErr;
+    int lastErrno = 0;
+
+    while (t.elapsed() < 800) // 给 indiserver 少量时间启动并打开 FIFO
+    {
+        int fd = ::open(fifoPath.toUtf8().constData(), O_WRONLY | O_NONBLOCK);
+        if (fd >= 0)
+        {
+            const QByteArray bytes = cmd.toUtf8();
+            const ssize_t n = ::write(fd, bytes.constData(), static_cast<size_t>(bytes.size()));
+            ::close(fd);
+            if (n == bytes.size())
+            {
+                ok = true;
+                break;
+            }
+            lastErrno = errno;
+            lastErr = "write failed: " + QString::fromUtf8(std::strerror(lastErrno));
+            break;
+        }
+
+        // 没有读端(ENXIO) / FIFO 不存在(ENOENT) 时，不要阻塞，短暂重试
+        lastErrno = errno;
+        lastErr = "open failed: " + QString::fromUtf8(std::strerror(lastErrno));
+        QThread::msleep(30);
+    }
+
+    if (!ok)
+    {
+        // 若明确是“无读端/不存在”，直接熔断，避免后续 stopIndiDriverAll 反复尝试
+        if (lastErrno == ENXIO || lastErrno == ENOENT)
+        {
+            disableIndiFifoOnce("startIndiDriver open failed (" + fifoPath + "): " + lastErr);
+        }
+        else
+        {
+            Logger::Log("startIndiDriver | Write to FIFO failed (" + fifoPath.toStdString() + "): " + lastErr.toStdString() +
+                            ", driver=" + driver_name.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+    else
+    {
+        Logger::Log("startIndiDriver | Start INDI Driver: " + driver_name.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    }
 }
 
 void Tools::stopIndiDriver(QString driver_name)
 {
-    QString s;
-    s = "echo ";
-    s.append("\"stop ");
-    s.append(driver_name);
-    s.append("\"");
-    s.append("> /tmp/myFIFO");
-    system(s.toUtf8().constData());
-    // qDebug() << "stopIndiDriver" << driver_name;
+    if (g_indiFifoDisabled.load())
+        return;
+
+    const QString fifoPath = "/tmp/myFIFO";
+    const QString cmd = "stop " + driver_name + "\n";
+
+    // stop 是断开路径的关键步骤：这里不要重试，避免“看起来一直在写”
+    int fd = ::open(fifoPath.toUtf8().constData(), O_WRONLY | O_NONBLOCK);
+    if (fd < 0)
+    {
+        const QString lastErr = "open failed: " + QString::fromUtf8(std::strerror(errno));
+        // 无读端/不存在：熔断，后续 stopIndiDriverAll 直接跳过
+        if (errno == ENXIO || errno == ENOENT)
+        {
+            disableIndiFifoOnce("stopIndiDriver open failed (" + fifoPath + "): " + lastErr);
+            return;
+        }
+        Logger::Log("stopIndiDriver | Write to FIFO failed (" + fifoPath.toStdString() + "): " + lastErr.toStdString() +
+                        ", driver=" + driver_name.toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return;
+    }
+
+    const QByteArray bytes = cmd.toUtf8();
+    const ssize_t n = ::write(fd, bytes.constData(), static_cast<size_t>(bytes.size()));
+    ::close(fd);
+    if (n != bytes.size())
+    {
+        const QString lastErr = "write failed: " + QString::fromUtf8(std::strerror(errno));
+        Logger::Log("stopIndiDriver | Write to FIFO failed (" + fifoPath.toStdString() + "): " + lastErr.toStdString() +
+                        ", driver=" + driver_name.toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
+    }
 }
 
 void Tools::stopIndiDriverAll(const DriversList driver_list)
@@ -2117,510 +2119,7 @@ int Tools::readFits_(const char* fileName, cv::Mat& image) {
     return true;
 }
 
-void Tools::ConnectQHYCCDSDK() {
-  // Connnect the FPGA board, QHY5III290 Guide/Solve camera and PoleMaster
 
-  uint32_t ret;
-  uint16_t index, value;
-  ret = InitQHYCCDResource();
-  // EnableQHYCCDMessage(true);
-  Logger::Log("initqhyccdresosurce " + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
-  uint32_t devices = 0;
-
-  devices = ScanQHYCCD();
-  Logger::Log("found qhyccd device " + std::to_string(devices), LogLevel::INFO, DeviceType::MAIN);
-
-  if (devices < 1) {
-    Logger::Log("SelectQHYCCDSDKDevice | No QHYCCD SDK Device Found", LogLevel::INFO, DeviceType::MAIN);
-    return;
-  }
-
-  char cameraName[11];
-  cameraName[10] = '\0';  // on debian linux it need this . on ubutun linux it
-                          // can work with or without this.
-  for (int i = 0; i < devices; i++) {
-    ret = GetQHYCCDId(i, camid_);
-    // qDebug("device name: %s",camid_);
-
-    memcpy(cameraName, camid_, 10);
-    // qDebug("cameraName: %s",cameraName);
-
-    QDataStream stream(&x_SDK, QIODevice::WriteOnly);
-    stream << cameraName;
-
-    if (strcmp(cameraName, "QHY5III485") == 0) {
-      fpgahandle_ = OpenQHYCCD(camid_);
-      Logger::Log("Found FPGA device:" + std::to_string(reinterpret_cast<uintptr_t>(fpgahandle_)), LogLevel::INFO, DeviceType::MAIN);
-    } else if (strcmp(cameraName, "QHY5III178") == 0) {
-      guiderhandle_ = OpenQHYCCD(camid_);
-      Logger::Log("Found guider device:" + std::to_string(reinterpret_cast<uintptr_t>(guiderhandle_)), LogLevel::INFO, DeviceType::MAIN);
-    } else if (strcmp(cameraName, "POLEMASTER") == 0) {
-      // polerhandle_ = OpenQHYCCD(camid_);
-      guiderhandle_ = OpenQHYCCD(camid_);
-      Logger::Log("Found poler device:" + std::to_string(reinterpret_cast<uintptr_t>(guiderhandle_)), LogLevel::INFO, DeviceType::MAIN);
-    }
-  }
-}
-
-void Tools::ScanCamera() {
-  if (Tools::systemDeviceList().currentDeviceCode != 1) {
-    int ret;
-    camhandle_ = OpenQHYCCD(camid_);
-    if (camhandle_ != NULL) {
-      Logger::Log("Open QHYCCD success.\n", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-      Logger::Log("Open QHYCCD failure.\n", LogLevel::INFO, DeviceType::MAIN);
-    }
-
-    ret = IsQHYCCDControlAvailable(camhandle_, CAM_SINGLEFRAMEMODE);
-    if (QHYCCD_ERROR == ret) {
-      Logger::Log("The detected camera is not support single frame.", LogLevel::INFO, DeviceType::MAIN);
-      // release sdk resources
-      ret = ReleaseQHYCCDResource();
-      if (QHYCCD_SUCCESS == ret) {
-        Logger::Log("SDK resources released.", LogLevel::INFO, DeviceType::MAIN);
-      } else {
-        Logger::Log("Cannot release SDK resources, error:" + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
-      }
-    }
-
-    int mode = 0;
-    ret = SetQHYCCDStreamMode(camhandle_, mode);
-    if (QHYCCD_SUCCESS == ret) {
-      Logger::Log("SetQHYCCDStreamMode set to:" + std::to_string(mode) + "success.", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-      Logger::Log("SetQHYCCDStreamMode:" + std::to_string(mode) + "failure, error:" + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
-    }
-    Logger::Log("\033[0m\033[1;35minitialize camera\033[0m", LogLevel::INFO, DeviceType::MAIN);
-    // initialize camera
-    ret = InitQHYCCD(camhandle_);
-    if (QHYCCD_SUCCESS == ret) {
-      Logger::Log("InitQHYCCD success.", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-      Logger::Log("InitQHYCCD faililure, error:" + std::to_string(ret), LogLevel::INFO, DeviceType::MAIN);
-    }
-  }
-  if ((Tools::systemDeviceList().currentDeviceCode >= 0) &&
-      (Tools::systemDeviceList().currentDeviceCode <
-       Tools::systemDeviceList().system_devices.size())) {
-    Tools::systemDeviceList()
-        .system_devices[Tools::systemDeviceList().currentDeviceCode]
-        .isConnect = true;
-  }
-}
-
-void Tools::SelectQHYCCDSDKDevice(int systemNumber) {
-  Tools::systemDeviceList().currentDeviceCode = systemNumber;
-  // QHYCCDSDK has no Groupd define.
-  Tools::driversList().selectedGrounp = -1;
-}
-cv::Mat Tools::Capture() {
-  double expTime_sec;
-  expTime_sec = (double)glMainCameraExpTime_ / 1000 / 1000;
-
-  int USB_TRAFFIC = 10;
-  int CHIP_GAIN = 10;
-  int CHIP_OFFSET = 140;
-  int EXPOSURE_TIME = glMainCameraExpTime_;
-  int camBinX = 1;
-  int camBinY = 1;
-
-  double chipWidthMM;
-  double chipHeightMM;
-  double pixelWidthUM;
-  double pixelHeightUM;
-
-  unsigned int roiStartX;
-  unsigned int roiStartY;
-  unsigned int roiSizeX;
-  unsigned int roiSizeY;
-
-  unsigned int overscanStartX;
-  unsigned int overscanStartY;
-  unsigned int overscanSizeX;
-  unsigned int overscanSizeY;
-
-  unsigned int effectiveStartX;
-  unsigned int effectiveStartY;
-  unsigned int effectiveSizeX;
-  unsigned int effectiveSizeY;
-
-  unsigned int maxImageSizeX;
-  unsigned int maxImageSizeY;
-  unsigned int bpp;
-  unsigned int channels;
-
-  unsigned char* pImgData = 0;
-  int ret;
-
-  ret = GetQHYCCDOverScanArea(camhandle_, &overscanStartX, &overscanStartY,
-                              &overscanSizeX, &overscanSizeY);
-  if (QHYCCD_SUCCESS == ret) {
-    Logger::Log("GetQHYCCDOverScanArea success", LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("GetQHYCCDOverScanArea error", LogLevel::INFO, DeviceType::MAIN);
-    return {};
-  }
-  ret = GetQHYCCDOverScanArea(camhandle_, &effectiveStartX, &effectiveStartY,
-                              &effectiveSizeX, &effectiveSizeY);
-  if (QHYCCD_SUCCESS == ret) {
-    Logger::Log("GetQHYCCDEffectiveArea success", LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("GetQHYCCDEffectiveArea error", LogLevel::INFO, DeviceType::MAIN);
-    return {};
-  }
-  ret =
-      GetQHYCCDChipInfo(camhandle_, &chipWidthMM, &chipHeightMM, &maxImageSizeX,
-                        &maxImageSizeY, &pixelWidthUM, &pixelHeightUM, &bpp);
-  if (QHYCCD_SUCCESS == ret) {
-    Logger::Log("GetQHYCCDChipInfo success", LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("GetQHYCCDChipInfo error", LogLevel::INFO, DeviceType::MAIN);
-    return {};
-  }
-
-  roiStartX = 0;
-  roiStartY = 0;
-  roiSizeX = maxImageSizeX;
-  roiSizeY = maxImageSizeY;
-
-  ret = IsQHYCCDControlAvailable(camhandle_, CAM_COLOR);
-  if (ret == BAYER_GB || ret == BAYER_GR || ret == BAYER_BG ||
-      ret == BAYER_RG) {
-    Logger::Log("This is a color camera.", LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("even this is a color camera, in Single Frame mode THE SDK "
-                "ONLY SUPPORT RAW OUTPUT.So please do not set "
-                "SetQHYCCDDebayerOnOff() to true;", LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("This is a mono camera.", LogLevel::INFO, DeviceType::MAIN);
-  }
-
-  ret = IsQHYCCDControlAvailable(camhandle_, CONTROL_USBTRAFFIC);
-  if (QHYCCD_SUCCESS == ret) {
-    ret = SetQHYCCDParam(camhandle_, CONTROL_USBTRAFFIC, USB_TRAFFIC);
-    if (QHYCCD_SUCCESS == ret) {
-      Logger::Log("SetQHYCCDParam CONTROL_USBTRAFFIC set to:" + std::to_string(USB_TRAFFIC)
-               + "success.", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-      Logger::Log("SetQHYCCDParam CONTROL_USBTRAFFIC error", LogLevel::INFO, DeviceType::MAIN);
-      getchar();
-      return {};
-    }
-  }
-
-  ret = IsQHYCCDControlAvailable(camhandle_, CONTROL_GAIN);
-  if (QHYCCD_SUCCESS == ret) {
-    ret = SetQHYCCDParam(camhandle_, CONTROL_GAIN, CHIP_GAIN);
-    if (QHYCCD_SUCCESS == ret) {
-      Logger::Log("SetQHYCCDParam CONTROL_GAIN set to:" + std::to_string(CHIP_GAIN)
-               + "success.", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-      Logger::Log("SetQHYCCDParam CONTROL_GAIN error", LogLevel::INFO, DeviceType::MAIN);
-      getchar();
-      return {};
-    }
-  }
-
-  ret = IsQHYCCDControlAvailable(camhandle_, CONTROL_OFFSET);
-  if (QHYCCD_SUCCESS == ret) {
-    ret = SetQHYCCDParam(camhandle_, CONTROL_OFFSET, CHIP_OFFSET);
-    if (QHYCCD_SUCCESS == ret) {
-      Logger::Log("SetQHYCCDParam CONTROL_OFFSET set to:" + std::to_string(CHIP_OFFSET)
-               + "success.", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-      Logger::Log("SetQHYCCDParam CONTROL_OFFSET failed.", LogLevel::INFO, DeviceType::MAIN);
-      getchar();
-      return {};
-    }
-  }
-
-  ret = SetQHYCCDParam(camhandle_, CONTROL_EXPOSURE, EXPOSURE_TIME);
-  if (QHYCCD_SUCCESS == ret) {
-    Logger::Log("SetQHYCCDParam CONTROL_EXPOSURE set to:" + std::to_string(EXPOSURE_TIME)
-             + "success.", LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("SetQHYCCDParam CONTROL_EXPOSURE failure", LogLevel::INFO, DeviceType::MAIN);
-    getchar();
-    return {};
-  }
-
-  ret =
-      SetQHYCCDResolution(camhandle_, roiStartX, roiStartY, roiSizeX, roiSizeY);
-  if (QHYCCD_SUCCESS == ret) {
-    Logger::Log("SetQHYCCDResolution success.", LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("SetQHYCCDResolution error.", LogLevel::INFO, DeviceType::MAIN);
-    return {};
-  }
-
-  ret = SetQHYCCDBinMode(camhandle_, camBinX, camBinY);
-  if (QHYCCD_SUCCESS == ret) {
-    Logger::Log("SetQHYCCDBinMode success.", LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("SetQHYCCDBinMode error.", LogLevel::INFO, DeviceType::MAIN);
-    return {};
-  }
-
-  ret = IsQHYCCDControlAvailable(camhandle_, CONTROL_TRANSFERBIT);
-  if (QHYCCD_SUCCESS == ret) {
-    ret = SetQHYCCDBitsMode(camhandle_, 16);
-    if (QHYCCD_SUCCESS == ret) {
-      Logger::Log("SetQHYCCDBitsMode success.", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-      Logger::Log("SetQHYCCDBitsMode error", LogLevel::INFO, DeviceType::MAIN);
-      getchar();
-      return {};
-    }
-  }
-
-  Logger::Log("ExpQHYCCDSingleFrame(camhandle) - start...", LogLevel::INFO, DeviceType::MAIN);
-  ret = ExpQHYCCDSingleFrame(camhandle_);
-  Logger::Log("ExpQHYCCDSingleFrame(camhandle) - end...", LogLevel::INFO, DeviceType::MAIN);
-  if (QHYCCD_ERROR != ret) {
-    Logger::Log("ExpQHYCCDSingleFrame success.", LogLevel::INFO, DeviceType::MAIN);
-    if (QHYCCD_READ_DIRECTLY != ret) {
-      QElapsedTimer t;
-      t.start();
-
-      QThread::usleep(glMainCameraExpTime_);
-
-      qDebug() << t.elapsed();
-    }
-  } else {
-    Logger::Log("ExpQHYCCDSingleFrame failure, error", LogLevel::INFO, DeviceType::MAIN);
-  }
-
-  uint32_t length = GetQHYCCDMemLength(camhandle_);
-
-  if (length > 0) {
-    pImgData = new unsigned char[length];
-    memset(pImgData, 0, length);
-    Logger::Log("Allocated memory for frame:" + std::to_string(length), LogLevel::INFO, DeviceType::MAIN);
-  } else {
-    Logger::Log("Cannot allocate memory for frame.", LogLevel::INFO, DeviceType::MAIN);
-    return {};
-  }
-
-  QElapsedTimer t;
-  t.start();
-  cv::Mat mmat;
-
-  ret = GetQHYCCDSingleFrame(camhandle_, &roiSizeX, &roiSizeY, &bpp, &channels,
-                             pImgData);
-  if (QHYCCD_SUCCESS == ret) {
-    Logger::Log("GetQHYCCDSingleFrame success.", LogLevel::INFO, DeviceType::MAIN);
-    // process image here
-
-    // emit signalRefreshMainPageMainCameraImage(pImgData,"MONO");
-
-    mmat = cv::Mat(maxImageSizeY, maxImageSizeX, CV_16UC1, pImgData, 0);
-
-    std::vector<int> creat_quality;
-    creat_quality.push_back(cv::IMWRITE_PNG_COMPRESSION);
-    creat_quality.push_back(0);
-    cv::imwrite("/dev/shm/SDK_Capture.png", mmat, creat_quality);
-    mmat = mmat.clone();
-  } else {
-    Logger::Log("GetQHYCCDSingleFrame error", LogLevel::INFO, DeviceType::MAIN);
-    return {};
-  }
-
-  delete[] pImgData;
-
-  Logger::Log("t.elapsed():" + std::to_string(t.elapsed()), LogLevel::INFO, DeviceType::MAIN);
-
-  /*
-  ret = CancelQHYCCDExposingAndReadout(camhandle_);
-  if (QHYCCD_SUCCESS == ret) {
-    qDebug() << "CancelQHYCCDExposingAndReadout success.";
-  } else {
-    qDebug() << "CancelQHYCCDExposingAndReadout error";
-    return {};
-  }
-  */
-
-  // cv::Mat img;
-  // img=imread("/home/q/Pictures/1.jpg",0);
-
-  // Mat img;
-  // img.create(5000,6000,CV_8UC3);
-
-  // showCvImageOnQLabelA(img,MainPageMainCameraImage);
-  return mmat;
-}
-
-int Tools::CFW() {
-  // step:  (1) display the CFW selector QLabel
-  //        (2) read the min, max, pos of the by getCFWPosition
-  //        (3) generate the button dynamicly and add the button to the QLabel
-  //        (4)
-  //
-
-  uint32_t ret;
-  int pos, min = 1, max;
-
-  ret = IsQHYCCDCFWPlugged(camhandle_);  // 检查滤镜轮连接状态
-  if (ret == QHYCCD_SUCCESS) {
-    // qDebug("CFW is plugged.");
-    max = GetQHYCCDParam(camhandle_,
-                         CONTROL_CFWSLOTSNUM);  // 获取滤镜轮孔数
-    return max;
-  } else {
-    // qDebug("CFW is NULL.");
-    return 0;
-  }
-}
-
-void Tools::SetCFW(int cfw) {
-  uint32_t ret;
-  ret = SetQHYCCDParam(camhandle_, CONTROL_CFWPORT,
-                       47.0 + cfw);  // 设置目标孔位
-  if (ret == QHYCCD_SUCCESS) {
-    double status;
-    while (status != 47.0 + cfw)  // 循环获取位置，判断是否转到目标位置
-    {
-      status = GetQHYCCDParam(camhandle_,
-                              CONTROL_CFWPORT);  // 获取当前位置
-      // sleep(500);//延时 500ms
-      QThread::msleep(500);
-      // qDebug() << "current location:" << status;
-    }
-  }
-}
-
-uint32_t& Tools::glMainCameraExpTime() { return glMainCameraExpTime_; }
-
-bool Tools::WriteFPGA(uint8_t hand, int command) {
-  if (hand == 0xa0) {
-    int dir = command;
-    switch (dir) {
-      case 1: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0xa0, 0x01) == QHYCCD_SUCCESS;
-      }
-      case 2: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0xa0, 0x02) == QHYCCD_SUCCESS;
-      }
-      case 3: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0xa0, 0x03) == QHYCCD_SUCCESS;
-      }
-      case 4: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0xa0, 0x04) == QHYCCD_SUCCESS;
-      }
-      default:
-        break;
-    }
-  }
-  if (hand == 0xa1) {
-    int dir = command;
-    switch (dir) {
-      case 1: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0xa1, 0x01) == QHYCCD_SUCCESS;
-      }
-      case 0: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0xa1, 0x00) == QHYCCD_SUCCESS;
-      }
-      default:
-        break;
-    }
-  }
-  if (hand == 0xa2) {
-    int qq = command;
-
-    uint8_t m_com;
-    bool ret = true;
-
-    m_com = qq / (256 * 256 * 256 * 256 * 256 * 256 * 256);
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa2, m_com) == QHYCCD_SUCCESS);
-
-    m_com = qq % (256 * 256 * 256 * 256 * 256 * 256 * 256) /
-            (256 * 256 * 256 * 256 * 256 * 256);
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa3, m_com) == QHYCCD_SUCCESS);
-
-    m_com = qq % (256 * 256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256 * 256) / (256 * 256 * 256 * 256 * 256);
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa4, m_com) == QHYCCD_SUCCESS);
-
-    m_com = qq % (256 * 256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256) / (256 * 256 * 256 * 256);
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa5, m_com) == QHYCCD_SUCCESS);
-
-    m_com = qq % (256 * 256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256) % (256 * 256 * 256 * 256) /
-            (256 * 256 * 256);
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa6, m_com) == QHYCCD_SUCCESS);
-
-    m_com = qq % (256 * 256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256) % (256 * 256 * 256 * 256) %
-            (256 * 256 * 256) / (256 * 256);
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa7, m_com) == QHYCCD_SUCCESS);
-
-    m_com = qq % (256 * 256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256) % (256 * 256 * 256 * 256) %
-            (256 * 256 * 256) % (256 * 256) / 256;
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa8, m_com) == QHYCCD_SUCCESS);
-
-    m_com = qq % (56 * 256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256 * 256) %
-            (256 * 256 * 256 * 256 * 256) % (256 * 256 * 256 * 256) %
-            (256 * 256 * 256) % (256 * 256) % 256;
-    ret = ret &&
-          (SetQHYCCDWriteFPGA(camhandle_, 0, 0xa9, m_com) == QHYCCD_SUCCESS);
-
-    return ret;
-  }
-  //               if(m_hand=="0xa3"){
-  //                 int qq=QString(command).toInt();
-  //                 int m_com;
-  //                 m_com=qq/(256*256*256);
-  //                 SetQHYCCDWriteFPGA(camhandle_,0,0xaa,m_com);
-  //                 m_com=qq%(256*256*256)/(256*256);
-  //                 SetQHYCCDWriteFPGA(camhandle_,0,0xab,m_com);
-  //                 m_com=qq%(256*256*256)%(256*256)/256;
-  //                 SetQHYCCDWriteFPGA(camhandle_,0,0xac,m_com);
-  //                 m_com=qq%(256*256*256)%(256*256)%256;
-  //                 SetQHYCCDWriteFPGA(camhandle_,0,0xad,m_com);
-  //                    wss_sendText(glClientIP,glClientPort,x.command_UID);
-  //               }
-
-  if (hand == 0xa4) {
-    int dir = command;
-    switch (dir) {
-      case 1: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0x9f, 0x01) == QHYCCD_SUCCESS;
-      }
-      case 0: {
-        return SetQHYCCDWriteFPGA(camhandle_, 0, 0x9f, 0x00) == QHYCCD_SUCCESS;
-      }
-      default:
-        break;
-    }
-  }
-
-  return false;
-}
-
-char* Tools::camid() { return camid_; }
-
-qhyccd_handle*& Tools::camhandle() { return camhandle_; }
-
-qhyccd_handle*& Tools::guiderhandle() { return guiderhandle_; }
-
-qhyccd_handle*& Tools::polerhandle() { return polerhandle_; }
-
-qhyccd_handle*& Tools::fpgahandle() { return fpgahandle_; }
-
-qhyccd_handle*& Tools::maincamhandle() { return maincamhandle_; }
 
 void Tools::CvDebugShow(cv::Mat img) {
   int randomInt = rand();
@@ -3162,17 +2661,28 @@ void Tools::GetAutoStretch(cv::Mat img_raw16, int mode, uint16_t& B,
     Logger::Log("GetAutoStretch | unsupported image depth: " + std::to_string(img_raw16.depth()) + ", using 16-bit default", LogLevel::WARNING, DeviceType::MAIN);
   }
 
+  // clamp to valid range for the actual bit depth (important for 8-bit guider frames)
   if (bx < 0) bx = 0;
-  if (wx > 65535) wx = 65535;
+  if (bx > maxValue) bx = maxValue;
+  if (wx < 0) wx = 0;
+  if (wx > maxValue) wx = maxValue;
+
+  // After clamping, bx may become == wx again (e.g. fully saturated or nearly-flat frames).
+  // Ensure we keep a non-degenerate stretch window within [0, maxValue].
+  if (bx >= wx) {
+    wx = std::min<double>(maxValue, bx + 10);
+    if (bx >= wx) bx = std::max<double>(0.0, wx - 10);
+  }
 
   B = (uint16_t)bx;
   W = (uint16_t)wx;
 
   // process some sepcial condtion
   // full saturated
-  if (B == maxValue && W == maxValue) {
+  // For full-saturated frames, prefer full-range mapping to avoid "all black" after LUT (notably on 8-bit inputs).
+  if (B >= maxValue && W >= maxValue) {
     B = 0;
-    W = 65535;
+    W = maxValue;
   }
   #ifdef ImageDebug
   Logger::Log("getAutoStretch |mean std B W" + std::to_string(mean.val[0]) + " " + std::to_string(std.val[0]) + " " + std::to_string(B) + " " + std::to_string(W), LogLevel::INFO, DeviceType::MAIN);
@@ -3733,23 +3243,6 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
 
 
 
-QList<FITSImage::Star> Tools::FindStarsByQHYCCDSDK(bool AllStars, bool runHFR)
-{
-  Tools tempTool;
-  loadFitsResult result = loadFits("/dev/shm/ccd_simulator.fits");
-  QList<FITSImage::Star> stars;
-  if (!result.success)
-  {
-    Logger::Log("FindStarsByQHYCCDSDK | Error in loading FITS file", LogLevel::INFO, DeviceType::MAIN);
-    return stars;
-  }
-  stars = tempTool.FindStarsByQHYCCDSDK_(AllStars, result.imageStats, result.imageBuffer, runHFR);
-  if (result.imageBuffer != nullptr)
-  {
-    delete[] result.imageBuffer;
-  }
-  return stars;
-}
 
 QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHFR)
 {
@@ -6509,7 +6002,7 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
   PlateSolveInProgress = false;
   return result;
 }
-SloveResults Tools::onSolveFinished(int exitCode) {
+void Tools::onSolveFinished(int exitCode) {
   Logger::Log("Solve Finished!!! 退出码: " + std::to_string(exitCode), LogLevel::INFO, DeviceType::MAIN);
   
   if (exitCode == 0) {
