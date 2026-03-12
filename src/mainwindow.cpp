@@ -3363,8 +3363,16 @@ void MainWindow::onMessageReceived(const QString &message)
             QString time = rx.cap(1);
             QString date = rx.cap(2);
             Logger::Log("SynchronizeTime ...", LogLevel::DEBUG, DeviceType::MAIN);
+            static QDateTime s_lastMountUTCSync;
+            bool doMountUTC = true;
+            if (s_lastMountUTCSync.isValid() && s_lastMountUTCSync.msecsTo(QDateTime::currentDateTime()) < 10000)
+                doMountUTC = false;   // 10s 内不重复下发 Mount 时间，避免 INDI 双超时拖慢刷新
             synchronizeTime(time, date);
-            setMountUTC(time, date);
+            if (doMountUTC)
+                setMountUTC(time, date);
+            else
+                Logger::Log("SynchronizeTime | skip setMountUTC (debounce 10s)", LogLevel::DEBUG, DeviceType::MAIN);
+            s_lastMountUTCSync = QDateTime::currentDateTime();
             Logger::Log("SynchronizeTime finish!", LogLevel::DEBUG, DeviceType::MAIN);
         }
     }
@@ -4347,6 +4355,7 @@ void MainWindow::onTimeout()
         {
             if (mountDisplayCounter >= 5)
             {
+                
                 double RA_HOURS, DEC_DEGREE;
                 indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
                 double CurrentRA_Degree = Tools::HourToDegree(RA_HOURS);
@@ -4463,8 +4472,10 @@ void MainWindow::onTimeout()
                 // }
 
             }
+            Logger::Log("11111", LogLevel::INFO, DeviceType::MAIN);
         }
     }
+    
 
     MainCameraStatusCounter++;
     
@@ -4523,9 +4534,11 @@ void MainWindow::onTimeout()
             {
                 emit wsThread->sendMessageToClient("MainCameraTemperature:" + QString::number(CameraTemp));
             }
+            
 
         }
     }
+    
 }
 
 MeridianStatus MainWindow::checkMeridianStatus()
@@ -24234,27 +24247,21 @@ void MainWindow::synchronizeTime(QString time, QString date)
     Logger::Log("synchronizeTime start ...", LogLevel::DEBUG, DeviceType::MAIN);
     Logger::Log("synchronizeTime time: " + time.toStdString() + ", date: " + date.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
 
-    // 先禁用自动时间同步
-    Logger::Log("Disabling automatic time synchronization...", LogLevel::DEBUG, DeviceType::MAIN);
-    
-    // 禁用 systemd-timesyncd 服务
-    int disableResult1 = system("sudo systemctl stop systemd-timesyncd");
-    int disableResult2 = system("sudo systemctl disable systemd-timesyncd");
-    
-    // 禁用 NTP 同步
-    int disableResult3 = system("sudo timedatectl set-ntp false");
-    
-    if (disableResult1 != 0 || disableResult2 != 0 || disableResult3 != 0)
+    // 仅首次对时禁用自动时间同步，刷新/重复对时不再执行以缩短耗时（约 2s）
+    static bool automaticTimeSyncDisabled = false;
+    if (!automaticTimeSyncDisabled)
     {
-        Logger::Log("Warning: Failed to disable some automatic time sync services", LogLevel::WARNING, DeviceType::MAIN);
+        Logger::Log("Disabling automatic time synchronization...", LogLevel::DEBUG, DeviceType::MAIN);
+        int disableResult1 = system("sudo systemctl stop systemd-timesyncd");
+        int disableResult2 = system("sudo systemctl disable systemd-timesyncd");
+        int disableResult3 = system("sudo timedatectl set-ntp false");
+        if (disableResult1 != 0 || disableResult2 != 0 || disableResult3 != 0)
+            Logger::Log("Warning: Failed to disable some automatic time sync services", LogLevel::WARNING, DeviceType::MAIN);
+        else
+            Logger::Log("Automatic time synchronization disabled successfully", LogLevel::DEBUG, DeviceType::MAIN);
+        automaticTimeSyncDisabled = true;
+        QThread::msleep(300);   // 缩短等待，原 1000ms 易在刷新时拖慢
     }
-    else
-    {
-        Logger::Log("Automatic time synchronization disabled successfully", LogLevel::DEBUG, DeviceType::MAIN);
-    }
-
-    // 等待一秒确保服务完全停止
-    QThread::msleep(1000);
 
     // Create the command string
     QString command = "sudo date -s \"" + date + " " + time + "\"";
@@ -24279,20 +24286,23 @@ void MainWindow::setMountLocation(QString lat, QString lon)
     Logger::Log("setMountLocation start ...", LogLevel::DEBUG, DeviceType::MAIN);
     observatorylatitude = lat.toDouble();
     observatorylongitude = lon.toDouble();
-    if (dpMount != nullptr)
-    {
+    if (indi_Client != nullptr)
         indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
-        indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
- 
+    // 仅当 Mount 已连接时才下发 INDI setLocation，避免未连接时 3s 超时拖慢刷新
+    if (dpMount == nullptr || !dpMount->isConnected())
+    {
+        Logger::Log("setMountLocation | Mount not connected, skip INDI setLocation", LogLevel::DEBUG, DeviceType::MAIN);
+        return;
     }
+    indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
 }
 
 void MainWindow::setMountUTC(QString time, QString date)
 {
     Logger::Log("setMountUTC start ...", LogLevel::DEBUG, DeviceType::MAIN);
-    if (dpMount == nullptr)
+    if (dpMount == nullptr || !dpMount->isConnected())
     {
-        Logger::Log("setMountUTC | dpMount is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+        Logger::Log("setMountUTC | Mount not connected, skip INDI time sync (avoid 3s timeout)", LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
     QDateTime datetime = QDateTime::fromString(date + "T" + time, Qt::ISODate);
