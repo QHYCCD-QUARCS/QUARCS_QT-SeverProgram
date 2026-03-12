@@ -1759,6 +1759,42 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setCCDOffset(dpMainCamera, ImageOffset);
         }
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetGuiderOffset")
+    {
+        guiderCameraOffset = parts[1].trimmed().toDouble();
+        Logger::Log("SetGuiderOffset is set to " + std::to_string(guiderCameraOffset), LogLevel::DEBUG, DeviceType::GUIDER);
+        Tools::saveParameter("Guider", "Offset", parts[1].trimmed());
+
+        bool isGuiderSDK = (systemdevicelist.system_devices.size() > 1 &&
+                            systemdevicelist.system_devices[1].isSDKConnect &&
+                            sdkGuiderHandle != nullptr);
+
+        if (isGuiderSDK)
+        {
+            SdkCommand setOffsetCmd;
+            setOffsetCmd.type = SdkCommandType::Custom;
+            setOffsetCmd.name = "SetOffset";
+            setOffsetCmd.payload = guiderCameraOffset;
+            SdkResult res = SdkManager::instance().callByHandle(sdkGuiderHandle, setOffsetCmd);
+            if (!res.success) {
+                Logger::Log("SetGuiderOffset | SDK SetOffset failed: " + res.message, LogLevel::ERROR, DeviceType::GUIDER);
+            } else {
+                glGuiderOffsetValue = static_cast<int>(guiderCameraOffset);
+                Logger::Log("SetGuiderOffset | SDK SetOffset success", LogLevel::INFO, DeviceType::GUIDER);
+            }
+        }
+        else if (dpGuider != NULL)
+        {
+            if (indi_Client->setCCDOffset(dpGuider, static_cast<int>(guiderCameraOffset)) == QHYCCD_SUCCESS)
+            {
+                glGuiderOffsetValue = static_cast<int>(guiderCameraOffset);
+            }
+        }
+
+        emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" +
+                                           QString::number(glGuiderOffsetMax) + ":" +
+                                           QString::number(glGuiderOffsetValue));
+    }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageCFA")
     {
@@ -2738,6 +2774,42 @@ void MainWindow::onMessageReceived(const QString &message)
             indi_Client->setCCDGain(dpMainCamera, CameraGain);
         }
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetGuiderGain")
+    {
+        guiderCameraGain = parts[1].trimmed().toDouble();
+        Logger::Log("Set Guider Gain to " + std::to_string(guiderCameraGain), LogLevel::DEBUG, DeviceType::GUIDER);
+        Tools::saveParameter("Guider", "Gain", parts[1].trimmed());
+
+        bool isGuiderSDK = (systemdevicelist.system_devices.size() > 1 &&
+                            systemdevicelist.system_devices[1].isSDKConnect &&
+                            sdkGuiderHandle != nullptr);
+
+        if (isGuiderSDK)
+        {
+            SdkCommand setGainCmd;
+            setGainCmd.type = SdkCommandType::Custom;
+            setGainCmd.name = "SetGain";
+            setGainCmd.payload = guiderCameraGain;
+            SdkResult res = SdkManager::instance().callByHandle(sdkGuiderHandle, setGainCmd);
+            if (!res.success) {
+                Logger::Log("SetGuiderGain | SDK SetGain failed: " + res.message, LogLevel::ERROR, DeviceType::GUIDER);
+            } else {
+                glGuiderGainValue = static_cast<int>(guiderCameraGain);
+                Logger::Log("SetGuiderGain | SDK SetGain success", LogLevel::INFO, DeviceType::GUIDER);
+            }
+        }
+        else if (dpGuider != NULL)
+        {
+            if (indi_Client->setCCDGain(dpGuider, static_cast<int>(guiderCameraGain)) == QHYCCD_SUCCESS)
+            {
+                glGuiderGainValue = static_cast<int>(guiderCameraGain);
+            }
+        }
+
+        emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" +
+                                           QString::number(glGuiderGainMax) + ":" +
+                                           QString::number(glGuiderGainValue));
+    }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "SetUsbTraffic")
     {
@@ -2949,7 +3021,7 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("saveToConfigFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
-    // PHD2 已移除：不再支持 GuiderFocalLength / MultiStarGuider / GuiderPixelSize / GuiderGain / CalibrationDuration / RaAggression / DecAggression
+    // PHD2 已移除：不再支持 GuiderFocalLength / MultiStarGuider / GuiderPixelSize / CalibrationDuration / RaAggression / DecAggression
 
     else if (message == "RestartRaspberryPi")
     {
@@ -2968,7 +3040,6 @@ void MainWindow::onMessageReceived(const QString &message)
              (parts[0].trimmed() == "GuiderFocalLength" ||
               parts[0].trimmed() == "MultiStarGuider" ||
               parts[0].trimmed() == "GuiderPixelSize" ||
-              parts[0].trimmed() == "GuiderGain" ||
               parts[0].trimmed() == "CalibrationDuration" ||
               parts[0].trimmed() == "RaAggression" ||
               parts[0].trimmed() == "DecAggression"))
@@ -3613,7 +3684,13 @@ void MainWindow::initINDIClient()
                 {
                     PersistGuidingFits(fitsPath);
                     if (isGuiderLoopExp && guiderLoopTimer)
-                        guiderLoopTimer->start(1);
+                    {
+                        // INDI 图像回调可能运行在非 GUI 线程，必须回到 MainWindow 线程再启动 QTimer。
+                        QMetaObject::invokeMethod(this, [this]() {
+                            if (isGuiderLoopExp && guiderLoopTimer)
+                                guiderLoopTimer->start(1);
+                        }, Qt::QueuedConnection);
+                    }
                 }
                 return;
             }
@@ -9076,6 +9153,98 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 }
             }
 
+            QMap<QString, QString> guiderParameters = Tools::readParameters("Guider");
+
+            {
+                SdkCommand getGainCmd;
+                getGainCmd.type = SdkCommandType::Custom;
+                getGainCmd.name = "GetGain";
+                getGainCmd.payload = std::any();
+                SdkResult gainRes = SdkManager::instance().callByHandle(sdkGuiderHandle, getGainCmd);
+                if (gainRes.success)
+                {
+                    try
+                    {
+                        SdkControlParamInfo gainInfo = std::any_cast<SdkControlParamInfo>(gainRes.payload);
+                        glGuiderGainMin = static_cast<int>(gainInfo.minValue);
+                        glGuiderGainMax = static_cast<int>(gainInfo.maxValue);
+                        glGuiderGainValue = static_cast<int>(gainInfo.current);
+
+                        if (guiderParameters.contains("Gain"))
+                        {
+                            guiderCameraGain = guiderParameters["Gain"].toDouble();
+                            int targetGain = static_cast<int>(guiderCameraGain);
+                            if (targetGain < glGuiderGainMin) targetGain = glGuiderGainMin;
+                            if (targetGain > glGuiderGainMax) targetGain = glGuiderGainMax;
+
+                            SdkCommand setGainCmd;
+                            setGainCmd.type = SdkCommandType::Custom;
+                            setGainCmd.name = "SetGain";
+                            setGainCmd.payload = targetGain;
+                            SdkResult setGainRes = SdkManager::instance().callByHandle(sdkGuiderHandle, setGainCmd);
+                            if (setGainRes.success)
+                            {
+                                glGuiderGainValue = targetGain;
+                            }
+                        }
+
+                        emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" +
+                                                           QString::number(glGuiderGainMax) + ":" +
+                                                           QString::number(glGuiderGainValue));
+                    }
+                    catch (const std::bad_any_cast &e)
+                    {
+                        Logger::Log("AfterDeviceConnect | Failed to cast Guider Gain info: " + std::string(e.what()),
+                                    LogLevel::ERROR, DeviceType::GUIDER);
+                    }
+                }
+            }
+
+            {
+                SdkCommand getOffsetCmd;
+                getOffsetCmd.type = SdkCommandType::Custom;
+                getOffsetCmd.name = "GetOffset";
+                getOffsetCmd.payload = std::any();
+                SdkResult offsetRes = SdkManager::instance().callByHandle(sdkGuiderHandle, getOffsetCmd);
+                if (offsetRes.success)
+                {
+                    try
+                    {
+                        SdkControlParamInfo offsetInfo = std::any_cast<SdkControlParamInfo>(offsetRes.payload);
+                        glGuiderOffsetMin = static_cast<int>(offsetInfo.minValue);
+                        glGuiderOffsetMax = static_cast<int>(offsetInfo.maxValue);
+                        glGuiderOffsetValue = static_cast<int>(offsetInfo.current);
+
+                        if (guiderParameters.contains("Offset"))
+                        {
+                            guiderCameraOffset = guiderParameters["Offset"].toDouble();
+                            int targetOffset = static_cast<int>(guiderCameraOffset);
+                            if (targetOffset < glGuiderOffsetMin) targetOffset = glGuiderOffsetMin;
+                            if (targetOffset > glGuiderOffsetMax) targetOffset = glGuiderOffsetMax;
+
+                            SdkCommand setOffsetCmd;
+                            setOffsetCmd.type = SdkCommandType::Custom;
+                            setOffsetCmd.name = "SetOffset";
+                            setOffsetCmd.payload = targetOffset;
+                            SdkResult setOffsetRes = SdkManager::instance().callByHandle(sdkGuiderHandle, setOffsetCmd);
+                            if (setOffsetRes.success)
+                            {
+                                glGuiderOffsetValue = targetOffset;
+                            }
+                        }
+
+                        emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" +
+                                                           QString::number(glGuiderOffsetMax) + ":" +
+                                                           QString::number(glGuiderOffsetValue));
+                    }
+                    catch (const std::bad_any_cast &e)
+                    {
+                        Logger::Log("AfterDeviceConnect | Failed to cast Guider Offset info: " + std::string(e.what()),
+                                    LogLevel::ERROR, DeviceType::GUIDER);
+                    }
+                }
+            }
+
             systemdevicelist.system_devices[1].isBind = true;
             QString deviceName = systemdevicelist.system_devices[1].DeviceIndiName;
             if (deviceName.isEmpty())
@@ -9527,6 +9696,31 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->getCCDSDKVersion(dpGuider, SDKVERSION);
         emit wsThread->sendMessageToClient("getSDKVersion:Guider:" + SDKVERSION);
         Logger::Log("Guider SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+        QMap<QString, QString> guiderParameters = Tools::readParameters("Guider");
+        if (guiderParameters.contains("Gain"))
+        {
+            guiderCameraGain = guiderParameters["Gain"].toDouble();
+            indi_Client->setCCDGain(dpGuider, static_cast<int>(guiderCameraGain));
+        }
+        if (guiderParameters.contains("Offset"))
+        {
+            guiderCameraOffset = guiderParameters["Offset"].toDouble();
+            indi_Client->setCCDOffset(dpGuider, static_cast<int>(guiderCameraOffset));
+        }
+
+        if (indi_Client->getCCDGain(dpGuider, glGuiderGainValue, glGuiderGainMin, glGuiderGainMax) == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" +
+                                               QString::number(glGuiderGainMax) + ":" +
+                                               QString::number(glGuiderGainValue));
+        }
+        if (indi_Client->getCCDOffset(dpGuider, glGuiderOffsetValue, glGuiderOffsetMin, glGuiderOffsetMax) == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" +
+                                               QString::number(glGuiderOffsetMax) + ":" +
+                                               QString::number(glGuiderOffsetValue));
+        }
 
         emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
     }
@@ -16679,24 +16873,50 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
         double minV = 0.0, maxV = 0.0;
         cv::minMaxLoc(img, &minV, &maxV);
 
+        // 循环曝光每帧都会走这里：降为 DEBUG（默认关闭 DEBUG）避免刷屏
+        const uint16_t depthMax = (img.depth() == CV_8U) ? 255 : 65535;
         uint16_t B = 0;
-        uint16_t W = (img.depth() == CV_8U) ? 255 : 65535;
+        uint16_t W = depthMax;
+
         if (AutoStretch)
             Tools::GetAutoStretch(img, 0, B, W);
 
-        // 兜底：避免 W<=B 造成全黑
         if (W <= B)
-            W = B + 1;
+            W = std::min<uint16_t>(depthMax, static_cast<uint16_t>(B + 1));
 
-        // 循环曝光每帧都会走这里：降为 DEBUG（默认关闭 DEBUG）避免刷屏
         Logger::Log("PersistGuidingFits | fits=" + effectiveFitsPath.toStdString() +
                         " depth=" + std::to_string(img.depth()) +
                         " min=" + std::to_string(minV) + " max=" + std::to_string(maxV) +
                         " B=" + std::to_string(B) + " W=" + std::to_string(W),
                     LogLevel::DEBUG, DeviceType::GUIDER);
 
-        cv::Mat img8(img.rows, img.cols, CV_8UC1);
-        Tools::Bit16To8_Stretch(img, img8, B, W);
+        cv::Mat img8(img.rows, img.cols, CV_8UC1, cv::Scalar(0));
+
+        // 近似平场/饱和帧时，传统 B/W 拉伸会把整帧映射成黑色；这里保留亮度信息，避免误判为黑屏。
+        if (maxV <= minV + 1.0)
+        {
+            const double normalized = std::clamp(maxV / std::max<double>(1.0, depthMax), 0.0, 1.0);
+            const int gray = static_cast<int>(std::lround(normalized * 255.0));
+            img8.setTo(cv::Scalar(gray));
+            Logger::Log("PersistGuidingFits | flat-frame fallback applied, gray=" + std::to_string(gray),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
+        else
+        {
+            Tools::Bit16To8_Stretch(img, img8, B, W);
+
+            double min8 = 0.0, max8 = 0.0;
+            cv::minMaxLoc(img8, &min8, &max8);
+            if (max8 <= 0.0 && maxV > 0.0)
+            {
+                B = 0;
+                W = static_cast<uint16_t>(std::clamp(maxV, 1.0, static_cast<double>(depthMax)));
+                Tools::Bit16To8_Stretch(img, img8, B, W);
+                Logger::Log("PersistGuidingFits | fallback restretch applied, B=" +
+                                std::to_string(B) + " W=" + std::to_string(W),
+                            LogLevel::INFO, DeviceType::GUIDER);
+            }
+        }
 
         saveGuiderImageAsJPG(img8);
     }
@@ -17441,6 +17661,11 @@ void MainWindow::getConnectedDevices()
                 Logger::Log("getConnectedDevices | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
             }
+        }
+        else if (ConnectedDevices[i].DeviceType == "Guider" && (dpGuider != nullptr || sdkGuiderHandle != nullptr))
+        {
+            emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" + QString::number(glGuiderOffsetMax) + ":" + QString::number(glGuiderOffsetValue));
+            emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" + QString::number(glGuiderGainMax) + ":" + QString::number(glGuiderGainValue));
         }
     }
     Logger::Log("getConnectedDevices finish!", LogLevel::INFO, DeviceType::MAIN);
@@ -21882,6 +22107,11 @@ void MainWindow::loadBindDeviceTypeList()
                         Logger::Log("LoadBindDeviceTypeList | MainCamera is in SDK mode but sdkMainCameraHandle is nullptr", LogLevel::WARNING, DeviceType::MAIN);
                     }
                 }
+            }
+            else if (systemdevicelist.system_devices[i].Description == "Guider" && systemdevicelist.system_devices[i].isBind)
+            {
+                emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" + QString::number(glGuiderOffsetMax) + ":" + QString::number(glGuiderOffsetValue));
+                emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" + QString::number(glGuiderGainMax) + ":" + QString::number(glGuiderGainValue));
             }
         }
     }

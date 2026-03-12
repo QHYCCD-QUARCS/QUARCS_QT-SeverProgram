@@ -1049,6 +1049,8 @@ public:
     double ImageGainB = 1.0;   // 显示增益 B
     double ImageOffset = 0.0;  // 显示偏移
     double CameraGain = 0;        // 相机增益
+    double guiderCameraOffset = 0.0;  // 导星相机偏置
+    double guiderCameraGain = 0.0;    // 导星相机增益
     QVector<QPointF> dataPoints; // FWHM 数据点
     double R2 = 0;             // 拟合优度
     bool isAutoFocus = false;  // 自动对焦开关
@@ -1886,6 +1888,8 @@ public:
     double CameraTemperature = 16;         // 当前相机温度
     int glOffsetValue = 0, glOffsetMin = 0, glOffsetMax = 0; // 偏置范围
     int glGainValue = 0, glGainMin = 0, glGainMax = 0;       // 增益范围
+    int glGuiderOffsetValue = 0, glGuiderOffsetMin = 0, glGuiderOffsetMax = 0; // 导星偏置范围
+    int glGuiderGainValue = 0, glGuiderGainMin = 0, glGuiderGainMax = 0;       // 导星增益范围
     int glUsbTrafficValue = 0, glUsbTrafficMin = 0, glUsbTrafficMax = 0, glUsbTrafficStep = 1; // USB_TRAFFIC 范围（可选）
 
     bool glIsFocusingLooping = false;     // 对焦循环开关
