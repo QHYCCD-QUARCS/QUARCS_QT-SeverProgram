@@ -638,6 +638,8 @@ public:
     // 视口驱动的瓦片生成（按当前 zoom/位置优先生成视口内 z/x/y）
     void scheduleViewportTileGeneration();
     void generateViewportTiles_Once(quint64 epoch, int budgetMs);
+    /** 同步生成当前视口要显示的瓦片，确保发送 GPM 前前端请求的瓦片已落盘，避免 404；无视口时退化为 z=0 全层 */
+    void generateVisibleTilesSync(quint64 epoch);
     static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
 
     /**
@@ -735,6 +737,12 @@ public:
      * @param keepCount 保留最近的文件数量（默认5个）
      */
     void cleanupOldHistogramFiles(int keepCount = 5);
+
+    /**
+     * @brief 清理旧的瓦片会话目录（保留当前会话目录）
+     * @param keepSessionId 当前会话 ID，该目录不删除
+     */
+    void cleanupOldTileSessionDirs(const QString& keepSessionId);
 
     // 瓦片相关配置
     int tilePyramidTileSize = 512;                    // 瓦片尺寸

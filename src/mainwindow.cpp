@@ -15,6 +15,7 @@
 #include <memory>
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <unordered_set>
 #include <chrono>
 
@@ -4399,6 +4400,7 @@ void MainWindow::onTimeout()
                     }
                 }
                 emit wsThread->sendMessageToClient("TelescopePierSide:" + NewTelescopePierSide);
+                // Logger::Log("TelescopePierSide:" + NewTelescopePierSide.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
                 indi_Client->getTelescopeMoving(dpMount);
 
@@ -4472,7 +4474,7 @@ void MainWindow::onTimeout()
                 // }
 
             }
-            Logger::Log("11111", LogLevel::INFO, DeviceType::MAIN);
+            // Logger::Log("11111", LogLevel::INFO, DeviceType::MAIN);
         }
     }
     
@@ -4954,8 +4956,8 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     }
 
     // ========================= 瓦片（视口驱动生成） =========================
-    // 固定 sessionId = "live"，永远写到 capture-tiles/live/，覆盖写，不再删目录（SD 卡友好）
-    const QString sessionId = QStringLiteral("live");
+    // 每张图像使用独立会话目录：live_<epoch>，便于区分并清理旧图
+    const QString sessionId = QString("live_%1").arg(epochAtStart);
 
     // 确保 tiles 主目录存在（tmpfs：/dev/shm/capture-tiles/）
     QDir tilesDir(QString::fromStdString(tilePyramidPath));
@@ -4969,6 +4971,11 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
             QFileDevice::ReadGroup | QFileDevice::ExeGroup |
             QFileDevice::ReadOther | QFileDevice::ExeOther);
         Logger::Log("Created tiles directory (tmpfs): " + tilePyramidPath, LogLevel::INFO, DeviceType::CAMERA);
+    }
+    // 创建当前会话目录
+    if (!tilesDir.mkpath(sessionId)) {
+        Logger::Log("Failed to create session tiles directory: " + sessionId.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+        return -1;
     }
 
     // 计算 GPM（快速路径默认不做 histogram）
@@ -4997,7 +5004,10 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
         tileFrameImage16 = std::make_shared<cv::Mat>(originalImage16); // 共享底层buffer（ref-count）
     }
 
-    // 初次：按当前视口优先生成需要的瓦片（<100ms），其余在视口变化时再按需补齐
+    // 先同步生成当前视口要显示的瓦片并落盘，再发 GPM，避免前端收到 GPM 后请求瓦片时 404（帧丢失）；无视口时退化为 z=0 全层
+    generateVisibleTilesSync(epochAtStart);
+
+    // 初次：按当前视口优先生成其它层级/视口瓦片，其余在视口变化时再按需补齐
     scheduleViewportTileGeneration();
 
     // 发送GPM到前端
@@ -5008,6 +5018,8 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     sendGPMToClient(gpm);
     // 同步发送直方图（前端可用于拉伸/显示）
     sendHistogramToClient(gpm);
+    // 删除其它旧会话的瓦片目录，仅保留当前 sessionId
+    cleanupOldTileSessionDirs(sessionId);
 
     // 更新状态（回主线程，避免数据竞争；同时在这里触发 loop capture）
     QMetaObject::invokeMethod(this, [this, sessionId, epochAtStart]() {
@@ -5544,6 +5556,130 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, int budgetMs)
     }
 }
 
+void MainWindow::generateVisibleTilesSync(quint64 epoch)
+{
+    TileFrameState st;
+    std::shared_ptr<cv::Mat> img;
+    {
+        std::lock_guard<std::mutex> lk(tileFrameMutex);
+        st = tileFrame;
+        img = tileFrameImage16;
+    }
+    if (!img || img->empty() || st.sessionId.isEmpty() || st.imageWidth <= 0 || st.imageHeight <= 0) return;
+    if (st.epoch != epoch || tilePyramidEpoch.load() != epoch) return;
+
+    const int W = st.imageWidth;
+    const int H = st.imageHeight;
+    const int T = (st.tileSize > 0) ? st.tileSize : 512;
+    const int maxZ = std::max(0, st.maxZoomLevel);
+
+    // 视口：无有效视口时按整图（scale=1）处理，即 z=0 全层
+    const double vx = tileViewportX.load();
+    const double vy = tileViewportY.load();
+    const double sc = tileViewportScale.load();
+    const double aspect = (tileViewportAspect > 0.1) ? tileViewportAspect : (16.0 / 9.0);
+    const double visibleX = std::isfinite(vx) ? vx : (W / 2.0);
+    const double visibleY = std::isfinite(vy) ? vy : (H / 2.0);
+    const double MIN_VIEW_SCALE = 0.01;
+    const double MAX_VIEW_SCALE = 1.0;
+    const double scale = std::isfinite(sc) && sc > 0
+        ? std::max(MIN_VIEW_SCALE, std::min(MAX_VIEW_SCALE, sc))
+        : 1.0;
+
+    const int z = calculateTileLevelFromScale(scale, maxZ);
+    const int levelScaleInt = 1 << std::max(0, (maxZ - z));
+    const double levelScale = static_cast<double>(levelScaleInt);
+
+    const double visibleWidth = W * scale;
+    const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
+    const double left = std::max(0.0, visibleX - visibleWidth / 2.0);
+    const double top = std::max(0.0, visibleY - visibleHeight / 2.0);
+    const double right = std::min(static_cast<double>(W), left + visibleWidth);
+    const double bottom = std::min(static_cast<double>(H), top + visibleHeight);
+    const double levelLeft = left / levelScale;
+    const double levelTop = top / levelScale;
+    const double levelRight = right / levelScale;
+    const double levelBottom = bottom / levelScale;
+
+    const int startX = static_cast<int>(std::floor(levelLeft / T));
+    const int startY = static_cast<int>(std::floor(levelTop / T));
+    const int endX = static_cast<int>(std::floor(levelRight / T));
+    const int endY = static_cast<int>(std::floor(levelBottom / T));
+    const int levelWidth = static_cast<int>(std::ceil(static_cast<double>(W) / levelScale));
+    const int levelHeight = static_cast<int>(std::ceil(static_cast<double>(H) / levelScale));
+    const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+    const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+
+    const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
+    const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+    if (!QDir().mkpath(zDirPath)) {
+        Logger::Log("generateVisibleTilesSync: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+        return;
+    }
+
+    constexpr int TILE_BORDER = 2;
+    auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
+        return (static_cast<uint64_t>(tz) << 40) |
+               (static_cast<uint64_t>(tx) << 20) |
+               static_cast<uint64_t>(ty);
+    };
+    {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        tileGenDoneEpoch = epoch;
+        tileGenDoneKeys.clear();
+    }
+    std::set<uint64_t> doneKeys;
+    int count = 0;
+    for (int ty = startY; ty <= endY; ++ty) {
+        if (ty < 0 || ty >= maxTilesY) continue;
+        for (int tx = startX; tx <= endX; ++tx) {
+            if (tx < 0 || tx >= maxTilesX) continue;
+            if (tilePyramidEpoch.load() != epoch) return;
+            const uint64_t key = makeKey(z, tx, ty);
+            doneKeys.insert(key);
+            count++;
+            const QString xDirPath = zDirPath + "/" + QString::number(tx);
+            if (!QDir().mkpath(xDirPath)) continue;
+            const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+
+            const int x0 = tx * T;
+            const int y0 = ty * T;
+            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER, T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+            const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
+                                      wantedLevel.y * levelScaleInt,
+                                      wantedLevel.width * levelScaleInt,
+                                      wantedLevel.height * levelScaleInt);
+            const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+            const cv::Rect srcRect = wantedOrig & boundsOrig;
+
+            cv::Mat padded;
+            if (srcRect.width <= 0 || srcRect.height <= 0) {
+                padded = cv::Mat::zeros(wantedOrig.height, wantedOrig.width, img->type());
+            } else {
+                cv::Mat src = (*img)(srcRect);
+                const int topPad = srcRect.y - wantedOrig.y;
+                const int leftPad = srcRect.x - wantedOrig.x;
+                const int bottomPad = (wantedOrig.y + wantedOrig.height) - (srcRect.y + srcRect.height);
+                const int rightPad = (wantedOrig.x + wantedOrig.width) - (srcRect.x + srcRect.width);
+                cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+            }
+            cv::Mat tileLevel;
+            if (levelScaleInt == 1) {
+                tileLevel = padded;
+            } else {
+                cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
+            }
+            saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        for (uint64_t k : doneKeys) tileGenDoneKeys.insert(k);
+    }
+    Logger::Log("generateVisibleTilesSync: wrote " + std::to_string(count) + " tiles (z=" + std::to_string(z) +
+               ") for session " + st.sessionId.toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
+}
+
 void MainWindow::saveTile(const cv::Mat& tile, int z, int x, int y, const QString& sessionId, int border)
 {
     // 构建瓦片存储路径: tiles/{sessionId}/{z}/{x}/{y}.bin
@@ -6027,6 +6163,32 @@ void MainWindow::cleanupOldHistogramFiles(int keepCount)
     if (removedCount > 0) {
         Logger::Log("Cleaned up " + std::to_string(removedCount) + " old histogram file(s), kept " + 
                     std::to_string(keepCount) + " most recent", 
+                    LogLevel::INFO, DeviceType::CAMERA);
+    }
+}
+
+void MainWindow::cleanupOldTileSessionDirs(const QString& keepSessionId)
+{
+    if (keepSessionId.isEmpty()) return;
+    QDir baseDir(QString::fromStdString(tilePyramidPath));
+    if (!baseDir.exists()) return;
+    const QStringList entries = baseDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    int removed = 0;
+    for (const QString& name : entries) {
+        if (name == keepSessionId) continue;
+        // 只删除会话目录：live 或 live_<数字>
+        if (name != QStringLiteral("live") && !name.startsWith(QStringLiteral("live_"))) continue;
+        QString absPath = baseDir.absoluteFilePath(name);
+        QDir subDir(absPath);
+        if (subDir.removeRecursively()) {
+            removed++;
+            Logger::Log("Removed old tile session dir: " + absPath.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        } else {
+            Logger::Log("Failed to remove old tile session dir: " + absPath.toStdString(), LogLevel::WARNING, DeviceType::CAMERA);
+        }
+    }
+    if (removed > 0) {
+        Logger::Log("Cleaned up " + std::to_string(removed) + " old tile session dir(s), kept " + keepSessionId.toStdString(),
                     LogLevel::INFO, DeviceType::CAMERA);
     }
 }
