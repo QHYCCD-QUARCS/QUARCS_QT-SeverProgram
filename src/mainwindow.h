@@ -641,6 +641,8 @@ public:
     /** 同步生成当前视口要显示的瓦片，确保发送 GPM 前前端请求的瓦片已落盘，避免 404；无视口时退化为 z=0 全层 */
     void generateVisibleTilesSync(quint64 epoch);
     static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
+    static QString buildTileSessionId(quint64 frameId);
+    int currentTilePreviewBinning() const;
 
     /**
      * @brief 瓦片金字塔全局处理元数据 (GPM - Global Processing Metadata)
@@ -737,6 +739,7 @@ public:
      * @param keepCount 保留最近的文件数量（默认5个）
      */
     void cleanupOldHistogramFiles(int keepCount = 5);
+    void cleanupOldTileSessions(int keepCount = 5);
 
     /**
      * @brief 清理旧的瓦片会话目录（保留当前会话目录）
@@ -767,6 +770,7 @@ public:
         QString sessionId;
         int imageWidth = 0;
         int imageHeight = 0;
+        int previewBinningFactor = 1;
         int tileSize = 512;
         int maxZoomLevel = 0;
         QString cfa;

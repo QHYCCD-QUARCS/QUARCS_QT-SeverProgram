@@ -4933,25 +4933,23 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     Tools::SaveMatToFITS(image16);
     Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
 
-    // 关键修复：瓦片坐标体系使用“传感器像素/原图尺寸”。
-    // 由于瓦片金字塔现在基于 originalImage16（未合并）构建，
-    // 这里对前端广播的 MainCameraSize 也应使用原图尺寸，避免拖动/ROI 边界计算被错误钳制。
-    const int width = originalImage16.cols;
-    const int height = originalImage16.rows;
-    Logger::Log("MainCameraSize (source) dimensions: " + std::to_string(width) + "x" + std::to_string(height), LogLevel::INFO, DeviceType::CAMERA);
-    emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
-    // MainCameraBinning 在瓦片模式下固定为 1（坐标不再按 bin 缩放）。
-    // 若需要展示预览/解析保存链路的 bin，可使用 TileGPM 的 previewBinningFactor。
-    emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(1));
+    const cv::Mat& tileSourceImage = image16;
 
-    if (image16.empty())
+    // 主画面瓦片与预览链路保持一致：若启用了软件 bin，则使用 bin 后图作为瓦片源与前端坐标系。
+    const int width = tileSourceImage.cols;
+    const int height = tileSourceImage.rows;
+    Logger::Log("MainCameraSize (tile source) dimensions: " + std::to_string(width) + "x" + std::to_string(height), LogLevel::INFO, DeviceType::CAMERA);
+    emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
+    emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(binningFactor));
+
+    if (tileSourceImage.empty())
     {
-        Logger::Log("saveFitsAsPNG | image16 is empty, cannot save.", LogLevel::ERROR, DeviceType::CAMERA);
+        Logger::Log("saveFitsAsPNG | tileSourceImage is empty, cannot save.", LogLevel::ERROR, DeviceType::CAMERA);
         return -1;
     }
-    if (image16.type() != CV_16UC1 && image16.type() != CV_8UC1)
+    if (tileSourceImage.type() != CV_16UC1 && tileSourceImage.type() != CV_8UC1)
     {
-        Logger::Log("saveFitsAsPNG | unsupported image type: " + std::to_string(image16.type()), LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("saveFitsAsPNG | unsupported image type: " + std::to_string(tileSourceImage.type()), LogLevel::WARNING, DeviceType::CAMERA);
         return -1;
     }
 
@@ -4983,7 +4981,7 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     if (ProcessBin) {
         maxMergeFactor = binningFactor;
     }
-    TileGPM gpm = calculateGPM(originalImage16, localCameraCFA, maxMergeFactor, /*enableHistogram=*/false);
+    TileGPM gpm = calculateGPM(tileSourceImage, localCameraCFA, maxMergeFactor, /*enableHistogram=*/false);
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
     gpm.previewHeight = image16.rows;
@@ -4996,12 +4994,13 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
         std::lock_guard<std::mutex> lk(tileFrameMutex);
         tileFrame.epoch = epochAtStart;
         tileFrame.sessionId = sessionId;
-        tileFrame.imageWidth = originalImage16.cols;
-        tileFrame.imageHeight = originalImage16.rows;
+        tileFrame.imageWidth = tileSourceImage.cols;
+        tileFrame.imageHeight = tileSourceImage.rows;
+        tileFrame.previewBinningFactor = binningFactor;
         tileFrame.tileSize = tilePyramidTileSize;
         tileFrame.maxZoomLevel = gpm.maxZoomLevel;
         tileFrame.cfa = localCameraCFA;
-        tileFrameImage16 = std::make_shared<cv::Mat>(originalImage16); // 共享底层buffer（ref-count）
+        tileFrameImage16 = std::make_shared<cv::Mat>(tileSourceImage); // 共享底层buffer（ref-count）
     }
 
     // 先同步生成当前视口要显示的瓦片并落盘，再发 GPM，避免前端收到 GPM 后请求瓦片时 404（帧丢失）；无视口时退化为 z=0 全层
@@ -5333,6 +5332,17 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
                 LogLevel::INFO, DeviceType::CAMERA);
 
     return gpm;
+}
+
+QString MainWindow::buildTileSessionId(quint64 frameId)
+{
+    return QStringLiteral("live_%1").arg(QString::number(static_cast<qulonglong>(frameId)));
+}
+
+int MainWindow::currentTilePreviewBinning() const
+{
+    std::lock_guard<std::mutex> lk(tileFrameMutex);
+    return std::max(1, tileFrame.previewBinningFactor);
 }
 
 int MainWindow::calculateTileLevelFromScale(double scale, int maxZoomLevel)
@@ -6075,9 +6085,9 @@ void MainWindow::sendHistogramToClient(const TileGPM& gpm)
     }
 
     // ========================= 新方案：直方图保存到 tmpfs，供 HTTPS 下载 =========================
-    // 直方图与瓦片同目录（/dev/shm/capture-tiles/），固定文件名 histogram_live.bin，覆盖写
+    // 直方图与瓦片同目录（/dev/shm/capture-tiles/），按 session 独立命名。
 
-    QString histogramFileName = QString("histogram_%1.bin").arg(gpm.sessionId);  // histogram_live.bin
+    QString histogramFileName = QString("histogram_%1.bin").arg(gpm.sessionId);
     QString histogramFilePath = QString::fromStdString(tilePyramidPath) + histogramFileName;
     
     // 2. 将直方图保存为二进制文件
@@ -6129,8 +6139,8 @@ void MainWindow::sendHistogramToClient(const TileGPM& gpm)
                 ", url=" + histogramUrl.toStdString(),
                 LogLevel::INFO, DeviceType::CAMERA);
     
-    // 5. tmpfs 下固定 histogram_live.bin 覆盖写，仅保留 1 个；清理其它残留（若有）
-    cleanupOldHistogramFiles(1);
+    // 5. 每帧独立 histogram 文件；保留最近几帧，兼顾前端异步下载与 tmpfs 占用。
+    cleanupOldHistogramFiles(5);
 }
 
 void MainWindow::cleanupOldHistogramFiles(int keepCount)
@@ -12901,10 +12911,10 @@ void MainWindow::FocusingLooping()
         if (cameraY % 2 != 0) cameraY += 1;
 
         // 坐标体系：
-        // - 瓦片模式（TileGPM 已建立）：前端坐标使用“原图像素”（bin=1），ROI_x/ROI_y 也应是原图像素。
+        // - 瓦片模式：前端坐标使用“当前瓦片预览像素”；若启用了软件 bin，需要乘以 previewBinningFactor 映射回传感器坐标。
         // - 非瓦片模式：沿用历史逻辑，ROI_x/ROI_y 为“预览/处理 bin 后坐标”，需要乘以 glMainCameraBinning 映射回原图像素。
         const bool tileModeActive = (isStagingImage && !SavedImage.empty());
-        const int roiCoordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
+        const int roiCoordScale = tileModeActive ? currentTilePreviewBinning() : std::max(1, glMainCameraBinning);
 
         // 使用缩放坐标（必要时乘以 binning）并在缩放空间内裁剪，允许等于边界
         int scaledX = cameraX * roiCoordScale;
@@ -12918,14 +12928,10 @@ void MainWindow::FocusingLooping()
         if (scaledX <= glMainCCDSizeX - ROI.width() && scaledY <= glMainCCDSizeY - ROI.height())
         {
             Logger::Log("FocusingLooping | set Camera ROI x:" + std::to_string(cameraX) + ", y:" + std::to_string(cameraY) + ", width:" + std::to_string(roiBox) + ", height:" + std::to_string(roiBox), LogLevel::DEBUG, DeviceType::FOCUSER);
-            // 将裁剪后的坐标反馈给前端：
-            // - 瓦片模式：保持原图像素坐标
-            // - 非瓦片模式：回退到“bin 后坐标”（历史行为）
+            // 将裁剪后的坐标反馈给前端，统一回到“当前预览坐标系”。
             if (roiCoordScale > 0) {
-                roiAndFocuserInfo["ROI_x"] = tileModeActive ? static_cast<double>(scaledX)
-                                                          : (static_cast<double>(scaledX) / roiCoordScale);
-                roiAndFocuserInfo["ROI_y"] = tileModeActive ? static_cast<double>(scaledY)
-                                                          : (static_cast<double>(scaledY) / roiCoordScale);
+                roiAndFocuserInfo["ROI_x"] = static_cast<double>(scaledX) / roiCoordScale;
+                roiAndFocuserInfo["ROI_y"] = static_cast<double>(scaledY) / roiCoordScale;
             }
             
             if (isMainCameraSDK)
@@ -13028,12 +13034,10 @@ void MainWindow::FocusingLooping()
             if (scaledY + ROI.height() > glMainCCDSizeY)
                 scaledY = glMainCCDSizeY - ROI.height();
 
-            // 将修正后的坐标反馈给前端（同上：瓦片模式用原图像素；非瓦片模式回退 bin 后坐标）
+            // 将修正后的坐标反馈给前端（同上：统一回到当前预览坐标系）
             if (roiCoordScale > 0) {
-                roiAndFocuserInfo["ROI_x"] = tileModeActive ? static_cast<double>(scaledX)
-                                                          : (static_cast<double>(scaledX) / roiCoordScale);
-                roiAndFocuserInfo["ROI_y"] = tileModeActive ? static_cast<double>(scaledY)
-                                                          : (static_cast<double>(scaledY) / roiCoordScale);
+                roiAndFocuserInfo["ROI_x"] = static_cast<double>(scaledX) / roiCoordScale;
+                roiAndFocuserInfo["ROI_y"] = static_cast<double>(scaledY) / roiCoordScale;
             }
             
             if (isMainCameraSDK)
@@ -23100,13 +23104,12 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 
     // 使用局部CFA副本进行 binning 处理
     // 说明：
-    // - 瓦片模式（TileGPM 已建立）下，前端画布尺寸是原图尺寸（bin=1），ROI 叠加也必须是原图像素尺寸，
-    //   因此 ROI 文件不再做软件 bin（roiBin=1），避免 124x124 叠加到 4K 画布时“缩小/错位”。
+    // - 瓦片模式下，ROI 叠加层应与主画面的当前预览倍率保持一致；若主画面已软件 bin，这里也使用相同 bin。
     // - 非瓦片模式沿用历史：ROI 输出按 glMainCameraBinning 做软件 bin，减少数据量与前端处理压力。
     const bool tileModeActive = (isStagingImage && !SavedImage.empty());
     int roiBin = 1;
-    if (ProcessBin && !tileModeActive) {
-        roiBin = glMainCameraBinning;
+    if (ProcessBin) {
+        roiBin = tileModeActive ? currentTilePreviewBinning() : glMainCameraBinning;
         if (roiBin < 1) roiBin = 1;
         if (roiBin > 16) roiBin = 16;
         // 防御：向上取整到 2^N（与 saveFitsAsPNG 的 previewBinningFactor 一致）
@@ -23210,8 +23213,8 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
             if (applyY % 2 != 0) applyY += (applyY < maxY ? 1 : -1);
             applyX = std::min(std::max(0, applyX), maxX);
             applyY = std::min(std::max(0, applyY), maxY);
-            // 坐标体系同 FocusingLooping：瓦片模式为原图像素；非瓦片模式回退到 bin 后坐标
-            const int coordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
+            // 坐标体系同 FocusingLooping：统一回到当前预览坐标系。
+            const int coordScale = tileModeActive ? currentTilePreviewBinning() : std::max(1, glMainCameraBinning);
             roiAndFocuserInfo["ROI_x"] = static_cast<int>(applyX / coordScale);
             roiAndFocuserInfo["ROI_y"] = static_cast<int>(applyY / coordScale);
         }
@@ -23321,7 +23324,7 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     // 2) 读取 ROI 与选择点（全图坐标）
     const double boxSide = roiAndFocuserInfo.count("BoxSideLength") ? roiAndFocuserInfo["BoxSideLength"] : BoxSideLength;
     const bool tileModeActive = (isStagingImage && !SavedImage.empty());
-    const int roiCoordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
+    const int roiCoordScale = tileModeActive ? currentTilePreviewBinning() : std::max(1, glMainCameraBinning);
     const double roi_x    = roiAndFocuserInfo.count("ROI_x") ? roiAndFocuserInfo["ROI_x"] * roiCoordScale : 0;
     const double roi_y    = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"] * roiCoordScale : 0;
     const double selXFull = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1;
