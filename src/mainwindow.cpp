@@ -4976,12 +4976,12 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
         return -1;
     }
 
-    // 计算 GPM（快速路径默认不做 histogram）
+    // 计算 GPM，并为前端白平衡/直方图面板同步生成 histogram 文件
     int maxMergeFactor = 16;
     if (ProcessBin) {
         maxMergeFactor = binningFactor;
     }
-    TileGPM gpm = calculateGPM(tileSourceImage, localCameraCFA, maxMergeFactor, /*enableHistogram=*/false);
+    TileGPM gpm = calculateGPM(tileSourceImage, localCameraCFA, maxMergeFactor, /*enableHistogram=*/true);
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
     gpm.previewHeight = image16.rows;
