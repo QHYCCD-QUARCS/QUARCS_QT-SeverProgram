@@ -75,6 +75,7 @@ namespace fs = std::filesystem;
 #include "autofocus.h"
 #include "SerialDeviceDetector.h"
 #include "guiding/GuiderCore.h"
+#include "guiding/SimGuiderFrameSource.h"
 #include <stellarsolver.h>
 
 #include "sdks/SdkSerialExecutor.h"
@@ -862,6 +863,7 @@ public:
 private:
     // 内置导星核心；未初始化时保持为空，相关逻辑自动降级为仅取图/显示。
     GuiderCore *guiderCore = nullptr;
+    std::unique_ptr<guiding::SimGuiderFrameSource> simGuiderFrameSource;
     // 导星循环曝光定时器（singleShot：收到一帧后再触发下一帧，避免重入）
     QTimer *guiderLoopTimer = nullptr;
     bool guiderExposureInFlight = false;
@@ -875,6 +877,8 @@ private:
     bool guiderMultiStarSecondaryPtsPending = false;
     bool guiderPhaseGuiding = false;
     bool guiderDirectionDetectActive = false;
+    bool guiderForceRecalibrateOnNextStart = false;
+    int guiderChartSampleIndex = 0;
     QVector<QPointF> guiderMultiStarSecondaryPtsPx;
 
 private Q_SLOTS:

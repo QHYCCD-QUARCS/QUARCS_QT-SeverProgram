@@ -119,6 +119,23 @@ int main(int argc, char** argv)
     const int w = 640, h = 480;
     QPointF lock(320.0, 240.0);
 
+    auto feedCoreFrame = [&](GuiderCore& core, QPointF starPos, const std::string& prefix, int idx) {
+        cv::Mat frame = makeFrame(w, h, starPos.x(), starPos.y(), 2.0, 40000);
+        std::string p = outDir + "/" + prefix + "_" + std::to_string(idx) + ".fits";
+        writeFits16(p, frame);
+        core.onNewFrame(QString::fromStdString(p));
+    };
+
+    auto attachSimpleMountModel = [&](GuiderCore& core, QPointF& starPos, double raPxPerMs, double decPxPerMs) {
+        QPointF* starPtr = &starPos;
+        QObject::connect(&core, &GuiderCore::requestPulse, [starPtr, raPxPerMs, decPxPerMs](const guiding::PulseCommand& cmd) {
+            if (cmd.dir == guiding::GuideDir::West)  starPtr->rx() += raPxPerMs * cmd.durationMs;
+            if (cmd.dir == guiding::GuideDir::East)  starPtr->rx() -= raPxPerMs * cmd.durationMs;
+            if (cmd.dir == guiding::GuideDir::North) starPtr->ry() += decPxPerMs * cmd.durationMs;
+            if (cmd.dir == guiding::GuideDir::South) starPtr->ry() -= decPxPerMs * cmd.durationMs;
+        });
+    };
+
     // ===== 1) 选星测试 =====
     {
         cv::Mat frame = makeFrame(w, h, lock.x(), lock.y(), 2.0, 40000);
@@ -417,7 +434,7 @@ int main(int argc, char** argv)
         core.setParams(gp);
 
         core.startLoop();
-        core.startGuiding();
+        core.startGuidingWithManualLock(lock.x(), lock.y());
 
         // Simulate mount response with deliberate cross-coupling so orthoErr is non-trivial.
         QPointF star = lock;
@@ -468,7 +485,7 @@ int main(int argc, char** argv)
         core.setParams(gp);
 
         core.startLoop();
-        core.startGuiding();
+        core.startGuidingWithManualLock(lock.x(), lock.y());
 
         // slow response -> large ms/px (pulse durations accumulate faster than travel)
         QPointF star = lock;
@@ -519,7 +536,7 @@ int main(int argc, char** argv)
         core.setParams(gp);
 
         core.startLoop();
-        core.startGuiding();
+        core.startGuidingWithManualLock(lock.x(), lock.y());
 
         QPointF star = lock;
         const double raPxPerMs2 = 0.00005; // 500ms -> 0.025px, almost no effect
@@ -756,6 +773,310 @@ int main(int argc, char** argv)
             return 1;
         }
         std::cout << "[RaHysteresis] OK\n";
+    }
+
+    // ===== 10) 自动选星：复用校准+DEC回差后应直接进入 Guiding，不再重测回差 =====
+    {
+        GuiderCore core;
+        guiding::GuidingParams gp;
+        gp.enableEmergency = false;
+        gp.autoDecGuideDir = false;
+        gp.allowedDecDirs = {guiding::GuideDir::North, guiding::GuideDir::South};
+        gp.calibMaxOrthoErrDeg = 90.0;
+        gp.calibMinAxisMovePx = 0.0;
+        gp.enableDecBacklashMeasure = true;
+        core.setParams(gp);
+
+        QPointF star = lock;
+        attachSimpleMountModel(core, star, 0.05, 0.04);
+        QString lastInfo;
+        QObject::connect(&core, &GuiderCore::infoMessage, [&](const QString& msg) { lastInfo = msg; });
+
+        core.startLoop();
+        core.setManualLock(lock.x(), lock.y());
+        core.startGuiding();
+
+        bool reachedGuiding = false;
+        for (int i = 0; i < 500; ++i)
+        {
+            feedCoreFrame(core, star, "reuse_auto_init", i);
+            if (core.state() == guiding::State::Guiding)
+            {
+                reachedGuiding = true;
+                break;
+            }
+        }
+        if (!reachedGuiding)
+        {
+            std::cerr << "[ReuseAuto] FAILED: first guiding run did not reach Guiding, state="
+                      << static_cast<int>(core.state())
+                      << " lastInfo=" << lastInfo.toStdString() << "\n";
+            return 1;
+        }
+
+        core.stopGuiding();
+        star = lock;
+
+        bool sawReuse = false;
+        bool sawBacklash = false;
+        QObject::connect(&core, &GuiderCore::infoMessage, [&](const QString& msg) {
+            if (msg.contains("已复用上次校准与DEC回差"))
+                sawReuse = true;
+            if (msg.contains("DEC 回差测量开始"))
+                sawBacklash = true;
+        });
+
+        core.startGuiding();
+        feedCoreFrame(core, star, "reuse_auto_second", 0);
+
+        if (core.state() != guiding::State::Guiding || !sawReuse || sawBacklash)
+        {
+            std::cerr << "[ReuseAuto] FAILED: expected direct Guiding with cached calibration/backlash\n";
+            return 1;
+        }
+        std::cout << "[ReuseAuto] OK: auto-select reused calibration+backlash without remeasurement\n";
+    }
+
+    // ===== 11) 手动选星：复用校准+DEC回差后应直接进入 Guiding =====
+    {
+        GuiderCore core;
+        guiding::GuidingParams gp;
+        gp.enableEmergency = false;
+        gp.autoDecGuideDir = false;
+        gp.allowedDecDirs = {guiding::GuideDir::North, guiding::GuideDir::South};
+        gp.calibMaxOrthoErrDeg = 90.0;
+        gp.calibMinAxisMovePx = 0.0;
+        gp.enableDecBacklashMeasure = true;
+        core.setParams(gp);
+
+        QPointF star = lock;
+        attachSimpleMountModel(core, star, 0.05, 0.04);
+
+        core.startLoop();
+        core.setManualLock(lock.x(), lock.y());
+        core.startGuiding();
+        bool reachedGuiding = false;
+        for (int i = 0; i < 500; ++i)
+        {
+            feedCoreFrame(core, star, "reuse_manual_init", i);
+            if (core.state() == guiding::State::Guiding)
+            {
+                reachedGuiding = true;
+                break;
+            }
+        }
+        if (!reachedGuiding)
+        {
+            std::cerr << "[ReuseManual] FAILED: first guiding run did not reach Guiding\n";
+            return 1;
+        }
+
+        core.stopGuiding();
+        core.startLoop();
+        core.setManualLock(lock.x(), lock.y());
+
+        bool sawReuse = false;
+        bool sawBacklash = false;
+        QObject::connect(&core, &GuiderCore::infoMessage, [&](const QString& msg) {
+            if (msg.contains("已复用上次校准与DEC回差"))
+                sawReuse = true;
+            if (msg.contains("DEC 回差测量开始"))
+                sawBacklash = true;
+        });
+
+        core.startGuiding();
+        if (core.state() != guiding::State::Guiding || !sawReuse || sawBacklash)
+        {
+            std::cerr << "[ReuseManual] FAILED: expected immediate Guiding with cached calibration/backlash\n";
+            return 1;
+        }
+        std::cout << "[ReuseManual] OK: manual lock reused calibration+backlash without remeasurement\n";
+    }
+
+    // ===== 12) 强制重新校准：即使已有历史快照，也必须重新进入 Calibrating =====
+    {
+        GuiderCore core;
+        guiding::GuidingParams gp;
+        gp.enableEmergency = false;
+        gp.autoDecGuideDir = false;
+        gp.allowedDecDirs = {guiding::GuideDir::North, guiding::GuideDir::South};
+        gp.calibMaxOrthoErrDeg = 90.0;
+        gp.calibMinAxisMovePx = 0.0;
+        gp.enableDecBacklashMeasure = true;
+        core.setParams(gp);
+
+        QPointF star = lock;
+        attachSimpleMountModel(core, star, 0.05, 0.04);
+
+        core.startLoop();
+        core.setManualLock(lock.x(), lock.y());
+        core.startGuiding();
+        bool reachedGuiding = false;
+        for (int i = 0; i < 500; ++i)
+        {
+            feedCoreFrame(core, star, "force_recal_init", i);
+            if (core.state() == guiding::State::Guiding)
+            {
+                reachedGuiding = true;
+                break;
+            }
+        }
+        if (!reachedGuiding)
+        {
+            std::cerr << "[ForceRecal] FAILED: first guiding run did not reach Guiding\n";
+            return 1;
+        }
+
+        core.stopGuiding();
+        core.startLoop();
+        core.setManualLock(lock.x(), lock.y());
+
+        bool sawClear = false;
+        bool sawReuse = false;
+        QObject::connect(&core, &GuiderCore::infoMessage, [&](const QString& msg) {
+            if (msg.contains("历史快照已清除"))
+                sawClear = true;
+            if (msg.contains("已复用上次校准"))
+                sawReuse = true;
+        });
+
+        core.startGuidingForceCalibrate();
+        if (core.state() != guiding::State::Calibrating || !sawClear || sawReuse)
+        {
+            std::cerr << "[ForceRecal] FAILED: expected forced recalibration instead of reuse\n";
+            return 1;
+        }
+        std::cout << "[ForceRecal] OK: forced recalibration bypassed cached snapshot\n";
+    }
+
+    // ===== 13) 自动选星 + 强制重新校准：异步选星后仍必须重新校准并重测回差 =====
+    {
+        GuiderCore core;
+        guiding::GuidingParams gp;
+        gp.enableEmergency = false;
+        gp.autoDecGuideDir = false;
+        gp.allowedDecDirs = {guiding::GuideDir::North, guiding::GuideDir::South};
+        gp.calibMaxOrthoErrDeg = 90.0;
+        gp.calibMinAxisMovePx = 0.0;
+        gp.enableDecBacklashMeasure = true;
+        core.setParams(gp);
+
+        QPointF star = lock;
+        attachSimpleMountModel(core, star, 0.05, 0.04);
+
+        core.startLoop();
+        core.startGuidingWithManualLock(lock.x(), lock.y());
+
+        bool reachedGuiding = false;
+        for (int i = 0; i < 500; ++i)
+        {
+            feedCoreFrame(core, star, "force_auto_init", i);
+            if (core.state() == guiding::State::Guiding)
+            {
+                reachedGuiding = true;
+                break;
+            }
+        }
+        if (!reachedGuiding)
+        {
+            std::cerr << "[ForceAutoRecal] FAILED: first guiding run did not reach Guiding\n";
+            return 1;
+        }
+
+        core.stopGuiding();
+        core.startLoop();
+        star = lock;
+
+        bool sawClear = false;
+        bool sawBacklashStart = false;
+        QObject::connect(&core, &GuiderCore::infoMessage, [&](const QString& msg) {
+            if (msg.contains("历史快照已清除"))
+                sawClear = true;
+            if (msg.contains("DEC 回差测量开始"))
+                sawBacklashStart = true;
+        });
+
+        core.startGuidingForceCalibrate();
+
+        bool reachedBacklash = false;
+        for (int i = 0; i < 500; ++i)
+        {
+            feedCoreFrame(core, star, "force_auto_second", i);
+            if (sawBacklashStart)
+            {
+                reachedBacklash = true;
+                break;
+            }
+            if (core.state() == guiding::State::Error)
+                break;
+        }
+
+        if (!sawClear || !reachedBacklash)
+        {
+            std::cerr << "[ForceAutoRecal] FAILED: expected recalibration and backlash measurement after auto-select\n";
+            return 1;
+        }
+        std::cout << "[ForceAutoRecal] OK: forced recalibration survived async auto-select path\n";
+    }
+
+    // ===== 14) 历史快照失效：上下文变化后应重新校准而不是复用 =====
+    {
+        GuiderCore core;
+        guiding::GuidingParams gp;
+        gp.enableEmergency = false;
+        gp.autoDecGuideDir = false;
+        gp.allowedDecDirs = {guiding::GuideDir::North, guiding::GuideDir::South};
+        gp.calibMaxOrthoErrDeg = 90.0;
+        gp.calibMinAxisMovePx = 0.0;
+        gp.enableDecBacklashMeasure = true;
+        core.setParams(gp);
+
+        QPointF star = lock;
+        attachSimpleMountModel(core, star, 0.05, 0.04);
+
+        core.startLoop();
+        core.startGuidingWithManualLock(lock.x(), lock.y());
+
+        bool reachedGuiding = false;
+        for (int i = 0; i < 500; ++i)
+        {
+            feedCoreFrame(core, star, "invalidate_init", i);
+            if (core.state() == guiding::State::Guiding)
+            {
+                reachedGuiding = true;
+                break;
+            }
+        }
+        if (!reachedGuiding)
+        {
+            std::cerr << "[InvalidateSnapshot] FAILED: first guiding run did not reach Guiding\n";
+            return 1;
+        }
+
+        core.stopGuiding();
+        core.startLoop();
+
+        gp.guiderBinning = 2; // invalidate startup snapshot
+        core.setParams(gp);
+
+        bool sawInvalid = false;
+        bool sawReuse = false;
+        QObject::connect(&core, &GuiderCore::infoMessage, [&](const QString& msg) {
+            if (msg.contains("历史快照不可复用（binning变化"))
+                sawInvalid = true;
+            if (msg.contains("已复用上次校准与DEC回差"))
+                sawReuse = true;
+        });
+
+        core.startGuiding();
+        feedCoreFrame(core, star, "invalidate_second", 0);
+
+        if (core.state() != guiding::State::Calibrating || !sawInvalid || sawReuse)
+        {
+            std::cerr << "[InvalidateSnapshot] FAILED: expected invalidation by binning change before reuse\n";
+            return 1;
+        }
+        std::cout << "[InvalidateSnapshot] OK: invalid startup snapshot triggered recalibration path\n";
     }
 
     std::cout << "Wrote FITS frames to: " << outDir << "\n";

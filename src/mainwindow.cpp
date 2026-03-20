@@ -613,6 +613,134 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     guiderLoopTimer = new QTimer(this);
     guiderLoopTimer->setSingleShot(true);
     connect(guiderLoopTimer, &QTimer::timeout, this, &MainWindow::onGuiderLoopTimeout);
+    guiderCore = new GuiderCore(this);
+#if QUARCS_SIM_GUIDER
+    simGuiderFrameSource = std::make_unique<guiding::SimGuiderFrameSource>();
+    Logger::Log("BuiltInGuider | simulated frame source enabled", LogLevel::INFO, DeviceType::GUIDER);
+#endif
+    connect(guiderCore, &GuiderCore::requestExposure, this, [this](int exposureMs) {
+        guiderExpMs = std::max(1, exposureMs);
+        isGuiderLoopExp = true;
+        guiderExposureInFlight = false;
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+        if (guiderLoopTimer)
+            guiderLoopTimer->start(0);
+    });
+    connect(guiderCore, &GuiderCore::requestPersistGuidingFits, this, &MainWindow::PersistGuidingFits);
+    connect(guiderCore, &GuiderCore::requestPulse, this, [this](const guiding::PulseCommand& cmd) {
+        ControlGuideEx(static_cast<int>(cmd.dir), cmd.durationMs, QStringLiteral("BuiltInGuider"));
+    });
+    connect(guiderCore, &GuiderCore::lockPositionChanged, this, [this](const QPointF& lockPosPx) {
+        glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
+        glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
+        emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
+        emit wsThread->sendMessageToClient(
+            "PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(static_cast<int>(std::lround(lockPosPx.x()))) + ":" +
+            QString::number(static_cast<int>(std::lround(lockPosPx.y()))));
+    });
+    connect(guiderCore, &GuiderCore::lockStarSelected, this, [this](double x, double y, double, double) {
+        glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
+        glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
+        emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+        emit wsThread->sendMessageToClient(
+            "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(static_cast<int>(std::lround(x))) + ":" +
+            QString::number(static_cast<int>(std::lround(y))));
+    });
+    connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
+        glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
+        glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
+        emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+        emit wsThread->sendMessageToClient(
+            "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(static_cast<int>(std::lround(centroidPx.x()))) + ":" +
+            QString::number(static_cast<int>(std::lround(centroidPx.y()))));
+    });
+    connect(guiderCore, &GuiderCore::directionDetectionStateChanged, this, [this](bool active) {
+        guiderDirectionDetectActive = active;
+        emit wsThread->sendMessageToClient(QString("GuiderStatus:%1")
+                                               .arg(active ? "InDirectionDetection"
+                                                           : (guiderPhaseGuiding ? "InGuiding" : "InCalibration")));
+    });
+    connect(guiderCore, &GuiderCore::guideErrorUpdated, this, [this](double raErrPx, double decErrPx) {
+        emit wsThread->sendMessageToClient(
+            "AddLineChartData:" + QString::number(guiderChartSampleIndex++) + ":" +
+            QString::number(raErrPx, 'f', 6) + ":" +
+            QString::number(decErrPx, 'f', 6));
+    });
+    connect(guiderCore, &GuiderCore::guidePulseIssued, this,
+            [this](const guiding::PulseCommand& cmd, double raErrPx, double decErrPx) {
+        const QString dir =
+            (cmd.dir == guiding::GuideDir::North) ? QStringLiteral("NORTH") :
+            (cmd.dir == guiding::GuideDir::South) ? QStringLiteral("SOUTH") :
+            (cmd.dir == guiding::GuideDir::East)  ? QStringLiteral("EAST")  :
+                                                    QStringLiteral("WEST");
+        emit wsThread->sendMessageToClient(
+            "GuiderPulse:" + dir + ":" + QString::number(cmd.durationMs) +
+            ":raErrPx=" + QString::number(raErrPx, 'f', 6) +
+            ":decErrPx=" + QString::number(decErrPx, 'f', 6));
+    });
+    connect(guiderCore, &GuiderCore::stateChanged, this, [this](guiding::State state) {
+        guiderPhaseGuiding = (state == guiding::State::Guiding);
+        if (state == guiding::State::Idle || state == guiding::State::Looping ||
+            state == guiding::State::Stopped || state == guiding::State::Error)
+        {
+            guiderDirectionDetectActive = false;
+            guiderChartSampleIndex = 0;
+            isGuiderLoopExp = false;
+            guiderExposureInFlight = false;
+            if (guiderLoopTimer)
+                guiderLoopTimer->stop();
+            if (sdkGuiderExposureTimer)
+                sdkGuiderExposureTimer->stop();
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
+            emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+        }
+        emit wsThread->sendMessageToClient(QString("GuiderCoreState:%1").arg(static_cast<int>(state)));
+        switch (state)
+        {
+        case guiding::State::Selecting:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderStatus:InSelecting");
+            break;
+        case guiding::State::Calibrating:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+            break;
+        case guiding::State::Guiding:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+            break;
+        case guiding::State::Idle:
+        case guiding::State::Looping:
+        case guiding::State::Stopped:
+        case guiding::State::Error:
+        default:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+            break;
+        }
+    });
+    connect(guiderCore, &GuiderCore::infoMessage, this, [this](const QString& msg) {
+        Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+        emit wsThread->sendMessageToClient("GuiderCoreInfo:" + msg);
+    });
+    connect(guiderCore, &GuiderCore::errorOccurred, this, [this](const QString& msg) {
+        Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::WARNING, DeviceType::GUIDER);
+        emit wsThread->sendMessageToClient("GuiderCoreError:" + msg);
+        if (msg.contains(QStringLiteral("LostStar"), Qt::CaseInsensitive) ||
+            msg.contains(QStringLiteral("丢星"), Qt::CaseInsensitive))
+        {
+            emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
+        }
+    });
     // getConnectedSerialPorts();
 
     // 电调控制初始化
@@ -2236,32 +2364,106 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("get CFWList finish!", LogLevel::DEBUG, DeviceType::CFW);
     }
 
-    else if (message == "ClearCalibrationData")
+    else if (message == "ClearCalibrationData"
+             || message == "clearGuiderData"
+             || message == "PHD2Recalibrate")
     {
-        
-        Logger::Log("Clear polar alignment calibration data", LogLevel::DEBUG, DeviceType::MAIN);
+        Logger::Log(("BuiltInGuider | recalibration request received: " + message).toStdString(),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log("BuiltInGuider | clear cached calibration/backlash and force recalibrate on next start",
+                    LogLevel::INFO, DeviceType::GUIDER);
+        guiderForceRecalibrateOnNextStart = true;
+        if (guiderCore)
+        {
+            guiderCore->clearCachedCalibration();
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:CachedCalibrationAndBacklashCleared:WillRecalibrateOnNextStart");
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:GuiderCoreNotReady:PendingRecalibrateOnNextStart");
+        }
     }else if (message == "getGuiderStatus")
     {
         Logger::Log("getGuiderStatus ...", LogLevel::DEBUG, DeviceType::GUIDER);
-        // PHD2 已移除：不再有 Guiding 状态，保持兼容字段为 false
-        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
-
         const bool guiderSdk =
             (systemdevicelist.system_devices.size() > 1 &&
              systemdevicelist.system_devices[1].isSDKConnect &&
              sdkGuiderHandle != nullptr);
         const bool loopOn = (isGuiderLoopExp && ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk));
+        bool guidingOn = false;
+        QString guiderStatus;
+        if (guiderCore)
+        {
+            switch (guiderCore->state())
+            {
+            case guiding::State::Selecting:
+                guidingOn = true;
+                guiderStatus = QStringLiteral("InSelecting");
+                break;
+            case guiding::State::Calibrating:
+                guidingOn = true;
+                guiderStatus = QStringLiteral("InCalibration");
+                break;
+            case guiding::State::Guiding:
+                guidingOn = true;
+                guiderStatus = QStringLiteral("InGuiding");
+                break;
+            default:
+                break;
+            }
+        }
+        emit wsThread->sendMessageToClient(QString("GuiderSwitchStatus:%1").arg(guidingOn ? "true" : "false"));
         emit wsThread->sendMessageToClient(QString("GuiderLoopExpStatus:%1").arg(loopOn ? "true" : "false"));
+        if (!guiderStatus.isEmpty())
+            emit wsThread->sendMessageToClient("GuiderStatus:" + guiderStatus);
         
         Logger::Log("getGuiderStatus finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
     else if (parts[0].trimmed() == "GuiderSwitch" && parts.size() == 2)
     {
-        // PHD2 已移除：GuiderSwitch（开始/停止导星）不再支持，仅保持兼容字段为 false
-        Logger::Log("GuiderSwitch ignored (PHD2 removed). Use GuiderLoopExpSwitch for guider imaging.", LogLevel::WARNING, DeviceType::GUIDER);
-        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
-        emit wsThread->sendMessageToClient(QString("GuiderLoopExpStatus:%1").arg(isGuiderLoopExp ? "true" : "false"));
+        const bool guiderSdk =
+            (systemdevicelist.system_devices.size() > 1 &&
+             systemdevicelist.system_devices[1].isSDKConnect &&
+             sdkGuiderHandle != nullptr);
+        const bool guiderConnected = ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk);
+        const bool wantOn = (parts[1].trimmed() == "true");
+
+        if (!guiderCore)
+        {
+            Logger::Log("GuiderSwitch failed: guiderCore not initialized", LogLevel::ERROR, DeviceType::GUIDER);
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+            return;
+        }
+
+        if (wantOn)
+        {
+            if (!guiderConnected)
+            {
+                Logger::Log("GuiderSwitch failed: guider is not connected", LogLevel::WARNING, DeviceType::GUIDER);
+                emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+                emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+                return;
+            }
+
+            Logger::Log("GuiderSwitch -> start built-in guider", LogLevel::INFO, DeviceType::GUIDER);
+            if (guiderForceRecalibrateOnNextStart)
+            {
+                Logger::Log("GuiderSwitch -> start built-in guider with forced recalibration",
+                            LogLevel::INFO, DeviceType::GUIDER);
+                guiderCore->startGuidingForceCalibrate();
+                guiderForceRecalibrateOnNextStart = false;
+            }
+            else
+            {
+                guiderCore->startGuiding();
+            }
+        }
+        else
+        {
+            Logger::Log("GuiderSwitch -> stop built-in guider", LogLevel::INFO, DeviceType::GUIDER);
+            guiderCore->stopGuiding();
+        }
     }
 
     else if (parts[0].trimmed() == "GuiderLoopExpSwitch" && parts.size() == 2)
@@ -2284,18 +2486,30 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             Logger::Log(std::string("Start GuiderLoopExp (") + (guiderSdk ? "SDK" : "INDI") + ") ...",
                         LogLevel::INFO, DeviceType::GUIDER);
-            isGuiderLoopExp = true;
-            guiderExposureInFlight = false;
-            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
-            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            if (guiderCore)
+            {
+                guiderCore->startLoop();
+            }
+            else
+            {
+                isGuiderLoopExp = true;
+                guiderExposureInFlight = false;
+                emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
 
-            if (guiderLoopTimer)
-                guiderLoopTimer->start(0);
+                if (guiderLoopTimer)
+                    guiderLoopTimer->start(0);
+            }
         }
         else if (!wantOn && isGuiderLoopExp)
         {
             Logger::Log(std::string("Stop GuiderLoopExp (") + (guiderSdk ? "SDK" : "INDI") + ") ...",
                         LogLevel::INFO, DeviceType::GUIDER);
+            if (guiderCore)
+            {
+                guiderCore->stopGuiding();
+                guiderCore->stopLoop();
+            }
             isGuiderLoopExp = false;
             guiderExposureInFlight = false;
             if (guiderLoopTimer)
@@ -2928,8 +3142,31 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
     {
-        // PHD2 已移除：不再支持点击选星
-        Logger::Log("GuiderCanvasClick ignored (PHD2 removed).", LogLevel::WARNING, DeviceType::GUIDER);
+        if (!guiderCore)
+        {
+            Logger::Log("GuiderCanvasClick ignored: guiderCore not initialized.", LogLevel::WARNING, DeviceType::GUIDER);
+            return;
+        }
+
+        const int canvasW = std::max(1, parts[1].trimmed().toInt());
+        const int canvasH = std::max(1, parts[2].trimmed().toInt());
+        const double clickX = parts[3].trimmed().toDouble();
+        const double clickY = parts[4].trimmed().toDouble();
+
+        const int imageW = std::max(1, glPHD_CurrentImageSizeX);
+        const int imageH = std::max(1, glPHD_CurrentImageSizeY);
+
+        const double mappedX = std::clamp(clickX * static_cast<double>(imageW) / static_cast<double>(canvasW),
+                                          0.0, static_cast<double>(imageW - 1));
+        const double mappedY = std::clamp(clickY * static_cast<double>(imageH) / static_cast<double>(canvasH),
+                                          0.0, static_cast<double>(imageH - 1));
+
+        guiderCore->setManualLock(mappedX, mappedY);
+        Logger::Log("GuiderCanvasClick -> built-in manual lock: canvas=" +
+                        std::to_string(canvasW) + "x" + std::to_string(canvasH) +
+                        " click=(" + std::to_string(clickX) + "," + std::to_string(clickY) + ")" +
+                        " mapped=(" + std::to_string(mappedX) + "," + std::to_string(mappedY) + ")",
+                    LogLevel::INFO, DeviceType::GUIDER);
     }
 
     else if (message == "getQTClientVersion")
@@ -4012,6 +4249,43 @@ void MainWindow::onGuiderLoopTimeout()
     if (!isGuiderLoopExp)
         return;
 
+#if QUARCS_SIM_GUIDER
+    if (simGuiderFrameSource)
+    {
+        if (guiderExposureInFlight)
+            return;
+
+        guiderExposureInFlight = true;
+        const int expMs = std::max(1, guiderExpMs);
+        const QString fitsPath = simGuiderFrameSource->generateNextFrame(expMs);
+        guiderExposureInFlight = false;
+
+        if (fitsPath.isEmpty() || !QFile::exists(fitsPath))
+        {
+            Logger::Log("onGuiderLoopTimeout | simulated guider frame generation failed",
+                        LogLevel::ERROR, DeviceType::GUIDER);
+            isGuiderLoopExp = false;
+            if (guiderLoopTimer)
+                guiderLoopTimer->stop();
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+            return;
+        }
+
+        if (guiderCore)
+        {
+            guiderCore->onNewFrame(fitsPath);
+        }
+        else
+        {
+            PersistGuidingFits(fitsPath);
+            if (isGuiderLoopExp && guiderLoopTimer)
+                guiderLoopTimer->start(1);
+        }
+        return;
+    }
+#endif
+
     const bool guiderSdk =
         (systemdevicelist.system_devices.size() > 1 &&
          systemdevicelist.system_devices[1].isSDKConnect &&
@@ -4393,8 +4667,9 @@ void MainWindow::onTimeout()
                                 Logger::Log("BuiltInGuider | pier side changed, force recalibrate after meridian flip.",
                                             LogLevel::INFO, DeviceType::GUIDER);
                                 emit wsThread->sendMessageToClient("GuiderCoreInfo:MeridianFlipDetected:Recalibrating");
+                                guiderCore->clearCachedCalibration();
                                 guiderCore->stopGuiding();
-                                guiderCore->startGuiding();
+                                guiderCore->startGuidingForceCalibrate();
                             }
                         }
                     }
@@ -14752,6 +15027,22 @@ static inline std::string GuideDirNameFromInt(int dir)
 void MainWindow::ControlGuideEx(int Direction, int Duration, const QString& source)
 {
     const std::string reqDir = GuideDirNameFromInt(Direction);
+
+#if QUARCS_SIM_GUIDER
+    if (simGuiderFrameSource)
+    {
+        guiding::PulseCommand cmd;
+        cmd.dir = static_cast<guiding::GuideDir>(Direction);
+        cmd.durationMs = std::max(0, Duration);
+        simGuiderFrameSource->injectPulse(cmd);
+
+        Logger::Log("GuidePulse TX | src=" + source.toStdString() +
+                        " | SIM inject dir=" + reqDir +
+                        " durationMs=" + std::to_string(cmd.durationMs),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        return;
+    }
+#endif
 
     if (!dpMount || !indi_Client)
     {
