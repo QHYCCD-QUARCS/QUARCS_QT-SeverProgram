@@ -2924,6 +2924,15 @@ void MainWindow::onMessageReceived(const QString &message)
         QString saveValue = (Mode == "default") ? "local" : Mode;
         Tools::saveParameter("MainCamera", "Save Folder", saveValue);
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraTileBuildMode")
+    {
+        const QString requestedMode = parts[1].trimmed();
+        tileBuildMode = (requestedMode == "merged_single_level")
+            ? QStringLiteral("merged_single_level")
+            : QStringLiteral("pyramid");
+        Logger::Log("Set MainCamera Tile Build Mode to " + tileBuildMode.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera", "Tile Build Mode", tileBuildMode);
+    }
 
 
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
@@ -3326,6 +3335,7 @@ void MainWindow::onMessageReceived(const QString &message)
         tileViewportX = vx;
         tileViewportY = vy;
         tileViewportScale = sc;
+        ++tileViewportRequestSeq;
 
         // 视口变化：调度“按需补瓦片”（不会阻塞主线程；会做合并/节流）
         scheduleViewportTileGeneration();
@@ -4988,6 +4998,9 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     gpm.previewBinningFactor = binningFactor;
     // 帧ID：与本次 saveFitsAsPNG() 的 epoch 对齐，用于前端/瓦片请求做“错帧丢弃”
     gpm.frameId = epochAtStart;
+    gpm.buildMode = (tileBuildMode.trimmed() == "merged_single_level")
+        ? QStringLiteral("merged_single_level")
+        : QStringLiteral("pyramid");
 
     // 保存“最新帧”供视口拖动/缩放时按需补瓦片（避免反复 readFits）
     {
@@ -5158,6 +5171,9 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
     gpm.cfa = cfa;
     gpm.gainR = ImageGainR;
     gpm.gainB = ImageGainB;
+    gpm.buildMode = (tileBuildMode.trimmed() == "merged_single_level")
+        ? QStringLiteral("merged_single_level")
+        : QStringLiteral("pyramid");
 
     // 计算最大缩放层级（基于最低精度层的合并倍数 maxMergeFactor=2^N）
     // 例：maxMergeFactor=16 => level 0=16x16 ... level 4=1x1（共5层）
@@ -5364,7 +5380,8 @@ int MainWindow::calculateTileLevelFromScale(double scale, int maxZoomLevel)
 
 void MainWindow::scheduleViewportTileGeneration()
 {
-    // 合并请求：若已有任务在跑，仅标记 pending，结束后再跑一轮（使用最新视口参数）
+    // 合并请求：若已有任务在跑，仅标记 pending，结束后再跑一轮（使用最新视口参数）。
+    // 旧任务会在生成循环中检测 tileViewportRequestSeq，并尽快自行退出。
     if (tileViewportGenInFlight.exchange(true))
     {
         tileViewportGenPending = true;
@@ -5387,12 +5404,13 @@ void MainWindow::scheduleViewportTileGeneration()
     }
 
     const quint64 epoch = st.epoch;
+    const quint64 requestSeq = tileViewportRequestSeq.load();
     const int budgetMs = std::max(1, tilePyramidFastBudgetMs);
     QPointer<MainWindow> self(this);
 
-    QtConcurrent::run([self, epoch, budgetMs]() {
+    QtConcurrent::run([self, epoch, requestSeq, budgetMs]() {
         if (!self) return;
-        self->generateViewportTiles_Once(epoch, budgetMs);
+        self->generateViewportTiles_Once(epoch, requestSeq, budgetMs);
 
         QMetaObject::invokeMethod(self, [self]() {
             if (!self) return;
@@ -5405,7 +5423,7 @@ void MainWindow::scheduleViewportTileGeneration()
     });
 }
 
-void MainWindow::generateViewportTiles_Once(quint64 epoch, int budgetMs)
+void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs)
 {
     TileFrameState st;
     std::shared_ptr<cv::Mat> img;
@@ -5417,6 +5435,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, int budgetMs)
     if (!img || img->empty()) return;
     if (st.epoch != epoch) return;
     if (tilePyramidEpoch.load() != epoch) return;
+    if (tileViewportRequestSeq.load() != requestSeq) return;
 
     const double vx = tileViewportX.load();
     const double vy = tileViewportY.load();
@@ -5426,9 +5445,6 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, int budgetMs)
     const int H = st.imageHeight;
     const int T = (st.tileSize > 0) ? st.tileSize : 512;
     const int maxZ = std::max(0, st.maxZoomLevel);
-    const int z = calculateTileLevelFromScale(sc, maxZ);
-    const int levelScaleInt = 1 << std::max(0, (maxZ - z)); // 2^(maxZ-z)
-    const double levelScale = static_cast<double>(levelScaleInt);
 
     // 视口矩形（尽量与前端一致；aspect 使用默认 16:9）
     const double aspect = (tileViewportAspect > 0.1) ? tileViewportAspect : (16.0 / 9.0);
@@ -5442,128 +5458,146 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, int budgetMs)
 
     const double visibleWidth = W * scale;
     const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
-
-    const double left = std::max(0.0, visibleX - visibleWidth / 2.0);
-    const double top = std::max(0.0, visibleY - visibleHeight / 2.0);
-    const double right = std::min(static_cast<double>(W), left + visibleWidth);
-    const double bottom = std::min(static_cast<double>(H), top + visibleHeight);
-
-    const double levelLeft = left / levelScale;
-    const double levelTop = top / levelScale;
-    const double levelRight = right / levelScale;
-    const double levelBottom = bottom / levelScale;
-
-    const int startX = static_cast<int>(std::floor(levelLeft / T));
-    const int startY = static_cast<int>(std::floor(levelTop / T));
-    const int endX = static_cast<int>(std::floor(levelRight / T));
-    const int endY = static_cast<int>(std::floor(levelBottom / T));
-
-    const int levelWidth = static_cast<int>(std::ceil(W / levelScale));
-    const int levelHeight = static_cast<int>(std::ceil(H / levelScale));
-    const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
-    const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
-
-    struct TileReq { int x; int y; double prio; };
-    std::vector<TileReq> tiles;
-    tiles.reserve(static_cast<size_t>(std::max(0, (endX - startX + 1) * (endY - startY + 1))));
-
-    const int cxTile = static_cast<int>(std::floor((visibleX / levelScale) / T));
-    const int cyTile = static_cast<int>(std::floor((visibleY / levelScale) / T));
-
-    for (int ty = startY; ty <= endY; ++ty)
-    {
-        if (ty < 0 || ty >= maxTilesY) continue;
-        for (int tx = startX; tx <= endX; ++tx)
-        {
-            if (tx < 0 || tx >= maxTilesX) continue;
-            const double dx = static_cast<double>(tx - cxTile);
-            const double dy = static_cast<double>(ty - cyTile);
-            const double dist = std::sqrt(dx * dx + dy * dy);
-            tiles.push_back({tx, ty, dist});
-        }
-    }
-
-    std::sort(tiles.begin(), tiles.end(), [](const TileReq& a, const TileReq& b) {
-        return a.prio < b.prio;
-    });
+    const int currentZ = calculateTileLevelFromScale(scale, maxZ);
+    const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
 
     QElapsedTimer timer;
     timer.start();
 
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
-    const QString zDirPath = sessionTilePath + "/" + QString::number(z);
-    QDir().mkpath(zDirPath);
-
     constexpr int TILE_BORDER = 2;
 
-    auto makeKey = [](int z, int x, int y) -> uint64_t {
-        return (static_cast<uint64_t>(z) << 40) |
-               (static_cast<uint64_t>(x) << 20) |
-               (static_cast<uint64_t>(y));
+    struct TileReq { int x; int y; double prio; };
+    auto shouldStop = [&]() -> bool {
+        if (tilePyramidEpoch.load() != epoch) return true;
+        if (tileViewportRequestSeq.load() != requestSeq) return true;
+        if (budgetMs > 0 && timer.elapsed() > budgetMs) return true;
+        return false;
     };
 
-    for (const auto& t : tiles)
-    {
-        if (budgetMs > 0 && timer.elapsed() > budgetMs) break;
-        if (tilePyramidEpoch.load() != epoch) break;
-
-        const uint64_t key = makeKey(z, t.x, t.y);
-        {
-            std::lock_guard<std::mutex> lk(tileGenDoneMutex);
-            if (tileGenDoneEpoch != epoch) {
-                tileGenDoneEpoch = epoch;
-                tileGenDoneKeys.clear();
-            }
-            if (tileGenDoneKeys.find(key) != tileGenDoneKeys.end()) {
-                continue;
-            }
-            tileGenDoneKeys.insert(key);
+    // merged_single_level：仅两层——z=0 压缩合并整图 + z=maxZ 原图整图
+    std::vector<int> levelsToGenerate;
+    if (mergedSingleLevelMode) {
+        levelsToGenerate.push_back(0);
+        if (maxZ > 0) levelsToGenerate.push_back(maxZ);
+    } else {
+        levelsToGenerate.reserve(static_cast<size_t>(maxZ + 1));
+        for (int z = 0; z <= maxZ; ++z) {
+            levelsToGenerate.push_back(z);
         }
-
-        const QString xDirPath = zDirPath + "/" + QString::number(t.x);
-        QDir().mkpath(xDirPath);
-        const QString tileFilePath = xDirPath + "/" + QString::number(t.y) + ".bin";
-
-        // 计算 level 坐标下的 wanted rect（含边界）
-        const int x0 = t.x * T;
-        const int y0 = t.y * T;
-        const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER, T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
-
-        // 映射到原图坐标：乘以 levelScaleInt
-        const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
-                                  wantedLevel.y * levelScaleInt,
-                                  wantedLevel.width * levelScaleInt,
-                                  wantedLevel.height * levelScaleInt);
-        const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
-        const cv::Rect srcRect = wantedOrig & boundsOrig;
-
-        cv::Mat padded;
-        if (srcRect.width <= 0 || srcRect.height <= 0)
-        {
-            padded = cv::Mat::zeros(wantedOrig.height, wantedOrig.width, img->type());
-        }
-        else
-        {
-            cv::Mat src = (*img)(srcRect);
-            const int topPad = srcRect.y - wantedOrig.y;
-            const int leftPad = srcRect.x - wantedOrig.x;
-            const int bottomPad = (wantedOrig.y + wantedOrig.height) - (srcRect.y + srcRect.height);
-            const int rightPad = (wantedOrig.x + wantedOrig.width) - (srcRect.x + srcRect.width);
-            cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
-        }
-
-        cv::Mat tileLevel;
-        if (levelScaleInt == 1)
-        {
-            tileLevel = padded;
-        }
-        else
-        {
-            cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
-        }
-
-        saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
     }
+
+    int totalWritten = 0;
+    for (int z : levelsToGenerate)
+    {
+        if (shouldStop()) break;
+
+        const int levelScaleInt = 1 << std::max(0, (maxZ - z)); // 2^(maxZ-z)
+        const double levelScale = static_cast<double>(levelScaleInt);
+
+        // merged_single_level：两层均为整图；pyramid：z=0 整图，z>0 视口
+        const bool fullImageForThisZ = (mergedSingleLevelMode || z == 0);
+        const double left = fullImageForThisZ ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
+        const double top = fullImageForThisZ ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
+        const double right = fullImageForThisZ ? static_cast<double>(W) : std::min(static_cast<double>(W), left + visibleWidth);
+        const double bottom = fullImageForThisZ ? static_cast<double>(H) : std::min(static_cast<double>(H), top + visibleHeight);
+
+        const double levelLeft = left / levelScale;
+        const double levelTop = top / levelScale;
+        const double levelRight = right / levelScale;
+        const double levelBottom = bottom / levelScale;
+
+        const int startX = static_cast<int>(std::floor(levelLeft / T));
+        const int startY = static_cast<int>(std::floor(levelTop / T));
+        const int endX = static_cast<int>(std::floor(levelRight / T));
+        const int endY = static_cast<int>(std::floor(levelBottom / T));
+
+        const int levelWidth = static_cast<int>(std::ceil(W / levelScale));
+        const int levelHeight = static_cast<int>(std::ceil(H / levelScale));
+        const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+        const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+
+        std::vector<TileReq> tiles;
+        tiles.reserve(static_cast<size_t>(std::max(0, (endX - startX + 1) * (endY - startY + 1))));
+
+        const int cxTile = static_cast<int>(std::floor((visibleX / levelScale) / T));
+        const int cyTile = static_cast<int>(std::floor((visibleY / levelScale) / T));
+
+        for (int ty = startY; ty <= endY; ++ty)
+        {
+            if (ty < 0 || ty >= maxTilesY) continue;
+            for (int tx = startX; tx <= endX; ++tx)
+            {
+                if (tx < 0 || tx >= maxTilesX) continue;
+                const double dx = static_cast<double>(tx - cxTile);
+                const double dy = static_cast<double>(ty - cyTile);
+                const double dist = (z == 0) ? 0.0 : std::sqrt(dx * dx + dy * dy);
+                tiles.push_back({tx, ty, dist});
+            }
+        }
+
+        std::sort(tiles.begin(), tiles.end(), [](const TileReq& a, const TileReq& b) {
+            return a.prio < b.prio;
+        });
+
+        const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+        QDir().mkpath(zDirPath);
+
+        for (const auto& t : tiles)
+        {
+            if (shouldStop()) break;
+
+            const QString xDirPath = zDirPath + "/" + QString::number(t.x);
+            QDir().mkpath(xDirPath);
+            const QString tileFilePath = xDirPath + "/" + QString::number(t.y) + ".bin";
+
+            // 每次视口生成都直接覆盖写，不保留旧的“已生成”去重记录，避免视口变化后沿用旧数据。
+            const int x0 = t.x * T;
+            const int y0 = t.y * T;
+            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER, T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+            const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
+                                      wantedLevel.y * levelScaleInt,
+                                      wantedLevel.width * levelScaleInt,
+                                      wantedLevel.height * levelScaleInt);
+            const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+            const cv::Rect srcRect = wantedOrig & boundsOrig;
+
+            cv::Mat padded;
+            if (srcRect.width <= 0 || srcRect.height <= 0)
+            {
+                padded = cv::Mat::zeros(wantedOrig.height, wantedOrig.width, img->type());
+            }
+            else
+            {
+                cv::Mat src = (*img)(srcRect);
+                const int topPad = srcRect.y - wantedOrig.y;
+                const int leftPad = srcRect.x - wantedOrig.x;
+                const int bottomPad = (wantedOrig.y + wantedOrig.height) - (srcRect.y + srcRect.height);
+                const int rightPad = (wantedOrig.x + wantedOrig.width) - (srcRect.x + srcRect.width);
+                cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+            }
+
+            cv::Mat tileLevel;
+            if (levelScaleInt == 1)
+            {
+                tileLevel = padded;
+            }
+            else
+            {
+                cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
+            }
+
+            saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
+            totalWritten++;
+        }
+    }
+
+    const std::string levelSummary = mergedSingleLevelMode
+        ? (levelsToGenerate.empty() ? std::string("none") : ("0," + std::to_string(maxZ)))
+        : ("0.." + std::to_string(maxZ));
+    Logger::Log("generateViewportTiles_Once: wrote " + std::to_string(totalWritten) +
+               " tiles (z=" + levelSummary + ") for session " + st.sessionId.toStdString(),
+               LogLevel::DEBUG, DeviceType::CAMERA);
 }
 
 void MainWindow::generateVisibleTilesSync(quint64 epoch)
@@ -5595,38 +5629,17 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
     const double scale = std::isfinite(sc) && sc > 0
         ? std::max(MIN_VIEW_SCALE, std::min(MAX_VIEW_SCALE, sc))
         : 1.0;
-
-    const int z = calculateTileLevelFromScale(scale, maxZ);
-    const int levelScaleInt = 1 << std::max(0, (maxZ - z));
-    const double levelScale = static_cast<double>(levelScaleInt);
-
-    const double visibleWidth = W * scale;
-    const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
-    const double left = std::max(0.0, visibleX - visibleWidth / 2.0);
-    const double top = std::max(0.0, visibleY - visibleHeight / 2.0);
-    const double right = std::min(static_cast<double>(W), left + visibleWidth);
-    const double bottom = std::min(static_cast<double>(H), top + visibleHeight);
-    const double levelLeft = left / levelScale;
-    const double levelTop = top / levelScale;
-    const double levelRight = right / levelScale;
-    const double levelBottom = bottom / levelScale;
-
-    const int startX = static_cast<int>(std::floor(levelLeft / T));
-    const int startY = static_cast<int>(std::floor(levelTop / T));
-    const int endX = static_cast<int>(std::floor(levelRight / T));
-    const int endY = static_cast<int>(std::floor(levelBottom / T));
-    const int levelWidth = static_cast<int>(std::ceil(static_cast<double>(W) / levelScale));
-    const int levelHeight = static_cast<int>(std::ceil(static_cast<double>(H) / levelScale));
-    const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
-    const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
-
-    const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
-    const QString zDirPath = sessionTilePath + "/" + QString::number(z);
-    if (!QDir().mkpath(zDirPath)) {
-        Logger::Log("generateVisibleTilesSync: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
-        return;
+    const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
+    // merged_single_level：仅两层 z=0 和 z=maxZ，均为整图
+    std::vector<int> levelsToSync;
+    if (mergedSingleLevelMode) {
+        levelsToSync.push_back(0);
+        if (maxZ > 0) levelsToSync.push_back(maxZ);
+    } else {
+        levelsToSync.push_back(calculateTileLevelFromScale(scale, maxZ));
     }
 
+    const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
     constexpr int TILE_BORDER = 2;
     auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
         return (static_cast<uint64_t>(tz) << 40) |
@@ -5638,55 +5651,91 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         tileGenDoneEpoch = epoch;
         tileGenDoneKeys.clear();
     }
-    std::set<uint64_t> doneKeys;
-    int count = 0;
-    for (int ty = startY; ty <= endY; ++ty) {
-        if (ty < 0 || ty >= maxTilesY) continue;
-        for (int tx = startX; tx <= endX; ++tx) {
-            if (tx < 0 || tx >= maxTilesX) continue;
-            if (tilePyramidEpoch.load() != epoch) return;
-            const uint64_t key = makeKey(z, tx, ty);
-            doneKeys.insert(key);
-            count++;
-            const QString xDirPath = zDirPath + "/" + QString::number(tx);
-            if (!QDir().mkpath(xDirPath)) continue;
-            const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+    int totalCount = 0;
+    const double visibleWidth = W * scale;
+    const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
 
-            const int x0 = tx * T;
-            const int y0 = ty * T;
-            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER, T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
-            const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
-                                      wantedLevel.y * levelScaleInt,
-                                      wantedLevel.width * levelScaleInt,
-                                      wantedLevel.height * levelScaleInt);
-            const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
-            const cv::Rect srcRect = wantedOrig & boundsOrig;
+    for (int z : levelsToSync) {
+        if (tilePyramidEpoch.load() != epoch) return;
+        const int levelScaleInt = 1 << std::max(0, (maxZ - z));
+        const double levelScale = static_cast<double>(levelScaleInt);
+        const bool fullImage = (mergedSingleLevelMode || z == 0);
+        const double left = fullImage ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
+        const double top = fullImage ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
+        const double right = fullImage ? static_cast<double>(W) : std::min(static_cast<double>(W), left + visibleWidth);
+        const double bottom = fullImage ? static_cast<double>(H) : std::min(static_cast<double>(H), top + visibleHeight);
+        const double levelLeft = left / levelScale;
+        const double levelTop = top / levelScale;
+        const double levelRight = right / levelScale;
+        const double levelBottom = bottom / levelScale;
 
-            cv::Mat padded;
-            if (srcRect.width <= 0 || srcRect.height <= 0) {
-                padded = cv::Mat::zeros(wantedOrig.height, wantedOrig.width, img->type());
-            } else {
-                cv::Mat src = (*img)(srcRect);
-                const int topPad = srcRect.y - wantedOrig.y;
-                const int leftPad = srcRect.x - wantedOrig.x;
-                const int bottomPad = (wantedOrig.y + wantedOrig.height) - (srcRect.y + srcRect.height);
-                const int rightPad = (wantedOrig.x + wantedOrig.width) - (srcRect.x + srcRect.width);
-                cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+        const int startX = static_cast<int>(std::floor(levelLeft / T));
+        const int startY = static_cast<int>(std::floor(levelTop / T));
+        const int endX = static_cast<int>(std::floor(levelRight / T));
+        const int endY = static_cast<int>(std::floor(levelBottom / T));
+        const int levelWidth = static_cast<int>(std::ceil(static_cast<double>(W) / levelScale));
+        const int levelHeight = static_cast<int>(std::ceil(static_cast<double>(H) / levelScale));
+        const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+        const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+
+        const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+        if (!QDir().mkpath(zDirPath)) {
+            Logger::Log("generateVisibleTilesSync: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+            continue;
+        }
+        std::set<uint64_t> doneKeys;
+        for (int ty = startY; ty <= endY; ++ty) {
+            if (ty < 0 || ty >= maxTilesY) continue;
+            for (int tx = startX; tx <= endX; ++tx) {
+                if (tx < 0 || tx >= maxTilesX) continue;
+                if (tilePyramidEpoch.load() != epoch) return;
+                const uint64_t key = makeKey(z, tx, ty);
+                doneKeys.insert(key);
+                totalCount++;
+                const QString xDirPath = zDirPath + "/" + QString::number(tx);
+                if (!QDir().mkpath(xDirPath)) continue;
+                const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+
+                const int x0 = tx * T;
+                const int y0 = ty * T;
+                const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER, T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+                const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
+                                          wantedLevel.y * levelScaleInt,
+                                          wantedLevel.width * levelScaleInt,
+                                          wantedLevel.height * levelScaleInt);
+                const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+                const cv::Rect srcRect = wantedOrig & boundsOrig;
+
+                cv::Mat padded;
+                if (srcRect.width <= 0 || srcRect.height <= 0) {
+                    padded = cv::Mat::zeros(wantedOrig.height, wantedOrig.width, img->type());
+                } else {
+                    cv::Mat src = (*img)(srcRect);
+                    const int topPad = srcRect.y - wantedOrig.y;
+                    const int leftPad = srcRect.x - wantedOrig.x;
+                    const int bottomPad = (wantedOrig.y + wantedOrig.height) - (srcRect.y + srcRect.height);
+                    const int rightPad = (wantedOrig.x + wantedOrig.width) - (srcRect.x + srcRect.width);
+                    cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+                }
+                cv::Mat tileLevel;
+                if (levelScaleInt == 1) {
+                    tileLevel = padded;
+                } else {
+                    cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
+                }
+                saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
             }
-            cv::Mat tileLevel;
-            if (levelScaleInt == 1) {
-                tileLevel = padded;
-            } else {
-                cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
-            }
-            saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
+        }
+        {
+            std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+            for (uint64_t k : doneKeys) tileGenDoneKeys.insert(k);
         }
     }
-    {
-        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
-        for (uint64_t k : doneKeys) tileGenDoneKeys.insert(k);
-    }
-    Logger::Log("generateVisibleTilesSync: wrote " + std::to_string(count) + " tiles (z=" + std::to_string(z) +
+    const std::string levelSummary = mergedSingleLevelMode
+        ? ("0," + std::to_string(maxZ))
+        : std::to_string(levelsToSync[0]);
+    Logger::Log("generateVisibleTilesSync: wrote " + std::to_string(totalCount) + " tiles (z=" + levelSummary +
+               (mergedSingleLevelMode ? ", merged 2-level" : "") +
                ") for session " + st.sessionId.toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
 }
 
@@ -6017,6 +6066,7 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
     gpmJson["sessionId"] = gpm.sessionId;
     // frameId 可能超过 JSON number 的安全整数范围（JS 2^53），这里按字符串写入更安全
     gpmJson["frameId"] = QString::number(static_cast<qulonglong>(gpm.frameId));
+    gpmJson["buildMode"] = gpm.buildMode;
 
         // 直方图（可选）
         // 注意：完整 65536 bins 写入 JSON 会非常大；这里只写入基础信息，详细直方图走 WebSocket B64 通道
@@ -6057,8 +6107,9 @@ void MainWindow::sendGPMToClient(const TileGPM& gpm)
     // - v1: TileGPM:{sessionId}:{imageWidth}:{imageHeight}:{tileSize}:{maxZoomLevel}:{blackLevel}:{whiteLevel}:{cfa}:{gainR}:{gainB}
     // - v2(追加): ...:{previewWidth}:{previewHeight}:{previewBinningFactor}
     // - v3(追加): ...:{frameId}
+    // - v4(追加): ...:{buildMode}
     // 说明：追加字段放在末尾，旧前端按前 11 段解析不会受影响。
-    QString gpmMessage = QString("TileGPM:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13:%14")
+    QString gpmMessage = QString("TileGPM:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13:%14:%15")
         .arg(gpm.sessionId)
         .arg(gpm.imageWidth)
         .arg(gpm.imageHeight)
@@ -6072,7 +6123,8 @@ void MainWindow::sendGPMToClient(const TileGPM& gpm)
         .arg(gpm.previewWidth)
         .arg(gpm.previewHeight)
         .arg(gpm.previewBinningFactor)
-        .arg(QString::number(static_cast<qulonglong>(gpm.frameId)));
+        .arg(QString::number(static_cast<qulonglong>(gpm.frameId)))
+        .arg(gpm.buildMode);
 
     emit wsThread->sendMessageToClient(gpmMessage);
     Logger::Log("GPM sent to client: " + gpmMessage.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
@@ -24323,6 +24375,7 @@ void MainWindow::getMainCameraParameters()
     Logger::Log("getMainCameraParameters start ...", LogLevel::DEBUG, DeviceType::MAIN);
     QMap<QString, QString> parameters = Tools::readParameters("MainCamera");
     QString order = "setMainCameraParameters";
+    bool hasTileBuildMode = false;
     for (auto it = parameters.begin(); it != parameters.end(); ++it)
     {
         Logger::Log("getMainCameraParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
@@ -24347,6 +24400,13 @@ void MainWindow::getMainCameraParameters()
                 saveMode = "local";
                 Logger::Log("LoadParameter | USB '" + oldSaveFolder.toStdString() + "' not found, using local", LogLevel::WARNING, DeviceType::MAIN);
             }
+        }
+        if (it.key() == "Tile Build Mode") {
+            tileBuildMode = (it.value() == "merged_single_level")
+                ? QStringLiteral("merged_single_level")
+                : QStringLiteral("pyramid");
+            it.value() = tileBuildMode;
+            hasTileBuildMode = true;
         }
         order += ":" + it.key() + ":" + it.value();
         if (it.key() == "RedBoxSize") {
@@ -24374,6 +24434,12 @@ void MainWindow::getMainCameraParameters()
         if (it.key() == "USB Traffic") {
             glUsbTrafficValue = it.value().toInt();
         }
+    }
+    if (!hasTileBuildMode) {
+        tileBuildMode = (tileBuildMode == "merged_single_level")
+            ? QStringLiteral("merged_single_level")
+            : QStringLiteral("pyramid");
+        order += ":Tile Build Mode:" + tileBuildMode;
     }
     Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
     emit wsThread->sendMessageToClient(order);

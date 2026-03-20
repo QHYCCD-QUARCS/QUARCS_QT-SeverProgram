@@ -637,7 +637,7 @@ public:
 
     // 视口驱动的瓦片生成（按当前 zoom/位置优先生成视口内 z/x/y）
     void scheduleViewportTileGeneration();
-    void generateViewportTiles_Once(quint64 epoch, int budgetMs);
+    void generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs);
     /** 同步生成当前视口要显示的瓦片，确保发送 GPM 前前端请求的瓦片已落盘，避免 404；无视口时退化为 z=0 全层 */
     void generateVisibleTilesSync(quint64 epoch);
     static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
@@ -671,6 +671,7 @@ public:
         double gainB;             // B通道增益
         QString sessionId;        // 会话ID (用于瓦片缓存)
         quint64 frameId = 0;      // 帧ID（与 tilePyramidEpoch/epoch 对齐，用于前后端丢弃旧帧/防错帧）
+        QString buildMode = "pyramid"; // 瓦片构建模式：pyramid / merged_single_level
 
         // 直方图（用于前端拉伸/显示）
         int histogramBins = 0;                 // bin 数（建议 256）
@@ -757,11 +758,13 @@ public:
     int tilePyramidFastBudgetMs = 100;                // 同步阶段预算（毫秒）
     int tilePyramidFastSyncMaxZ = 1;                  // 同步生成的最大层级（z=0 为最低精度）；其余后台生成
     bool tilePyramidFastEnableMedianBlur = false;     // 同步阶段是否做 medianBlur（大图可能超时）
+    QString tileBuildMode = QStringLiteral("pyramid"); // 瓦片构建模式：金字塔 / 合并图+单层细化
 
     // 前端视口参数（来自 Vue_Command: sendVisibleArea:x:y:scale）
     std::atomic<double> tileViewportX{0.0};           // 视口中心 X（原图像素）
     std::atomic<double> tileViewportY{0.0};           // 视口中心 Y（原图像素）
     std::atomic<double> tileViewportScale{1.0};       // 缩放比例（0.1~1.0；越小越放大）
+    std::atomic_uint64_t tileViewportRequestSeq{0};   // 每次 sendVisibleArea ++，用于打断旧视口瓦片生成
     double tileViewportAspect = 16.0 / 9.0;           // 视口宽高比（与前端 CanvasWidth/CanvasHeight 一致；默认 16:9）
 
     // 最新一帧的瓦片源图与元数据（用于“拖动/缩放时按需补瓦片”，避免反复 readFits）
