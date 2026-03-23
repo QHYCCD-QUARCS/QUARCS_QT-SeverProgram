@@ -82,7 +82,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260313"  // 手动指定版本号
+#define QT_Client_Version "20260323-4"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"

@@ -178,7 +178,11 @@ Installation steps:
 - Open the QUARCS_QT-SeverProgram folder, configure the project with Cmake, select /src/CmakeLists.txt, and then select CXX 11.4.0.
 - You can then run QT-SeverProgram directly in VScode.
 
-8、Compile and Run in Terminal (assume the project in ~/workspace/QUARCS_QT-SeverProgram)
+8、树莓派 aarch64 交叉编译（sysroot）
+
+见仓库内 [README_CROSS_RPI.md](README_CROSS_RPI.md)（`toolchain-rpi-arm64.cmake` + rsync sysroot）。
+
+9、Compile and Run in Terminal (assume the project in ~/workspace/QUARCS_QT-SeverProgram)
 
 	cd ~/workspace/QUARCS_QT-SeverProgram/src
 	mkdir build

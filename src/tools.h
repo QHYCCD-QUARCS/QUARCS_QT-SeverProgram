@@ -9,6 +9,8 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+/* OpenCV 4：旧版 CV_BGR2GRAY 等宏在 types_c.h；交叉编译使用 apt 的 opencv4 时需显式包含 */
+#include <opencv2/imgproc/types_c.h>
 #include <opencv2/highgui.hpp>
 #include <qhyccd.h>
 #include <dirent.h>

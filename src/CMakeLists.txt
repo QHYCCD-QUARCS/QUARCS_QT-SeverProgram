@@ -2,6 +2,60 @@ cmake_minimum_required(VERSION 3.14)
 
 project(client LANGUAGES CXX)
 
+# ---------- Sysroot / 交叉编译：宿主 Qt 工具 + 目标库 ----------
+# 使用 toolchain-rpi-arm64.cmake 时 CMAKE_SYSROOT 已设置；moc/uic/rcc 必须在宿主机运行。
+if(CMAKE_SYSROOT)
+  if(NOT DEFINED CMAKE_LIBRARY_ARCHITECTURE OR CMAKE_LIBRARY_ARCHITECTURE STREQUAL "")
+    set(QUARCS_DEB_MULTIARCH "aarch64-linux-gnu")
+  else()
+    set(QUARCS_DEB_MULTIARCH "${CMAKE_LIBRARY_ARCHITECTURE}")
+  endif()
+
+  list(PREPEND CMAKE_PREFIX_PATH
+    "${CMAKE_SYSROOT}/usr/lib/${QUARCS_DEB_MULTIARCH}/cmake"
+    "${CMAKE_SYSROOT}/usr/lib/cmake"
+    "${CMAKE_SYSROOT}/usr/local/lib/cmake"
+  )
+
+  find_program(QUARCS_HOST_MOC
+    NAMES moc moc-qt5
+    PATHS
+      "/usr/lib/${CMAKE_HOST_SYSTEM_PROCESSOR}-linux-gnu/qt5/bin"
+      /usr/lib/qt5/bin
+      /usr/bin
+    REQUIRED
+    DOC "宿主机 Qt MOC（请安装 qtbase5-dev）")
+  find_program(QUARCS_HOST_UIC
+    NAMES uic uic-qt5
+    PATHS
+      "/usr/lib/${CMAKE_HOST_SYSTEM_PROCESSOR}-linux-gnu/qt5/bin"
+      /usr/lib/qt5/bin
+      /usr/bin
+    REQUIRED)
+  find_program(QUARCS_HOST_RCC
+    NAMES rcc rcc-qt5
+    PATHS
+      "/usr/lib/${CMAKE_HOST_SYSTEM_PROCESSOR}-linux-gnu/qt5/bin"
+      /usr/lib/qt5/bin
+      /usr/bin
+    REQUIRED)
+
+  set(CMAKE_AUTOMOC_EXECUTABLE "${QUARCS_HOST_MOC}" CACHE FILEPATH "" FORCE)
+  set(CMAKE_AUTOUIC_EXECUTABLE "${QUARCS_HOST_UIC}" CACHE FILEPATH "" FORCE)
+  set(CMAKE_AUTORCC_EXECUTABLE "${QUARCS_HOST_RCC}" CACHE FILEPATH "" FORCE)
+
+  set(QUARCS_INDI_INCLUDE "${CMAKE_SYSROOT}/usr/include/libindi")
+  set(QUARCS_STELLARSOLVER_INCLUDE "${CMAKE_SYSROOT}/usr/local/include/libstellarsolver")
+  set(QUARCS_LOCAL_INCLUDE "${CMAKE_SYSROOT}/usr/local/include")
+  set(QUARCS_TARGET_LIBDIR "${CMAKE_SYSROOT}/usr/lib/${QUARCS_DEB_MULTIARCH}")
+  set(QUARCS_TARGET_LIBDIR_ALT "${CMAKE_SYSROOT}/usr/lib")
+  set(QUARCS_TARGET_LOCAL_LIBDIR "${CMAKE_SYSROOT}/usr/local/lib")
+else()
+  set(QUARCS_INDI_INCLUDE "/usr/include/libindi")
+  set(QUARCS_STELLARSOLVER_INCLUDE "/usr/local/include/libstellarsolver")
+  set(QUARCS_LOCAL_INCLUDE "/usr/local/include")
+endif()
+
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -25,6 +79,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # 仅使用 Qt5（去掉 Qt6）
 find_package(Qt5 REQUIRED COMPONENTS ${QT_COMPONENTS} SerialPort)
+
+# find_package(Qt5) 会从 sysroot 导入 ARM 版 moc/uic/rcc，AUTOMOC 会误执行目标架构二进制。
+# 必须再指回宿主机上的同名工具（与上方 QUARCS_HOST_* 一致）。
+if(CMAKE_SYSROOT)
+  if(TARGET Qt5::moc)
+    set_property(TARGET Qt5::moc PROPERTY IMPORTED_LOCATION "${QUARCS_HOST_MOC}")
+  endif()
+  if(TARGET Qt5::uic)
+    set_property(TARGET Qt5::uic PROPERTY IMPORTED_LOCATION "${QUARCS_HOST_UIC}")
+  endif()
+  if(TARGET Qt5::rcc)
+    set_property(TARGET Qt5::rcc PROPERTY IMPORTED_LOCATION "${QUARCS_HOST_RCC}")
+  endif()
+endif()
 
 find_package(OpenCV REQUIRED)
 find_package(StellarSolver REQUIRED)
@@ -90,11 +158,20 @@ add_executable(guiding_offline_test
   mountstate.h
 )
 
+# sysroot 中 /usr/local/include 常含旧版 opencv2 树；-I 会优先于 -isystem(opencv4)，导致头文件与 apt 的 libopencv 不一致。
+# 不要用 -I/usr/local/include，改为 -idirafter，使 QHY 等仍能找到，且 <opencv2/...> 先命中 /usr/include/opencv4。
+if(CMAKE_SYSROOT)
+  target_compile_options(client PRIVATE "-idirafter" "${CMAKE_SYSROOT}/usr/local/include")
+  target_compile_options(guiding_offline_test PRIVATE "-idirafter" "${CMAKE_SYSROOT}/usr/local/include")
+endif()
+
 target_include_directories(guiding_offline_test PUBLIC
-  /usr/include/libindi
-  /usr/local/include/libstellarsolver
-  /usr/local/include
+  "${QUARCS_INDI_INCLUDE}"
+  "${QUARCS_STELLARSOLVER_INCLUDE}"
 )
+if(NOT CMAKE_SYSROOT)
+  target_include_directories(guiding_offline_test PUBLIC "${QUARCS_LOCAL_INCLUDE}")
+endif()
 
 target_link_libraries(guiding_offline_test PRIVATE
   ${OpenCV_LIBS}
@@ -127,11 +204,20 @@ install(TARGETS client
 )
 
 target_include_directories(client PUBLIC
-  /usr/include/libindi
-  /usr/local/include/libstellarsolver
+  "${QUARCS_INDI_INCLUDE}"
+  "${QUARCS_STELLARSOLVER_INCLUDE}"
 )
 
-link_directories(${PROJECT_SOURCE_DIR}/usr/lib/x86_64-linux-gnu)
+# 原生 x86_64：保留项目内自带的 INDI 相关库路径（交叉编译时改用 sysroot）
+if(CMAKE_SYSROOT)
+  link_directories(
+    "${QUARCS_TARGET_LIBDIR}"
+    "${QUARCS_TARGET_LIBDIR_ALT}"
+    "${QUARCS_TARGET_LOCAL_LIBDIR}"
+  )
+else()
+  link_directories(${PROJECT_SOURCE_DIR}/usr/lib/x86_64-linux-gnu)
+endif()
 
 target_link_libraries(client PUBLIC
   -lnova
@@ -140,9 +226,9 @@ target_link_libraries(client PUBLIC
   -lcfitsio
 )
 
-target_include_directories(client PUBLIC
-    /usr/local/include
-)
+if(NOT CMAKE_SYSROOT)
+  target_include_directories(client PUBLIC "${QUARCS_LOCAL_INCLUDE}")
+endif()
 
 target_link_libraries(client PRIVATE
     qhyccd
@@ -161,6 +247,19 @@ target_link_libraries(client PRIVATE
     Qt5::SerialPort
     ${StellarSolver_LIBS}
 )
+
+# Debian sysroot：liblapack.so.3 / libblas.so.3 常经 alternatives 指到绝对路径，交叉 ld 用 rpath-link 仍可能解析失败。
+# 直接链接 multiarch/atlas 下真实 .so，满足 libopencv_core 对 LAPACK/BLAS 的传递依赖。
+if(CMAKE_SYSROOT)
+  set(_QUARCS_ATLAS_BLAS "${CMAKE_SYSROOT}/usr/lib/${QUARCS_DEB_MULTIARCH}/atlas/libblas.so.3")
+  set(_QUARCS_ATLAS_LAPACK "${CMAKE_SYSROOT}/usr/lib/${QUARCS_DEB_MULTIARCH}/atlas/liblapack.so.3")
+  if(EXISTS "${_QUARCS_ATLAS_BLAS}" AND EXISTS "${_QUARCS_ATLAS_LAPACK}")
+    target_link_libraries(client PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
+    target_link_libraries(guiding_offline_test PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
+  endif()
+  unset(_QUARCS_ATLAS_BLAS)
+  unset(_QUARCS_ATLAS_LAPACK)
+endif()
 
 # 复制配置文件到构建目录
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/../qhyccd.ini
