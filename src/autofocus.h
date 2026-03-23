@@ -16,6 +16,9 @@
 #include <fitsio.h>
 #include <random> // 添加随机数生成器头文件
 #include "websocketthread.h"
+// SDK：注意本工程的“SDK连接”是按设备分别启用的（非全局模式）
+#include "sdks/SdkCommon.h"
+#include "sdks/SdkManager.h"
 
 // 自动对焦状态枚举
 enum class AutoFocusState {
@@ -74,10 +77,22 @@ public:
      * @param dpMainCamera 主相机设备对象
      * @param parent 父对象
      */
-    explicit AutoFocus(MyClient *indiServer, 
-                      INDI::BaseDevice *dpFocuser, 
-                      INDI::BaseDevice *dpMainCamera, 
+    /**
+     * @brief 构造函数（兼容“单设备SDK连接”）
+     *
+     * 说明：
+     * - SDK 模式不是全局模式，而是“某个具体设备”可能用 SDK 连接；
+     * - 因此主相机/电调可分别选择 INDI 或 SDK 通路；
+     * - 主相机 SDK：通过信号 requestCapture/requestAbortCapture 交给 MainWindow 的统一入口处理（INDI_Capture/INDI_AbortCapture）；
+     * - 电调 SDK：在 AutoFocus 内部直接通过 SdkManager::callByHandle 执行（MoveAbsolute/GetPosition/Abort...）。
+     */
+    explicit AutoFocus(MyClient *indiServer,
+                      INDI::BaseDevice *dpFocuser,
+                      INDI::BaseDevice *dpMainCamera,
                       WebSocketThread *wsThread,
+                      bool useSdkMainCamera,
+                      bool useSdkFocuser,
+                      SdkDeviceHandle sdkFocuserHandle,
                       QObject *parent = nullptr);
     ~AutoFocus();
 
@@ -173,6 +188,17 @@ signals:
   // 各阶段拍摄进度：stage = "coarse" / "fine" / "super_fine"，current = 当前第几张，total = 总张数
   void captureProgressChanged(const QString &stage, int current, int total);
 
+  /**
+   * @brief 请求主线程触发一次拍摄（兼容 SDK / INDI）
+   * @param exposureTimeMs 曝光时间（毫秒）
+   */
+  void requestCapture(int exposureTimeMs);
+
+  /**
+   * @brief 请求主线程取消当前拍摄（兼容 SDK / INDI）
+   */
+  void requestAbortCapture();
+
 
 private slots:
     void onTimerTimeout();
@@ -188,6 +214,11 @@ private:
     INDI::BaseDevice *m_dpFocuser;   // 电调设备对象
     INDI::BaseDevice *m_dpMainCamera; // 主相机设备对象
     WebSocketThread *m_wsThread;// 网络线程
+
+    // “单设备SDK连接”标记（分别作用于主相机/电调）
+    bool m_useSdkMainCamera{false};
+    bool m_useSdkFocuser{false};
+    SdkDeviceHandle m_sdkFocuserHandle{nullptr};
     // 状态管理
     AutoFocusState m_currentState;
     QTimer *m_timer;

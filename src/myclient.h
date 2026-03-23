@@ -9,6 +9,7 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
+#include <QStringList>
 
 #include "Logger.h"
 #include "mountstate.h"
@@ -78,6 +79,9 @@ class MyClient : public INDI::BaseClient
         uint32_t setCCDGain(INDI::BaseDevice *dp,int value);
         uint32_t getCCDOffset(INDI::BaseDevice *dp,int &value,int &min,int &max);
         uint32_t setCCDOffset(INDI::BaseDevice *dp,int value);
+        // USB Traffic (部分相机/驱动可能不存在该属性，调用方需判断返回值)
+        uint32_t getCCDUsbTraffic(INDI::BaseDevice *dp,int &value,int &min,int &max,int &step);
+        uint32_t setCCDUsbTraffic(INDI::BaseDevice *dp,int value);
         uint32_t getCCDReadMode(INDI::BaseDevice *dp,int &value,int &min,int &max);
         uint32_t setCCDReadMode(INDI::BaseDevice *dp,int value);
 
@@ -124,6 +128,10 @@ class MyClient : public INDI::BaseClient
         uint32_t setTelescopeMoveNS(INDI::BaseDevice *dp,QString command);
         uint32_t setTelescopeGuideNS(INDI::BaseDevice* dp, int dir, int time_guide);
         uint32_t setTelescopeGuideWE(INDI::BaseDevice* dp, int dir, int time_guide);
+
+        // GUIDE_RATE (guide speed as fraction of sidereal)
+        // Typical INDI property: GUIDE_RATE with two numbers (RA/DEC or WE/NS)
+        uint32_t getTelescopeGuideRate(INDI::BaseDevice *dp, double &raRate, double &decRate);
         uint32_t setTelescopeActionAfterPositionSet(INDI::BaseDevice *dp,QString action)  ;
         uint32_t getTelescopeRADECJ2000(INDI::BaseDevice *dp,double & RA_Hours,double & DEC_Degree)  ;
         uint32_t setTelescopeRADECJ2000(INDI::BaseDevice *dp,double RA_Hours,double DEC_Degree);
@@ -218,7 +226,7 @@ class MyClient : public INDI::BaseClient
     // 收到图像并触发回调
     void receiveMessage(const std::string& message) {
         // 触发回调函数
-        if (imageReceivedCallback) {
+        if (messageReceivedCallback) {
           messageReceivedCallback(message);
         }
     }
@@ -232,6 +240,16 @@ class MyClient : public INDI::BaseClient
         void newProperty(INDI::Property property) override;
         void updateProperty(INDI::Property property);
     private:
+        // -------- INDI property compatibility utils --------
+        // 兼容不同 INDI CCD 驱动的 Gain/Offset 属性位置：
+        // - 优先 CCD_GAIN / CCD_OFFSET
+        // - 回退 CCD_CONTROLS，并按 member 的 name/label 匹配 Gain/Offset/BlackLevel/Brightness 等
+        static int FindNumberWidgetIndexByNameOrLabelUpper(const INDI::PropertyNumber &prop,
+                                                          const QStringList &exactUpper,
+                                                          const QStringList &containsUpper);
+        static bool ResolveCcdGainWidget(INDI::BaseDevice *dp, INDI::PropertyNumber &prop, int &idx);
+        static bool ResolveCcdOffsetWidget(INDI::BaseDevice *dp, INDI::PropertyNumber &prop, int &idx);
+
         INDI::BaseDevice mSimpleCCD;
 
         // 存储设备的列表

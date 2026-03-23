@@ -91,10 +91,16 @@ struct SystemDevice {
   QString DeviceIndiName{};  //"QHY CCD QHY268M-XXXX"
   QString DriverIndiName;    //"indi_qhy_ccd"  or "libqhyccd"
   QString DriverFrom{};      // INDI,ASCOM,NATIVE.
+  // 🆕 存储当前使用的 SDK 驱动名（当 isSDKConnect == true 时有效）
+  // 由 SdkDriverRegistry 自动从 DriverIndiName 推导
+  // 例如：DriverIndiName = "indi_qhy_ccd" -> SDKDriverName = "QHYCCD"
+  QString SDKDriverName{};
   int BaudRate{9600};  // 9600,19200,38400,57600,115200,230400
   INDI::BaseDevice *dp;
   bool isConnect = false;
   bool isBind = false;
+  // 标记该设备是否通过 SDK 方式连接。false 表示走 INDI 流程。
+  bool isSDKConnect = false;
 };
 
 struct SystemDeviceList {
@@ -287,6 +293,8 @@ class Tools : public QObject {
 
   static void readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,std::vector<DevGroup> &dev_groups, std::vector<Device> &devices);
   static void printDevGroups2(const DriversList driver_list);
+  // INDI FIFO 写入保护：当 /tmp/myFIFO 无读端时，避免阻塞/反复尝试
+  static void resetIndiFifoState();
   static void startIndiDriver(QString driver_name);
   static void stopIndiDriver(QString driver_name);
   static void printSystemDeviceList(const SystemDeviceList& s);
@@ -402,21 +410,7 @@ class Tools : public QObject {
    */
   static double MedianHFR(const std::vector<FocusedStar>& stars);
 
-  // QHYCCD Camera
-  static void ConnectQHYCCDSDK();
-  static void ScanCamera();
-  static void SelectQHYCCDSDKDevice(int systemNumber);
-  static cv::Mat Capture();
-  static int CFW();
-  static void SetCFW(int cfw);
-  static uint32_t& glMainCameraExpTime();
-  static bool WriteFPGA(uint8_t hand, int command);
-  static char* camid();
-  static qhyccd_handle*& camhandle();
-  static qhyccd_handle*& guiderhandle();
-  static qhyccd_handle*& polerhandle();
-  static qhyccd_handle*& fpgahandle();
-  static qhyccd_handle*& maincamhandle();  // unused
+
 
   // Image process
   static void CvDebugShow(cv::Mat img);
@@ -446,7 +440,6 @@ class Tools : public QObject {
   static cv::Mat CalMoments(cv::Mat image);
 
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
-  static QList<FITSImage::Star> FindStarsByQHYCCDSDK(bool AllStars, bool runHFR);
   // 基于C++合焦算法的星点识别（仿照上面两个接口）
   static QList<FITSImage::Star> FindStarsByFocusedCpp(bool AllStars, bool runHFR);
   
@@ -592,7 +585,7 @@ class Tools : public QObject {
 public slots:
   void StellarSolverLogOutput(QString text);
 
-  SloveResults onSolveFinished(int exitCode);
+  void onSolveFinished(int exitCode);
 
 signals:
     void parseInfoEmitted(const QString& message);

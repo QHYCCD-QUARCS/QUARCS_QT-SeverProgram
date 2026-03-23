@@ -1,5 +1,7 @@
 #include "Logger.h"
 #include <mutex>
+#include <cerrno>
+#include <cstring>
 #include <sstream>
 #include <iomanip>
 #include <ctime>
@@ -14,7 +16,8 @@
 std::map<DeviceType, std::unique_ptr<std::ofstream>> Logger::logFiles;
 const unsigned int Logger::maxLogSize = 104857600; // 设定最大日志文件大小为100MB
 std::mutex Logger::logMutex;  // 添加一个静态互斥锁
-bool Logger::shouldLogDebug = true; // 初始化默认不记录 DEBUG 日志
+bool Logger::shouldLogDebug = false; // 初始化默认不记录 DEBUG 日志
+TimePrecision Logger::timePrecision = TimePrecision::Millisecond; // 默认毫秒级
 bool Logger::readyToFlush = false;
 std::mutex Logger::readyMutex;
 std::condition_variable Logger::logCond;
@@ -93,6 +96,10 @@ void Logger::SetDebugLogging(bool enable) {
     shouldLogDebug = enable;
 }
 
+void Logger::SetTimePrecision(TimePrecision precision) {
+    timePrecision = precision;
+}
+
 void Logger::Log(const std::string& message, LogLevel level, DeviceType device) {
     if (level == DEBUG && !shouldLogDebug) return;
 
@@ -105,6 +112,10 @@ void Logger::Log(const std::string& message, LogLevel level, DeviceType device) 
     }
 
     std::string logEntry = BuildLogEntry(message, level, device);
+    // IMPORTANT: always terminate each log entry with '\n' so log files are line-based.
+    // Without this, multiple entries get glued into a single line, making debugging and parsing hard.
+    if (logEntry.empty() || logEntry.back() != '\n')
+        logEntry.push_back('\n');
     errno = 0;  // 重置 errno
     qDebug() << logEntry.c_str();
     std::string levelStr;
@@ -180,6 +191,8 @@ std::string Logger::BuildLogEntry(const std::string& message, LogLevel level, De
     auto now = std::chrono::system_clock::now();
     auto now_c = std::chrono::system_clock::to_time_t(now);
     std::tm now_tm = *std::localtime(&now_c);
+    // DEBUG 模式或显式设置为 Millisecond 时，精确到毫秒
+    bool useMs = (level == DEBUG) || (timePrecision == TimePrecision::Millisecond);
 
     // 转换日志级别为字符串
     std::string levelStr;
@@ -193,8 +206,13 @@ std::string Logger::BuildLogEntry(const std::string& message, LogLevel level, De
 
     // 构建日志条目
     std::ostringstream stream;
-    stream << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S") << " | "
-           << levelStr << " | "
+    stream << std::put_time(&now_tm, "%Y-%m-%d %H:%M:%S");
+    if (useMs) {
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()) % 1000;
+        stream << '.' << std::setfill('0') << std::setw(3) << ms.count();
+    }
+    stream << " | " << levelStr << " | "
            << "Device " << deviceName << ": " << message;
 
     return stream.str();

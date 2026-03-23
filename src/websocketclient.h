@@ -15,11 +15,15 @@ class WebSocketClient : public QObject
     Q_OBJECT
 public:
     explicit WebSocketClient(const QUrl &httpUrl, const QUrl &httpsUrl, QObject *parent = nullptr);
-    void messageSend(QString message);
     void sendAcknowledgment(QString  messageObj);
-    void sendProcessCommandReturn(QString message);
     void reconnect();
     void onNetworkStateChanged(bool isOnline);
+
+public slots:
+    // 这些方法会被跨线程调用（WebSocketThread 通过 invokeMethod/QueuedConnection 转发），
+    // 标记为 slot 以确保元对象系统可正确调度。
+    void messageSend(QString message);
+    void sendProcessCommandReturn(QString message);
     void stop();
 
 signals:

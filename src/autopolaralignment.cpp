@@ -252,11 +252,16 @@ dist_arcm, bearing
 }
 
 
-PolarAlignment::PolarAlignment(MyClient* indiServer, INDI::BaseDevice* dpMount, INDI::BaseDevice* dpMainCamera, QObject *parent)
+PolarAlignment::PolarAlignment(MyClient* indiServer,
+                               INDI::BaseDevice* dpMount,
+                               INDI::BaseDevice* dpMainCamera,
+                               bool useSdkMainCamera,
+                               QObject *parent)
     : QObject(parent)
     , indiServer(indiServer)
     , dpMount(dpMount)
     , dpMainCamera(dpMainCamera)
+    , useSdkMainCamera(useSdkMainCamera)
     , currentState(PolarAlignmentState::IDLE)
     , obstacleFromState(PolarAlignmentState::IDLE)
     , initialRA(0.0)
@@ -323,11 +328,16 @@ bool PolarAlignment::startPolarAlignment()
         result.errorMessage = "校准流程已在运行中";
         return false;
     }
-    if (!indiServer || !dpMount || !dpMainCamera) {
-        Logger::Log("PolarAlignment: 设备不可用，无法启动校准", LogLevel::ERROR, DeviceType::MAIN);
+    if (!indiServer || !dpMount) {
+        Logger::Log("PolarAlignment: 设备不可用(indiServer/dpMount)，无法启动校准", LogLevel::ERROR, DeviceType::MAIN);
         result.isSuccessful = false;
         result.errorMessage = "设备不可用，无法启动校准";
         return false;
+    }
+    // 单设备：主相机可能走 SDK，此时不应依赖 dpMainCamera
+    if (useSdkMainCamera || !dpMainCamera) {
+        Logger::Log("PolarAlignment: 主相机使用 SDK 通路（或 dpMainCamera 为空），将通过 requestCapture 触发拍摄",
+                    LogLevel::INFO, DeviceType::MAIN);
     }
     
     // 验证地理位置配置
@@ -565,6 +575,19 @@ void PolarAlignment::setState(PolarAlignmentState newState)
     if (currentState == newState) return;
     
     currentState = newState;
+
+    // 终态收敛：一旦进入终态，需要立刻将运行标志清零。
+    // 说明：之前 isRunningFlag 的清零放在 processCurrentState() 的 COMPLETED/FAILED 分支中，
+    // 但 setState() 在进入终态会 stop() 定时器，导致 processCurrentState() 不会再次被调用，
+    // 从而 isRunningFlag 永远不变为 false，外部看到的 isRunning() 状态就不会更新。
+    const bool isTerminalState =
+        (newState == PolarAlignmentState::COMPLETED ||
+         newState == PolarAlignmentState::FAILED ||
+         newState == PolarAlignmentState::USER_INTERVENTION);
+    if (isTerminalState) {
+        isRunningFlag = false;
+        isPausedFlag = false;
+    }
     
     // 根据新状态设置对应的状态消息
     switch (newState) {
@@ -756,6 +779,9 @@ void PolarAlignment::setState(PolarAlignmentState newState)
     if (newProgress != progressPercentage) {
         progressPercentage = newProgress;
         // emit progressUpdated(progressPercentage);
+        emit stateChanged(currentState, currentStatusMessage, progressPercentage);
+    } else if (isTerminalState) {
+        // 终态即便进度未变化，也要确保对外发出一次状态更新（尤其是 isRunningFlag 已经变为 false）
         emit stateChanged(currentState, currentStatusMessage, progressPercentage);
     }
     
@@ -1260,10 +1286,7 @@ bool PolarAlignment::moveDecAxisForObstacleAvoidance()
 bool PolarAlignment::captureAndAnalyze(int attempt)
 {
     Logger::Log("PolarAlignment: 拍摄和分析，尝试次数 " + std::to_string(attempt), LogLevel::INFO, DeviceType::MAIN);
-    if (!dpMainCamera) {
-        Logger::Log("PolarAlignment: 相机设备不可用", LogLevel::ERROR, DeviceType::MAIN);
-        return false;
-    }
+    // dpMainCamera 在 SDK 模式下可能为空：拍摄会通过 requestCapture -> MainWindow::INDI_Capture() 完成
     
     // 根据尝试次数确定曝光时间
     int exposureTime;
@@ -1654,6 +1677,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 图像拍摄失败", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄失败", -1);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
@@ -1662,40 +1686,14 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 拍摄超时", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CAPTURING, "拍摄超时", -1);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
     // 2. 拍摄完成后，先做星点质量（SNR）检查
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "正在检查星点质量...");
     
-    // bool ok = Tools::findMedianHFRByPython_Process(lastCapturedImage);
-    // double starHFR = Tools::getLastMedianHFR();
-    
-    // // 如果 SNR 脚本没有正常执行，则仅记录日志并跳过质量判断，继续后续流程
-    // if (!ok) {
-    //     Logger::Log("PolarAlignment: median_HFR 脚本执行失败，跳过星点质量判断，继续后续解析流程", LogLevel::WARNING, DeviceType::MAIN);
-    //     emit guidanceAdjustmentStepProgress(
-    //         GuidanceAdjustmentStep::CHECKING_STARS,
-    //         "median_HFR 脚本执行失败，跳过星点质量判断",
-    //         -1   // 不再使用星点数量做判断与展示
-    //     );
-    // } else {
-        
-    //     Logger::Log(
-    //         "PolarAlignment: 图像星点质量 median_HFR = " + std::to_string(starHFR),
-    //         LogLevel::INFO,
-    //         DeviceType::MAIN
-    //     );
-    //     if (starHFR > 0.0) {
-    //         Logger::Log("PolarAlignment: 星点质量 median_HFR > 0.0，继续解析流程", LogLevel::WARNING, DeviceType::MAIN);
-    //         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR > 0.0，继续解析流程", -1);
-    //     }else{
-    //         Logger::Log("PolarAlignment: 星点质量 median_HFR <= 0.0，跳过解析流程", LogLevel::WARNING, DeviceType::MAIN);
-    //         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CHECKING_STARS, "星点质量 median_HFR <= 0.0，跳过解析流程", -1);
-    //         if (isRunningFlag && !isPausedFlag) stateTimer.start(1000);
-    //         return false;
-    //     }
-    // }
+  
     
     // 3. 星点数量足够，继续解析图像
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "正在解析图像...");
@@ -1704,6 +1702,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析失败", -1);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
     
@@ -1711,6 +1710,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     if (!waitForSolveComplete()) {
         Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析超时", -1);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         updateSolveModeStatistics(false);
         return false;
@@ -1724,6 +1724,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
         emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "解析结果无效", -1);
         updateSolveModeStatistics(false);
+        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
         return false;
     }
@@ -1846,21 +1847,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     // 6. 发送完成信号，等待用户调整
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::WAITING_USER, "等待用户调整...", -1);
 
-    // // 达标判断用球面距离
-    // double precisionThreshold = config.finalVerificationThreshold; // 仍然"度"
-    // if (total_deg < precisionThreshold) {
-    //     Logger::Log("PolarAlignment: 精度达标: " + std::to_string(total_deg) + "° < " +
-    //                 std::to_string(precisionThreshold) + "°", LogLevel::INFO, DeviceType::MAIN);
-    //     result.raDeviation  = east_deg;
-    //     result.decDeviation = north_deg;
-    //     result.totalDeviation = total_deg;
-    //     adjustmentAttempts = 0;
-    //     setState(PolarAlignmentState::FINAL_VERIFICATION);
-    // } else {
-    //     Logger::Log("PolarAlignment: 精度未达标，继续调整",
-    //                 LogLevel::WARNING, DeviceType::MAIN);
-    //     if (isRunningFlag && !isPausedFlag) stateTimer.start(3000);
-    // }
+
     if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
     return true;
 }
@@ -1868,36 +1855,39 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
 bool PolarAlignment::captureImage(int exposureTime)
 {
     Logger::Log("PolarAlignment: 拍摄图像，曝光时间 " + std::to_string(exposureTime) + "ms", LogLevel::INFO, DeviceType::MAIN);
-    if (!dpMainCamera) {
-        Logger::Log("PolarAlignment: 相机设备不可用", LogLevel::ERROR, DeviceType::MAIN);
-        return false;
-    }
-    
     // 检查INDI客户端是否有效
     if (!indiServer) {
         Logger::Log("PolarAlignment: INDI客户端不可用", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
     
-    uint32_t ret = indiServer->resetCCDFrameInfo(dpMainCamera);
-    if (ret != QHYCCD_SUCCESS)
-    {
-        Logger::Log("INDI_Capture | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
-    }
-    
-    // 通过INDI接口拍摄图像
-    Logger::Log("PolarAlignment: 开始调用INDI拍摄接口", LogLevel::INFO, DeviceType::MAIN);
-    ret = indiServer->takeExposure(dpMainCamera, exposureTime / 1000.0);
-    if (ret == QHYCCD_SUCCESS) {
-        isCaptureEnd = false;
-        lastCapturedImage = "/dev/shm/ccd_simulator.fits";
+    // 每次触发拍摄前，复位完成标志（由 MainWindow 在 ExposureCompleted 时置为 true）
+    isCaptureEnd = false;
+    lastCapturedImage = "/dev/shm/ccd_simulator.fits";
 
-        Logger::Log("PolarAlignment: 拍摄命令发送成功，等待回调", LogLevel::INFO, DeviceType::MAIN);
-        return true;
-    } else {
-        Logger::Log("PolarAlignment: 拍摄失败，错误代码: " + std::to_string(ret), LogLevel::ERROR, DeviceType::MAIN);
-        return false;
+    // INDI 模式：直接通过 INDI 下发曝光
+    if (!useSdkMainCamera && dpMainCamera) {
+        uint32_t ret = indiServer->resetCCDFrameInfo(dpMainCamera);
+        if (ret != QHYCCD_SUCCESS)
+        {
+            Logger::Log("PolarAlignment::captureImage | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
+        }
+        
+        Logger::Log("PolarAlignment: 开始调用 INDI takeExposure", LogLevel::INFO, DeviceType::MAIN);
+        ret = indiServer->takeExposure(dpMainCamera, exposureTime / 1000.0);
+        if (ret == QHYCCD_SUCCESS) {
+            Logger::Log("PolarAlignment: INDI 拍摄命令发送成功，等待回调", LogLevel::INFO, DeviceType::MAIN);
+            return true;
+        } else {
+            Logger::Log("PolarAlignment: INDI 拍摄失败，错误代码: " + std::to_string(ret), LogLevel::ERROR, DeviceType::MAIN);
+            return false;
+        }
     }
+
+    // SDK 模式：由 MainWindow 统一入口 INDI_Capture() 执行（内部已兼容 SDK/INDI）
+    Logger::Log("PolarAlignment: 触发 requestCapture(统一拍摄入口) 进行拍摄", LogLevel::INFO, DeviceType::MAIN);
+    emit requestCapture(exposureTime);
+    return true;
 }
 
 
@@ -2194,7 +2184,16 @@ bool PolarAlignment::waitForCaptureComplete()
             if (status != 0)
             {
                 Logger::Log("Failed to read FITS file: " + lastCapturedImage.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-                return status;
+                isCaptureEnd = false;
+                loop.quit();
+                return;
+            }
+            if (image.empty())
+            {
+                Logger::Log("PolarAlignment: readFits succeeded but image is empty: " + lastCapturedImage.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+                isCaptureEnd = false;
+                loop.quit();
+                return;
             }
             if (image.type() == CV_8UC1 || image.type() == CV_8UC3 || image.type() == CV_16UC1)
             {
@@ -2204,13 +2203,32 @@ bool PolarAlignment::waitForCaptureComplete()
             else
             {
                 Logger::Log("The current image data type is not supported for processing.", LogLevel::WARNING, DeviceType::MAIN);
-                return -1;
+                isCaptureEnd = false;
+                loop.quit();
+                return;
+            }
+            if (originalImage16.empty())
+            {
+                Logger::Log("PolarAlignment: convert8UTo16U_BayerSafe returned empty image; skip medianBlur", LogLevel::ERROR, DeviceType::MAIN);
+                isCaptureEnd = false;
+                loop.quit();
+                return;
             }
             int binning = 1;
             int currentSize = originalImage16.cols;
 
             Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
-            cv::medianBlur(originalImage16, originalImage16, 3);
+            try
+            {
+                cv::medianBlur(originalImage16, originalImage16, 3);
+            }
+            catch (const cv::Exception &e)
+            {
+                Logger::Log(std::string("PolarAlignment: medianBlur failed: ") + e.what(), LogLevel::ERROR, DeviceType::MAIN);
+                isCaptureEnd = false;
+                loop.quit();
+                return;
+            }
             Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
 
             // 逐步增加binning直到像素大小小于等于548

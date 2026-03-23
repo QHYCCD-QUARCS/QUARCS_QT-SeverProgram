@@ -174,7 +174,18 @@ public:
      * @param mainWindow 主窗口指针，用于访问拍摄状态
      * @param parent 父对象指针
      */
-    explicit PolarAlignment(MyClient* indiServer, INDI::BaseDevice* dpMount, INDI::BaseDevice* dpMainCamera, QObject *parent = nullptr);
+    /**
+     * @brief 构造函数（兼容“单设备SDK连接”）
+     * @param indiServer INDI服务器客户端
+     * @param dpMount    赤道仪（INDI）
+     * @param dpMainCamera 主相机（INDI，若主相机走 SDK 可为空）
+     * @param useSdkMainCamera 主相机是否走 SDK（单设备维度）
+     */
+    explicit PolarAlignment(MyClient* indiServer,
+                            INDI::BaseDevice* dpMount,
+                            INDI::BaseDevice* dpMainCamera,
+                            bool useSdkMainCamera,
+                            QObject *parent = nullptr);
     
     /**
      * @brief 析构函数
@@ -393,6 +404,16 @@ signals:
      * @param starCount 识别的星点数量（仅在CHECKING_STARS步骤时有效，-1表示未检测）
      */
     void guidanceAdjustmentStepProgress(GuidanceAdjustmentStep step, QString message, int starCount = -1);
+
+    /**
+     * @brief 请求主线程触发一次拍摄（兼容 SDK / INDI）
+     * @param exposureTimeMs 曝光时间（毫秒）
+     *
+     * 说明：
+     * - INDI 模式下 PolarAlignment 也可以直接调用 indiServer->takeExposure；
+     * - SDK 模式下 dpMainCamera 可能为空，此时通过该信号让 MainWindow 调用统一入口 INDI_Capture()。
+     */
+    void requestCapture(int exposureTimeMs);
 
 private slots:
     /**
@@ -969,6 +990,7 @@ private:
     MyClient* indiServer;           // INDI服务器客户端
     INDI::BaseDevice* dpMount;      // 望远镜设备指针
     INDI::BaseDevice* dpMainCamera; // 主相机设备指针
+    bool useSdkMainCamera{false};   // 单设备：主相机是否使用 SDK 通路
     
     PolarAlignmentState currentState;    // 当前校准状态
     PolarAlignmentState obstacleFromState; // 避开遮挡前的状态
