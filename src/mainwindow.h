@@ -26,6 +26,8 @@
 #include <QFileInfo>
 #include <QDir>
 
+#include <functional>
+
 #include <fitsio.h>
 
 #include <sys/types.h>
@@ -1457,6 +1459,41 @@ public:
      * @param delaySeconds 关闭时长（秒），默认 10 秒
      */
     void restartHotspotWithDelay(int delaySeconds = 10);
+
+    /**********************  网络模式（AP/WAN）  **********************/
+public:
+    /**
+     * @brief 查询网络模式状态（由 net-mode.sh 输出 JSON）
+     */
+    void requestNetStatus();
+
+    /**
+     * @brief 切换网络模式（ap/wan）
+     * @param mode "ap" or "wan"
+     */
+    void switchNetMode(const QString &mode);
+
+    /**********************  Wi‑Fi 配置（扫描/保存）  **********************/
+public:
+    /**
+     * @brief 扫描附近 Wi‑Fi 热点
+     * @note 通过 nmcli，结果回传：WiFiScan|[{"ssid","signal","security"},...]
+     */
+    void wifiScan();
+
+    /**
+     * @brief 保存/更新上级 Wi‑Fi profile（默认建议用固定 con-name：wan-uplink）
+     * @note 前端发送：wifiSaveB64|<base64(JSON)>
+     *       JSON 示例：{"name":"wan-uplink","ssid":"xxx","psk":"yyy"}
+     */
+    void wifiSaveFromB64Payload(const QString &b64Payload);
+
+private:
+    /**
+     * @brief 以异步方式执行 sudo 命令，避免阻塞主线程
+     */
+    void runSudoAsync(const QString &program, const QStringList &args,
+                      const std::function<void(int, const QString &, const QString &)> &onDone);
 
 /**********************  串口/设备路径  **********************/
 public:

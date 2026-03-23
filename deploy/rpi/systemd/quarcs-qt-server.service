@@ -1,0 +1,29 @@
+[Unit]
+Description=QUARCS Qt Server Program
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 重要：把 <SERVICE_USER> 改成你要跑服务的用户（例如 quarcs / pi）
+User=<SERVICE_USER>
+Group=<SERVICE_USER>
+
+# 让 Qt 端始终连本机 WebSocket Hub（NodeJs-Transponder）
+Environment=QUARCS_WS_HOST=127.0.0.1
+
+# TODO: 把路径改成你实际安装/部署 Qt 程序的位置
+WorkingDirectory=/opt/quarcs
+ExecStart=/opt/quarcs/QUARCS_QT-SeverProgram
+
+Restart=always
+RestartSec=2
+
+# 日志直接进 journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

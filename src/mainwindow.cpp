@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include <functional>
+
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
@@ -168,6 +170,31 @@ MainWindow::~MainWindow()
 
 void MainWindow::getHostAddress()
 {
+    // 默认使用本机回环地址连接本机的 WebSocket Hub（NodeJs-Transponder）。
+    // 这样即使局域网 IP 变化，也不会影响 Qt <-> Hub 的连接（避免“换网段就断连”）。
+    //
+    // 如需指定 Hub 所在主机，可设置环境变量：
+    // - QUARCS_WS_HOST=<ip/hostname>  例如：192.168.200.129
+    // - QUARCS_WS_HOST=auto           继续使用旧的“自动探测网卡IP”逻辑
+    const QByteArray envHost = qgetenv("QUARCS_WS_HOST");
+    if (envHost.isEmpty()) {
+        const QString host = QStringLiteral("127.0.0.1");
+        websockethttpUrl  = QUrl(QStringLiteral("ws://%1:8600").arg(host));
+        websockethttpsUrl = QUrl(QStringLiteral("wss://%1:8601").arg(host));
+        Logger::Log("WebSocket target (default loopback): " + websockethttpUrl.toString().toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+        return;
+    }
+
+    if (envHost != "auto") {
+        const QString host = QString::fromUtf8(envHost);
+        websockethttpUrl  = QUrl(QStringLiteral("ws://%1:8600").arg(host));
+        websockethttpsUrl = QUrl(QStringLiteral("wss://%1:8601").arg(host));
+        Logger::Log("WebSocket target (from QUARCS_WS_HOST): " + websockethttpUrl.toString().toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+        return;
+    }
+
     int retryCount = 0;
     const int maxRetries = 20;
     const int waitTime = 5000; // 5秒
@@ -1607,6 +1634,32 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("restartHotspot10s finish (command issued)", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
+    // ===== Network mode (AP/WAN) + ZeroTier =====
+    else if (message == "netStatus")
+    {
+        Logger::Log("netStatus ...", LogLevel::DEBUG, DeviceType::MAIN);
+        requestNetStatus();
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "netMode")
+    {
+        const QString mode = parts[1].trimmed(); // ap / wan
+        Logger::Log("netMode:" + mode.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        switchNetMode(mode);
+    }
+
+    // ===== Wi‑Fi scan / save (uplink profiles) =====
+    else if (message == "wifiScan")
+    {
+        Logger::Log("wifiScan ...", LogLevel::DEBUG, DeviceType::MAIN);
+        wifiScan();
+    }
+    else if (message.startsWith("wifiSaveB64|"))
+    {
+        const QString payload = message.mid(QString("wifiSaveB64|").length());
+        Logger::Log("wifiSaveB64 ...", LogLevel::DEBUG, DeviceType::MAIN);
+        wifiSaveFromB64Payload(payload);
+    }
+
     else if (parts.size() == 4 && parts[0].trimmed() == "DSLRCameraInfo")
     {
         Logger::Log("DSLRCameraInfo ...", LogLevel::DEBUG, DeviceType::MAIN);
@@ -2076,6 +2129,191 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         Logger::Log("Unknown message: " + message.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
     }
+}
+
+void MainWindow::runSudoAsync(const QString &program, const QStringList &args,
+                              const std::function<void(int, const QString &, const QString &)> &onDone)
+{
+    QProcess *p = new QProcess(this);
+    p->setProgram("sudo");
+    QStringList a;
+    // -n: non-interactive. If sudoers is not configured correctly, fail fast instead of hanging.
+    a << "-n";
+    a << program;
+    a << args;
+    p->setArguments(a);
+
+    // Safety timeout: avoid hanging forever on slow nmcli/blocked sudo.
+    QTimer *killer = new QTimer(this);
+    killer->setSingleShot(true);
+    killer->setInterval(15000);
+    connect(killer, &QTimer::timeout, this, [p, onDone]() {
+        if (p->state() != QProcess::NotRunning) {
+            p->kill();
+            const QString out = QString::fromUtf8(p->readAllStandardOutput());
+            const QString err = QString::fromUtf8(p->readAllStandardError()) + "\n(timeout)";
+            if (onDone) onDone(124, out, err);
+        }
+    });
+
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [p, onDone, killer](int exitCode, QProcess::ExitStatus /*status*/) {
+                if (killer->isActive()) killer->stop();
+                killer->deleteLater();
+                const QString out = QString::fromUtf8(p->readAllStandardOutput());
+                const QString err = QString::fromUtf8(p->readAllStandardError());
+                if (onDone) onDone(exitCode, out, err);
+                p->deleteLater();
+            });
+    p->start();
+    killer->start();
+}
+
+void MainWindow::requestNetStatus()
+{
+    runSudoAsync("/usr/local/sbin/net-mode.sh", {"status"},
+                 [this](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode != 0) {
+                         Logger::Log(("netStatus failed: " + err).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                         emit wsThread->sendMessageToClient("SendDebugMessage|Warning|netStatus failed");
+                         emit wsThread->sendMessageToClient("NetModeResult|status|fail|" + err.left(200));
+                         return;
+                     }
+                     const QString json = out.trimmed();
+                     emit wsThread->sendMessageToClient("NetStatus|" + json);
+                 });
+}
+
+void MainWindow::switchNetMode(const QString &mode)
+{
+    const QString m = mode.trimmed().toLower();
+    if (m != "ap" && m != "wan") {
+        emit wsThread->sendMessageToClient("NetModeResult|" + m + "|fail|invalid_mode");
+        return;
+    }
+
+    runSudoAsync("/usr/local/sbin/net-mode.sh", {m},
+                 [this, m](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode == 0) {
+                         emit wsThread->sendMessageToClient("NetModeResult|" + m + "|ok");
+                     } else {
+                         const QString detail = (err.isEmpty() ? out : err).trimmed();
+                         emit wsThread->sendMessageToClient("NetModeResult|" + m + "|fail|" + detail.left(200));
+                     }
+                     // Always refresh status after mode switch attempt
+                     QTimer::singleShot(500, this, [this]() { requestNetStatus(); });
+                 });
+}
+
+void MainWindow::wifiScan()
+{
+    // nmcli will output lines like: SSID:SIGNAL:SECURITY
+    // (If SSID contains ':', parsing may be imperfect; typical consumer SSID does not.)
+    runSudoAsync("/usr/bin/nmcli",
+                 {"-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"},
+                 [this](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode != 0) {
+                         Logger::Log(("wifiScan failed: " + err).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                         emit wsThread->sendMessageToClient("WiFiScan|[]");
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|scan|fail|" + err.left(200));
+                         return;
+                     }
+                     QJsonArray arr;
+                     const QStringList lines = out.split('\n', Qt::SkipEmptyParts);
+                     for (const QString &line : lines) {
+                         // SSID:SIGNAL:SECURITY
+                         const QStringList p = line.split(':');
+                         if (p.isEmpty()) continue;
+                         const QString ssid = p.value(0).trimmed();
+                         if (ssid.isEmpty()) continue;
+                         const int signal = p.value(1).trimmed().toInt();
+                         const QString sec = p.value(2).trimmed();
+                         QJsonObject o;
+                         o["ssid"] = ssid;
+                         o["signal"] = signal;
+                         o["security"] = sec;
+                         arr.append(o);
+                     }
+                     QJsonDocument doc(arr);
+                     const QString json = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+                     emit wsThread->sendMessageToClient("WiFiScan|" + json);
+                 });
+}
+
+void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
+{
+    const QByteArray decoded = QByteArray::fromBase64(b64Payload.toUtf8());
+    if (decoded.isEmpty()) {
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|bad_base64");
+        return;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(decoded);
+    if (!doc.isObject()) {
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|bad_json");
+        return;
+    }
+    const QJsonObject obj = doc.object();
+    const QString name = obj.value("name").toString("wan-uplink").trimmed();
+    const QString ssid = obj.value("ssid").toString().trimmed();
+    const QString psk  = obj.value("psk").toString();
+    if (name.isEmpty() || ssid.isEmpty() || psk.isEmpty()) {
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|need_name_ssid_psk");
+        return;
+    }
+
+    // Check if connection exists
+    runSudoAsync("/usr/bin/nmcli", {"-t", "-f", "NAME", "con", "show"},
+                 [this, name, ssid, psk](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode != 0) {
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + err.left(200));
+                         return;
+                     }
+                     const QStringList names = out.split('\n', Qt::SkipEmptyParts);
+                     const bool exists = names.contains(name);
+
+                     auto finishOk = [this]() {
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|save|ok");
+                     };
+                     auto finishFail = [this](const QString &e) {
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + e.left(200));
+                     };
+
+                     if (!exists) {
+                         // add connection
+                         runSudoAsync("/usr/bin/nmcli",
+                                      {"con", "add", "type", "wifi", "ifname", "wlan0", "con-name", name, "ssid", ssid},
+                                      [this, name, ssid, psk, finishOk, finishFail](int codeAdd, const QString &outAdd, const QString &errAdd) {
+                                          if (codeAdd != 0) {
+                                              finishFail(errAdd.isEmpty() ? outAdd : errAdd);
+                                              return;
+                                          }
+                                          // set security + disable autoconnect
+                                          runSudoAsync("/usr/bin/nmcli",
+                                                       {"con", "modify", name,
+                                                        "wifi-sec.key-mgmt", "wpa-psk",
+                                                        "wifi-sec.psk", psk,
+                                                        "autoconnect", "no",
+                                                        "ipv6.method", "ignore"},
+                                                       [finishOk, finishFail](int codeMod, const QString &outMod, const QString &errMod) {
+                                                           if (codeMod == 0) finishOk();
+                                                           else finishFail(errMod.isEmpty() ? outMod : errMod);
+                                                       });
+                                      });
+                     } else {
+                         // modify existing connection
+                         runSudoAsync("/usr/bin/nmcli",
+                                      {"con", "modify", name,
+                                       "802-11-wireless.ssid", ssid,
+                                       "wifi-sec.key-mgmt", "wpa-psk",
+                                       "wifi-sec.psk", psk,
+                                       "autoconnect", "no",
+                                       "ipv6.method", "ignore"},
+                                      [finishOk, finishFail](int codeMod, const QString &outMod, const QString &errMod) {
+                                          if (codeMod == 0) finishOk();
+                                          else finishFail(errMod.isEmpty() ? outMod : errMod);
+                                      });
+                     }
+                 });
 }
 
 void MainWindow::initINDIServer()
@@ -10270,23 +10508,33 @@ void MainWindow::RecoverySloveResul()
 void MainWindow::editHotspotName(QString newName)
 {
     Logger::Log("editHotspotName(" + newName.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
-    QString command = QString("echo 'quarcs' | sudo -S sed -i 's/^ssid=.*/ssid=%1/' /etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection").arg(newName);
+    const QString connectionName = "RaspBerryPi-WiFi";
 
-    Logger::Log("editHotspotName | command:" + command.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
+    // Use nmcli instead of editing system-connections file + hardcoded sudo password.
+    // Requires sudoers NOPASSWD for: nmcli connection modify/down/up on this connection.
     QProcess process;
-    process.start("bash", QStringList() << "-c" << command);
+    process.start("sudo", QStringList()
+                          << "nmcli" << "connection" << "modify"
+                          << connectionName
+                          << "802-11-wireless.ssid" << newName);
     process.waitForFinished();
 
+    const int exitCode = process.exitCode();
+    const QString out = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+    const QString err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    Logger::Log(("editHotspotName | nmcli modify exit=" + std::to_string(exitCode) +
+                 " out=" + out.toStdString() + " err=" + err.toStdString()),
+                LogLevel::INFO, DeviceType::MAIN);
+
+    // Refresh name by nmcli query
     QString HostpotName = getHotspotName();
     Logger::Log("editHotspotName | New Hotspot Name:" + HostpotName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-    if (HostpotName == newName)
+    if (exitCode == 0 && HostpotName == newName)
     {
         emit wsThread->sendMessageToClient("EditHotspotNameSuccess");
-        // restart NetworkManager
-        process.start("sudo systemctl restart NetworkManager");
-        process.waitForFinished();
+        // Restart hotspot connection to apply changes without restarting NetworkManager
+        restartHotspotWithDelay(10);
     }
     else
     {
@@ -10297,27 +10545,42 @@ void MainWindow::editHotspotName(QString newName)
 
 QString MainWindow::getHotspotName()
 {
+    const QString connectionName = "RaspBerryPi-WiFi";
+
+    // Prefer nmcli query (stable) over parsing the nmconnection file.
+    {
+        QProcess process;
+        process.start("sudo", QStringList()
+                              << "nmcli" << "-g" << "802-11-wireless.ssid"
+                              << "connection" << "show" << connectionName);
+        process.waitForFinished();
+        const QString ssid = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+        const QString err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        if (!ssid.isEmpty()) {
+            Logger::Log("getHotspotName | nmcli ssid:" + ssid.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            return ssid;
+        }
+        if (!err.isEmpty()) {
+            Logger::Log("getHotspotName | nmcli error:" + err.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+
+    // Fallback: parse file (legacy)
     QProcess process;
     process.start("sudo", QStringList() << "cat" << "/etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection");
     process.waitForFinished();
-
-    // Get the command output
     QString output = process.readAllStandardOutput();
-    Logger::Log("getHotspotName | output:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("getHotspotName | file output:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-    // Look for the SSID configuration
     QString ssidPattern = "ssid=";
     int index = output.indexOf(ssidPattern);
     if (index != -1)
     {
         int start = index + ssidPattern.length();
         int end = output.indexOf("\n", start);
-        if (end == -1)
-            end = output.length();
-        return output.mid(start, end - start);
+        if (end == -1) end = output.length();
+        return output.mid(start, end - start).trimmed();
     }
-
-    // If SSID is not found, return a default value
     return "N/A";
 }
 
@@ -10336,21 +10599,17 @@ void MainWindow::restartHotspotWithDelay(int delaySeconds)
 
     // 先关闭当前热点
     {
-        QString command = QString("echo 'quarcs' | sudo -S nmcli connection down '%1'").arg(connectionName);
-        Logger::Log("restartHotspotWithDelay | down command:" + command.toStdString(),
-                    LogLevel::INFO, DeviceType::MAIN);
-
         QProcess process;
-        process.start("bash", QStringList() << "-c" << command);
+        process.start("sudo", QStringList() << "nmcli" << "connection" << "down" << connectionName);
         process.waitForFinished();
 
         QString output = process.readAllStandardOutput();
         QString errorOutput = process.readAllStandardError();
-        Logger::Log("restartHotspotWithDelay | down output:" + output.toStdString(),
+        Logger::Log("restartHotspotWithDelay | down output:" + output.trimmed().toStdString(),
                     LogLevel::INFO, DeviceType::MAIN);
         if (!errorOutput.isEmpty())
         {
-            Logger::Log("restartHotspotWithDelay | down error:" + errorOutput.toStdString(),
+            Logger::Log("restartHotspotWithDelay | down error:" + errorOutput.trimmed().toStdString(),
                         LogLevel::WARNING, DeviceType::MAIN);
         }
     }
@@ -10362,21 +10621,17 @@ void MainWindow::restartHotspotWithDelay(int delaySeconds)
         Logger::Log("restartHotspotWithDelay | starting hotspot again ...",
                     LogLevel::INFO, DeviceType::MAIN);
 
-        QString command = QString("echo 'quarcs' | sudo -S nmcli connection up '%1'").arg(connectionName);
-        Logger::Log("restartHotspotWithDelay | up command:" + command.toStdString(),
-                    LogLevel::INFO, DeviceType::MAIN);
-
         QProcess process;
-        process.start("bash", QStringList() << "-c" << command);
+        process.start("sudo", QStringList() << "nmcli" << "connection" << "up" << connectionName);
         process.waitForFinished();
 
         QString output = process.readAllStandardOutput();
         QString errorOutput = process.readAllStandardError();
-        Logger::Log("restartHotspotWithDelay | up output:" + output.toStdString(),
+        Logger::Log("restartHotspotWithDelay | up output:" + output.trimmed().toStdString(),
                     LogLevel::INFO, DeviceType::MAIN);
         if (!errorOutput.isEmpty())
         {
-            Logger::Log("restartHotspotWithDelay | up error:" + errorOutput.toStdString(),
+            Logger::Log("restartHotspotWithDelay | up error:" + errorOutput.trimmed().toStdString(),
                         LogLevel::WARNING, DeviceType::MAIN);
         }
 

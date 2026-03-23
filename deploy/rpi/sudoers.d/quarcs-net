@@ -1,0 +1,32 @@
+# /etc/sudoers.d/quarcs-net
+#
+# 目的：允许 Qt 服务以非 root 用户运行，但可最小权限执行网络切换脚本与少量 nmcli/systemctl。
+# 使用前请用：visudo -c  检查语法
+#
+# 将下面的 <SERVICE_USER> 改成你 systemd 服务运行的用户名（例如 quarcs / pi）
+
+Defaults:<SERVICE_USER> !requiretty
+
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/local/sbin/net-mode.sh ap
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/local/sbin/net-mode.sh wan
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/local/sbin/net-mode.sh status
+
+# Wi‑Fi scan (for UI)
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli -t -f SSID,SIGNAL,SECURITY dev wifi list ifname wlan0 --rescan yes
+
+# Hotspot rename / restart (MainWindow::editHotspotName & restartHotspotWithDelay)
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli connection modify RaspBerryPi-WiFi 802-11-wireless.ssid *
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli connection down RaspBerryPi-WiFi
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli connection up RaspBerryPi-WiFi
+
+# Save uplink profile (default: wan-uplink)
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli -t -f NAME con show
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli con add type wifi ifname wlan0 con-name wan-uplink ssid *
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli con modify wan-uplink wifi-sec.key-mgmt wpa-psk wifi-sec.psk * autoconnect no ipv6.method ignore
+<SERVICE_USER> ALL=(root) NOPASSWD: /usr/bin/nmcli con modify wan-uplink 802-11-wireless.ssid * wifi-sec.key-mgmt wpa-psk wifi-sec.psk * autoconnect no ipv6.method ignore
+
+# ZeroTier control (used by net-mode.sh)
+<SERVICE_USER> ALL=(root) NOPASSWD: /bin/systemctl start zerotier-one
+<SERVICE_USER> ALL=(root) NOPASSWD: /bin/systemctl stop zerotier-one
+<SERVICE_USER> ALL=(root) NOPASSWD: /bin/systemctl is-active zerotier-one
+
