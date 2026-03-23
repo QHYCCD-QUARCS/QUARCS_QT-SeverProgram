@@ -48,6 +48,7 @@ public:
     Q_INVOKABLE void startGuiding();
     // 强制重新校准：忽略历史校准复用（用于“长按开始导星强制校准”）
     Q_INVOKABLE void startGuidingForceCalibrate();
+    Q_INVOKABLE void clearCachedCalibration();
     Q_INVOKABLE void stopGuiding();
 
     // 手动选星：来自前端画布点击（替代外部 PHD2 的 StarClick）
@@ -84,6 +85,9 @@ private:
     void scheduleNextExposure(int delayMs);
     void beginCalibrationFromLock();
     bool canReuseLastCalibration(QString* reason = nullptr) const;
+    bool canReuseStartupSnapshot(QString* reason = nullptr) const;
+    void startGuidingFromLock(bool isManualLock);
+    void enterGuidingState();
 
 private:
     guiding::State m_state = guiding::State::Idle;
@@ -111,6 +115,9 @@ private:
     bool m_hasLastCalibration = false;
     guiding::CalibrationResult m_lastCalibration{};
     CalibrationContext m_lastCalibrationCtx{};
+    bool m_hasLastBacklash = false;
+    int m_lastBacklashMsBase = 0;
+    int m_lastBacklashMsRuntime = 0;
     bool m_forceCalibrateNextStart = false;
 
     // 导星闭环

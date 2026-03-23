@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include <functional>
+
 // SDK 框架相关头文件
 #include "sdks/SdkManager.h"
 #include "sdks/SdkCommon.h"  // 包含统一的 SDK 类型定义（SdkControlParamInfo, SdkFocuserOpenParam 等）
@@ -613,6 +615,134 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     guiderLoopTimer = new QTimer(this);
     guiderLoopTimer->setSingleShot(true);
     connect(guiderLoopTimer, &QTimer::timeout, this, &MainWindow::onGuiderLoopTimeout);
+    guiderCore = new GuiderCore(this);
+#if QUARCS_SIM_GUIDER
+    simGuiderFrameSource = std::make_unique<guiding::SimGuiderFrameSource>();
+    Logger::Log("BuiltInGuider | simulated frame source enabled", LogLevel::INFO, DeviceType::GUIDER);
+#endif
+    connect(guiderCore, &GuiderCore::requestExposure, this, [this](int exposureMs) {
+        guiderExpMs = std::max(1, exposureMs);
+        isGuiderLoopExp = true;
+        guiderExposureInFlight = false;
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+        if (guiderLoopTimer)
+            guiderLoopTimer->start(0);
+    });
+    connect(guiderCore, &GuiderCore::requestPersistGuidingFits, this, &MainWindow::PersistGuidingFits);
+    connect(guiderCore, &GuiderCore::requestPulse, this, [this](const guiding::PulseCommand& cmd) {
+        ControlGuideEx(static_cast<int>(cmd.dir), cmd.durationMs, QStringLiteral("BuiltInGuider"));
+    });
+    connect(guiderCore, &GuiderCore::lockPositionChanged, this, [this](const QPointF& lockPosPx) {
+        glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
+        glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
+        emit wsThread->sendMessageToClient("PHD2StarCrossView:true");
+        emit wsThread->sendMessageToClient(
+            "PHD2StarCrossPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(static_cast<int>(std::lround(lockPosPx.x()))) + ":" +
+            QString::number(static_cast<int>(std::lround(lockPosPx.y()))));
+    });
+    connect(guiderCore, &GuiderCore::lockStarSelected, this, [this](double x, double y, double, double) {
+        glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
+        glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
+        emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+        emit wsThread->sendMessageToClient(
+            "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(static_cast<int>(std::lround(x))) + ":" +
+            QString::number(static_cast<int>(std::lround(y))));
+    });
+    connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
+        glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
+        glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
+        emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
+        emit wsThread->sendMessageToClient(
+            "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+            QString::number(glPHD_CurrentImageSizeY) + ":" +
+            QString::number(static_cast<int>(std::lround(centroidPx.x()))) + ":" +
+            QString::number(static_cast<int>(std::lround(centroidPx.y()))));
+    });
+    connect(guiderCore, &GuiderCore::directionDetectionStateChanged, this, [this](bool active) {
+        guiderDirectionDetectActive = active;
+        emit wsThread->sendMessageToClient(QString("GuiderStatus:%1")
+                                               .arg(active ? "InDirectionDetection"
+                                                           : (guiderPhaseGuiding ? "InGuiding" : "InCalibration")));
+    });
+    connect(guiderCore, &GuiderCore::guideErrorUpdated, this, [this](double raErrPx, double decErrPx) {
+        emit wsThread->sendMessageToClient(
+            "AddLineChartData:" + QString::number(guiderChartSampleIndex++) + ":" +
+            QString::number(raErrPx, 'f', 6) + ":" +
+            QString::number(decErrPx, 'f', 6));
+    });
+    connect(guiderCore, &GuiderCore::guidePulseIssued, this,
+            [this](const guiding::PulseCommand& cmd, double raErrPx, double decErrPx) {
+        const QString dir =
+            (cmd.dir == guiding::GuideDir::North) ? QStringLiteral("NORTH") :
+            (cmd.dir == guiding::GuideDir::South) ? QStringLiteral("SOUTH") :
+            (cmd.dir == guiding::GuideDir::East)  ? QStringLiteral("EAST")  :
+                                                    QStringLiteral("WEST");
+        emit wsThread->sendMessageToClient(
+            "GuiderPulse:" + dir + ":" + QString::number(cmd.durationMs) +
+            ":raErrPx=" + QString::number(raErrPx, 'f', 6) +
+            ":decErrPx=" + QString::number(decErrPx, 'f', 6));
+    });
+    connect(guiderCore, &GuiderCore::stateChanged, this, [this](guiding::State state) {
+        guiderPhaseGuiding = (state == guiding::State::Guiding);
+        if (state == guiding::State::Idle || state == guiding::State::Looping ||
+            state == guiding::State::Stopped || state == guiding::State::Error)
+        {
+            guiderDirectionDetectActive = false;
+            guiderChartSampleIndex = 0;
+            isGuiderLoopExp = false;
+            guiderExposureInFlight = false;
+            if (guiderLoopTimer)
+                guiderLoopTimer->stop();
+            if (sdkGuiderExposureTimer)
+                sdkGuiderExposureTimer->stop();
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+            emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
+            emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
+            emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+        }
+        emit wsThread->sendMessageToClient(QString("GuiderCoreState:%1").arg(static_cast<int>(state)));
+        switch (state)
+        {
+        case guiding::State::Selecting:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderStatus:InSelecting");
+            break;
+        case guiding::State::Calibrating:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+            break;
+        case guiding::State::Guiding:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
+            emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+            break;
+        case guiding::State::Idle:
+        case guiding::State::Looping:
+        case guiding::State::Stopped:
+        case guiding::State::Error:
+        default:
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+            break;
+        }
+    });
+    connect(guiderCore, &GuiderCore::infoMessage, this, [this](const QString& msg) {
+        Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+        emit wsThread->sendMessageToClient("GuiderCoreInfo:" + msg);
+    });
+    connect(guiderCore, &GuiderCore::errorOccurred, this, [this](const QString& msg) {
+        Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::WARNING, DeviceType::GUIDER);
+        emit wsThread->sendMessageToClient("GuiderCoreError:" + msg);
+        if (msg.contains(QStringLiteral("LostStar"), Qt::CaseInsensitive) ||
+            msg.contains(QStringLiteral("丢星"), Qt::CaseInsensitive))
+        {
+            emit wsThread->sendMessageToClient("GuiderStatus:StarLostAlert");
+        }
+    });
     // getConnectedSerialPorts();
 
     // 电调控制初始化
@@ -764,6 +894,31 @@ bool MainWindow::isMountSDK()
 
 void MainWindow::getHostAddress()
 {
+    // 默认使用本机回环地址连接本机的 WebSocket Hub（NodeJs-Transponder）。
+    // 这样即使局域网 IP 变化，也不会影响 Qt <-> Hub 的连接（避免“换网段就断连”）。
+    //
+    // 如需指定 Hub 所在主机，可设置环境变量：
+    // - QUARCS_WS_HOST=<ip/hostname>  例如：192.168.200.129
+    // - QUARCS_WS_HOST=auto           继续使用旧的“自动探测网卡IP”逻辑
+    const QByteArray envHost = qgetenv("QUARCS_WS_HOST");
+    if (envHost.isEmpty()) {
+        const QString host = QStringLiteral("127.0.0.1");
+        websockethttpUrl  = QUrl(QStringLiteral("ws://%1:8600").arg(host));
+        websockethttpsUrl = QUrl(QStringLiteral("wss://%1:8601").arg(host));
+        Logger::Log("WebSocket target (default loopback): " + websockethttpUrl.toString().toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+        return;
+    }
+
+    if (envHost != "auto") {
+        const QString host = QString::fromUtf8(envHost);
+        websockethttpUrl  = QUrl(QStringLiteral("ws://%1:8600").arg(host));
+        websockethttpsUrl = QUrl(QStringLiteral("wss://%1:8601").arg(host));
+        Logger::Log("WebSocket target (from QUARCS_WS_HOST): " + websockethttpUrl.toString().toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+        return;
+    }
+
     int retryCount = 0;
     const int maxRetries = 20;
     const int waitTime = 5000; // 5秒
@@ -2236,32 +2391,106 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("get CFWList finish!", LogLevel::DEBUG, DeviceType::CFW);
     }
 
-    else if (message == "ClearCalibrationData")
+    else if (message == "ClearCalibrationData"
+             || message == "clearGuiderData"
+             || message == "PHD2Recalibrate")
     {
-        
-        Logger::Log("Clear polar alignment calibration data", LogLevel::DEBUG, DeviceType::MAIN);
+        Logger::Log(("BuiltInGuider | recalibration request received: " + message).toStdString(),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log("BuiltInGuider | clear cached calibration/backlash and force recalibrate on next start",
+                    LogLevel::INFO, DeviceType::GUIDER);
+        guiderForceRecalibrateOnNextStart = true;
+        if (guiderCore)
+        {
+            guiderCore->clearCachedCalibration();
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:CachedCalibrationAndBacklashCleared:WillRecalibrateOnNextStart");
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:GuiderCoreNotReady:PendingRecalibrateOnNextStart");
+        }
     }else if (message == "getGuiderStatus")
     {
         Logger::Log("getGuiderStatus ...", LogLevel::DEBUG, DeviceType::GUIDER);
-        // PHD2 已移除：不再有 Guiding 状态，保持兼容字段为 false
-        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
-
         const bool guiderSdk =
             (systemdevicelist.system_devices.size() > 1 &&
              systemdevicelist.system_devices[1].isSDKConnect &&
              sdkGuiderHandle != nullptr);
         const bool loopOn = (isGuiderLoopExp && ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk));
+        bool guidingOn = false;
+        QString guiderStatus;
+        if (guiderCore)
+        {
+            switch (guiderCore->state())
+            {
+            case guiding::State::Selecting:
+                guidingOn = true;
+                guiderStatus = QStringLiteral("InSelecting");
+                break;
+            case guiding::State::Calibrating:
+                guidingOn = true;
+                guiderStatus = QStringLiteral("InCalibration");
+                break;
+            case guiding::State::Guiding:
+                guidingOn = true;
+                guiderStatus = QStringLiteral("InGuiding");
+                break;
+            default:
+                break;
+            }
+        }
+        emit wsThread->sendMessageToClient(QString("GuiderSwitchStatus:%1").arg(guidingOn ? "true" : "false"));
         emit wsThread->sendMessageToClient(QString("GuiderLoopExpStatus:%1").arg(loopOn ? "true" : "false"));
+        if (!guiderStatus.isEmpty())
+            emit wsThread->sendMessageToClient("GuiderStatus:" + guiderStatus);
         
         Logger::Log("getGuiderStatus finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
 
     else if (parts[0].trimmed() == "GuiderSwitch" && parts.size() == 2)
     {
-        // PHD2 已移除：GuiderSwitch（开始/停止导星）不再支持，仅保持兼容字段为 false
-        Logger::Log("GuiderSwitch ignored (PHD2 removed). Use GuiderLoopExpSwitch for guider imaging.", LogLevel::WARNING, DeviceType::GUIDER);
-        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
-        emit wsThread->sendMessageToClient(QString("GuiderLoopExpStatus:%1").arg(isGuiderLoopExp ? "true" : "false"));
+        const bool guiderSdk =
+            (systemdevicelist.system_devices.size() > 1 &&
+             systemdevicelist.system_devices[1].isSDKConnect &&
+             sdkGuiderHandle != nullptr);
+        const bool guiderConnected = ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk);
+        const bool wantOn = (parts[1].trimmed() == "true");
+
+        if (!guiderCore)
+        {
+            Logger::Log("GuiderSwitch failed: guiderCore not initialized", LogLevel::ERROR, DeviceType::GUIDER);
+            emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+            return;
+        }
+
+        if (wantOn)
+        {
+            if (!guiderConnected)
+            {
+                Logger::Log("GuiderSwitch failed: guider is not connected", LogLevel::WARNING, DeviceType::GUIDER);
+                emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+                emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+                return;
+            }
+
+            Logger::Log("GuiderSwitch -> start built-in guider", LogLevel::INFO, DeviceType::GUIDER);
+            if (guiderForceRecalibrateOnNextStart)
+            {
+                Logger::Log("GuiderSwitch -> start built-in guider with forced recalibration",
+                            LogLevel::INFO, DeviceType::GUIDER);
+                guiderCore->startGuidingForceCalibrate();
+                guiderForceRecalibrateOnNextStart = false;
+            }
+            else
+            {
+                guiderCore->startGuiding();
+            }
+        }
+        else
+        {
+            Logger::Log("GuiderSwitch -> stop built-in guider", LogLevel::INFO, DeviceType::GUIDER);
+            guiderCore->stopGuiding();
+        }
     }
 
     else if (parts[0].trimmed() == "GuiderLoopExpSwitch" && parts.size() == 2)
@@ -2284,18 +2513,30 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             Logger::Log(std::string("Start GuiderLoopExp (") + (guiderSdk ? "SDK" : "INDI") + ") ...",
                         LogLevel::INFO, DeviceType::GUIDER);
-            isGuiderLoopExp = true;
-            guiderExposureInFlight = false;
-            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
-            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+            if (guiderCore)
+            {
+                guiderCore->startLoop();
+            }
+            else
+            {
+                isGuiderLoopExp = true;
+                guiderExposureInFlight = false;
+                emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+                emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
 
-            if (guiderLoopTimer)
-                guiderLoopTimer->start(0);
+                if (guiderLoopTimer)
+                    guiderLoopTimer->start(0);
+            }
         }
         else if (!wantOn && isGuiderLoopExp)
         {
             Logger::Log(std::string("Stop GuiderLoopExp (") + (guiderSdk ? "SDK" : "INDI") + ") ...",
                         LogLevel::INFO, DeviceType::GUIDER);
+            if (guiderCore)
+            {
+                guiderCore->stopGuiding();
+                guiderCore->stopLoop();
+            }
             isGuiderLoopExp = false;
             guiderExposureInFlight = false;
             if (guiderLoopTimer)
@@ -2937,8 +3178,31 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
     {
-        // PHD2 已移除：不再支持点击选星
-        Logger::Log("GuiderCanvasClick ignored (PHD2 removed).", LogLevel::WARNING, DeviceType::GUIDER);
+        if (!guiderCore)
+        {
+            Logger::Log("GuiderCanvasClick ignored: guiderCore not initialized.", LogLevel::WARNING, DeviceType::GUIDER);
+            return;
+        }
+
+        const int canvasW = std::max(1, parts[1].trimmed().toInt());
+        const int canvasH = std::max(1, parts[2].trimmed().toInt());
+        const double clickX = parts[3].trimmed().toDouble();
+        const double clickY = parts[4].trimmed().toDouble();
+
+        const int imageW = std::max(1, glPHD_CurrentImageSizeX);
+        const int imageH = std::max(1, glPHD_CurrentImageSizeY);
+
+        const double mappedX = std::clamp(clickX * static_cast<double>(imageW) / static_cast<double>(canvasW),
+                                          0.0, static_cast<double>(imageW - 1));
+        const double mappedY = std::clamp(clickY * static_cast<double>(imageH) / static_cast<double>(canvasH),
+                                          0.0, static_cast<double>(imageH - 1));
+
+        guiderCore->setManualLock(mappedX, mappedY);
+        Logger::Log("GuiderCanvasClick -> built-in manual lock: canvas=" +
+                        std::to_string(canvasW) + "x" + std::to_string(canvasH) +
+                        " click=(" + std::to_string(clickX) + "," + std::to_string(clickY) + ")" +
+                        " mapped=(" + std::to_string(mappedX) + "," + std::to_string(mappedY) + ")",
+                    LogLevel::INFO, DeviceType::GUIDER);
     }
 
     else if (message == "getQTClientVersion")
@@ -2979,6 +3243,32 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("restartHotspot10s ...", LogLevel::DEBUG, DeviceType::MAIN);
         restartHotspotWithDelay(10);
         Logger::Log("restartHotspot10s finish (command issued)", LogLevel::DEBUG, DeviceType::MAIN);
+    }
+
+    // ===== Network mode (AP/WAN) + ZeroTier =====
+    else if (message == "netStatus")
+    {
+        Logger::Log("netStatus ...", LogLevel::DEBUG, DeviceType::MAIN);
+        requestNetStatus();
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "netMode")
+    {
+        const QString mode = parts[1].trimmed(); // ap / wan
+        Logger::Log("netMode:" + mode.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        switchNetMode(mode);
+    }
+
+    // ===== Wi‑Fi scan / save (uplink profiles) =====
+    else if (message == "wifiScan")
+    {
+        Logger::Log("wifiScan ...", LogLevel::DEBUG, DeviceType::MAIN);
+        wifiScan();
+    }
+    else if (message.startsWith("wifiSaveB64|"))
+    {
+        const QString payload = message.mid(QString("wifiSaveB64|").length());
+        Logger::Log("wifiSaveB64 ...", LogLevel::DEBUG, DeviceType::MAIN);
+        wifiSaveFromB64Payload(payload);
     }
 
     else if (parts.size() == 4 && parts[0].trimmed() == "DSLRCameraInfo")
@@ -3620,6 +3910,191 @@ void MainWindow::onMessageReceived(const QString &message)
     }
 }
 
+void MainWindow::runSudoAsync(const QString &program, const QStringList &args,
+                              const std::function<void(int, const QString &, const QString &)> &onDone)
+{
+    QProcess *p = new QProcess(this);
+    p->setProgram("sudo");
+    QStringList a;
+    // -n: non-interactive. If sudoers is not configured correctly, fail fast instead of hanging.
+    a << "-n";
+    a << program;
+    a << args;
+    p->setArguments(a);
+
+    // Safety timeout: avoid hanging forever on slow nmcli/blocked sudo.
+    QTimer *killer = new QTimer(this);
+    killer->setSingleShot(true);
+    killer->setInterval(15000);
+    connect(killer, &QTimer::timeout, this, [p, onDone]() {
+        if (p->state() != QProcess::NotRunning) {
+            p->kill();
+            const QString out = QString::fromUtf8(p->readAllStandardOutput());
+            const QString err = QString::fromUtf8(p->readAllStandardError()) + "\n(timeout)";
+            if (onDone) onDone(124, out, err);
+        }
+    });
+
+    connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [p, onDone, killer](int exitCode, QProcess::ExitStatus /*status*/) {
+                if (killer->isActive()) killer->stop();
+                killer->deleteLater();
+                const QString out = QString::fromUtf8(p->readAllStandardOutput());
+                const QString err = QString::fromUtf8(p->readAllStandardError());
+                if (onDone) onDone(exitCode, out, err);
+                p->deleteLater();
+            });
+    p->start();
+    killer->start();
+}
+
+void MainWindow::requestNetStatus()
+{
+    runSudoAsync("/usr/local/sbin/net-mode.sh", {"status"},
+                 [this](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode != 0) {
+                         Logger::Log(("netStatus failed: " + err).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                         emit wsThread->sendMessageToClient("SendDebugMessage|Warning|netStatus failed");
+                         emit wsThread->sendMessageToClient("NetModeResult|status|fail|" + err.left(200));
+                         return;
+                     }
+                     const QString json = out.trimmed();
+                     emit wsThread->sendMessageToClient("NetStatus|" + json);
+                 });
+}
+
+void MainWindow::switchNetMode(const QString &mode)
+{
+    const QString m = mode.trimmed().toLower();
+    if (m != "ap" && m != "wan") {
+        emit wsThread->sendMessageToClient("NetModeResult|" + m + "|fail|invalid_mode");
+        return;
+    }
+
+    runSudoAsync("/usr/local/sbin/net-mode.sh", {m},
+                 [this, m](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode == 0) {
+                         emit wsThread->sendMessageToClient("NetModeResult|" + m + "|ok");
+                     } else {
+                         const QString detail = (err.isEmpty() ? out : err).trimmed();
+                         emit wsThread->sendMessageToClient("NetModeResult|" + m + "|fail|" + detail.left(200));
+                     }
+                     // Always refresh status after mode switch attempt
+                     QTimer::singleShot(500, this, [this]() { requestNetStatus(); });
+                 });
+}
+
+void MainWindow::wifiScan()
+{
+    // nmcli will output lines like: SSID:SIGNAL:SECURITY
+    // (If SSID contains ':', parsing may be imperfect; typical consumer SSID does not.)
+    runSudoAsync("/usr/bin/nmcli",
+                 {"-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "ifname", "wlan0", "--rescan", "yes"},
+                 [this](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode != 0) {
+                         Logger::Log(("wifiScan failed: " + err).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                         emit wsThread->sendMessageToClient("WiFiScan|[]");
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|scan|fail|" + err.left(200));
+                         return;
+                     }
+                     QJsonArray arr;
+                     const QStringList lines = out.split('\n', Qt::SkipEmptyParts);
+                     for (const QString &line : lines) {
+                         // SSID:SIGNAL:SECURITY
+                         const QStringList p = line.split(':');
+                         if (p.isEmpty()) continue;
+                         const QString ssid = p.value(0).trimmed();
+                         if (ssid.isEmpty()) continue;
+                         const int signal = p.value(1).trimmed().toInt();
+                         const QString sec = p.value(2).trimmed();
+                         QJsonObject o;
+                         o["ssid"] = ssid;
+                         o["signal"] = signal;
+                         o["security"] = sec;
+                         arr.append(o);
+                     }
+                     QJsonDocument doc(arr);
+                     const QString json = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+                     emit wsThread->sendMessageToClient("WiFiScan|" + json);
+                 });
+}
+
+void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
+{
+    const QByteArray decoded = QByteArray::fromBase64(b64Payload.toUtf8());
+    if (decoded.isEmpty()) {
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|bad_base64");
+        return;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(decoded);
+    if (!doc.isObject()) {
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|bad_json");
+        return;
+    }
+    const QJsonObject obj = doc.object();
+    const QString name = obj.value("name").toString("wan-uplink").trimmed();
+    const QString ssid = obj.value("ssid").toString().trimmed();
+    const QString psk  = obj.value("psk").toString();
+    if (name.isEmpty() || ssid.isEmpty() || psk.isEmpty()) {
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|need_name_ssid_psk");
+        return;
+    }
+
+    // Check if connection exists
+    runSudoAsync("/usr/bin/nmcli", {"-t", "-f", "NAME", "con", "show"},
+                 [this, name, ssid, psk](int exitCode, const QString &out, const QString &err) {
+                     if (exitCode != 0) {
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + err.left(200));
+                         return;
+                     }
+                     const QStringList names = out.split('\n', Qt::SkipEmptyParts);
+                     const bool exists = names.contains(name);
+
+                     auto finishOk = [this]() {
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|save|ok");
+                     };
+                     auto finishFail = [this](const QString &e) {
+                         emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + e.left(200));
+                     };
+
+                     if (!exists) {
+                         // add connection
+                         runSudoAsync("/usr/bin/nmcli",
+                                      {"con", "add", "type", "wifi", "ifname", "wlan0", "con-name", name, "ssid", ssid},
+                                      [this, name, ssid, psk, finishOk, finishFail](int codeAdd, const QString &outAdd, const QString &errAdd) {
+                                          if (codeAdd != 0) {
+                                              finishFail(errAdd.isEmpty() ? outAdd : errAdd);
+                                              return;
+                                          }
+                                          // set security + disable autoconnect
+                                          runSudoAsync("/usr/bin/nmcli",
+                                                       {"con", "modify", name,
+                                                        "wifi-sec.key-mgmt", "wpa-psk",
+                                                        "wifi-sec.psk", psk,
+                                                        "autoconnect", "no",
+                                                        "ipv6.method", "ignore"},
+                                                       [finishOk, finishFail](int codeMod, const QString &outMod, const QString &errMod) {
+                                                           if (codeMod == 0) finishOk();
+                                                           else finishFail(errMod.isEmpty() ? outMod : errMod);
+                                                       });
+                                      });
+                     } else {
+                         // modify existing connection
+                         runSudoAsync("/usr/bin/nmcli",
+                                      {"con", "modify", name,
+                                       "802-11-wireless.ssid", ssid,
+                                       "wifi-sec.key-mgmt", "wpa-psk",
+                                       "wifi-sec.psk", psk,
+                                       "autoconnect", "no",
+                                       "ipv6.method", "ignore"},
+                                      [finishOk, finishFail](int codeMod, const QString &outMod, const QString &errMod) {
+                                          if (codeMod == 0) finishOk();
+                                          else finishFail(errMod.isEmpty() ? outMod : errMod);
+                                      });
+                     }
+                 });
+}
+
 void MainWindow::initINDIServer()
 {
     Logger::Log("initINDIServer ...", LogLevel::INFO, DeviceType::MAIN);
@@ -4022,6 +4497,43 @@ void MainWindow::onGuiderLoopTimeout()
     if (!isGuiderLoopExp)
         return;
 
+#if QUARCS_SIM_GUIDER
+    if (simGuiderFrameSource)
+    {
+        if (guiderExposureInFlight)
+            return;
+
+        guiderExposureInFlight = true;
+        const int expMs = std::max(1, guiderExpMs);
+        const QString fitsPath = simGuiderFrameSource->generateNextFrame(expMs);
+        guiderExposureInFlight = false;
+
+        if (fitsPath.isEmpty() || !QFile::exists(fitsPath))
+        {
+            Logger::Log("onGuiderLoopTimeout | simulated guider frame generation failed",
+                        LogLevel::ERROR, DeviceType::GUIDER);
+            isGuiderLoopExp = false;
+            if (guiderLoopTimer)
+                guiderLoopTimer->stop();
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+            return;
+        }
+
+        if (guiderCore)
+        {
+            guiderCore->onNewFrame(fitsPath);
+        }
+        else
+        {
+            PersistGuidingFits(fitsPath);
+            if (isGuiderLoopExp && guiderLoopTimer)
+                guiderLoopTimer->start(1);
+        }
+        return;
+    }
+#endif
+
     const bool guiderSdk =
         (systemdevicelist.system_devices.size() > 1 &&
          systemdevicelist.system_devices[1].isSDKConnect &&
@@ -4403,8 +4915,9 @@ void MainWindow::onTimeout()
                                 Logger::Log("BuiltInGuider | pier side changed, force recalibrate after meridian flip.",
                                             LogLevel::INFO, DeviceType::GUIDER);
                                 emit wsThread->sendMessageToClient("GuiderCoreInfo:MeridianFlipDetected:Recalibrating");
+                                guiderCore->clearCachedCalibration();
                                 guiderCore->stopGuiding();
-                                guiderCore->startGuiding();
+                                guiderCore->startGuidingForceCalibrate();
                             }
                         }
                     }
@@ -14805,6 +15318,22 @@ void MainWindow::ControlGuideEx(int Direction, int Duration, const QString& sour
 {
     const std::string reqDir = GuideDirNameFromInt(Direction);
 
+#if QUARCS_SIM_GUIDER
+    if (simGuiderFrameSource)
+    {
+        guiding::PulseCommand cmd;
+        cmd.dir = static_cast<guiding::GuideDir>(Direction);
+        cmd.durationMs = std::max(0, Duration);
+        simGuiderFrameSource->injectPulse(cmd);
+
+        Logger::Log("GuidePulse TX | src=" + source.toStdString() +
+                        " | SIM inject dir=" + reqDir +
+                        " durationMs=" + std::to_string(cmd.durationMs),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        return;
+    }
+#endif
+
     if (!dpMount || !indi_Client)
     {
         Logger::Log("GuidePulse TX | src=" + source.toStdString() + " | ABORT (mount/client null) | dir=" + reqDir +
@@ -19196,23 +19725,33 @@ void MainWindow::RecoverySloveResul()
 void MainWindow::editHotspotName(QString newName)
 {
     Logger::Log("editHotspotName(" + newName.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
-    QString command = QString("echo 'quarcs' | sudo -S sed -i 's/^ssid=.*/ssid=%1/' /etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection").arg(newName);
+    const QString connectionName = "RaspBerryPi-WiFi";
 
-    Logger::Log("editHotspotName | command:" + command.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
+    // Use nmcli instead of editing system-connections file + hardcoded sudo password.
+    // Requires sudoers NOPASSWD for: nmcli connection modify/down/up on this connection.
     QProcess process;
-    process.start("bash", QStringList() << "-c" << command);
+    process.start("sudo", QStringList()
+                          << "nmcli" << "connection" << "modify"
+                          << connectionName
+                          << "802-11-wireless.ssid" << newName);
     process.waitForFinished();
 
+    const int exitCode = process.exitCode();
+    const QString out = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+    const QString err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    Logger::Log(("editHotspotName | nmcli modify exit=" + std::to_string(exitCode) +
+                 " out=" + out.toStdString() + " err=" + err.toStdString()),
+                LogLevel::INFO, DeviceType::MAIN);
+
+    // Refresh name by nmcli query
     QString HostpotName = getHotspotName();
     Logger::Log("editHotspotName | New Hotspot Name:" + HostpotName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-    if (HostpotName == newName)
+    if (exitCode == 0 && HostpotName == newName)
     {
         emit wsThread->sendMessageToClient("EditHotspotNameSuccess");
-        // restart NetworkManager
-        process.start("sudo systemctl restart NetworkManager");
-        process.waitForFinished();
+        // Restart hotspot connection to apply changes without restarting NetworkManager
+        restartHotspotWithDelay(10);
     }
     else
     {
@@ -19223,27 +19762,42 @@ void MainWindow::editHotspotName(QString newName)
 
 QString MainWindow::getHotspotName()
 {
+    const QString connectionName = "RaspBerryPi-WiFi";
+
+    // Prefer nmcli query (stable) over parsing the nmconnection file.
+    {
+        QProcess process;
+        process.start("sudo", QStringList()
+                              << "nmcli" << "-g" << "802-11-wireless.ssid"
+                              << "connection" << "show" << connectionName);
+        process.waitForFinished();
+        const QString ssid = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+        const QString err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        if (!ssid.isEmpty()) {
+            Logger::Log("getHotspotName | nmcli ssid:" + ssid.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+            return ssid;
+        }
+        if (!err.isEmpty()) {
+            Logger::Log("getHotspotName | nmcli error:" + err.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+
+    // Fallback: parse file (legacy)
     QProcess process;
     process.start("sudo", QStringList() << "cat" << "/etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection");
     process.waitForFinished();
-
-    // Get the command output
     QString output = process.readAllStandardOutput();
-    Logger::Log("getHotspotName | output:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("getHotspotName | file output:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-    // Look for the SSID configuration
     QString ssidPattern = "ssid=";
     int index = output.indexOf(ssidPattern);
     if (index != -1)
     {
         int start = index + ssidPattern.length();
         int end = output.indexOf("\n", start);
-        if (end == -1)
-            end = output.length();
-        return output.mid(start, end - start);
+        if (end == -1) end = output.length();
+        return output.mid(start, end - start).trimmed();
     }
-
-    // If SSID is not found, return a default value
     return "N/A";
 }
 
@@ -19262,21 +19816,17 @@ void MainWindow::restartHotspotWithDelay(int delaySeconds)
 
     // 先关闭当前热点
     {
-        QString command = QString("echo 'quarcs' | sudo -S nmcli connection down '%1'").arg(connectionName);
-        Logger::Log("restartHotspotWithDelay | down command:" + command.toStdString(),
-                    LogLevel::INFO, DeviceType::MAIN);
-
         QProcess process;
-        process.start("bash", QStringList() << "-c" << command);
+        process.start("sudo", QStringList() << "nmcli" << "connection" << "down" << connectionName);
         process.waitForFinished();
 
         QString output = process.readAllStandardOutput();
         QString errorOutput = process.readAllStandardError();
-        Logger::Log("restartHotspotWithDelay | down output:" + output.toStdString(),
+        Logger::Log("restartHotspotWithDelay | down output:" + output.trimmed().toStdString(),
                     LogLevel::INFO, DeviceType::MAIN);
         if (!errorOutput.isEmpty())
         {
-            Logger::Log("restartHotspotWithDelay | down error:" + errorOutput.toStdString(),
+            Logger::Log("restartHotspotWithDelay | down error:" + errorOutput.trimmed().toStdString(),
                         LogLevel::WARNING, DeviceType::MAIN);
         }
     }
@@ -19288,21 +19838,17 @@ void MainWindow::restartHotspotWithDelay(int delaySeconds)
         Logger::Log("restartHotspotWithDelay | starting hotspot again ...",
                     LogLevel::INFO, DeviceType::MAIN);
 
-        QString command = QString("echo 'quarcs' | sudo -S nmcli connection up '%1'").arg(connectionName);
-        Logger::Log("restartHotspotWithDelay | up command:" + command.toStdString(),
-                    LogLevel::INFO, DeviceType::MAIN);
-
         QProcess process;
-        process.start("bash", QStringList() << "-c" << command);
+        process.start("sudo", QStringList() << "nmcli" << "connection" << "up" << connectionName);
         process.waitForFinished();
 
         QString output = process.readAllStandardOutput();
         QString errorOutput = process.readAllStandardError();
-        Logger::Log("restartHotspotWithDelay | up output:" + output.toStdString(),
+        Logger::Log("restartHotspotWithDelay | up output:" + output.trimmed().toStdString(),
                     LogLevel::INFO, DeviceType::MAIN);
         if (!errorOutput.isEmpty())
         {
-            Logger::Log("restartHotspotWithDelay | up error:" + errorOutput.toStdString(),
+            Logger::Log("restartHotspotWithDelay | up error:" + errorOutput.trimmed().toStdString(),
                         LogLevel::WARNING, DeviceType::MAIN);
         }
 

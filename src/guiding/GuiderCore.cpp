@@ -304,97 +304,45 @@ void GuiderCore::startGuiding()
         m_lastGuideCentroid = m_lockPosPx;
         emit lockPositionChanged(m_lockPosPx);
         emit lockStarSelected(m_lockPosPx.x(), m_lockPosPx.y(), 0.0, 0.0);
-        // 若存在可复用校准且未要求强制校准，则跳过校准
-        if (!m_forceCalibrateNextStart)
-        {
-            QString reason;
-            if (canReuseLastCalibration(&reason))
-            {
-                m_calibResult = m_lastCalibration;
-                // 元数据更新为当前锁点与当前时间（便于前端显示/诊断）
-                m_calibResult.lockPosPx = m_lockPosPx;
-                m_calibResult.timestampMs = QDateTime::currentMSecsSinceEpoch();
-                emit calibrationResultChanged(m_calibResult);
-                emit infoMessage(QStringLiteral("已复用上次校准（%1），开始导星。").arg(reason));
-
-                // 复用校准后：仍可执行导星前 DEC 回差测量（与“校准后进入导星”的行为一致）
-                if (m_params.enableDecBacklashMeasure)
-                {
-                    setState(guiding::State::Calibrating);
-                    m_decBacklashMeasureActive = true;
-                    m_decBacklash.start(m_calibResult, m_params, m_lockPosPx);
-                    emit infoMessage(QStringLiteral("DEC 回差测量开始：先 NORTH 预加载到 %1px，再 SOUTH 探测回差...")
-                                         .arg(m_params.decBacklashNorthTargetPx, 0, 'f', 1));
-                    return; // 等待下一帧驱动回差测量
-                }
-
-                // 直接进入导星（复用校准）
-                if (m_params.autoDecGuideDir)
-                {
-                    m_decUniPolicyActive = true;
-                    m_decUniPolicyDecided = false;
-                    m_decUniLargeMove = false;
-                    m_decUniFrames = 0;
-                    m_decUniSum = 0.0;
-                    m_decUniSumSq = 0.0;
-                    m_decDriftSamples.clear();
-                    m_decDriftTimer.restart();
-
-                    m_quickDirectionDetectActive = true;
-                    emit directionDetectionStateChanged(true);
-
-                    auto newParams = m_params;
-                    newParams.allowedDecDirs.clear();
-                    newParams.allowedDecDirs.insert(guiding::GuideDir::North);
-                    newParams.allowedDecDirs.insert(guiding::GuideDir::South);
-                    m_params = newParams;
-                    emit paramsChanged();
-
-                    emit infoMessage(QStringLiteral("DEC 单向方向判定中：先双向收集数据，小漂移等 %1 帧后锁定；大漂移前 %2 帧快速锁定。")
-                                     .arg(m_params.decUniCollectFrames)
-                                     .arg(m_params.decUniInitialFrames));
-                }
-                else
-                {
-                    emit paramsChanged();
-                }
-
-                setState(guiding::State::Guiding);
-                m_lastGuideCentroid = m_lockPosPx;
-                m_guidingFrameCount = 0;
-                m_centroidFailCount = 0;
-                m_guidingDiagTimer.restart();
-                m_raGatedCount = 0;
-                m_decGatedCount = 0;
-                m_reselectAfterLostStar = false;
-
-                m_pulseEffActive = false;
-                m_pulseEffFramesLeft = 0;
-                m_pulseEffFailStreak = 0;
-                m_rms.reset(m_params.rmsWindowFrames);
-                m_rmsEmitCounter = 0;
-                return;
-            }
-            // 不能复用：按原因提示后重新校准
-            emit infoMessage(QStringLiteral("上次校准不可复用（%1），将重新校准。").arg(reason));
-        }
-
-        emit infoMessage(QStringLiteral("开始导星：使用手动选星点，进入校准阶段。"));
-        beginCalibrationFromLock();
+        startGuidingFromLock(true);
         return; // 校准由后续帧驱动
     }
-    emit infoMessage(QStringLiteral("开始导星：进入选星阶段。"));
+    QString reuseReason;
+    if (m_forceCalibrateNextStart)
+    {
+        emit infoMessage(QStringLiteral("开始导星：进入自动选星阶段。本次为强制重新校准。"));
+    }
+    else if (canReuseStartupSnapshot(&reuseReason))
+    {
+        emit infoMessage(QStringLiteral("开始导星：进入自动选星阶段。选星成功后将复用上次校准与DEC回差（%1）并直接开始导星。")
+                         .arg(reuseReason));
+    }
+    else
+    {
+        emit infoMessage(QStringLiteral("开始导星：进入自动选星阶段。"));
+    }
 }
 
 void GuiderCore::startGuidingForceCalibrate()
 {
+    clearCachedCalibration();
     m_forceCalibrateNextStart = true;
     startGuiding();
-    m_forceCalibrateNextStart = false;
+}
+
+void GuiderCore::clearCachedCalibration()
+{
+    m_hasLastCalibration = false;
+    m_lastCalibration = guiding::CalibrationResult{};
+    m_lastCalibrationCtx = CalibrationContext{};
+    m_hasLastBacklash = false;
+    m_lastBacklashMsBase = 0;
+    m_lastBacklashMsRuntime = 0;
 }
 
 void GuiderCore::stopGuiding()
 {
+    m_loopActive = false;
     if (m_state == guiding::State::Guiding || m_state == guiding::State::Calibrating || m_state == guiding::State::Selecting)
         setState(guiding::State::Stopped);
     // cancel any pending pulse/exposure timers
@@ -523,6 +471,124 @@ bool GuiderCore::canReuseLastCalibration(QString* reason) const
     return true;
 }
 
+bool GuiderCore::canReuseStartupSnapshot(QString* reason) const
+{
+    QString calibReason;
+    if (!canReuseLastCalibration(&calibReason))
+    {
+        if (reason) *reason = calibReason;
+        return false;
+    }
+
+    if (m_params.enableDecBacklashMeasure && !m_hasLastBacklash)
+    {
+        if (reason) *reason = QStringLiteral("无历史DEC回差");
+        return false;
+    }
+
+    if (reason) *reason = calibReason;
+    return true;
+}
+
+void GuiderCore::startGuidingFromLock(bool isManualLock)
+{
+    if (!m_hasLock)
+    {
+        emit errorOccurred(QStringLiteral("StartGuidingFromLockFailed:NoLock"));
+        setState(guiding::State::Error);
+        return;
+    }
+
+    const bool forceRecalibrate = m_forceCalibrateNextStart;
+    if (forceRecalibrate)
+    {
+        m_forceCalibrateNextStart = false;
+        emit infoMessage(QStringLiteral("本次为强制重新校准。"));
+        emit infoMessage(QStringLiteral("历史快照已清除，将重新校准。"));
+    }
+    else
+    {
+        QString reason;
+        if (canReuseStartupSnapshot(&reason))
+        {
+            m_calibResult = m_lastCalibration;
+            m_calibResult.lockPosPx = m_lockPosPx;
+            m_calibResult.timestampMs = QDateTime::currentMSecsSinceEpoch();
+            emit calibrationResultChanged(m_calibResult);
+
+            if (m_hasLastBacklash)
+            {
+                m_decBacklashMsBase = m_lastBacklashMsBase;
+                m_decBacklashMsRuntime = m_lastBacklashMsRuntime;
+                emit infoMessage(QStringLiteral("已复用上次校准与DEC回差（%1），直接开始导星。").arg(reason));
+            }
+            else
+            {
+                emit infoMessage(QStringLiteral("已复用上次校准（%1），直接开始导星。").arg(reason));
+            }
+
+            enterGuidingState();
+            return;
+        }
+
+        emit infoMessage(QStringLiteral("历史快照不可复用（%1），将重新校准。").arg(reason));
+    }
+
+    emit infoMessage(isManualLock
+                         ? QStringLiteral("开始导星：使用手动选星点，进入校准阶段。")
+                         : QStringLiteral("开始导星：自动选星完成，历史快照不可复用，进入校准阶段。"));
+    beginCalibrationFromLock();
+}
+
+void GuiderCore::enterGuidingState()
+{
+    if (m_params.autoDecGuideDir)
+    {
+        m_decUniPolicyActive = true;
+        m_decUniPolicyDecided = false;
+        m_decUniLargeMove = false;
+        m_decUniFrames = 0;
+        m_decUniSum = 0.0;
+        m_decUniSumSq = 0.0;
+        m_decDriftSamples.clear();
+        m_decDriftTimer.restart();
+
+        m_quickDirectionDetectActive = true;
+        emit directionDetectionStateChanged(true);
+
+        auto newParams = m_params;
+        newParams.allowedDecDirs.clear();
+        newParams.allowedDecDirs.insert(guiding::GuideDir::North);
+        newParams.allowedDecDirs.insert(guiding::GuideDir::South);
+        m_params = newParams;
+        emit paramsChanged();
+
+        emit infoMessage(QStringLiteral("DEC 单向方向判定中：先双向收集数据，小漂移等 %1 帧后锁定；大漂移前 %2 帧快速锁定。")
+                         .arg(m_params.decUniCollectFrames)
+                         .arg(m_params.decUniInitialFrames));
+    }
+    else
+    {
+        emit paramsChanged();
+    }
+
+    setState(guiding::State::Guiding);
+    m_lastGuideCentroid = m_lockPosPx;
+    m_guidingFrameCount = 0;
+    m_centroidFailCount = 0;
+    m_guidingDiagTimer.restart();
+    m_raGatedCount = 0;
+    m_decGatedCount = 0;
+    m_reselectAfterLostStar = false;
+
+    m_pulseEffActive = false;
+    m_pulseEffFramesLeft = 0;
+    m_pulseEffFailStreak = 0;
+    m_rms.reset(m_params.rmsWindowFrames);
+    m_rmsEmitCounter = 0;
+    m_decDriftDetectActive = false;
+}
+
 void GuiderCore::beginCalibrationFromLock()
 {
     // 前置条件：已锁星
@@ -577,8 +643,7 @@ void GuiderCore::startGuidingWithManualLock(double xPx, double yPx)
     emit lockPositionChanged(m_lockPosPx);
     emit lockStarSelected(xPx, yPx, 0.0, 0.0);
     emit infoMessage(QStringLiteral("手动选星：x=%1 y=%2").arg(xPx, 0, 'f', 2).arg(yPx, 0, 'f', 2));
-
-    beginCalibrationFromLock();
+    startGuidingFromLock(true);
 }
 
 void GuiderCore::onNewFrame(const QString& fitsPath)
@@ -613,7 +678,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                                  .arg(best->y, 0, 'f', 2)
                                  .arg(best->snr, 0, 'f', 1)
                                  .arg(best->hfd, 0, 'f', 2));
-                beginCalibrationFromLock();
+                startGuidingFromLock(false);
             }
         }
     }
@@ -703,6 +768,9 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_lastCalibrationCtx.guiderBinning = std::max(1, m_params.guiderBinning);
                 m_lastCalibrationCtx.guideSpeedSidereal = m_params.guideSpeedSidereal;
                 m_lastCalibrationCtx.imageScaleArcsecPerPixel = computeImageScaleArcsecPerPixel(m_params);
+                m_hasLastBacklash = false;
+                m_lastBacklashMsBase = 0;
+                m_lastBacklashMsRuntime = 0;
 
                 // ===== 校准质量硬门槛（不达标直接失败，室外更安全）=====
                 {
@@ -775,65 +843,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                     return;
                 }
 
-                // 进入导星前：先快速判断方向（如果当前是单向且需要确定方向）
-                // 如果启用了 AUTO 模式，会在后续进行完整的漂移检测
-                // 用户需求：DEC 单向策略（两种情况）
-                // - 导星开始先允许 DEC 双向，并开始收集数据
-                // - 若检测到 DEC 移动幅度大，则用前 N 帧快速锁定单向方向
-                // - 否则等待收集到足够数据后再锁定单向方向
-                if (m_params.autoDecGuideDir)
-                {
-                    m_decUniPolicyActive = true;
-                    m_decUniPolicyDecided = false;
-                    m_decUniLargeMove = false;
-                    m_decUniFrames = 0;
-                    m_decUniSum = 0.0;
-                    m_decUniSumSq = 0.0;
-                    m_decDriftSamples.clear();
-                    m_decDriftTimer.restart();
-
-                    // 兼容前端：仍用 directionDetectionStateChanged 展示“正在判向”
-                    m_quickDirectionDetectActive = true;
-                    emit directionDetectionStateChanged(true);
-
-                    // 进入判向期先临时允许 DEC 双向（不开启单向导星）
-                    auto newParams = m_params;
-                    newParams.allowedDecDirs.clear();
-                    newParams.allowedDecDirs.insert(guiding::GuideDir::North);
-                    newParams.allowedDecDirs.insert(guiding::GuideDir::South);
-                    m_params = newParams;
-                    emit paramsChanged();
-
-                    emit infoMessage(QStringLiteral("DEC 单向方向判定中：先双向收集数据，小漂移等 %1 帧后锁定；大漂移前 %2 帧快速锁定。")
-                                     .arg(m_params.decUniCollectFrames)
-                                     .arg(m_params.decUniInitialFrames));
-                }
-                else
-                {
-                    emit paramsChanged();
-                }
-
-                setState(guiding::State::Guiding);
-                // 导星起始：确保后续质心搜索从最新 lock 点附近开始
-                m_lastGuideCentroid = m_lockPosPx;
-                m_guidingFrameCount = 0;
-                m_centroidFailCount = 0;
-                m_guidingDiagTimer.restart();
-                // 重置自动调整计数器
-                m_raGatedCount = 0;
-                m_decGatedCount = 0;
-                m_reselectAfterLostStar = false;
-
-                // reset pulse-effect + RMS
-                m_pulseEffActive = false;
-                m_pulseEffFramesLeft = 0;
-                m_pulseEffFailStreak = 0;
-                m_rms.reset(m_params.rmsWindowFrames);
-                m_rmsEmitCounter = 0;
-
-                // 若启用自动 RA/DEC 单向方向：启动"漂移检测窗口"（在快速检测完成后）
-                // 注意：检测窗口期间临时允许双向（以便检测真实漂移），检测完成后自动锁定为单向
-                m_decDriftDetectActive = false; // DEC 漂移检测（旧逻辑）不再使用，改由 decUniPolicy 的数据收集判定完成
+                enterGuidingState();
             }
         }
     }
@@ -890,6 +900,9 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                     {
                         m_decBacklashMsBase = std::max(0, r.backlashMs);
                         m_decBacklashMsRuntime = m_decBacklashMsBase;
+                        m_hasLastBacklash = true;
+                        m_lastBacklashMsBase = m_decBacklashMsBase;
+                        m_lastBacklashMsRuntime = m_decBacklashMsRuntime;
                         emit infoMessage(QStringLiteral("DEC 回差测量结果：backlash=%1ms（后续导星将使用/可自适应调整）")
                                              .arg(m_decBacklashMsBase));
                     }
@@ -899,47 +912,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                     m_lockPosPx = m_lastGuideCentroid;
                     emit lockPositionChanged(m_lockPosPx);
 
-                    // 回差测量完成后，进入导星（沿用原逻辑）
-                    if (m_params.autoDecGuideDir)
-                    {
-                        m_decUniPolicyActive = true;
-                        m_decUniPolicyDecided = false;
-                        m_decUniLargeMove = false;
-                        m_decUniFrames = 0;
-                        m_decUniSum = 0.0;
-                        m_decUniSumSq = 0.0;
-                        m_decDriftSamples.clear();
-                        m_decDriftTimer.restart();
-
-                        m_quickDirectionDetectActive = true;
-                        emit directionDetectionStateChanged(true);
-
-                        auto newParams = m_params;
-                        newParams.allowedDecDirs.clear();
-                        newParams.allowedDecDirs.insert(guiding::GuideDir::North);
-                        newParams.allowedDecDirs.insert(guiding::GuideDir::South);
-                        m_params = newParams;
-                        emit paramsChanged();
-
-                        emit infoMessage(QStringLiteral("DEC 单向方向判定中：先双向收集数据，小漂移等 %1 帧后锁定；大漂移前 %2 帧快速锁定。")
-                                         .arg(m_params.decUniCollectFrames)
-                                         .arg(m_params.decUniInitialFrames));
-                    }
-                    else
-                    {
-                        emit paramsChanged();
-                    }
-
-                    setState(guiding::State::Guiding);
-                    // 导星起始：以最新 lockPos 作为质心搜索起点
-                    m_lastGuideCentroid = m_lockPosPx;
-                    m_guidingFrameCount = 0;
-                    m_centroidFailCount = 0;
-                    m_guidingDiagTimer.restart();
-                    m_raGatedCount = 0;
-                    m_decGatedCount = 0;
-
-                    m_decDriftDetectActive = false;
+                    enterGuidingState();
                 }
             }
             else
