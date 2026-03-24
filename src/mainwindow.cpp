@@ -82,6 +82,44 @@ static QVector<QString>         g_sdkQhyCamIds;         // SDK 相机 ID 池（�
 static int                      g_sdkMainCameraPoolIndex = -1;  // 当前分配给 MainCamera 的池索引（-1 表示未分配）
 static int                      g_sdkGuiderPoolIndex = -1;      // 当前分配给 Guider 的池索引（-1 表示未分配）
 
+namespace {
+struct SyncCommandResult {
+    int exitCode = -1;
+    QString out;
+    QString err;
+    bool finished = false;
+};
+
+SyncCommandResult runCommandSync(const QString &program, const QStringList &args, int timeoutMs = 3000)
+{
+    QProcess process;
+    process.start(program, args);
+    if (!process.waitForStarted(timeoutMs)) {
+        return {-1, QString(), process.errorString(), false};
+    }
+    if (!process.waitForFinished(timeoutMs)) {
+        process.kill();
+        process.waitForFinished(1000);
+        return {124,
+                QString::fromUtf8(process.readAllStandardOutput()).trimmed(),
+                QString::fromUtf8(process.readAllStandardError()).trimmed() + "\n(timeout)",
+                false};
+    }
+    return {process.exitCode(),
+            QString::fromUtf8(process.readAllStandardOutput()).trimmed(),
+            QString::fromUtf8(process.readAllStandardError()).trimmed(),
+            true};
+}
+
+SyncCommandResult runSudoSync(const QString &program, const QStringList &args, int timeoutMs = 3000)
+{
+    QStringList sudoArgs;
+    sudoArgs << "-n" << program;
+    sudoArgs << args;
+    return runCommandSync("sudo", sudoArgs, timeoutMs);
+}
+}
+
 // 索引转换辅助函数
 static inline int sdkUiIndexFromPoolIndex(int poolIndex)
 {
@@ -19727,18 +19765,15 @@ void MainWindow::editHotspotName(QString newName)
     Logger::Log("editHotspotName(" + newName.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
     const QString connectionName = "RaspBerryPi-WiFi";
 
-    // Use nmcli instead of editing system-connections file + hardcoded sudo password.
-    // Requires sudoers NOPASSWD for: nmcli connection modify/down/up on this connection.
-    QProcess process;
-    process.start("sudo", QStringList()
-                          << "nmcli" << "connection" << "modify"
-                          << connectionName
-                          << "802-11-wireless.ssid" << newName);
-    process.waitForFinished();
-
-    const int exitCode = process.exitCode();
-    const QString out = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-    const QString err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    // Remote control is optional. When sudoers is not configured, fail fast instead of
+    // blocking the Qt backend on a password prompt.
+    const SyncCommandResult result = runSudoSync("/usr/bin/nmcli",
+                                                 {"connection", "modify",
+                                                  connectionName,
+                                                  "802-11-wireless.ssid", newName});
+    const int exitCode = result.exitCode;
+    const QString out = result.out;
+    const QString err = result.err;
     Logger::Log(("editHotspotName | nmcli modify exit=" + std::to_string(exitCode) +
                  " out=" + out.toStdString() + " err=" + err.toStdString()),
                 LogLevel::INFO, DeviceType::MAIN);
@@ -19766,13 +19801,11 @@ QString MainWindow::getHotspotName()
 
     // Prefer nmcli query (stable) over parsing the nmconnection file.
     {
-        QProcess process;
-        process.start("sudo", QStringList()
-                              << "nmcli" << "-g" << "802-11-wireless.ssid"
-                              << "connection" << "show" << connectionName);
-        process.waitForFinished();
-        const QString ssid = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-        const QString err = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        const SyncCommandResult result = runSudoSync("/usr/bin/nmcli",
+                                                     {"-g", "802-11-wireless.ssid",
+                                                      "connection", "show", connectionName});
+        const QString ssid = result.out;
+        const QString err = result.err;
         if (!ssid.isEmpty()) {
             Logger::Log("getHotspotName | nmcli ssid:" + ssid.toStdString(), LogLevel::INFO, DeviceType::MAIN);
             return ssid;
@@ -19782,11 +19815,16 @@ QString MainWindow::getHotspotName()
         }
     }
 
-    // Fallback: parse file (legacy)
-    QProcess process;
-    process.start("sudo", QStringList() << "cat" << "/etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection");
-    process.waitForFinished();
-    QString output = process.readAllStandardOutput();
+    // Fallback: parse file directly when readable. If permissions are insufficient,
+    // keep returning "N/A" so AP mode / Qt startup remain unaffected.
+    QFile file("/etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection");
+    QString output;
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        output = QString::fromUtf8(file.readAll());
+    } else {
+        Logger::Log("getHotspotName | file open failed:" + file.errorString().toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
+    }
     Logger::Log("getHotspotName | file output:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     QString ssidPattern = "ssid=";
@@ -19816,17 +19854,13 @@ void MainWindow::restartHotspotWithDelay(int delaySeconds)
 
     // 先关闭当前热点
     {
-        QProcess process;
-        process.start("sudo", QStringList() << "nmcli" << "connection" << "down" << connectionName);
-        process.waitForFinished();
-
-        QString output = process.readAllStandardOutput();
-        QString errorOutput = process.readAllStandardError();
-        Logger::Log("restartHotspotWithDelay | down output:" + output.trimmed().toStdString(),
+        const SyncCommandResult result = runSudoSync("/usr/bin/nmcli",
+                                                     {"connection", "down", connectionName});
+        Logger::Log("restartHotspotWithDelay | down output:" + result.out.toStdString(),
                     LogLevel::INFO, DeviceType::MAIN);
-        if (!errorOutput.isEmpty())
+        if (!result.err.isEmpty())
         {
-            Logger::Log("restartHotspotWithDelay | down error:" + errorOutput.trimmed().toStdString(),
+            Logger::Log("restartHotspotWithDelay | down error:" + result.err.toStdString(),
                         LogLevel::WARNING, DeviceType::MAIN);
         }
     }
@@ -19838,17 +19872,13 @@ void MainWindow::restartHotspotWithDelay(int delaySeconds)
         Logger::Log("restartHotspotWithDelay | starting hotspot again ...",
                     LogLevel::INFO, DeviceType::MAIN);
 
-        QProcess process;
-        process.start("sudo", QStringList() << "nmcli" << "connection" << "up" << connectionName);
-        process.waitForFinished();
-
-        QString output = process.readAllStandardOutput();
-        QString errorOutput = process.readAllStandardError();
-        Logger::Log("restartHotspotWithDelay | up output:" + output.trimmed().toStdString(),
+        const SyncCommandResult result = runSudoSync("/usr/bin/nmcli",
+                                                     {"connection", "up", connectionName});
+        Logger::Log("restartHotspotWithDelay | up output:" + result.out.toStdString(),
                     LogLevel::INFO, DeviceType::MAIN);
-        if (!errorOutput.isEmpty())
+        if (!result.err.isEmpty())
         {
-            Logger::Log("restartHotspotWithDelay | up error:" + errorOutput.trimmed().toStdString(),
+            Logger::Log("restartHotspotWithDelay | up error:" + result.err.toStdString(),
                         LogLevel::WARNING, DeviceType::MAIN);
         }
 

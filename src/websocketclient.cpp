@@ -371,7 +371,9 @@ void WebSocketClient::onTextMessageReceived(QString message)
     // qDebug() << "Message received:" << message;
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
     QJsonObject messageObj = doc.object();
-    if (messageObj["type"].toString() == "Vue_Command" || messageObj["type"].toString() == "Process_Command" )
+    if (messageObj["type"].toString() == "Vue_Command" ||
+        messageObj["type"].toString() == "Process_Command" ||
+        messageObj["type"].toString() == "Process_Command_Return")
     {
         // 处理命令
         emit messageReceived(messageObj["message"].toString());
