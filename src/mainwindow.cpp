@@ -5494,14 +5494,14 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     Tools::SaveMatToFITS(image16);
     Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
 
-    const cv::Mat& tileSourceImage = image16;
+    // 软件 bin 后图仅用于另一路 FITS 保存；瓦片源统一使用原图，避免在瓦片构建前提前合并。
+    const cv::Mat& tileSourceImage = originalImage16;
 
-    // 主画面瓦片与预览链路保持一致：若启用了软件 bin，则使用 bin 后图作为瓦片源与前端坐标系。
     const int width = tileSourceImage.cols;
     const int height = tileSourceImage.rows;
     Logger::Log("MainCameraSize (tile source) dimensions: " + std::to_string(width) + "x" + std::to_string(height), LogLevel::INFO, DeviceType::CAMERA);
     emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
-    emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(binningFactor));
+    emit wsThread->sendMessageToClient("MainCameraBinning:1");
 
     if (tileSourceImage.empty())
     {
@@ -5539,9 +5539,6 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
 
     // 计算 GPM，并为前端白平衡/直方图面板同步生成 histogram 文件
     int maxMergeFactor = 16;
-    if (ProcessBin) {
-        maxMergeFactor = binningFactor;
-    }
     TileGPM gpm = calculateGPM(tileSourceImage, localCameraCFA, maxMergeFactor, /*enableHistogram=*/true);
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
