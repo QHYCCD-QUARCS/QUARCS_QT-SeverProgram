@@ -1006,6 +1006,15 @@ public:
     int pendingRoiX = 0;
     int pendingRoiY = 0;
 
+    /** FocusingLooping 在真正下发曝光前记录：与当前帧 FITS/.bin 像素对应的传感器 ROI 原点（scaled 空间）及坐标系倍率 */
+    bool lastFocusExposureSnapshotValid = false;
+    int lastFocusExposureScaledX = 0;
+    int lastFocusExposureScaledY = 0;
+    int lastFocusExposureRoiCoordScale = 1;
+    /** 本次曝光请求的 ROI 宽高（传感器像素，与 SetResolution/setCCDFrameInfo 一致）；用于全幅 FITS 下裁剪 .bin */
+    int lastFocusExposureRoiW = 0;
+    int lastFocusExposureRoiH = 0;
+
     /**
      * @brief 启动自动对焦流程
      */
