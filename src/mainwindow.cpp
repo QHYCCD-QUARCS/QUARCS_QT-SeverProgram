@@ -130,6 +130,8 @@ static inline int sdkUiIndexFromPoolIndex(int poolIndex)
 // 约定：相机池使用 [-1, -2, ...]；固定设备从 -10000 往下分配。
 static constexpr int SDK_FOCUSER_UI_INDEX = -10001;
 
+static constexpr int kIndiFocuserRelMoveChunkMax = 10000;
+
 static inline int sdkPoolIndexFromUiIndex(int uiIndex)
 {
     return -uiIndex - 1;
@@ -1175,18 +1177,20 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts.size() == 2 && parts[0].trimmed() == "focusMove")
     {
         Logger::Log("focuser to " + parts[1].trimmed().toStdString() + " move ", LogLevel::DEBUG, DeviceType::FOCUSER);
-        QString LR = parts[1].trimmed();
-        // int Steps = parts[2].trimmed().toInt();
-        if (LR == "Left")
+        const QString direction = parts[1].trimmed().toLower();
+        const bool isLeftDir =
+            (direction == "left" || direction == "inward" || direction == "in" || direction == "l");
+        const bool isRightDir =
+            (direction == "right" || direction == "outward" || direction == "out" || direction == "r");
+
+        if (isLeftDir)
         {
             Logger::Log("focuser to Left move ", LogLevel::INFO, DeviceType::FOCUSER);
             FocuserControlMove(true);
-            // FocusMoveAndCalHFR(true,Steps);
         }
-        else if (LR == "Right")
+        else if (isRightDir)
         {
             Logger::Log("focuser to Right move ", LogLevel::INFO, DeviceType::FOCUSER);
-            // FocusMoveAndCalHFR(false,Steps);
             FocuserControlMove(false);
         }
         // else if(LR == "Target")
@@ -1196,18 +1200,20 @@ void MainWindow::onMessageReceived(const QString &message)
     }else if (parts.size() == 3 && parts[0].trimmed() == "focusMoveStep")
     {
         Logger::Log("focuser to " + parts[1].trimmed().toStdString() + " move " + parts[2].trimmed().toStdString() + " steps", LogLevel::DEBUG, DeviceType::FOCUSER);
-        QString LR = parts[1].trimmed();
+        const QString direction = parts[1].trimmed().toLower();
+        const bool isLeftDir =
+            (direction == "left" || direction == "inward" || direction == "in" || direction == "l");
         int Steps = parts[2].trimmed().toInt();
         // 单步执行时，如果上一次移动已完成，允许立即执行新的单步
         // 注意：防抖机制会阻止完全相同的命令，但不同步数的命令应该可以执行
-        FocuserControlMoveStep(LR == "Left", Steps);
+        FocuserControlMoveStep(isLeftDir, Steps);
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "getFocuserMoveState")
     {
-        if (isFocusMoveDone && parts[1].trimmed() == "true")
+        if (isFocusMoveDone)
         {
-            focusMoveEndTime = 2;
+            focusMoveEndTime = 6;
         }
     }
     else if (parts[0].trimmed() == "focusMoveStop" && parts.size() == 2)
@@ -15726,8 +15732,7 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
                     }
                     else
                     {
-                        // 保持与原逻辑一致（注意：这里原代码也写成了 focuserMinPosition）
-                        newTarget = minSnap;
+                        newTarget = maxSnap;
                     }
                     if (steps <= 0)
                     {
@@ -15839,6 +15844,30 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
     // INDI 模式：保持原逻辑
     Logger::Log("HandleFocuserMovementDataPeriodically | INDI Mode", LogLevel::DEBUG, DeviceType::FOCUSER);
     CurrentPosition = FocuserControl_getPosition();
+    if (focuserIndiNeedResyncTarget)
+    {
+        TargetPosition = CurrentPosition;
+        focuserIndiNeedResyncTarget = false;
+    }
+    if (CurrentPosition != TargetPosition)
+    {
+        if (focuserIndiHaveLastPollPos && focuserIndiLastPollPos == CurrentPosition)
+            focuserIndiStallCount++;
+        else
+            focuserIndiStallCount = 0;
+        focuserIndiLastPollPos = CurrentPosition;
+        focuserIndiHaveLastPollPos = true;
+        if (focuserIndiStallCount >= 2)
+        {
+            TargetPosition = CurrentPosition;
+            focuserIndiStallCount = 0;
+        }
+    }
+    else
+    {
+        focuserIndiStallCount = 0;
+        focuserIndiHaveLastPollPos = false;
+    }
     emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
 
     const bool isInward = this->currentDirection;
@@ -15852,9 +15881,9 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
         if (CurrentPosition == TargetPosition)
         {
             int steps = CurrentPosition - focuserMinPosition;
-            if (steps > 60000)
+            if (steps > kIndiFocuserRelMoveChunkMax)
             {
-                steps = 60000;
+                steps = kIndiFocuserRelMoveChunkMax;
                 TargetPosition = CurrentPosition - steps;
             }
             else
@@ -15880,9 +15909,9 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
         if (TargetPosition == CurrentPosition)
         {
             int steps = focuserMaxPosition - CurrentPosition;
-            if (steps > 60000)
+            if (steps > kIndiFocuserRelMoveChunkMax)
             {
-                steps = 60000;
+                steps = kIndiFocuserRelMoveChunkMax;
                 TargetPosition = CurrentPosition + steps;
             }
             else
@@ -15947,9 +15976,9 @@ void MainWindow::FocuserControlMove(bool isInward)
         sdkFocuserPosTaskInFlight = false;
     }
     
-    focusMoveEndTime = 2;
+    focusMoveEndTime = 6;
     isFocusMoveDone = true;
-    
+
     // 在移动前读取位置
     if (dpFocuser != NULL)
     {
@@ -15969,6 +15998,12 @@ void MainWindow::FocuserControlMove(bool isInward)
     }
     TargetPosition = CurrentPosition;
     startPosition = CurrentPosition;
+    if (dpFocuser != nullptr)
+    {
+        focuserIndiNeedResyncTarget = true;
+        focuserIndiStallCount = 0;
+        focuserIndiHaveLastPollPos = false;
+    }
     
     Logger::Log("FocuserControlMove | Init Position - CurrentPosition: " + std::to_string(CurrentPosition) + 
                 ", TargetPosition: " + std::to_string(TargetPosition) + 
@@ -15976,12 +16011,14 @@ void MainWindow::FocuserControlMove(bool isInward)
                 LogLevel::DEBUG, DeviceType::FOCUSER);
     if (CurrentPosition >= focuserMaxPosition && !isInward)
     {
+        focuserIndiNeedResyncTarget = false;
         emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
         focusMoveTimer->stop();
         return;
     }
     else if (CurrentPosition <= focuserMinPosition && isInward)
     {
+        focuserIndiNeedResyncTarget = false;
         emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
         focusMoveTimer->stop();
         return;
@@ -25514,8 +25551,7 @@ void MainWindow::focusMoveToMin()
     CurrentPosition = FocuserControl_getPosition();
     emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
 
-    // 向最小位置移动（分段 60000）
-    int steps = std::min(std::max(0, CurrentPosition - min), 60000);
+    int steps = std::min(std::max(0, CurrentPosition - min), kIndiFocuserRelMoveChunkMax);
     Logger::Log("focusMoveToMin | Moving to minimum position: " + std::to_string(min) + " with steps: " + std::to_string(steps), LogLevel::INFO, DeviceType::FOCUSER);
     if (steps <= 0)
     {
@@ -25566,7 +25602,7 @@ void MainWindow::focusMoveToMin()
         CurrentPosition = FocuserControl_getPosition();
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         if (CurrentPosition == TargetPosition){
-            int steps = std::min(std::max(0, CurrentPosition - min), 60000);
+            int steps = std::min(std::max(0, CurrentPosition - min), kIndiFocuserRelMoveChunkMax);
             if (steps <= 0)
             {
                 // Reached the minimum limit
@@ -25712,7 +25748,7 @@ void MainWindow::focusMoveToMax()
         max = 64000;
     }
 
-    int steps = std::min(std::max(0, max - CurrentPosition), 60000);
+    int steps = std::min(std::max(0, max - CurrentPosition), kIndiFocuserRelMoveChunkMax);
     if (steps <= 0)
     {
         emit wsThread->sendMessageToClient("focusMoveFailed:already at maximum or invalid range");
@@ -25767,7 +25803,7 @@ void MainWindow::focusMoveToMax()
         CurrentPosition = FocuserControl_getPosition();
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         if (CurrentPosition == TargetPosition){
-            int steps = std::min(std::max(0, max-CurrentPosition),60000);
+            int steps = std::min(std::max(0, max - CurrentPosition), kIndiFocuserRelMoveChunkMax);
             if (steps <= 0)
             {
                 // Reached the maximum limit
