@@ -1008,8 +1008,12 @@ public:
 
     /** FocusingLooping 在真正下发曝光前记录：与当前帧 FITS/.bin 像素对应的传感器 ROI 原点（scaled 空间）及坐标系倍率 */
     bool lastFocusExposureSnapshotValid = false;
+    /** 对焦快照：ROI 起点在「有效区坐标系」下的缩放坐标（× binning 后，相对有效区原点），与前端 ROI_x/y 语义一致 */
     int lastFocusExposureScaledX = 0;
     int lastFocusExposureScaledY = 0;
+    /** 与 scaled 相加得到全幅/芯片缓冲中的裁剪起点；无有效区信息时为 0 */
+    int lastFocusExposureEffMinX = 0;
+    int lastFocusExposureEffMinY = 0;
     int lastFocusExposureRoiCoordScale = 1;
     /** 本次曝光请求的 ROI 宽高（传感器像素，与 SetResolution/setCCDFrameInfo 一致）；用于全幅 FITS 下裁剪 .bin */
     int lastFocusExposureRoiW = 0;

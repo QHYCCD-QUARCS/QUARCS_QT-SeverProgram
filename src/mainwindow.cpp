@@ -13476,7 +13476,7 @@ void MainWindow::FocusingLooping()
                     emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
                     Logger::Log("FocusingLooping | SDK ChipInfo loaded on-demand: " +
                                 std::to_string(glMainCCDSizeX) + "x" + std::to_string(glMainCCDSizeY),
-                                LogLevel::INFO, DeviceType::FOCUSER);
+                                LogLevel::DEBUG, DeviceType::FOCUSER);
                 } catch (const std::bad_any_cast&) {
                     // ignore, will fail below
                 }
@@ -13494,11 +13494,42 @@ void MainWindow::FocusingLooping()
         }
 
         QSize cameraResolution{glMainCCDSizeX, glMainCCDSizeY};
+        // SDK：GetEffectiveArea 得到有效区在芯片上的偏移与尺寸；ROI_x/y 与前端一致为「仅有效区内」相对坐标（原点在有效区左上角）
+        int effMinX = 0;
+        int effMinY = 0;
+        int effW = glMainCCDSizeX;
+        int effH = glMainCCDSizeY;
+        if (isMainCameraSDK && sdkMainCameraHandle != nullptr) {
+            SdkCommand effCmd;
+            effCmd.type = SdkCommandType::Custom;
+            effCmd.name = "GetEffectiveArea";
+            effCmd.payload = std::any();
+            SdkResult effRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, effCmd);
+            if (effRes.success) {
+                try {
+                    SdkAreaInfo eff = std::any_cast<SdkAreaInfo>(effRes.payload);
+                    if (eff.sizeX > 0U && eff.sizeY > 0U) {
+                        effMinX = static_cast<int>(eff.startX);
+                        effMinY = static_cast<int>(eff.startY);
+                        effW = static_cast<int>(eff.sizeX);
+                        effH = static_cast<int>(eff.sizeY);
+                        Logger::Log("FocusingLooping | GetEffectiveArea: start=(" + std::to_string(effMinX) + "," +
+                                    std::to_string(effMinY) + ") size=(" + std::to_string(effW) + "x" + std::to_string(effH) + ")",
+                                    LogLevel::DEBUG, DeviceType::FOCUSER);
+                    }
+                } catch (const std::bad_any_cast&) {
+                }
+            }
+        }
         // 使用局部变量，避免把全局 BoxSideLength 夹成 0（会导致后续一直 0x0 ROI）
         int roiBox = BoxSideLength;
         if (roiBox <= 0) roiBox = 300;
-        if (roiBox > glMainCCDSizeX) roiBox = glMainCCDSizeX;
-        if (roiBox > glMainCCDSizeY) roiBox = glMainCCDSizeY;
+        {
+            const int capW = std::min(glMainCCDSizeX, effW);
+            const int capH = std::min(glMainCCDSizeY, effH);
+            if (roiBox > capW) roiBox = capW;
+            if (roiBox > capH) roiBox = capH;
+        }
         if (roiBox < 2) roiBox = 2; // 最小 2，便于后续偶数对齐
         QSize ROI{roiBox, roiBox};
 
@@ -13510,22 +13541,19 @@ void MainWindow::FocusingLooping()
         if (cameraX % 2 != 0) cameraX += 1;
         if (cameraY % 2 != 0) cameraY += 1;
 
-        // 坐标体系：
-        // - 瓦片模式：与前端 App.vue 一致，ROI_x/y 为传感器像素（全幅逻辑坐标），不再乘预览软 bin。
-        // - 非瓦片模式：ROI_x/y 为预览/硬件 bin 后坐标，乘以 glMainCameraBinning 映射到传感器像素。
+        // 坐标体系：ROI_x/y 为「有效成像区」内坐标（相对有效区原点），乘 binning 得 scaledX/Y（仍在相对空间，范围 [0, effW-w]）
         const bool tileModeActive = (isStagingImage && !SavedImage.empty());
         const int roiCoordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
 
-        // 使用缩放坐标（必要时乘以 binning）并在缩放空间内裁剪，允许等于边界
         int scaledX = cameraX * roiCoordScale;
         int scaledY = cameraY * roiCoordScale;
         if (scaledX < 0) scaledX = 0;
         if (scaledY < 0) scaledY = 0;
         ROI = QSize(roiBox, roiBox);
-        if (scaledX > glMainCCDSizeX - ROI.width()) scaledX = glMainCCDSizeX - ROI.width();
-        if (scaledY > glMainCCDSizeY - ROI.height()) scaledY = glMainCCDSizeY - ROI.height();
+        if (scaledX > effW - ROI.width()) scaledX = effW - ROI.width();
+        if (scaledY > effH - ROI.height()) scaledY = effH - ROI.height();
 
-        if (scaledX <= glMainCCDSizeX - ROI.width() && scaledY <= glMainCCDSizeY - ROI.height())
+        if (scaledX <= effW - ROI.width() && scaledY <= effH - ROI.height())
         {
             Logger::Log("FocusingLooping | set Camera ROI x:" + std::to_string(cameraX) + ", y:" + std::to_string(cameraY) + ", width:" + std::to_string(roiBox) + ", height:" + std::to_string(roiBox), LogLevel::DEBUG, DeviceType::FOCUSER);
             // 将裁剪后的坐标反馈给前端，统一回到“当前预览坐标系”。
@@ -13547,35 +13575,44 @@ void MainWindow::FocusingLooping()
                     SdkManager::instance().callByHandle(sdkMainCameraHandle, cancelCmd);
                 }
 
-                // 1. 设置 ROI（部分机型要求 ROI 起点/宽高为偶数，这里统一对齐）
+                // 1. 设置 ROI（部分机型要求 ROI 起点/宽高为偶数；芯片坐标 = 有效区偏移 + 相对坐标）
                 int roiW = roiBox;
                 int roiH = roiBox;
                 if (roiW % 2 != 0) roiW += 1;
                 if (roiH % 2 != 0) roiH += 1;
-                if (roiW > glMainCCDSizeX) roiW = glMainCCDSizeX;
-                if (roiH > glMainCCDSizeY) roiH = glMainCCDSizeY;
-                if (scaledX % 2 != 0) scaledX = std::max(0, scaledX - 1);
-                if (scaledY % 2 != 0) scaledY = std::max(0, scaledY - 1);
-                if (scaledX > glMainCCDSizeX - roiW) scaledX = glMainCCDSizeX - roiW;
-                if (scaledY > glMainCCDSizeY - roiH) scaledY = glMainCCDSizeY - roiH;
+                if (roiW > effW) roiW = effW;
+                if (roiH > effH) roiH = effH;
+                if ((effMinX + scaledX) % 2 != 0) scaledX = std::max(0, scaledX - 1);
+                if ((effMinY + scaledY) % 2 != 0) scaledY = std::max(0, scaledY - 1);
+                if (scaledX > effW - roiW) scaledX = effW - roiW;
+                if (scaledY > effH - roiH) scaledY = effH - roiH;
+                if (scaledX < 0) scaledX = 0;
+                if (scaledY < 0) scaledY = 0;
+
+                const int sensorStartX = effMinX + scaledX;
+                const int sensorStartY = effMinY + scaledY;
 
                 lastFocusExposureSnapshotValid = true;
                 lastFocusExposureScaledX = scaledX;
                 lastFocusExposureScaledY = scaledY;
+                lastFocusExposureEffMinX = effMinX;
+                lastFocusExposureEffMinY = effMinY;
                 lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
                 lastFocusExposureRoiW = roiW;
                 lastFocusExposureRoiH = roiH;
 
                 SdkAreaInfo roi;
-                roi.startX = scaledX;
-                roi.startY = scaledY;
-                roi.sizeX = roiW;
-                roi.sizeY = roiH;
+                roi.startX = static_cast<unsigned int>(sensorStartX);
+                roi.startY = static_cast<unsigned int>(sensorStartY);
+                roi.sizeX = static_cast<unsigned int>(roiW);
+                roi.sizeY = static_cast<unsigned int>(roiH);
                 
                 SdkCommand setRoiCmd;
                 setRoiCmd.type = SdkCommandType::Custom;
                 setRoiCmd.name = "SetResolution";
                 setRoiCmd.payload = roi;
+                Logger::Log("FocusingLooping | SDK SetResolution | start=(" + std::to_string(roi.startX) + "," + std::to_string(roi.startY) + ") size=(" + std::to_string(roi.sizeX) + "x" + std::to_string(roi.sizeY) + ")",
+                            LogLevel::DEBUG, DeviceType::FOCUSER);
                 // 直接通过设备句柄调用，无需指定驱动名称
                 SdkResult roiRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setRoiCmd);
                 if (!roiRes.success) {
@@ -13584,7 +13621,6 @@ void MainWindow::FocusingLooping()
                     glMainCameraStatu = "IDLE";
                     return;
                 }
-                Logger::Log("FocusingLooping | SDK SetResolution success", LogLevel::DEBUG, DeviceType::FOCUSER);
                 
                 // 2. 设置曝光时间（微秒）
                 SdkCommand setExpCmd;
@@ -13627,15 +13663,21 @@ void MainWindow::FocusingLooping()
             }
             else
             {
-                // === INDI 模式 ===
+                // === INDI 模式 ===（未取 GetEffectiveArea 时 effMin=0，相对坐标即芯片坐标）
+                const int indiX = effMinX + scaledX;
+                const int indiY = effMinY + scaledY;
                 lastFocusExposureSnapshotValid = true;
                 lastFocusExposureScaledX = scaledX;
                 lastFocusExposureScaledY = scaledY;
+                lastFocusExposureEffMinX = effMinX;
+                lastFocusExposureEffMinY = effMinY;
                 lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
                 lastFocusExposureRoiW = BoxSideLength;
                 lastFocusExposureRoiH = BoxSideLength;
 
-                indi_Client->setCCDFrameInfo(dpMainCamera, scaledX, scaledY, BoxSideLength, BoxSideLength);
+                Logger::Log("FocusingLooping | INDI setCCDFrameInfo | (" + std::to_string(indiX) + "," + std::to_string(indiY) + ") " + std::to_string(BoxSideLength) + "x" + std::to_string(BoxSideLength),
+                            LogLevel::DEBUG, DeviceType::FOCUSER);
+                indi_Client->setCCDFrameInfo(dpMainCamera, indiX, indiY, BoxSideLength, BoxSideLength);
                 indi_Client->takeExposure(dpMainCamera, expTime_sec);
                 Logger::Log("FocusingLooping | INDI takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::DEBUG, DeviceType::FOCUSER);
             }
@@ -13643,10 +13685,10 @@ void MainWindow::FocusingLooping()
         else
         {
             Logger::Log("FocusingLooping | Too close to the edge, please reselect the area.", LogLevel::WARNING, DeviceType::FOCUSER);
-            if (scaledX + ROI.width() > glMainCCDSizeX)
-                scaledX = glMainCCDSizeX - ROI.width();
-            if (scaledY + ROI.height() > glMainCCDSizeY)
-                scaledY = glMainCCDSizeY - ROI.height();
+            if (scaledX + ROI.width() > effW)
+                scaledX = effW - ROI.width();
+            if (scaledY + ROI.height() > effH)
+                scaledY = effH - ROI.height();
 
             // 将修正后的坐标反馈给前端（同上：统一回到当前预览坐标系）
             if (roiCoordScale > 0) {
@@ -13672,30 +13714,39 @@ void MainWindow::FocusingLooping()
                 int roiH = ROI.height();
                 if (roiW % 2 != 0) roiW += 1;
                 if (roiH % 2 != 0) roiH += 1;
-                if (roiW > glMainCCDSizeX) roiW = glMainCCDSizeX;
-                if (roiH > glMainCCDSizeY) roiH = glMainCCDSizeY;
-                if (scaledX % 2 != 0) scaledX = std::max(0, scaledX - 1);
-                if (scaledY % 2 != 0) scaledY = std::max(0, scaledY - 1);
-                if (scaledX > glMainCCDSizeX - roiW) scaledX = glMainCCDSizeX - roiW;
-                if (scaledY > glMainCCDSizeY - roiH) scaledY = glMainCCDSizeY - roiH;
+                if (roiW > effW) roiW = effW;
+                if (roiH > effH) roiH = effH;
+                if ((effMinX + scaledX) % 2 != 0) scaledX = std::max(0, scaledX - 1);
+                if ((effMinY + scaledY) % 2 != 0) scaledY = std::max(0, scaledY - 1);
+                if (scaledX > effW - roiW) scaledX = effW - roiW;
+                if (scaledY > effH - roiH) scaledY = effH - roiH;
+                if (scaledX < 0) scaledX = 0;
+                if (scaledY < 0) scaledY = 0;
+
+                const int sensorStartXEdge = effMinX + scaledX;
+                const int sensorStartYEdge = effMinY + scaledY;
 
                 lastFocusExposureSnapshotValid = true;
                 lastFocusExposureScaledX = scaledX;
                 lastFocusExposureScaledY = scaledY;
+                lastFocusExposureEffMinX = effMinX;
+                lastFocusExposureEffMinY = effMinY;
                 lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
                 lastFocusExposureRoiW = roiW;
                 lastFocusExposureRoiH = roiH;
 
                 SdkAreaInfo roi;
-                roi.startX = scaledX;
-                roi.startY = scaledY;
-                roi.sizeX = roiW;
-                roi.sizeY = roiH;
+                roi.startX = static_cast<unsigned int>(sensorStartXEdge);
+                roi.startY = static_cast<unsigned int>(sensorStartYEdge);
+                roi.sizeX = static_cast<unsigned int>(roiW);
+                roi.sizeY = static_cast<unsigned int>(roiH);
                 
                 SdkCommand setRoiCmd;
                 setRoiCmd.type = SdkCommandType::Custom;
                 setRoiCmd.name = "SetResolution";
                 setRoiCmd.payload = roi;
+                Logger::Log("FocusingLooping | SDK SetResolution | start=(" + std::to_string(roi.startX) + "," + std::to_string(roi.startY) + ") size=(" + std::to_string(roi.sizeX) + "x" + std::to_string(roi.sizeY) + ")",
+                            LogLevel::DEBUG, DeviceType::FOCUSER);
                 // 直接通过设备句柄调用，无需指定驱动名称
                 SdkResult roiRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setRoiCmd);
                 if (!roiRes.success) {
@@ -13738,14 +13789,20 @@ void MainWindow::FocusingLooping()
             else
             {
                 // === INDI 模式 ===
+                const int indiXe = effMinX + scaledX;
+                const int indiYe = effMinY + scaledY;
                 lastFocusExposureSnapshotValid = true;
                 lastFocusExposureScaledX = scaledX;
                 lastFocusExposureScaledY = scaledY;
+                lastFocusExposureEffMinX = effMinX;
+                lastFocusExposureEffMinY = effMinY;
                 lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
                 lastFocusExposureRoiW = ROI.width();
                 lastFocusExposureRoiH = ROI.height();
 
-                indi_Client->setCCDFrameInfo(dpMainCamera, scaledX, scaledY, ROI.width(), ROI.height());
+                Logger::Log("FocusingLooping | INDI setCCDFrameInfo | (" + std::to_string(indiXe) + "," + std::to_string(indiYe) + ") " + std::to_string(ROI.width()) + "x" + std::to_string(ROI.height()),
+                            LogLevel::DEBUG, DeviceType::FOCUSER);
+                indi_Client->setCCDFrameInfo(dpMainCamera, indiXe, indiYe, ROI.width(), ROI.height());
                 indi_Client->takeExposure(dpMainCamera, expTime_sec);
             }
         }
@@ -23763,8 +23820,9 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     {
         const int cw = lastFocusExposureRoiW;
         const int ch = lastFocusExposureRoiH;
-        const int sx = lastFocusExposureScaledX;
-        const int sy = lastFocusExposureScaledY;
+        // 快照为「有效区内」相对坐标；全幅 FITS 缓冲以芯片左上角为原点，需加上有效区偏移
+        const int sx = lastFocusExposureEffMinX + lastFocusExposureScaledX;
+        const int sy = lastFocusExposureEffMinY + lastFocusExposureScaledY;
         if (image16.cols == cw && image16.rows == ch)
         {
             // 已是 ROI 子帧（像素 (0,0) 即 ROI 左上角）
@@ -23773,10 +23831,9 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         {
             const cv::Rect patch(sx, sy, cw, ch);
             image16 = image16(patch).clone();
-            Logger::Log("saveFitsAsJPG | cropped full-frame buffer to ROI " + std::to_string(cw) + "x" + std::to_string(ch)
-                            + " at sensor (" + std::to_string(sx) + "," + std::to_string(sy) + "), out " + std::to_string(image16.cols) + "x"
-                            + std::to_string(image16.rows),
-                        LogLevel::INFO, DeviceType::FOCUSER);
+            Logger::Log("saveFitsAsJPG | crop full buffer to ROI " + std::to_string(cw) + "x" + std::to_string(ch)
+                            + " at (" + std::to_string(sx) + "," + std::to_string(sy) + ")",
+                        LogLevel::DEBUG, DeviceType::FOCUSER);
         }
         else if (image16.cols > cw || image16.rows > ch)
         {
@@ -23791,8 +23848,7 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
             }
         }
     }
-    Logger::Log("saveFitsAsJPG | ROI_x:" + std::to_string(roiAndFocuserInfo["ROI_x"]) + ", ROI_y:" + std::to_string(roiAndFocuserInfo["ROI_y"]), LogLevel::INFO, DeviceType::FOCUSER);
-    Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::INFO, DeviceType::FOCUSER);
+    Logger::Log("saveFitsAsJPG | output image16 " + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
     originalImage16.release();
 
     // ROI 循环频率可能高于 1Hz：若文件名只精确到秒，会在同一秒内反复覆盖同名文件，
@@ -23856,7 +23912,8 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
             emitRoiY = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"] : 0.0;
         }
 
-        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(emitRoiX) + ":" + QString::number(emitRoiY));
+        // 与前端 parseFloat 一致，保留小数（非瓦片 bin 缩放下 emit 可能为小数）
+        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(emitRoiX, 'g', 9) + ":" + QString::number(emitRoiY, 'g', 9));
 
         // 挂起的 ROI 居中更新：在本帧图像已发出后再改 roiAndFocuserInfo，并单独通知前端（与 SaveJpgSuccess 解耦）
         if (hasPendingRoiUpdate)
