@@ -911,6 +911,10 @@ public:
     bool isFocusMoveDone = false;  // 是否移动完成
     int focuserMaxPosition = -1;   // 行程上限
     int focuserMinPosition = -1;   // 行程下限
+    bool focuserIndiNeedResyncTarget = false;
+    int focuserIndiStallCount = 0;
+    int focuserIndiLastPollPos = 0;
+    bool focuserIndiHaveLastPollPos = false;
     int autofocusBacklashCompensation = 0; // 自动对焦空程补偿值
     int autoFocusExposureTime = 1000;      // 自动对焦曝光时间(ms)，仅作用于自动对焦流程
     int autoFocusCoarseDivisions = 10;     // 粗调分段数（总行程 / 此值），默认 10
