@@ -5500,14 +5500,14 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     Tools::SaveMatToFITS(image16);
     Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
 
-    const cv::Mat& tileSourceImage = image16;
+    // 软件 bin 后图仅用于另一路 FITS 保存；瓦片源统一使用原图，避免在瓦片构建前提前合并。
+    const cv::Mat& tileSourceImage = originalImage16;
 
-    // 主画面瓦片与预览链路保持一致：若启用了软件 bin，则使用 bin 后图作为瓦片源与前端坐标系。
     const int width = tileSourceImage.cols;
     const int height = tileSourceImage.rows;
     Logger::Log("MainCameraSize (tile source) dimensions: " + std::to_string(width) + "x" + std::to_string(height), LogLevel::INFO, DeviceType::CAMERA);
     emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(width) + ":" + QString::number(height));
-    emit wsThread->sendMessageToClient("MainCameraBinning:" + QString::number(binningFactor));
+    emit wsThread->sendMessageToClient("MainCameraBinning:1");
 
     if (tileSourceImage.empty())
     {
@@ -5545,9 +5545,6 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
 
     // 计算 GPM，并为前端白平衡/直方图面板同步生成 histogram 文件
     int maxMergeFactor = 16;
-    if (ProcessBin) {
-        maxMergeFactor = binningFactor;
-    }
     TileGPM gpm = calculateGPM(tileSourceImage, localCameraCFA, maxMergeFactor, /*enableHistogram=*/true);
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
@@ -13520,10 +13517,10 @@ void MainWindow::FocusingLooping()
         if (cameraY % 2 != 0) cameraY += 1;
 
         // 坐标体系：
-        // - 瓦片模式：前端坐标使用“当前瓦片预览像素”；若启用了软件 bin，需要乘以 previewBinningFactor 映射回传感器坐标。
-        // - 非瓦片模式：沿用历史逻辑，ROI_x/ROI_y 为“预览/处理 bin 后坐标”，需要乘以 glMainCameraBinning 映射回原图像素。
+        // - 瓦片模式：与前端 App.vue 一致，ROI_x/y 为传感器像素（全幅逻辑坐标），不再乘预览软 bin。
+        // - 非瓦片模式：ROI_x/y 为预览/硬件 bin 后坐标，乘以 glMainCameraBinning 映射到传感器像素。
         const bool tileModeActive = (isStagingImage && !SavedImage.empty());
-        const int roiCoordScale = tileModeActive ? currentTilePreviewBinning() : std::max(1, glMainCameraBinning);
+        const int roiCoordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
 
         // 使用缩放坐标（必要时乘以 binning）并在缩放空间内裁剪，允许等于边界
         int scaledX = cameraX * roiCoordScale;
@@ -13567,6 +13564,13 @@ void MainWindow::FocusingLooping()
                 if (scaledY % 2 != 0) scaledY = std::max(0, scaledY - 1);
                 if (scaledX > glMainCCDSizeX - roiW) scaledX = glMainCCDSizeX - roiW;
                 if (scaledY > glMainCCDSizeY - roiH) scaledY = glMainCCDSizeY - roiH;
+
+                lastFocusExposureSnapshotValid = true;
+                lastFocusExposureScaledX = scaledX;
+                lastFocusExposureScaledY = scaledY;
+                lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
+                lastFocusExposureRoiW = roiW;
+                lastFocusExposureRoiH = roiH;
 
                 SdkAreaInfo roi;
                 roi.startX = scaledX;
@@ -13630,6 +13634,13 @@ void MainWindow::FocusingLooping()
             else
             {
                 // === INDI 模式 ===
+                lastFocusExposureSnapshotValid = true;
+                lastFocusExposureScaledX = scaledX;
+                lastFocusExposureScaledY = scaledY;
+                lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
+                lastFocusExposureRoiW = BoxSideLength;
+                lastFocusExposureRoiH = BoxSideLength;
+
                 indi_Client->setCCDFrameInfo(dpMainCamera, scaledX, scaledY, BoxSideLength, BoxSideLength);
                 indi_Client->takeExposure(dpMainCamera, expTime_sec);
                 Logger::Log("FocusingLooping | INDI takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -13673,6 +13684,13 @@ void MainWindow::FocusingLooping()
                 if (scaledY % 2 != 0) scaledY = std::max(0, scaledY - 1);
                 if (scaledX > glMainCCDSizeX - roiW) scaledX = glMainCCDSizeX - roiW;
                 if (scaledY > glMainCCDSizeY - roiH) scaledY = glMainCCDSizeY - roiH;
+
+                lastFocusExposureSnapshotValid = true;
+                lastFocusExposureScaledX = scaledX;
+                lastFocusExposureScaledY = scaledY;
+                lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
+                lastFocusExposureRoiW = roiW;
+                lastFocusExposureRoiH = roiH;
 
                 SdkAreaInfo roi;
                 roi.startX = scaledX;
@@ -13726,6 +13744,13 @@ void MainWindow::FocusingLooping()
             else
             {
                 // === INDI 模式 ===
+                lastFocusExposureSnapshotValid = true;
+                lastFocusExposureScaledX = scaledX;
+                lastFocusExposureScaledY = scaledY;
+                lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
+                lastFocusExposureRoiW = ROI.width();
+                lastFocusExposureRoiH = ROI.height();
+
                 indi_Client->setCCDFrameInfo(dpMainCamera, scaledX, scaledY, ROI.width(), ROI.height());
                 indi_Client->takeExposure(dpMainCamera, expTime_sec);
             }
@@ -23731,8 +23756,6 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     emit wsThread->sendMessageToClient("addFwhmNow:" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
     Logger::Log("saveFitsAsJPG | 星点位置更新为 x:" + std::to_string(roiAndFocuserInfo["SelectStarX"]) + ",y:" + std::to_string(roiAndFocuserInfo["SelectStarY"]) + ",HFR:" + std::to_string(roiAndFocuserInfo["SelectStarHFR"]), LogLevel::INFO, DeviceType::FOCUSER);
 
-    // 判断当前相机是否为彩色相机（使用局部CFA副本）
-    bool isColor = !(localCameraCFA == "" || localCameraCFA == "null");
     cv::Mat originalImage16;
     if (image.type() == CV_8UC1 || image.type() == CV_8UC3 || image.type() == CV_16UC1)
     {
@@ -23767,51 +23790,43 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     }
     Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
 
-    // 使用局部CFA副本进行 binning 处理
-    // 说明：
-    // - 瓦片模式下，ROI 叠加层应与主画面的当前预览倍率保持一致；若主画面已软件 bin，这里也使用相同 bin。
-    // - 非瓦片模式沿用历史：ROI 输出按 glMainCameraBinning 做软件 bin，减少数据量与前端处理压力。
-    const bool tileModeActive = (isStagingImage && !SavedImage.empty());
-    int roiBin = 1;
-    if (ProcessBin) {
-        roiBin = tileModeActive ? currentTilePreviewBinning() : glMainCameraBinning;
-        if (roiBin < 1) roiBin = 1;
-        if (roiBin > 16) roiBin = 16;
-        // 防御：向上取整到 2^N（与 saveFitsAsPNG 的 previewBinningFactor 一致）
-        int p2 = 1;
-        while (p2 < roiBin && p2 < 16) p2 <<= 1;
-        if (p2 > 16) p2 = 16;
-        roiBin = p2;
-    }
-
-    cv::Mat image16;
-    if (roiBin != 1)
+    // 下发给前端的 ROI .bin：不做软件合并，与相机 ROI 读出尺寸一致（与前端红框/瓦片传感器坐标对齐）。
+    (void)ProcessBin;
+    cv::Mat image16 = originalImage16.clone();
+    // 部分驱动/SDK 在 ROI 模式下仍写出全幅 FITS；前端按 RedBoxSideLength² 解码并与 SaveJpgSuccess 的传感器原点对齐。
+    // 若缓冲区大于本次曝光 ROI 尺寸，则按 FocusingLooping 记录的快照从全幅中裁出与 .bin 语义一致的子图。
+    if (lastFocusExposureSnapshotValid && lastFocusExposureRoiW > 0 && lastFocusExposureRoiH > 0 && !image16.empty()
+        && image16.type() == CV_16UC1)
     {
-        // 使用新的Mat版本的PixelsDataSoftBin_Bayer函数
-        if (localCameraCFA == "RGGB" || localCameraCFA == "RG")
+        const int cw = lastFocusExposureRoiW;
+        const int ch = lastFocusExposureRoiH;
+        const int sx = lastFocusExposureScaledX;
+        const int sy = lastFocusExposureScaledY;
+        if (image16.cols == cw && image16.rows == ch)
         {
-            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, roiBin, roiBin, BAYER_RGGB);
+            // 已是 ROI 子帧（像素 (0,0) 即 ROI 左上角）
         }
-        else if (localCameraCFA == "BGGR" || localCameraCFA == "BG")
+        else if (sx >= 0 && sy >= 0 && image16.cols >= sx + cw && image16.rows >= sy + ch)
         {
-            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, roiBin, roiBin, BAYER_BGGR);
+            const cv::Rect patch(sx, sy, cw, ch);
+            image16 = image16(patch).clone();
+            Logger::Log("saveFitsAsJPG | cropped full-frame buffer to ROI " + std::to_string(cw) + "x" + std::to_string(ch)
+                            + " at sensor (" + std::to_string(sx) + "," + std::to_string(sy) + "), out " + std::to_string(image16.cols) + "x"
+                            + std::to_string(image16.rows),
+                        LogLevel::INFO, DeviceType::FOCUSER);
         }
-        else if (localCameraCFA == "GRBG" || localCameraCFA == "GR")
+        else if (image16.cols > cw || image16.rows > ch)
         {
-            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, roiBin, roiBin, BAYER_GRBG);
+            const cv::Rect want(sx, sy, cw, ch);
+            const cv::Rect bounds(0, 0, image16.cols, image16.rows);
+            const cv::Rect inter = want & bounds;
+            if (inter.width > 0 && inter.height > 0)
+            {
+                image16 = image16(inter).clone();
+                Logger::Log("saveFitsAsJPG | cropped full-frame buffer (clamped) to " + std::to_string(image16.cols) + "x" + std::to_string(image16.rows),
+                            LogLevel::WARNING, DeviceType::FOCUSER);
+            }
         }
-        else if (localCameraCFA == "GBRG" || localCameraCFA == "GB")
-        {
-            image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, roiBin, roiBin, BAYER_GBRG);
-        }
-        else
-        {
-            image16 = Tools::processMatWithBinAvg(originalImage16, roiBin, roiBin, isColor, true);
-        }
-    }
-    else
-    {
-        image16 = originalImage16.clone();
     }
     Logger::Log("saveFitsAsJPG | ROI_x:" + std::to_string(roiAndFocuserInfo["ROI_x"]) + ", ROI_y:" + std::to_string(roiAndFocuserInfo["ROI_y"]), LogLevel::INFO, DeviceType::FOCUSER);
     Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::INFO, DeviceType::FOCUSER);
@@ -23862,8 +23877,25 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 
     if (saved)
     {
-        // 若有挂起的 ROI，则先应用到 roiAndFocuserInfo（仅更新 ROI_x/ROI_y），使 SaveJpgSuccess 携带的新 ROI
-        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(roiAndFocuserInfo["ROI_x"]) + ":" + QString::number(roiAndFocuserInfo["ROI_y"]));
+        // SaveJpgSuccess 中的 ROI 必须与「本帧 .bin 对应的曝光」一致：用 FocusingLooping 里在真正下发曝光前记录的快照。
+        // 若先应用 hasPendingRoiUpdate / 或用户已 sendRedBoxState 再发 SaveJpgSuccess，会把下一帧坐标与当前帧像素绑在一起，造成 ROI 叠加与底图错位。
+        double emitRoiX = 0.0;
+        double emitRoiY = 0.0;
+        if (lastFocusExposureSnapshotValid)
+        {
+            const int snapScale = std::max(1, lastFocusExposureRoiCoordScale);
+            emitRoiX = static_cast<double>(lastFocusExposureScaledX) / static_cast<double>(snapScale);
+            emitRoiY = static_cast<double>(lastFocusExposureScaledY) / static_cast<double>(snapScale);
+        }
+        else
+        {
+            emitRoiX = roiAndFocuserInfo.count("ROI_x") ? roiAndFocuserInfo["ROI_x"] : 0.0;
+            emitRoiY = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"] : 0.0;
+        }
+
+        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(emitRoiX) + ":" + QString::number(emitRoiY));
+
+        // 挂起的 ROI 居中更新：在本帧图像已发出后再改 roiAndFocuserInfo，并单独通知前端（与 SaveJpgSuccess 解耦）
         if (hasPendingRoiUpdate)
         {
             hasPendingRoiUpdate = false;
@@ -23878,10 +23910,12 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
             if (applyY % 2 != 0) applyY += (applyY < maxY ? 1 : -1);
             applyX = std::min(std::max(0, applyX), maxX);
             applyY = std::min(std::max(0, applyY), maxY);
-            // 坐标体系同 FocusingLooping：统一回到当前预览坐标系。
-            const int coordScale = tileModeActive ? currentTilePreviewBinning() : std::max(1, glMainCameraBinning);
+            // pendingRoiX/Y 已为传感器像素（见 selectStar 全图坐标）；瓦片模式下勿再除以 previewBinning。
+            const bool tileModeActive = (isStagingImage && !SavedImage.empty());
+            const int coordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
             roiAndFocuserInfo["ROI_x"] = static_cast<int>(applyX / coordScale);
             roiAndFocuserInfo["ROI_y"] = static_cast<int>(applyY / coordScale);
+            // 勿在此处 emit SetRedBoxState：本帧 SaveJpgSuccess 已带「当前曝光」ROI；若再发「下一帧居中」坐标，前端会在叠加层仍为当前帧像素时把红框/选星圆改到新 ROI，造成错位。下一帧 SaveJpgSuccess 会携带新快照坐标并同步 UI。sendRoiInfo() 仍会发 SetRedBoxState 供重连等场景。
         }
 
         Logger::Log("SaveJpgSuccess:" + fileName + " to " + filePath + ",image size:" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -23989,7 +24023,7 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     // 2) 读取 ROI 与选择点（全图坐标）
     const double boxSide = roiAndFocuserInfo.count("BoxSideLength") ? roiAndFocuserInfo["BoxSideLength"] : BoxSideLength;
     const bool tileModeActive = (isStagingImage && !SavedImage.empty());
-    const int roiCoordScale = tileModeActive ? currentTilePreviewBinning() : std::max(1, glMainCameraBinning);
+    const int roiCoordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
     const double roi_x    = roiAndFocuserInfo.count("ROI_x") ? roiAndFocuserInfo["ROI_x"] * roiCoordScale : 0;
     const double roi_y    = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"] * roiCoordScale : 0;
     const double selXFull = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1;
