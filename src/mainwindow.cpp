@@ -25519,6 +25519,7 @@ bool MainWindow::initPolarAlignment()
 
 void MainWindow::focusMoveToMin()
 {
+    emit wsThread->sendMessageToClient("focusMoveToMinStarted");
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
          systemdevicelist.system_devices[22].isSDKConnect &&
@@ -25675,6 +25676,7 @@ void MainWindow::focusMoveToMin()
 
 void MainWindow::focusMoveToMax()
 {
+    emit wsThread->sendMessageToClient("focusMoveToMaxStarted");
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
          systemdevicelist.system_devices[22].isSDKConnect &&
@@ -25875,6 +25877,7 @@ void MainWindow::focusMoveToMax()
 
 void MainWindow::focusSetTravelRange()
 {
+    emit wsThread->sendMessageToClient("focusSetTravelRangeStarted");
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
          systemdevicelist.system_devices[22].isSDKConnect &&
