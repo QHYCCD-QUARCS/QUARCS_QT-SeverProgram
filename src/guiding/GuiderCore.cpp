@@ -295,6 +295,7 @@ void GuiderCore::startGuiding()
     m_raHysPrevSignedMs = 0.0;
     m_lastRaPulseMs = 0;
     m_lastDecPulseMs = 0;
+    m_selectingNoStarFrameCount = 0;
 
     setState(guiding::State::Selecting);
     if (preserveManualLock)
@@ -388,6 +389,7 @@ void GuiderCore::stopGuiding()
     m_raHysPrevSignedMs = 0.0;
     m_lastRaPulseMs = 0;
     m_lastDecPulseMs = 0;
+    m_selectingNoStarFrameCount = 0;
     emit infoMessage(QStringLiteral("停止导星。"));
 }
 
@@ -665,20 +667,41 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
         {
             guiding::StarSelectionParams sp;
             auto best = m_detector.selectGuideStar(img16, sp, nullptr);
+            bool usedRelaxedParams = false;
+            if (!best.has_value())
+            {
+                auto relaxed = sp;
+                relaxed.minSNR = 5.0;
+                relaxed.detectMinSNR = 2.5;
+                relaxed.minHFD = 1.0;
+                relaxed.edgeMarginPx = 20.0;
+                relaxed.kSigma = 3.0;
+                best = m_detector.selectGuideStar(img16, relaxed, nullptr);
+                usedRelaxedParams = best.has_value();
+            }
             if (best.has_value())
             {
+                m_selectingNoStarFrameCount = 0;
                 m_hasLock = true;
                 m_lockPosPx = QPointF(best->x, best->y);
                 // 关键：确保后续校准/导星的“质心跟踪”从本次新锁点开始，而不是沿用上次的 centroid
                 m_lastGuideCentroid = m_lockPosPx;
                 emit lockPositionChanged(m_lockPosPx);
                 emit lockStarSelected(best->x, best->y, best->snr, best->hfd);
+                if (usedRelaxedParams)
+                    emit infoMessage(QStringLiteral("自动选星：默认阈值未命中，已使用宽松阈值锁定星点。"));
                 emit infoMessage(QStringLiteral("选星成功：x=%1 y=%2 SNR=%3 HFD=%4")
                                  .arg(best->x, 0, 'f', 2)
                                  .arg(best->y, 0, 'f', 2)
                                  .arg(best->snr, 0, 'f', 1)
                                  .arg(best->hfd, 0, 'f', 2));
                 startGuidingFromLock(false);
+            }
+            else
+            {
+                ++m_selectingNoStarFrameCount;
+                if (m_selectingNoStarFrameCount == 1 || (m_selectingNoStarFrameCount % 3) == 0)
+                    emit infoMessage(QStringLiteral("自动选星：当前帧未识别到可用星点，继续等待下一帧。"));
             }
         }
     }

@@ -232,6 +232,9 @@ private:
     // 保留接口：前端可能仍会调用 isQuickDirectionDetecting() 显示状态
     bool m_quickDirectionDetectActive = false;
 
+    // Selecting 阶段用于抑制“未找到可用星点”日志刷屏
+    int m_selectingNoStarFrameCount = 0;
+
 signals:
     void calibrationResultChanged(const guiding::CalibrationResult& r);
     void guidePulseIssued(const guiding::PulseCommand& cmd, double raErrPx, double decErrPx);

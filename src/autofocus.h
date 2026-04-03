@@ -113,6 +113,8 @@ public:
     void setMinLargeRangeStep(double percentage);
     void setDefaultExposureTime(int exposureTime);  // 设置默认曝光时间
     void setCoarseDivisionCount(int divisions);     // 设置粗调分段数（总行程 / 分段数）
+    void setScheduleTriggered(bool scheduleTriggered); // 设置本次自动对焦是否由计划任务触发
+    void handleCoarseRetryDecision(bool accepted);     // 处理粗调失败后的二十等分补扫确认结果
     
     // 拍摄状态查询
     bool isCaptureEnd() const { return m_isCaptureEnd; }
@@ -184,6 +186,7 @@ signals:
     void autoFocusModeChanged(const QString &mode, double hfr); // 自动对焦模式变化信号
     void focuserPositionChanged(int currentPosition); // 电调位置变化信号**xiugai
     void autoFocusStepChanged(int step, const QString &stepDescription); // 自动对焦步骤变化信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
+    void coarseRetryPromptRequested(int totalDivisions, const QString &message); // 请求前端确认是否执行粗调补扫
 
   // 各阶段拍摄进度：stage = "coarse" / "fine" / "super_fine"，current = 当前第几张，total = 总张数
   void captureProgressChanged(const QString &stage, int current, int total);
@@ -253,10 +256,17 @@ private:
     int m_coarseStepSpan;                  // 粗调步进（= 总行程 / m_coarseDivisionCount）
     int m_fineStepSpan;                    // 精调步进（= 粗调步进/10）
     int m_coarseDivisionCount;             // 粗调分段数（默认 10）
+    int m_initialCoarseDivisionCount;      // 首轮粗调分段数（用于失败后补扫）
     int m_coarseBestPosition;              // 粗调期望位置
     double m_coarseBestHFR;
     int m_fineBestPosition;                // 精调阶段 SNR 最佳位置（super-fine 中心）
     bool m_coarseHasValidSNR;              // 粗调阶段是否存在至少一个 SNR>0 的位置
+    bool m_scheduleTriggered;              // 本次自动对焦是否由计划任务触发
+    bool m_coarseRetryPromptRequested;     // 是否已发起过粗调补扫确认
+    bool m_waitingForCoarseRetryDecision;  // 是否正在等待用户确认粗调补扫
+    bool m_isCoarseRetryScan;              // 当前是否处于粗调补扫模式
+    QVector<int> m_initialCoarseScanPositions; // 首轮粗调已覆盖的位置
+    QVector<int> m_remainingRetryScanPositions; // 二十等分补扫剩余待扫位置
     
     // === 新：独立 HFR 精调模式的方向与采样控制参数 ===
     int  m_fineDirection;                  // +1: 向大的方向；-1: 向小的方向
@@ -411,6 +421,9 @@ private:
     // 粗调流程
     void startCoarseAdjustment();
     void processCoarseAdjustment();
+    QVector<int> buildCoarseScanPositions(int divisions) const;
+    bool prepareRemainingCoarseRetryScan();
+    void finalizeCoarseFailure();
     
     // 精调流程
     void startFineAdjustment();

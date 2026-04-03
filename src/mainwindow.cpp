@@ -1592,6 +1592,27 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("AutoFocusCancelled:用户已取消自动对焦");
         }
     }
+    else if (message.startsWith("AutoFocusCoarseRetryDecision:"))
+    {
+        const QString prefix = "AutoFocusCoarseRetryDecision:";
+        const QString decision = message.mid(prefix.length()).trimmed();
+        const bool accepted =
+            decision.compare("Yes", Qt::CaseInsensitive) == 0 ||
+            decision.compare("True", Qt::CaseInsensitive) == 0 ||
+            decision == "1";
+
+        if (autoFocus == nullptr || !autoFocus->isRunning()) {
+            Logger::Log(QString("忽略粗调补扫确认结果：自动对焦未运行，decision=%1")
+                            .arg(decision).toStdString(),
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+            return;
+        }
+
+        Logger::Log(QString("收到粗调补扫确认结果：%1")
+                        .arg(accepted ? "执行补扫" : "放弃补扫").toStdString(),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+        autoFocus->handleCoarseRetryDecision(accepted);
+    }
     else if (message == "StopAutoFocus")
     {
         if (!isAutoFocus) {
@@ -24197,9 +24218,19 @@ void MainWindow::startAutoFocus()
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
                                            this, [this]() { this->INDI_AbortCapture(); },
                                            Qt::QueuedConnection));
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
+                                           this, [this](int totalDivisions, const QString &message)
+                                           {
+        Logger::Log(QString("请求前端弹出粗调补扫确认框：totalDivisions=%1, message=%2")
+                        .arg(totalDivisions).arg(message).toStdString(),
+                    LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(
+            QString("AutoFocusCoarseRetryPrompt:%1:%2").arg(totalDivisions).arg(message));
+    }));
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
     autoFocus->setCoarseDivisionCount(autoFocusCoarseDivisions);
+    autoFocus->setScheduleTriggered(isScheduleTriggeredAutoFocus);
     autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
     autoFocus->setUseVirtualData(false);      // 使用虚拟数据
     
@@ -24485,11 +24516,21 @@ void MainWindow::startAutoFocusFineHFROnly()
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
                                            this, [this]() { this->INDI_AbortCapture(); },
                                            Qt::QueuedConnection));
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
+                                           this, [this](int totalDivisions, const QString &message)
+                                           {
+        Logger::Log(QString("请求前端弹出粗调补扫确认框：totalDivisions=%1, message=%2")
+                        .arg(totalDivisions).arg(message).toStdString(),
+                    LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(
+            QString("AutoFocusCoarseRetryPrompt:%1:%2").arg(totalDivisions).arg(message));
+    }));
 
     // 与常规自动对焦保持一致的参数配置
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
     autoFocus->setCoarseDivisionCount(autoFocusCoarseDivisions);
+    autoFocus->setScheduleTriggered(isScheduleTriggeredAutoFocus);
     autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
     autoFocus->setUseVirtualData(false);      // 使用实时数据
 
@@ -24697,11 +24738,21 @@ void MainWindow::startAutoFocusSuperFineOnly()
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
                                            this, [this]() { this->INDI_AbortCapture(); },
                                            Qt::QueuedConnection));
+    autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
+                                           this, [this](int totalDivisions, const QString &message)
+                                           {
+        Logger::Log(QString("请求前端弹出粗调补扫确认框：totalDivisions=%1, message=%2")
+                        .arg(totalDivisions).arg(message).toStdString(),
+                    LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient(
+            QString("AutoFocusCoarseRetryPrompt:%1:%2").arg(totalDivisions).arg(message));
+    }));
 
     // 与常规自动对焦保持一致的参数配置
     autoFocus->setFocuserMinPosition(focuserMinPosition);
     autoFocus->setFocuserMaxPosition(focuserMaxPosition);
     autoFocus->setCoarseDivisionCount(autoFocusCoarseDivisions);
+    autoFocus->setScheduleTriggered(isScheduleTriggeredAutoFocus);
     autoFocus->setDefaultExposureTime(autoFocusExposureTime); // 自动对焦曝光时间（仅作用于自动对焦）
     autoFocus->setUseVirtualData(false);      // 使用虚拟数据
 

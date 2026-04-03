@@ -181,6 +181,11 @@ AutoFocus::AutoFocus(MyClient *indiServer,
 {
         m_hasLastPosition = false;
         m_coarseDivisionCount = 10;
+        m_initialCoarseDivisionCount = 10;
+        m_scheduleTriggered = false;
+        m_coarseRetryPromptRequested = false;
+        m_waitingForCoarseRetryDecision = false;
+        m_isCoarseRetryScan = false;
 // 验证传入的设备对象（SDK 为“单设备连接”，不以 dp 指针是否为空作为全局判断）
     if (!m_dpMainCamera && !m_useSdkMainCamera) {
         log(QString("警告: 主相机设备对象为空（且未启用 SDK 主相机）"));
@@ -421,6 +426,12 @@ bool AutoFocus::initializeAutoFocusCommon()
     m_dataCollectionCount = 0;
     m_currentLargeRangeShots = 0;
     m_currentLargeRangeStep = m_initialLargeRangeStep;
+    m_initialCoarseDivisionCount = m_coarseDivisionCount > 0 ? m_coarseDivisionCount : 10;
+    m_coarseRetryPromptRequested = false;
+    m_waitingForCoarseRetryDecision = false;
+    m_isCoarseRetryScan = false;
+    m_initialCoarseScanPositions.clear();
+    m_remainingRetryScanPositions.clear();
     
     // 初始化ROI参数（确保回调访问时不会出现段错误）
     m_useROI = false;
@@ -840,6 +851,43 @@ void AutoFocus::setCoarseDivisionCount(int divisions)
     }
     m_coarseDivisionCount = divisions;
     log(QString("设置粗调分段数: 总行程将被等分为 %1 份").arg(m_coarseDivisionCount));
+}
+
+void AutoFocus::setScheduleTriggered(bool scheduleTriggered)
+{
+    m_scheduleTriggered = scheduleTriggered;
+    log(QString("设置自动对焦触发来源: %1")
+            .arg(m_scheduleTriggered ? "计划任务" : "手动"));
+}
+
+void AutoFocus::handleCoarseRetryDecision(bool accepted)
+{
+    if (!m_isRunning) {
+        log("忽略粗调补扫确认结果：自动对焦当前未运行");
+        return;
+    }
+
+    if (!m_waitingForCoarseRetryDecision) {
+        log("忽略粗调补扫确认结果：当前不在等待用户确认");
+        return;
+    }
+
+    m_waitingForCoarseRetryDecision = false;
+
+    if (!accepted) {
+        log("用户拒绝执行二十等分粗调补扫，按失败结束本次自动对焦");
+        finalizeCoarseFailure();
+        return;
+    }
+
+    if (!prepareRemainingCoarseRetryScan()) {
+        log("无法构造二十等分补扫位置，按失败结束本次自动对焦");
+        finalizeCoarseFailure();
+        return;
+    }
+
+    log(QString("用户同意执行二十等分粗调补扫，剩余待扫位置数=%1")
+            .arg(m_coarseScanPositions.size()));
 }
 
 
@@ -1658,6 +1706,72 @@ void AutoFocus::checkAndReduceStepSize()
     }
 }
 
+QVector<int> AutoFocus::buildCoarseScanPositions(int divisions) const
+{
+    QVector<int> positions;
+
+    const int minPos = m_focuserMinPosition;
+    const int maxPos = m_focuserMaxPosition;
+    if (divisions <= 0 || maxPos <= minPos) {
+        return positions;
+    }
+
+    const int totalRange = maxPos - minPos;
+    for (int i = 0; i < divisions; ++i) {
+        int offset = static_cast<int>(std::llround((static_cast<double>(totalRange) * i) / divisions));
+        int position = std::clamp(maxPos - offset, minPos, maxPos);
+        if (positions.isEmpty() || positions.last() != position) {
+            positions.push_back(position);
+        }
+    }
+
+    if (positions.isEmpty() || positions.back() != minPos) {
+        positions.push_back(minPos);
+    }
+
+    return positions;
+}
+
+bool AutoFocus::prepareRemainingCoarseRetryScan()
+{
+    const int totalRange = std::max(1, m_focuserMaxPosition - m_focuserMinPosition);
+    const QVector<int> fullRetryPositions = buildCoarseScanPositions(20);
+    if (fullRetryPositions.isEmpty()) {
+        return false;
+    }
+
+    m_remainingRetryScanPositions.clear();
+    for (int position : fullRetryPositions) {
+        if (!m_initialCoarseScanPositions.contains(position)) {
+            m_remainingRetryScanPositions.push_back(position);
+        }
+    }
+
+    if (m_remainingRetryScanPositions.isEmpty()) {
+        Logger::Log("二十等分粗调补扫未生成新的待扫位置", LogLevel::WARNING, DeviceType::FOCUSER);
+        return false;
+    }
+
+    m_coarseScanPositions = m_remainingRetryScanPositions;
+    m_coarseScanIndex = 0;
+    m_isCoarseRetryScan = true;
+    m_coarseStepSpan = std::max(1, totalRange / 20);
+
+    Logger::Log(QString("粗调补扫已准备：二十等分总采样点=%1，首轮已覆盖=%2，剩余待扫=%3")
+                    .arg(fullRetryPositions.size())
+                    .arg(m_initialCoarseScanPositions.size())
+                    .arg(m_remainingRetryScanPositions.size()).toStdString(),
+                LogLevel::INFO, DeviceType::FOCUSER);
+    return true;
+}
+
+void AutoFocus::finalizeCoarseFailure()
+{
+    Logger::Log("粗调阶段所有采样点的 SNR 均为 0 或无效，判定本次对焦失败", LogLevel::ERROR, DeviceType::FOCUSER);
+    emit autofocusFailed();
+    completeAutoFocus(false);
+}
+
 void AutoFocus::startCoarseAdjustment()
 {
     emit focusSeriesReset(QStringLiteral("coarse"));
@@ -1669,6 +1783,12 @@ void AutoFocus::startCoarseAdjustment()
     m_dataCollectionCount = 0;
     m_coarseBestSNR = -1.0;
     m_coarseHasValidSNR = false;  // 粗调开始时尚未发现任何有效 SNR
+    m_initialCoarseDivisionCount = (m_coarseDivisionCount > 0) ? m_coarseDivisionCount : 10;
+    m_coarseRetryPromptRequested = false;
+    m_waitingForCoarseRetryDecision = false;
+    m_isCoarseRetryScan = false;
+    m_initialCoarseScanPositions.clear();
+    m_remainingRetryScanPositions.clear();
 
     // 从 INI 配置的最大、最小范围生成一组粗调采样位置：从最大到最小
     const int minPos = m_focuserMinPosition;
@@ -1679,25 +1799,17 @@ void AutoFocus::startCoarseAdjustment()
     }
 
     const int totalRange = std::max(1, maxPos - minPos);
-    int divisions = (m_coarseDivisionCount > 0) ? m_coarseDivisionCount : 10;
+    int divisions = m_initialCoarseDivisionCount;
 
     // 粗调步长 = 总行程 / 分段数
     m_coarseStepSpan = std::max(1, totalRange / divisions);
 
-    m_coarseScanPositions.clear();
-    // 从最大位置开始，每次按 m_coarseStepSpan 向最小位置扫描，
-    // 使得粗调尽量覆盖完整量程。
-    for (int i = 0; i < divisions; ++i) {
-        int p = maxPos - i * m_coarseStepSpan;
-        p = std::clamp(p, minPos, maxPos);
-        if (m_coarseScanPositions.isEmpty() || m_coarseScanPositions.last() != p) {
-            m_coarseScanPositions.push_back(p);
-        }
+    m_coarseScanPositions = buildCoarseScanPositions(divisions);
+    if (m_coarseScanPositions.isEmpty()) {
+        handleError("电调位置范围无效，无法生成粗调采样点");
+        return;
     }
-    // 确保最小位置被包含在最后一个采样点附近
-    if (m_coarseScanPositions.isEmpty() || m_coarseScanPositions.back() != minPos) {
-        m_coarseScanPositions.push_back(minPos);
-    }
+    m_initialCoarseScanPositions = m_coarseScanPositions;
 
     m_coarseScanIndex = 0;
     m_coarseBestPosition = maxPos;
@@ -1731,6 +1843,10 @@ void AutoFocus::processCoarseAdjustment()
         return;
     }
 
+    if (m_waitingForCoarseRetryDecision) {
+        return;
+    }
+
     // 直接进入粗调采样流程（内部会根据当前位置决定是否需要移动）
     performCoarseDataCollection();
 }
@@ -1747,11 +1863,19 @@ void AutoFocus::performCoarseDataCollection()
     if (m_coarseScanIndex >= m_coarseScanPositions.size()) {
         // 所有粗调采样点已完成，先检查是否存在任何有效 SNR
         if (!m_coarseHasValidSNR) {
+            if (!m_scheduleTriggered && !m_coarseRetryPromptRequested && !m_isCoarseRetryScan) {
+                m_coarseRetryPromptRequested = true;
+                m_waitingForCoarseRetryDecision = true;
+
+                const QString promptMessage =
+                    QStringLiteral("粗调第一轮未识别到有效星点，是否将粗调量程细分为 20 份，并仅补扫剩余未覆盖的位置后再试一次？");
+                Logger::Log("粗调首轮全无星点，等待用户确认是否执行二十等分补扫", LogLevel::WARNING, DeviceType::FOCUSER);
+                emit coarseRetryPromptRequested(20, promptMessage);
+                return;
+            }
+
             // 说明本轮粗调中的每一张星图识别结果都是 0（无有效星点）
-            Logger::Log("粗调阶段所有采样点的 SNR 均为 0 或无效，判定本次对焦失败", LogLevel::ERROR, DeviceType::FOCUSER);
-            emit autofocusFailed();
-            // 结束自动对焦流程，不再进入精调
-            completeAutoFocus(false);
+            finalizeCoarseFailure();
             return;
         }
 
