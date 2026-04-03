@@ -85,7 +85,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260323-4"  // 手动指定版本号
+#define QT_Client_Version "20260401"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -634,15 +634,23 @@ public:
      * @param ProcessBin 是否进行 bin 处理
      * @return 0 成功，非 0 失败
      */
-    int saveFitsAsPNG(QString fitsFileName, bool ProcessBin);
+    int saveFitsAsPNG(QString fitsFileName, bool ProcessBin, std::function<void(bool)> onComplete = {});
     // 实际执行（可能耗时）的实现：由 saveFitsAsPNG() 异步调度调用
     int saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin);
+    // SDK 单帧直通前端后处理：避免“先写 FITS 再读 FITS”带来的额外 IO 延迟
+    int saveFitsAsPNG_FromSdkFrame(const std::shared_ptr<SdkFrameData>& frame, bool ProcessBin, std::function<void(bool)> onComplete = {});
+    int saveFitsAsPNG_FromSdkFrame_Worker(std::shared_ptr<SdkFrameData> frame, bool ProcessBin);
+    int processImageForFrontend(const cv::Mat& originalImage16, const QString& cameraCFA, bool ProcessBin, const QString& sourceTag);
+    void CaptureImageSaveAsync();
 
     // 视口驱动的瓦片生成（按当前 zoom/位置优先生成视口内 z/x/y）
     void scheduleViewportTileGeneration();
     void generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs);
     /** 同步生成当前视口要显示的瓦片，确保发送 GPM 前前端请求的瓦片已落盘，避免 404；无视口时退化为 z=0 全层 */
     void generateVisibleTilesSync(quint64 epoch);
+    /** merged_single_level: 后台补齐 z=maxZ 整层原图瓦片，避免轮询时 ready 数长期停在当前视口附近 */
+    void scheduleFullResTileCompletion();
+    void generateFullResTiles_Once(quint64 epoch);
     static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
     static QString buildTileSessionId(quint64 frameId);
     int currentTilePreviewBinning() const;
@@ -674,7 +682,7 @@ public:
         double gainB;             // B通道增益
         QString sessionId;        // 会话ID (用于瓦片缓存)
         quint64 frameId = 0;      // 帧ID（与 tilePyramidEpoch/epoch 对齐，用于前后端丢弃旧帧/防错帧）
-        QString buildMode = "pyramid"; // 瓦片构建模式：pyramid / merged_single_level
+        QString buildMode = "merged_single_level"; // 瓦片构建模式：pyramid / merged_single_level
 
         // 直方图（用于前端拉伸/显示）
         int histogramBins = 0;                 // bin 数（建议 256）
@@ -731,6 +739,10 @@ public:
      * @param gpm GPM元数据
      */
     void sendGPMToClient(const TileGPM& gpm);
+    void sendTileBatchReadyToClient(const QString& sessionId, quint64 frameId, const QStringList& tileKeys);
+    void sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId);
+    void sendTileGenerationCompleteToClient(const QString& sessionId, quint64 frameId);
+    void sendCurrentTileGenerationCompleteSnapshotToClient(const QString& sessionId, quint64 frameId);
 
     /**
      * @brief 发送直方图数据到前端（与 TileGPM 分开，避免破坏既有解析）
@@ -761,7 +773,7 @@ public:
     int tilePyramidFastBudgetMs = 100;                // 同步阶段预算（毫秒）
     int tilePyramidFastSyncMaxZ = 1;                  // 同步生成的最大层级（z=0 为最低精度）；其余后台生成
     bool tilePyramidFastEnableMedianBlur = false;     // 同步阶段是否做 medianBlur（大图可能超时）
-    QString tileBuildMode = QStringLiteral("pyramid"); // 瓦片构建模式：金字塔 / 合并图+单层细化
+    QString tileBuildMode = QStringLiteral("merged_single_level"); // 瓦片构建模式：金字塔 / 合并图+单层细化
 
     // 前端视口参数（来自 Vue_Command: sendVisibleArea:x:y:scale）
     std::atomic<double> tileViewportX{0.0};           // 视口中心 X（原图像素）
@@ -787,11 +799,14 @@ public:
 
     std::atomic_bool tileViewportGenInFlight{false};
     std::atomic_bool tileViewportGenPending{false};
+    std::atomic_bool tileFullResGenInFlight{false};
+    std::atomic_bool tileFullResGenPending{false};
 
     // “已生成瓦片”去重（同一 epoch 内避免重复写同一 z/x/y）
     mutable std::mutex tileGenDoneMutex;
     quint64 tileGenDoneEpoch = 0;
     std::unordered_set<uint64_t> tileGenDoneKeys;
+    quint64 tileGenCompleteEpoch = 0;
 
 
     /**
@@ -1012,8 +1027,12 @@ public:
 
     /** FocusingLooping 在真正下发曝光前记录：与当前帧 FITS/.bin 像素对应的传感器 ROI 原点（scaled 空间）及坐标系倍率 */
     bool lastFocusExposureSnapshotValid = false;
+    /** 对焦快照：ROI 起点在「有效区坐标系」下的缩放坐标（× binning 后，相对有效区原点），与前端 ROI_x/y 语义一致 */
     int lastFocusExposureScaledX = 0;
     int lastFocusExposureScaledY = 0;
+    /** 与 scaled 相加得到全幅/芯片缓冲中的裁剪起点；无有效区信息时为 0 */
+    int lastFocusExposureEffMinX = 0;
+    int lastFocusExposureEffMinY = 0;
     int lastFocusExposureRoiCoordScale = 1;
     /** 本次曝光请求的 ROI 宽高（传感器像素，与 SetResolution/setCCDFrameInfo 一致）；用于全幅 FITS 下裁剪 .bin */
     int lastFocusExposureRoiW = 0;
