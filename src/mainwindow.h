@@ -85,7 +85,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260331"  // 手动指定版本号
+#define QT_Client_Version "20260401"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -634,15 +634,23 @@ public:
      * @param ProcessBin 是否进行 bin 处理
      * @return 0 成功，非 0 失败
      */
-    int saveFitsAsPNG(QString fitsFileName, bool ProcessBin);
+    int saveFitsAsPNG(QString fitsFileName, bool ProcessBin, std::function<void(bool)> onComplete = {});
     // 实际执行（可能耗时）的实现：由 saveFitsAsPNG() 异步调度调用
     int saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin);
+    // SDK 单帧直通前端后处理：避免“先写 FITS 再读 FITS”带来的额外 IO 延迟
+    int saveFitsAsPNG_FromSdkFrame(const std::shared_ptr<SdkFrameData>& frame, bool ProcessBin, std::function<void(bool)> onComplete = {});
+    int saveFitsAsPNG_FromSdkFrame_Worker(std::shared_ptr<SdkFrameData> frame, bool ProcessBin);
+    int processImageForFrontend(const cv::Mat& originalImage16, const QString& cameraCFA, bool ProcessBin, const QString& sourceTag);
+    void CaptureImageSaveAsync();
 
     // 视口驱动的瓦片生成（按当前 zoom/位置优先生成视口内 z/x/y）
     void scheduleViewportTileGeneration();
     void generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs);
     /** 同步生成当前视口要显示的瓦片，确保发送 GPM 前前端请求的瓦片已落盘，避免 404；无视口时退化为 z=0 全层 */
     void generateVisibleTilesSync(quint64 epoch);
+    /** merged_single_level: 后台补齐 z=maxZ 整层原图瓦片，避免轮询时 ready 数长期停在当前视口附近 */
+    void scheduleFullResTileCompletion();
+    void generateFullResTiles_Once(quint64 epoch);
     static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
     static QString buildTileSessionId(quint64 frameId);
     int currentTilePreviewBinning() const;
@@ -731,6 +739,10 @@ public:
      * @param gpm GPM元数据
      */
     void sendGPMToClient(const TileGPM& gpm);
+    void sendTileBatchReadyToClient(const QString& sessionId, quint64 frameId, const QStringList& tileKeys);
+    void sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId);
+    void sendTileGenerationCompleteToClient(const QString& sessionId, quint64 frameId);
+    void sendCurrentTileGenerationCompleteSnapshotToClient(const QString& sessionId, quint64 frameId);
 
     /**
      * @brief 发送直方图数据到前端（与 TileGPM 分开，避免破坏既有解析）
@@ -787,11 +799,14 @@ public:
 
     std::atomic_bool tileViewportGenInFlight{false};
     std::atomic_bool tileViewportGenPending{false};
+    std::atomic_bool tileFullResGenInFlight{false};
+    std::atomic_bool tileFullResGenPending{false};
 
     // “已生成瓦片”去重（同一 epoch 内避免重复写同一 z/x/y）
     mutable std::mutex tileGenDoneMutex;
     quint64 tileGenDoneEpoch = 0;
     std::unordered_set<uint64_t> tileGenDoneKeys;
+    quint64 tileGenCompleteEpoch = 0;
 
 
     /**

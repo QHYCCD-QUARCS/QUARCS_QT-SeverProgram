@@ -3674,6 +3674,16 @@ void MainWindow::onMessageReceived(const QString &message)
         // 视口变化：调度“按需补瓦片”（不会阻塞主线程；会做合并/节流）
         scheduleViewportTileGeneration();
     }
+    else if (parts[0].trimmed() == "queryTileBatchReady" && parts.size() == 3)
+    {
+        const QString sessionId = parts[1].trimmed();
+        const quint64 frameId = parts[2].trimmed().toULongLong();
+        Logger::Log("queryTileBatchReady: session=" + sessionId.toStdString() +
+                        ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)),
+                    LogLevel::DEBUG, DeviceType::MAIN);
+        sendCurrentTileBatchReadySnapshotToClient(sessionId, frameId);
+        sendCurrentTileGenerationCompleteSnapshotToClient(sessionId, frameId);
+    }
     else if (parts[0].trimmed() == "sendSelectStars" && parts.size() == 3)
     {
         Logger::Log("sendSelectStars ...", LogLevel::DEBUG, DeviceType::MAIN);
@@ -5357,7 +5367,7 @@ MeridianStatus MainWindow::checkMeridianStatus()
 //     }
 // }
 
-int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
+int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin, std::function<void(bool)> onComplete)
 {
     // 目标：主线程不阻塞；重活放后台，并可用 epoch 取消旧帧任务
     const quint64 epoch = ++tilePyramidEpoch;
@@ -5365,15 +5375,40 @@ int MainWindow::saveFitsAsPNG(QString fitsFileName, bool ProcessBin)
     const QString fitsCopy = fitsFileName;
     const bool processBinCopy = ProcessBin;
 
-    QtConcurrent::run([self, epoch, fitsCopy, processBinCopy]() {
+    QtConcurrent::run([self, epoch, fitsCopy, processBinCopy, onComplete]() {
         if (!self) return;
         if (self->tilePyramidEpoch.load() != epoch) return;
         const int rc = self->saveFitsAsPNG_Worker(fitsCopy, processBinCopy);
 
         // Live 模式的“处理链路 busy”必须在处理结束后再释放（否则会导致每帧都排队重处理）
-        QMetaObject::invokeMethod(self, [self, epoch, rc]() {
+        QMetaObject::invokeMethod(self, [self, epoch, rc, onComplete]() {
             if (!self) return;
             if (self->tilePyramidEpoch.load() != epoch) return;
+            if (onComplete) onComplete(rc == 0);
+            (void)rc;
+            self->sdkMainLiveProcessingBusy = false;
+        }, Qt::QueuedConnection);
+    });
+
+    return 0;
+}
+
+int MainWindow::saveFitsAsPNG_FromSdkFrame(const std::shared_ptr<SdkFrameData>& frame, bool ProcessBin, std::function<void(bool)> onComplete)
+{
+    const quint64 epoch = ++tilePyramidEpoch;
+    QPointer<MainWindow> self(this);
+    const bool processBinCopy = ProcessBin;
+    auto frameCopy = frame;
+
+    QtConcurrent::run([self, epoch, processBinCopy, frameCopy, onComplete]() {
+        if (!self || !frameCopy) return;
+        if (self->tilePyramidEpoch.load() != epoch) return;
+        const int rc = self->saveFitsAsPNG_FromSdkFrame_Worker(frameCopy, processBinCopy);
+
+        QMetaObject::invokeMethod(self, [self, epoch, rc, onComplete]() {
+            if (!self) return;
+            if (self->tilePyramidEpoch.load() != epoch) return;
+            if (onComplete) onComplete(rc == 0);
             (void)rc;
             self->sdkMainLiveProcessingBusy = false;
         }, Qt::QueuedConnection);
@@ -5390,21 +5425,8 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
     const quint64 epochAtStart = tilePyramidEpoch.load();
     
-    // 创建MainCameraCFA的局部副本，防止多线程竞态条件导致的值污染
-    QString localCameraCFA = MainCameraCFA;
-    
-    // 验证CFA值的合法性
-    QStringList validCFAValues = {"RGGB", "BGGR", "GRBG", "GBRG", "RG", "BG", "GR", "GB", "", "null"};
-    if (!validCFAValues.contains(localCameraCFA))
-    {
-        Logger::Log("saveFitsAsPNG | Invalid MainCameraCFA value detected: '" + localCameraCFA.toStdString() + 
-                   "'. Using empty (Mono mode) for this operation.", LogLevel::ERROR, DeviceType::CAMERA);
-        localCameraCFA = "";  // 使用单色相机模式
-    }
-    
     cv::Mat image;
     cv::Mat originalImage16;
-    cv::Mat image16;
     Logger::Log("FITS file path: " + fitsFileName.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     int status = Tools::readFits(fitsFileName.toLocal8Bit().constData(), image);
 
@@ -5434,6 +5456,123 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
         return -1;
     }
 
+    // 创建MainCameraCFA的局部副本，防止多线程竞态条件导致的值污染
+    QString localCameraCFA = MainCameraCFA;
+
+    // 验证CFA值的合法性
+    QStringList validCFAValues = {"RGGB", "BGGR", "GRBG", "GBRG", "RG", "BG", "GR", "GB", "", "null"};
+    if (!validCFAValues.contains(localCameraCFA))
+    {
+        Logger::Log("saveFitsAsPNG | Invalid MainCameraCFA value detected: '" + localCameraCFA.toStdString() +
+                   "'. Using empty (Mono mode) for this operation.", LogLevel::ERROR, DeviceType::CAMERA);
+        localCameraCFA = "";
+    }
+
+    const int rc = processImageForFrontend(originalImage16, localCameraCFA, ProcessBin, fitsFileName);
+    if (rc != 0) {
+        return rc;
+    }
+
+    if (!fitsFileName.contains("ccd_simulator_original.fits"))
+    {
+        const QString destinationPath = QStringLiteral("/dev/shm/ccd_simulator_original.fits");
+        QFile::remove(destinationPath);
+        QFile::copy(fitsFileName, destinationPath);
+    }
+
+    return 0;
+}
+
+int MainWindow::saveFitsAsPNG_FromSdkFrame_Worker(std::shared_ptr<SdkFrameData> frame, bool ProcessBin)
+{
+    Logger::Log("Starting to save SDK frame as PNG...", LogLevel::INFO, DeviceType::CAMERA);
+    if (!frame)
+    {
+        Logger::Log("saveFitsAsPNG_FromSdkFrame | frame is null", LogLevel::ERROR, DeviceType::CAMERA);
+        return -1;
+    }
+
+    cv::Mat sourceImage;
+    cv::Mat originalImage16;
+
+    if (!frame->pixels.empty())
+    {
+        const size_t needPixels = static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
+        if (frame->pixels.size() < needPixels)
+        {
+            Logger::Log("saveFitsAsPNG_FromSdkFrame | pixels buffer too small", LogLevel::ERROR, DeviceType::CAMERA);
+            return -1;
+        }
+        sourceImage = cv::Mat(frame->height, frame->width, CV_16UC1,
+                              const_cast<uint16_t*>(frame->pixels.data())).clone();
+    }
+    else if (frame->rawBuffer != nullptr && frame->rawBytes > 0)
+    {
+        if (frame->channels != 1 || (frame->bpp != 16 && frame->bpp != 8))
+        {
+            Logger::Log("saveFitsAsPNG_FromSdkFrame | unsupported rawBuffer format: bpp=" +
+                        std::to_string(frame->bpp) + " channels=" + std::to_string(frame->channels),
+                        LogLevel::ERROR, DeviceType::CAMERA);
+            return -1;
+        }
+
+        const size_t pixelCount = static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height);
+        const size_t needBytes = pixelCount * static_cast<size_t>(frame->bpp / 8);
+        if (frame->rawBuffer->size() < needBytes || frame->rawBytes < needBytes)
+        {
+            Logger::Log("saveFitsAsPNG_FromSdkFrame | rawBuffer too small: needBytes=" +
+                        std::to_string(needBytes) + " rawBytes=" + std::to_string(frame->rawBytes) +
+                        " bufSize=" + std::to_string(frame->rawBuffer->size()),
+                        LogLevel::ERROR, DeviceType::CAMERA);
+            return -1;
+        }
+
+        const int cvType = (frame->bpp == 16) ? CV_16UC1 : CV_8UC1;
+        sourceImage = cv::Mat(frame->height, frame->width, cvType, frame->rawBuffer->data()).clone();
+    }
+    else
+    {
+        Logger::Log("saveFitsAsPNG_FromSdkFrame | frame has no image payload", LogLevel::ERROR, DeviceType::CAMERA);
+        return -1;
+    }
+
+    originalImage16 = Tools::convert8UTo16U_BayerSafe(sourceImage, false);
+    if (originalImage16.empty())
+    {
+        Logger::Log("saveFitsAsPNG_FromSdkFrame | convert8UTo16U_BayerSafe returned empty image",
+                    LogLevel::ERROR, DeviceType::CAMERA);
+        return -1;
+    }
+
+    QString localCameraCFA = MainCameraCFA;
+    QStringList validCFAValues = {"RGGB", "BGGR", "GRBG", "GBRG", "RG", "BG", "GR", "GB", "", "null"};
+    if (!validCFAValues.contains(localCameraCFA))
+    {
+        Logger::Log("saveFitsAsPNG_FromSdkFrame | Invalid MainCameraCFA value detected: '" +
+                    localCameraCFA.toStdString() + "'. Using empty (Mono mode) for this operation.",
+                    LogLevel::ERROR, DeviceType::CAMERA);
+        localCameraCFA = "";
+    }
+
+    const int rc = processImageForFrontend(originalImage16, localCameraCFA, ProcessBin, QStringLiteral("sdk_frame"));
+    if (rc != 0) {
+        return rc;
+    }
+
+    const std::string fitsPath = "/dev/shm/ccd_simulator.fits";
+    SaveQhyFrameDataToFits(*frame, fitsPath);
+    const QString destinationPath = QStringLiteral("/dev/shm/ccd_simulator_original.fits");
+    QFile::remove(destinationPath);
+    QFile::copy(QString::fromStdString(fitsPath), destinationPath);
+    return 0;
+}
+
+int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QString& cameraCFA, bool ProcessBin, const QString& sourceTag)
+{
+    const quint64 epochAtStart = tilePyramidEpoch.load();
+    cv::Mat originalImage16 = inputImage16.clone();
+    cv::Mat image16;
+
     // 中值滤波（可选）：大图上会显著增加耗时；默认在 fast 模式关闭
     if (tilePyramidFastEnableMedianBlur) {
         Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
@@ -5452,8 +5591,9 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     }
 
     // 使用局部CFA副本，避免全局变量在多线程环境中被污染
-    bool isColor = !(localCameraCFA == "" || localCameraCFA == "null");
-    Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + localCameraCFA.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    bool isColor = !(cameraCFA == "" || cameraCFA == "null");
+    Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + cameraCFA.toStdString() +
+                " source: " + sourceTag.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     // 记录预览/解析保存使用的软件 bin 因子（用于前端对照调试）
     int binningFactor = 1;
@@ -5470,20 +5610,27 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
 
     if (ProcessBin && binningFactor != 1)
     {
+        // 单色大图预览优先走 OpenCV INTER_AREA，避免通用 bin 路径带来的额外逐像素开销。
+        if (!isColor && originalImage16.type() == CV_16UC1)
+        {
+            const int newWidth = std::max(1, originalImage16.cols / binningFactor);
+            const int newHeight = std::max(1, originalImage16.rows / binningFactor);
+            cv::resize(originalImage16, image16, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
+        }
         // 使用新的Mat版本的PixelsDataSoftBin_Bayer函数
-        if (localCameraCFA == "RGGB" || localCameraCFA == "RG")
+        else if (cameraCFA == "RGGB" || cameraCFA == "RG")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_RGGB);
         }
-        else if (localCameraCFA == "BGGR" || localCameraCFA == "BG")
+        else if (cameraCFA == "BGGR" || cameraCFA == "BG")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_BGGR);
         }
-        else if (localCameraCFA == "GRBG" || localCameraCFA == "GR")
+        else if (cameraCFA == "GRBG" || cameraCFA == "GR")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_GRBG);
         }
-        else if (localCameraCFA == "GBRG" || localCameraCFA == "GB")
+        else if (cameraCFA == "GBRG" || cameraCFA == "GB")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_GBRG);
         }
@@ -5496,9 +5643,6 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     {
         image16 = originalImage16.clone();
     }
-
-    Tools::SaveMatToFITS(image16);
-    Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
 
     // 软件 bin 后图仅用于另一路 FITS 保存；瓦片源统一使用原图，避免在瓦片构建前提前合并。
     const cv::Mat& tileSourceImage = originalImage16;
@@ -5543,9 +5687,12 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
         return -1;
     }
 
-    // 计算 GPM，并为前端白平衡/直方图面板同步生成 histogram 文件
+    // 先计算“快速 GPM”用于首帧显示：
+    // - 不等待完整直方图
+    // - 大图会走子采样统计，尽快把可显示的 black/white 发给前端
+    // 完整直方图与更细统计放到后台补发，避免首帧额外等待 1s+
     int maxMergeFactor = 16;
-    TileGPM gpm = calculateGPM(tileSourceImage, localCameraCFA, maxMergeFactor, /*enableHistogram=*/true);
+    TileGPM gpm = calculateGPM(tileSourceImage, cameraCFA, maxMergeFactor, /*enableHistogram=*/false);
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
     gpm.previewHeight = image16.rows;
@@ -5566,7 +5713,7 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
         tileFrame.previewBinningFactor = binningFactor;
         tileFrame.tileSize = tilePyramidTileSize;
         tileFrame.maxZoomLevel = gpm.maxZoomLevel;
-        tileFrame.cfa = localCameraCFA;
+        tileFrame.cfa = cameraCFA;
         tileFrameImage16 = std::make_shared<cv::Mat>(tileSourceImage); // 共享底层buffer（ref-count）
     }
 
@@ -5575,6 +5722,9 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
 
     // 初次：按当前视口优先生成其它层级/视口瓦片，其余在视口变化时再按需补齐
     scheduleViewportTileGeneration();
+    if (gpm.buildMode == QStringLiteral("merged_single_level")) {
+        scheduleFullResTileCompletion();
+    }
 
     // 发送GPM到前端
     if (tilePyramidEpoch.load() != epochAtStart) {
@@ -5582,10 +5732,76 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
         return -1;
     }
     sendGPMToClient(gpm);
-    // 同步发送直方图（前端可用于拉伸/显示）
-    sendHistogramToClient(gpm);
     // 删除其它旧会话的瓦片目录，仅保留当前 sessionId
     cleanupOldTileSessionDirs(sessionId);
+
+    // 预览 FITS 挪到后台保存，避免首帧显示被额外 IO/编码阻塞。
+    auto previewFitsImage = std::make_shared<cv::Mat>(image16);
+    QtConcurrent::run([previewFitsImage]() {
+        if (!previewFitsImage || previewFitsImage->empty()) return;
+        Tools::SaveMatToFITS(*previewFitsImage);
+        Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
+    });
+
+    // 后台补充完整直方图与更精确的拉伸参数：
+    // - 这里对 preview/bin 后的小图做完整统计，速度远快于全分辨率原图
+    // - 使用相同 sessionId/frameId 再发一次 TileGPM，前端会在同一帧上更新 black/white，而不会切新会话
+    auto previewStatsImage = std::make_shared<cv::Mat>(image16.clone());
+    const QString asyncSessionId = sessionId;
+    const QString asyncBuildMode = gpm.buildMode;
+    const quint64 asyncFrameId = epochAtStart;
+    const int asyncImageWidth = gpm.imageWidth;
+    const int asyncImageHeight = gpm.imageHeight;
+    const int asyncTileSize = gpm.tileSize;
+    const int asyncMaxZoomLevel = gpm.maxZoomLevel;
+    const int asyncPreviewWidth = gpm.previewWidth;
+    const int asyncPreviewHeight = gpm.previewHeight;
+    const int asyncPreviewBin = gpm.previewBinningFactor;
+    const QString asyncCfa = gpm.cfa;
+    const double asyncGainR = gpm.gainR;
+    const double asyncGainB = gpm.gainB;
+    QPointer<MainWindow> self(this);
+    QtConcurrent::run([self,
+                       previewStatsImage,
+                       asyncSessionId,
+                       asyncBuildMode,
+                       asyncFrameId,
+                       asyncImageWidth,
+                       asyncImageHeight,
+                       asyncTileSize,
+                       asyncMaxZoomLevel,
+                       asyncPreviewWidth,
+                       asyncPreviewHeight,
+                       asyncPreviewBin,
+                       asyncCfa,
+                       asyncGainR,
+                       asyncGainB,
+                       maxMergeFactor]() {
+        if (!self || !previewStatsImage || previewStatsImage->empty()) return;
+        if (self->tilePyramidEpoch.load() != asyncFrameId) return;
+
+        TileGPM refined = self->calculateGPM(*previewStatsImage, asyncCfa, maxMergeFactor, /*enableHistogram=*/true);
+        refined.sessionId = asyncSessionId;
+        refined.frameId = asyncFrameId;
+        refined.buildMode = asyncBuildMode;
+        refined.imageWidth = asyncImageWidth;
+        refined.imageHeight = asyncImageHeight;
+        refined.tileSize = asyncTileSize;
+        refined.maxZoomLevel = asyncMaxZoomLevel;
+        refined.previewWidth = asyncPreviewWidth;
+        refined.previewHeight = asyncPreviewHeight;
+        refined.previewBinningFactor = asyncPreviewBin;
+        refined.cfa = asyncCfa;
+        refined.gainR = asyncGainR;
+        refined.gainB = asyncGainB;
+
+        QMetaObject::invokeMethod(self, [self, refined]() {
+            if (!self) return;
+            if (self->tilePyramidEpoch.load() != refined.frameId) return;
+            self->sendGPMToClient(refined);
+            self->sendHistogramToClient(refined);
+        }, Qt::QueuedConnection);
+    });
 
     // 更新状态（回主线程，避免数据竞争；同时在这里触发 loop capture）
     QMetaObject::invokeMethod(this, [this, sessionId, epochAtStart]() {
@@ -5628,16 +5844,6 @@ int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
     Logger::Log("Tile GPM sent; viewport-driven tiles scheduled.", LogLevel::INFO, DeviceType::CAMERA);
     // ========================= 视口驱动瓦片结束 =========================
 
-    if (!fitsFileName.contains("ccd_simulator_original.fits"))
-    {
-        QString destinationPath = "/dev/shm/ccd_simulator_original.fits";
-        QFile destinationFile(destinationPath);
-        if (destinationFile.exists())
-        {
-            destinationFile.remove();
-        }
-        QFile::copy(fitsFileName, destinationPath);
-    }
     // 移除这里的 setCaptureComplete 调用，避免与外部调用重复
     // 调用者会在需要时调用 autoFocus->setCaptureComplete()
     // if (isAutoFocus)
@@ -5866,6 +6072,14 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
                 if (wi <= bi) bi = std::max<long long>(0, wi - 1);
             }
 
+            // 过曝保护：当画面整体接近饱和时，保留一个明显更亮的窗口，
+            // 避免前端把“高亮满屏”拉成近黑。
+            if (mean >= static_cast<long double>(maxValue) * 0.85L ||
+                minV >= static_cast<uint16_t>(maxValue * 0.75)) {
+                wi = maxValue;
+                bi = std::min<long long>(bi, maxValue / 2);
+            }
+
             uint16_t B = static_cast<uint16_t>(bi);
             uint16_t W = static_cast<uint16_t>(wi);
             if (B >= maxValue && W >= maxValue) {
@@ -5977,6 +6191,50 @@ void MainWindow::scheduleViewportTileGeneration()
     });
 }
 
+void MainWindow::scheduleFullResTileCompletion()
+{
+    if (tileBuildMode.trimmed() != QStringLiteral("merged_single_level")) {
+        return;
+    }
+
+    if (tileFullResGenInFlight.exchange(true))
+    {
+        tileFullResGenPending = true;
+        return;
+    }
+
+    tileFullResGenPending = false;
+
+    TileFrameState st;
+    std::shared_ptr<cv::Mat> img;
+    {
+        std::lock_guard<std::mutex> lk(tileFrameMutex);
+        st = tileFrame;
+        img = tileFrameImage16;
+    }
+    if (!img || img->empty() || st.sessionId.isEmpty() || st.imageWidth <= 0 || st.imageHeight <= 0)
+    {
+        tileFullResGenInFlight = false;
+        return;
+    }
+
+    const quint64 epoch = st.epoch;
+    QPointer<MainWindow> self(this);
+    QtConcurrent::run([self, epoch]() {
+        if (!self) return;
+        self->generateFullResTiles_Once(epoch);
+
+        QMetaObject::invokeMethod(self, [self]() {
+            if (!self) return;
+            self->tileFullResGenInFlight = false;
+            if (self->tileFullResGenPending.exchange(false))
+            {
+                self->scheduleFullResTileCompletion();
+            }
+        }, Qt::QueuedConnection);
+    });
+}
+
 void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs)
 {
     TileFrameState st;
@@ -6029,28 +6287,51 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         return false;
     };
 
-    // merged_single_level：仅两层——z=0 压缩合并整图 + z=maxZ 原图整图
+    // 与前端当前请求策略保持一致：
+    // - 始终优先 z=0 整图预览，保证首帧能尽快显示
+    // - 再补 currentZ-1 / currentZ，作为当前视口的渐进细化层
+    // 这样避免 pyramid 模式一次性生成 0..maxZ 全层，减少首帧等待和无效工作。
     std::vector<int> levelsToGenerate;
     if (mergedSingleLevelMode) {
-        levelsToGenerate.push_back(0);
-        if (maxZ > 0) levelsToGenerate.push_back(maxZ);
-    } else {
-        levelsToGenerate.reserve(static_cast<size_t>(maxZ + 1));
-        for (int z = 0; z <= maxZ; ++z) {
-            levelsToGenerate.push_back(z);
+        // merged_single_level 下，z=0 预览已经由 generateVisibleTilesSync()
+        // 在发出 TileGPM 前同步生成完成。这里的后台视口任务只负责
+        // 当前视口的高分辨率原图瓦片，避免把 100ms 预算浪费在重复生成 z=0 上。
+        if (maxZ > 0) {
+            levelsToGenerate.push_back(maxZ);
+        } else {
+            levelsToGenerate.push_back(0);
         }
+    } else {
+        const int coarseZ = std::max(0, currentZ - 1);
+        levelsToGenerate = {0, coarseZ, currentZ};
+        std::sort(levelsToGenerate.begin(), levelsToGenerate.end());
+        levelsToGenerate.erase(std::unique(levelsToGenerate.begin(), levelsToGenerate.end()), levelsToGenerate.end());
     }
 
     int totalWritten = 0;
+    QStringList readyTileKeys;
+    std::set<uint64_t> doneKeys;
+    bool completedAllRequestedTiles = true;
+    auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
+        return (static_cast<uint64_t>(tz) << 40) |
+               (static_cast<uint64_t>(tx) << 20) |
+               static_cast<uint64_t>(ty);
+    };
     for (int z : levelsToGenerate)
     {
-        if (shouldStop()) break;
+        if (shouldStop()) {
+            completedAllRequestedTiles = false;
+            break;
+        }
 
         const int levelScaleInt = 1 << std::max(0, (maxZ - z)); // 2^(maxZ-z)
         const double levelScale = static_cast<double>(levelScaleInt);
+        const bool singlePreviewTile = mergedSingleLevelMode && (z == 0);
 
-        // merged_single_level：两层均为整图；pyramid：z=0 整图，z>0 视口
-        const bool fullImageForThisZ = (mergedSingleLevelMode || z == 0);
+        // 与前端请求策略保持一致：
+        // - z=0：整图单瓦片预览
+        // - z>0：仅当前视口范围的高分辨率瓦片
+        const bool fullImageForThisZ = (z == 0);
         const double left = fullImageForThisZ ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
         const double top = fullImageForThisZ ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
         const double right = fullImageForThisZ ? static_cast<double>(W) : std::min(static_cast<double>(W), left + visibleWidth);
@@ -6061,21 +6342,20 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         const double levelRight = right / levelScale;
         const double levelBottom = bottom / levelScale;
 
-        const int startX = static_cast<int>(std::floor(levelLeft / T));
-        const int startY = static_cast<int>(std::floor(levelTop / T));
-        const int endX = static_cast<int>(std::floor(levelRight / T));
-        const int endY = static_cast<int>(std::floor(levelBottom / T));
-
         const int levelWidth = static_cast<int>(std::ceil(W / levelScale));
         const int levelHeight = static_cast<int>(std::ceil(H / levelScale));
-        const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
-        const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+        const int maxTilesX = singlePreviewTile ? 1 : static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+        const int maxTilesY = singlePreviewTile ? 1 : static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+        const int startX = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelLeft / T));
+        const int startY = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelTop / T));
+        const int endX = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelRight / T) - 1.0);
+        const int endY = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelBottom / T) - 1.0);
 
         std::vector<TileReq> tiles;
         tiles.reserve(static_cast<size_t>(std::max(0, (endX - startX + 1) * (endY - startY + 1))));
 
-        const int cxTile = static_cast<int>(std::floor((visibleX / levelScale) / T));
-        const int cyTile = static_cast<int>(std::floor((visibleY / levelScale) / T));
+        const int cxTile = singlePreviewTile ? 0 : static_cast<int>(std::floor((visibleX / levelScale) / T));
+        const int cyTile = singlePreviewTile ? 0 : static_cast<int>(std::floor((visibleY / levelScale) / T));
 
         for (int ty = startY; ty <= endY; ++ty)
         {
@@ -6099,16 +6379,22 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
 
         for (const auto& t : tiles)
         {
-            if (shouldStop()) break;
+            if (shouldStop()) {
+                completedAllRequestedTiles = false;
+                break;
+            }
 
             const QString xDirPath = zDirPath + "/" + QString::number(t.x);
             QDir().mkpath(xDirPath);
             const QString tileFilePath = xDirPath + "/" + QString::number(t.y) + ".bin";
 
             // 每次视口生成都直接覆盖写，不保留旧的“已生成”去重记录，避免视口变化后沿用旧数据。
-            const int x0 = t.x * T;
-            const int y0 = t.y * T;
-            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER, T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+            const int x0 = singlePreviewTile ? 0 : (t.x * T);
+            const int y0 = singlePreviewTile ? 0 : (t.y * T);
+            const int coreWidth = singlePreviewTile ? levelWidth : T;
+            const int coreHeight = singlePreviewTile ? levelHeight : T;
+            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
+                                       coreWidth + 2 * TILE_BORDER, coreHeight + 2 * TILE_BORDER);
             const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
                                       wantedLevel.y * levelScaleInt,
                                       wantedLevel.width * levelScaleInt,
@@ -6142,15 +6428,157 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
             }
 
             saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
+            readyTileKeys.push_back(QString::number(z) + "/" + QString::number(t.x) + "/" + QString::number(t.y));
+            doneKeys.insert(makeKey(z, t.x, t.y));
             totalWritten++;
         }
     }
 
-    const std::string levelSummary = mergedSingleLevelMode
-        ? (levelsToGenerate.empty() ? std::string("none") : ("0," + std::to_string(maxZ)))
-        : ("0.." + std::to_string(maxZ));
+    std::string levelSummary;
+    if (mergedSingleLevelMode)
+    {
+        levelSummary = levelsToGenerate.empty() ? std::string("none") : ("0," + std::to_string(maxZ));
+    }
+    else
+    {
+        levelSummary.clear();
+        for (size_t i = 0; i < levelsToGenerate.size(); ++i)
+        {
+            if (i > 0) levelSummary += ",";
+            levelSummary += std::to_string(levelsToGenerate[i]);
+        }
+    }
     Logger::Log("generateViewportTiles_Once: wrote " + std::to_string(totalWritten) +
                " tiles (z=" + levelSummary + ") for session " + st.sessionId.toStdString(),
+               LogLevel::DEBUG, DeviceType::CAMERA);
+    if (!doneKeys.empty()) {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        if (tileGenDoneEpoch == epoch) {
+            for (uint64_t key : doneKeys) tileGenDoneKeys.insert(key);
+        }
+    }
+    if (!readyTileKeys.isEmpty()) {
+        sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+    }
+    if (completedAllRequestedTiles && !mergedSingleLevelMode) {
+        sendTileGenerationCompleteToClient(st.sessionId, epoch);
+    }
+}
+
+void MainWindow::generateFullResTiles_Once(quint64 epoch)
+{
+    TileFrameState st;
+    std::shared_ptr<cv::Mat> img;
+    {
+        std::lock_guard<std::mutex> lk(tileFrameMutex);
+        st = tileFrame;
+        img = tileFrameImage16;
+    }
+    if (!img || img->empty()) return;
+    if (st.epoch != epoch) return;
+    if (tilePyramidEpoch.load() != epoch) return;
+    if (tileBuildMode.trimmed() != QStringLiteral("merged_single_level")) return;
+
+    const int z = std::max(0, st.maxZoomLevel);
+    const int T = (st.tileSize > 0) ? st.tileSize : 512;
+    const int levelWidth = st.imageWidth;
+    const int levelHeight = st.imageHeight;
+    const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+    const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+    const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
+    const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+    constexpr int TILE_BORDER = 2;
+    constexpr int READY_BATCH_SIZE = 32;
+
+    auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
+        return (static_cast<uint64_t>(tz) << 40) |
+               (static_cast<uint64_t>(tx) << 20) |
+               static_cast<uint64_t>(ty);
+    };
+
+    if (!QDir().mkpath(zDirPath)) {
+        Logger::Log("generateFullResTiles_Once: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+        return;
+    }
+
+    int written = 0;
+    int skippedExisting = 0;
+    QStringList readyTileKeys;
+    readyTileKeys.reserve(READY_BATCH_SIZE);
+
+    for (int ty = 0; ty < maxTilesY; ++ty)
+    {
+        if (tilePyramidEpoch.load() != epoch) return;
+        for (int tx = 0; tx < maxTilesX; ++tx)
+        {
+            if (tilePyramidEpoch.load() != epoch) return;
+
+            const uint64_t packedKey = makeKey(z, tx, ty);
+            {
+                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
+                    skippedExisting++;
+                    continue;
+                }
+            }
+
+            const QString xDirPath = zDirPath + "/" + QString::number(tx);
+            if (!QDir().mkpath(xDirPath)) {
+                continue;
+            }
+            const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+
+            const int x0 = tx * T;
+            const int y0 = ty * T;
+            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
+                                       T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+            const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+            const cv::Rect srcRect = wantedLevel & boundsOrig;
+
+            cv::Mat padded;
+            if (srcRect.width <= 0 || srcRect.height <= 0)
+            {
+                padded = cv::Mat::zeros(wantedLevel.height, wantedLevel.width, img->type());
+            }
+            else
+            {
+                cv::Mat src = (*img)(srcRect);
+                const int topPad = srcRect.y - wantedLevel.y;
+                const int leftPad = srcRect.x - wantedLevel.x;
+                const int bottomPad = (wantedLevel.y + wantedLevel.height) - (srcRect.y + srcRect.height);
+                const int rightPad = (wantedLevel.x + wantedLevel.width) - (srcRect.x + srcRect.width);
+                cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+            }
+
+            saveTileFast_NoMkdir(padded, tileFilePath, TILE_BORDER);
+
+            {
+                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                if (tileGenDoneEpoch == epoch) {
+                    tileGenDoneKeys.insert(packedKey);
+                }
+            }
+
+            readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+            written++;
+
+            if (readyTileKeys.size() >= READY_BATCH_SIZE) {
+                sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+                readyTileKeys.clear();
+            }
+        }
+    }
+
+    if (!readyTileKeys.isEmpty()) {
+        sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+    }
+
+    sendTileGenerationCompleteToClient(st.sessionId, epoch);
+
+    Logger::Log("generateFullResTiles_Once: wrote " + std::to_string(written) +
+               " full-res tiles at z=" + std::to_string(z) +
+               " for session " + st.sessionId.toStdString() +
+               " (skippedExisting=" + std::to_string(skippedExisting) + ")",
                LogLevel::DEBUG, DeviceType::CAMERA);
 }
 
@@ -6184,13 +6612,18 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         ? std::max(MIN_VIEW_SCALE, std::min(MAX_VIEW_SCALE, sc))
         : 1.0;
     const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
-    // merged_single_level：仅两层 z=0 和 z=maxZ，均为整图
+    // 同步预生成阶段：
+    // - merged_single_level：首帧只保证 z=0 整图粗预览就绪，尽快把 TileGPM 发给前端；
+    //   z=maxZ 的细节层交给后台视口任务补齐，避免首帧被整图高精度瓦片阻塞。
+    // - pyramid：至少准备 z=0 整图预览 + currentZ 当前视口层，
+    //   这样前端在收到 TileGPM 后，请求预览图和当前层时都能尽量命中，避免首帧黑屏/404。
     std::vector<int> levelsToSync;
     if (mergedSingleLevelMode) {
         levelsToSync.push_back(0);
-        if (maxZ > 0) levelsToSync.push_back(maxZ);
     } else {
-        levelsToSync.push_back(calculateTileLevelFromScale(scale, maxZ));
+        levelsToSync = {0, calculateTileLevelFromScale(scale, maxZ)};
+        std::sort(levelsToSync.begin(), levelsToSync.end());
+        levelsToSync.erase(std::unique(levelsToSync.begin(), levelsToSync.end()), levelsToSync.end());
     }
 
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
@@ -6204,8 +6637,10 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         std::lock_guard<std::mutex> lk(tileGenDoneMutex);
         tileGenDoneEpoch = epoch;
         tileGenDoneKeys.clear();
+        tileGenCompleteEpoch = 0;
     }
     int totalCount = 0;
+    QStringList readyTileKeys;
     const double visibleWidth = W * scale;
     const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
 
@@ -6213,6 +6648,7 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         if (tilePyramidEpoch.load() != epoch) return;
         const int levelScaleInt = 1 << std::max(0, (maxZ - z));
         const double levelScale = static_cast<double>(levelScaleInt);
+        const bool singlePreviewTile = mergedSingleLevelMode && (z == 0);
         const bool fullImage = (mergedSingleLevelMode || z == 0);
         const double left = fullImage ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
         const double top = fullImage ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
@@ -6222,15 +6658,14 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         const double levelTop = top / levelScale;
         const double levelRight = right / levelScale;
         const double levelBottom = bottom / levelScale;
-
-        const int startX = static_cast<int>(std::floor(levelLeft / T));
-        const int startY = static_cast<int>(std::floor(levelTop / T));
-        const int endX = static_cast<int>(std::floor(levelRight / T));
-        const int endY = static_cast<int>(std::floor(levelBottom / T));
         const int levelWidth = static_cast<int>(std::ceil(static_cast<double>(W) / levelScale));
         const int levelHeight = static_cast<int>(std::ceil(static_cast<double>(H) / levelScale));
-        const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
-        const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+        const int maxTilesX = singlePreviewTile ? 1 : static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+        const int maxTilesY = singlePreviewTile ? 1 : static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+        const int startX = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelLeft / T));
+        const int startY = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelTop / T));
+        const int endX = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelRight / T) - 1.0);
+        const int endY = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelBottom / T) - 1.0);
 
         const QString zDirPath = sessionTilePath + "/" + QString::number(z);
         if (!QDir().mkpath(zDirPath)) {
@@ -6250,9 +6685,12 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                 if (!QDir().mkpath(xDirPath)) continue;
                 const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
 
-                const int x0 = tx * T;
-                const int y0 = ty * T;
-                const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER, T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+                const int x0 = singlePreviewTile ? 0 : (tx * T);
+                const int y0 = singlePreviewTile ? 0 : (ty * T);
+                const int coreWidth = singlePreviewTile ? levelWidth : T;
+                const int coreHeight = singlePreviewTile ? levelHeight : T;
+                const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
+                                           coreWidth + 2 * TILE_BORDER, coreHeight + 2 * TILE_BORDER);
                 const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
                                           wantedLevel.y * levelScaleInt,
                                           wantedLevel.width * levelScaleInt,
@@ -6278,6 +6716,7 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                     cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
                 }
                 saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
+                readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
             }
         }
         {
@@ -6285,12 +6724,26 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
             for (uint64_t k : doneKeys) tileGenDoneKeys.insert(k);
         }
     }
-    const std::string levelSummary = mergedSingleLevelMode
-        ? ("0," + std::to_string(maxZ))
-        : std::to_string(levelsToSync[0]);
+    std::string levelSummary;
+    if (mergedSingleLevelMode)
+    {
+        levelSummary = "0";
+    }
+    else
+    {
+        levelSummary.clear();
+        for (size_t i = 0; i < levelsToSync.size(); ++i)
+        {
+            if (i > 0) levelSummary += ",";
+            levelSummary += std::to_string(levelsToSync[i]);
+        }
+    }
     Logger::Log("generateVisibleTilesSync: wrote " + std::to_string(totalCount) + " tiles (z=" + levelSummary +
                (mergedSingleLevelMode ? ", merged 2-level" : "") +
                ") for session " + st.sessionId.toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
+    if (!readyTileKeys.isEmpty()) {
+        sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+    }
 }
 
 void MainWindow::saveTile(const cv::Mat& tile, int z, int x, int y, const QString& sessionId, int border)
@@ -6682,6 +7135,182 @@ void MainWindow::sendGPMToClient(const TileGPM& gpm)
 
     emit wsThread->sendMessageToClient(gpmMessage);
     Logger::Log("GPM sent to client: " + gpmMessage.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+}
+
+void MainWindow::sendTileBatchReadyToClient(const QString& sessionId, quint64 frameId, const QStringList& tileKeys)
+{
+    if (sessionId.isEmpty() || tileKeys.isEmpty()) {
+        return;
+    }
+
+    if (QThread::currentThread() != thread()) {
+        QPointer<MainWindow> self(this);
+        QMetaObject::invokeMethod(this, [self, sessionId, frameId, tileKeys]() {
+            if (!self) return;
+            self->sendTileBatchReadyToClient(sessionId, frameId, tileKeys);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    QJsonObject payload;
+    payload["sessionId"] = sessionId;
+    payload["frameId"] = QString::number(static_cast<qulonglong>(frameId));
+    QJsonArray tilesJson;
+    for (const QString& key : tileKeys) {
+        tilesJson.append(key);
+    }
+    payload["tiles"] = tilesJson;
+
+    const QString message = QStringLiteral("TileBatchReady:")
+        + QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    emit wsThread->sendMessageToClient(message);
+    QStringList sampleKeys;
+    const int sampleCount = std::min(8, tileKeys.size());
+    for (int i = 0; i < sampleCount; ++i) {
+        sampleKeys.push_back(tileKeys.at(i));
+    }
+    Logger::Log("TileBatchReady sent to client: session=" + sessionId.toStdString() +
+                    ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)) +
+                    ", count=" + std::to_string(tileKeys.size()) +
+                    ", sample=[" + sampleKeys.join(", ").toStdString() + "]",
+                LogLevel::DEBUG, DeviceType::CAMERA);
+}
+
+void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId)
+{
+    if (sessionId.isEmpty() || frameId == 0) {
+        return;
+    }
+
+    TileFrameState st;
+    {
+        std::lock_guard<std::mutex> lk(tileFrameMutex);
+        st = tileFrame;
+    }
+    if (st.sessionId != sessionId || st.epoch != frameId) {
+        Logger::Log("queryTileBatchReady ignored: current session/frame mismatch, currentSession=" +
+                        st.sessionId.toStdString() + ", currentFrame=" +
+                        std::to_string(static_cast<unsigned long long>(st.epoch)),
+                    LogLevel::DEBUG, DeviceType::CAMERA);
+        return;
+    }
+
+    std::vector<uint64_t> readyKeys;
+    {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        if (tileGenDoneEpoch != frameId || tileGenDoneKeys.empty()) {
+            return;
+        }
+        readyKeys.assign(tileGenDoneKeys.begin(), tileGenDoneKeys.end());
+    }
+
+    std::sort(readyKeys.begin(), readyKeys.end());
+    QStringList tileKeys;
+    tileKeys.reserve(static_cast<int>(readyKeys.size()));
+    for (uint64_t packedKey : readyKeys) {
+        const int z = static_cast<int>((packedKey >> 40) & ((1ULL << 24) - 1));
+        const int x = static_cast<int>((packedKey >> 20) & ((1ULL << 20) - 1));
+        const int y = static_cast<int>(packedKey & ((1ULL << 20) - 1));
+        tileKeys.push_back(QString::number(z) + "/" + QString::number(x) + "/" + QString::number(y));
+    }
+
+    Logger::Log("queryTileBatchReady snapshot: session=" + sessionId.toStdString() +
+                    ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)) +
+                    ", count=" + std::to_string(tileKeys.size()),
+                LogLevel::DEBUG, DeviceType::CAMERA);
+    sendTileBatchReadyToClient(sessionId, frameId, tileKeys);
+}
+
+void MainWindow::sendTileGenerationCompleteToClient(const QString& sessionId, quint64 frameId)
+{
+    if (sessionId.isEmpty() || frameId == 0) {
+        return;
+    }
+
+    if (QThread::currentThread() != thread()) {
+        QPointer<MainWindow> self(this);
+        QMetaObject::invokeMethod(this, [self, sessionId, frameId]() {
+            if (!self) return;
+            self->sendTileGenerationCompleteToClient(sessionId, frameId);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
+    TileFrameState st;
+    {
+        std::lock_guard<std::mutex> lk(tileFrameMutex);
+        st = tileFrame;
+    }
+    if (st.sessionId != sessionId || st.epoch != frameId || tilePyramidEpoch.load() != frameId) {
+        return;
+    }
+
+    size_t readyCount = 0;
+    {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        if (tileGenDoneEpoch != frameId) {
+            return;
+        }
+        if (tileGenCompleteEpoch == frameId) {
+            return;
+        }
+        readyCount = tileGenDoneKeys.size();
+        tileGenCompleteEpoch = frameId;
+    }
+
+    QJsonObject payload;
+    payload["sessionId"] = sessionId;
+    payload["frameId"] = QString::number(static_cast<qulonglong>(frameId));
+    payload["readyCount"] = static_cast<qint64>(readyCount);
+    payload["complete"] = true;
+
+    const QString message = QStringLiteral("TileGenerationComplete:")
+        + QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    emit wsThread->sendMessageToClient(message);
+
+    Logger::Log("TileGenerationComplete sent to client: session=" + sessionId.toStdString() +
+                    ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)) +
+                    ", readyCount=" + std::to_string(static_cast<unsigned long long>(readyCount)),
+                LogLevel::DEBUG, DeviceType::CAMERA);
+}
+
+void MainWindow::sendCurrentTileGenerationCompleteSnapshotToClient(const QString& sessionId, quint64 frameId)
+{
+    if (sessionId.isEmpty() || frameId == 0) {
+        return;
+    }
+
+    TileFrameState st;
+    {
+        std::lock_guard<std::mutex> lk(tileFrameMutex);
+        st = tileFrame;
+    }
+    if (st.sessionId != sessionId || st.epoch != frameId) {
+        return;
+    }
+
+    size_t readyCount = 0;
+    {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        if (tileGenCompleteEpoch != frameId) {
+            return;
+        }
+        readyCount = tileGenDoneKeys.size();
+    }
+
+    Logger::Log("queryTileGenerationComplete snapshot: session=" + sessionId.toStdString() +
+                    ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)),
+                LogLevel::DEBUG, DeviceType::CAMERA);
+
+    QJsonObject payload;
+    payload["sessionId"] = sessionId;
+    payload["frameId"] = QString::number(static_cast<qulonglong>(frameId));
+    payload["readyCount"] = static_cast<qint64>(readyCount);
+    payload["complete"] = true;
+
+    const QString message = QStringLiteral("TileGenerationComplete:")
+        + QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    emit wsThread->sendMessageToClient(message);
 }
 
 void MainWindow::sendHistogramToClient(const TileGPM& gpm)
@@ -13177,13 +13806,14 @@ void MainWindow::onSdkExposureTimerTimeout()
                         return;
                     }
 
+                    auto framePtr = std::make_shared<SdkFrameData>(std::move(frame));
                     const std::string fitsPath = "/dev/shm/ccd_simulator.fits";
-                    SaveQhyFrameDataToFits(frame, fitsPath);
 
                     glMainCameraStatu = "Displaying";
 
                     if (isRoiSnap)
                     {
+                        SaveQhyFrameDataToFits(*framePtr, fitsPath);
                         saveFitsAsJPG(QString::fromStdString(fitsPath), true);
                         Logger::Log("onSdkExposureTimerTimeout | ROI mode, saveFitsAsJPG complete",
                                     LogLevel::DEBUG, DeviceType::CAMERA);
@@ -13197,8 +13827,11 @@ void MainWindow::onSdkExposureTimerTimeout()
 
                         if (polarAlignment != nullptr && polarAlignment->isRunning())
                         {
+                            // PolarAlignment 后续会立即读取 /dev/shm/ccd_simulator.fits，
+                            // 这里必须先把本次 SDK 新帧落盘，再通知拍摄结束。
+                            SaveQhyFrameDataToFits(*framePtr, fitsPath);
                             polarAlignment->setCaptureEnd(true);
-                            Logger::Log("onSdkExposureTimerTimeout | ExposureCompleted -> polarAlignment capture end",
+                            Logger::Log("onSdkExposureTimerTimeout | ExposureCompleted -> polarAlignment capture end, FITS updated: " + fitsPath,
                                         LogLevel::INFO, DeviceType::MAIN);
                             return;
                         }
@@ -13206,20 +13839,27 @@ void MainWindow::onSdkExposureTimerTimeout()
                         // AutoFocus：SDK 主相机模式下，曝光完成需要通知 AutoFocus（否则会一直等待拍摄结束）
                         if (isAutoFocus && autoFocus != nullptr && autoFocus->isRunning())
                         {
-                            // 与 INDI 回调一致：把本次 FITS 路径交给 AutoFocus
-                            saveFitsAsPNG(QString::fromStdString(fitsPath), true);
-                            autoFocus->setCaptureComplete(QString::fromStdString(fitsPath));
-                            Logger::Log("onSdkExposureTimerTimeout | ExposureCompleted -> autoFocus capture complete: " + fitsPath,
-                                        LogLevel::INFO, DeviceType::FOCUSER);
+                            // 与 INDI 回调一致：处理完成并落盘后，再把本次 FITS 路径交给 AutoFocus
+                            saveFitsAsPNG_FromSdkFrame(framePtr, true, [this, fitsPath](bool ok) {
+                                if (!ok) return;
+                                if (autoFocus != nullptr && autoFocus->isRunning()) {
+                                    autoFocus->setCaptureComplete(QString::fromStdString(fitsPath));
+                                    Logger::Log("onSdkExposureTimerTimeout | ExposureCompleted -> autoFocus capture complete: " + fitsPath,
+                                                LogLevel::INFO, DeviceType::FOCUSER);
+                                }
+                            });
                             return;
                         }
 
-                        saveFitsAsPNG(QString::fromStdString(fitsPath), true);
-
                         if (mainCameraAutoSave && isScheduleRunning == false) {
-                            Logger::Log("onSdkExposureTimerTimeout | Auto Save enabled, saving captured image...",
-                                        LogLevel::INFO, DeviceType::CAMERA);
-                            CaptureImageSave();
+                            saveFitsAsPNG_FromSdkFrame(framePtr, true, [this](bool ok) {
+                                if (!ok) return;
+                                Logger::Log("onSdkExposureTimerTimeout | Auto Save enabled, saving captured image...",
+                                            LogLevel::INFO, DeviceType::CAMERA);
+                                CaptureImageSaveAsync();
+                            });
+                        } else {
+                            saveFitsAsPNG_FromSdkFrame(framePtr, true);
                         }
                     }
                     return;
@@ -17722,6 +18362,15 @@ int MainWindow::CaptureImageSave()
     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
     Logger::Log("CaptureImageSave | File saved successfully: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     return 0;
+}
+
+void MainWindow::CaptureImageSaveAsync()
+{
+    QPointer<MainWindow> self(this);
+    QtConcurrent::run([self]() {
+        if (!self) return;
+        self->CaptureImageSave();
+    });
 }
 
 void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
