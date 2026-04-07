@@ -17,6 +17,7 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <atomic>
+#include <limits>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -6277,75 +6278,125 @@ int Tools::fitQuadraticCurveForAutoFocus(const QVector<QPointF>& data, float& a,
         return std::isfinite(outA) && std::isfinite(outB) && std::isfinite(outC);
     };
 
+    struct CandidateFit {
+        float a = 0.0f;
+        float b = 0.0f;
+        float c = 0.0f;
+        int excludedIndex = -1;
+        double trimmedSse = std::numeric_limits<double>::infinity();
+        double totalSse = 0.0;
+        double vertex = std::numeric_limits<double>::quiet_NaN();
+        bool valid = false;
+    };
+
+    auto evaluateCandidate = [&](float candA, float candB, float candC, int excludedIndex) -> CandidateFit {
+        CandidateFit candidate;
+        candidate.a = candA;
+        candidate.b = candB;
+        candidate.c = candC;
+        candidate.excludedIndex = excludedIndex;
+
+        if (!std::isfinite(candA) || !std::isfinite(candB) || !std::isfinite(candC) ||
+            std::fabs(static_cast<double>(candA)) < 1e-12) {
+            return candidate;
+        }
+
+        candidate.vertex = -static_cast<double>(candB) / (2.0 * static_cast<double>(candA));
+
+        double minX = static_cast<double>(data[0].x());
+        double maxX = minX;
+        for (const QPointF& point : data) {
+            minX = std::min(minX, static_cast<double>(point.x()));
+            maxX = std::max(maxX, static_cast<double>(point.x()));
+        }
+
+        double typicalSpacing = 0.0;
+        if (n >= 2) {
+            typicalSpacing = (maxX - minX) / static_cast<double>(n - 1);
+        }
+        const double vertexMargin = std::max(typicalSpacing, 1.0);
+        if (!std::isfinite(candidate.vertex) ||
+            candidate.vertex < minX - vertexMargin ||
+            candidate.vertex > maxX + vertexMargin) {
+            return candidate;
+        }
+
+        QVector<double> squaredResiduals;
+        squaredResiduals.reserve(n);
+        for (const QPointF& point : data) {
+            const double x = static_cast<double>(point.x());
+            const double y = static_cast<double>(point.y());
+            const double yFit = static_cast<double>(candA) * x * x +
+                                static_cast<double>(candB) * x +
+                                static_cast<double>(candC);
+            const double residual = y - yFit;
+            const double residual2 = residual * residual;
+            squaredResiduals.append(residual2);
+            candidate.totalSse += residual2;
+        }
+
+        std::sort(squaredResiduals.begin(), squaredResiduals.end());
+        candidate.trimmedSse = 0.0;
+        const int trimmedCount = std::max(3, n - 1);
+        for (int i = 0; i < trimmedCount; ++i) {
+            candidate.trimmedSse += squaredResiduals[i];
+        }
+
+        candidate.valid = true;
+        return candidate;
+    };
+
     // 第一次拟合：使用全部点，获得初始曲线
     float a0 = 0.0f, b0 = 0.0f, c0 = 0.0f;
     if (!fitWithSubset(data, a0, b0, c0)) {
         return -1;
     }
 
-    // 计算残差，并根据标准差剔除离群点
-    QVector<double> residuals;
-    residuals.reserve(n);
-    double sumRes2 = 0.0;
-    for (int i = 0; i < n; ++i) {
-        const double x = static_cast<double>(data[i].x());
-        const double y = static_cast<double>(data[i].y());
-        const double yFit = static_cast<double>(a0) * x * x +
-                            static_cast<double>(b0) * x +
-                            static_cast<double>(c0);
-        const double r = y - yFit;
-        residuals.append(r);
-        sumRes2 += r * r;
-    }
+    CandidateFit bestCandidate = evaluateCandidate(a0, b0, c0, -1);
 
-    if (n <= 1) {
-        // 理论上不会发生，因为前面已经检查 n >= kMinPoints
-        a = a0;
-        b = b0;
-        c = c0;
-        return 0;
-    }
+    // 对自动对焦采样点数而言，枚举“去掉一个点后再拟合”很便宜，
+    // 但能显著降低单个误识别点把顶点拖偏的风险。
+    for (int excludedIndex = 0; excludedIndex < n; ++excludedIndex) {
+        QVector<QPointF> subset;
+        subset.reserve(n - 1);
+        for (int i = 0; i < n; ++i) {
+            if (i != excludedIndex) {
+                subset.append(data[i]);
+            }
+        }
+        if (subset.size() < kMinPoints) {
+            continue;
+        }
 
-    const double sigma = std::sqrt(sumRes2 / (n - 1));
-    // 若几乎无散布，直接使用全数据拟合结果即可
-    if (!std::isfinite(sigma) || sigma <= 0.0) {
-        a = a0;
-        b = b0;
-        c = c0;
-        return 0;
-    }
+        float candA = 0.0f, candB = 0.0f, candC = 0.0f;
+        if (!fitWithSubset(subset, candA, candB, candC)) {
+            continue;
+        }
 
-    const double kSigmaThreshold = 2.5; // 超过 2.5σ 视为离群点
-    QVector<QPointF> inliers;
-    inliers.reserve(n);
-    for (int i = 0; i < n; ++i) {
-        if (std::fabs(residuals[i]) <= kSigmaThreshold * sigma) {
-            inliers.append(data[i]);
+        CandidateFit candidate = evaluateCandidate(candA, candB, candC, excludedIndex);
+        if (!candidate.valid) {
+            continue;
+        }
+
+        if (!bestCandidate.valid ||
+            candidate.trimmedSse < bestCandidate.trimmedSse * 0.85 ||
+            (candidate.trimmedSse <= bestCandidate.trimmedSse * 1.02 &&
+             candidate.totalSse < bestCandidate.totalSse)) {
+            bestCandidate = candidate;
         }
     }
 
-    // 如果剔除后剩余点太少或没有真正剔除任何点，则退回到原始拟合结果
-    if (inliers.size() < kMinPoints || inliers.size() == n) {
+    if (!bestCandidate.valid) {
         a = a0;
         b = b0;
         c = c0;
         return 0;
     }
 
-    // 使用内点重新拟合
-    float a1 = 0.0f, b1 = 0.0f, c1 = 0.0f;
-    if (!fitWithSubset(inliers, a1, b1, c1)) {
-        // 若内点拟合失败，则仍然使用初始拟合结果
-        a = a0;
-        b = b0;
-        c = c0;
-        return 0;
-    }
-
-    a = a1;
-    b = b1;
-    c = c1;
-    return 0; // 拟合成功（已剔除离群点）
+    a = bestCandidate.a;
+    b = bestCandidate.b;
+    c = bestCandidate.c;
+    return 0;
 }
 
 double Tools::calculateRSquared(QVector<QPointF> data, float a, float b, float c) {
