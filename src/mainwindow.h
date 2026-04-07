@@ -797,6 +797,7 @@ public:
     mutable std::mutex tileFrameMutex;
     TileFrameState tileFrame;
     std::shared_ptr<cv::Mat> tileFrameImage16;        // CV_16UC1 原图（maxZoomLevel层）
+    std::shared_ptr<cv::Mat> tileFramePreviewImage16; // 预览图（image16），用于 z=0 首帧预览
 
     std::atomic_bool tileViewportGenInFlight{false};
     std::atomic_bool tileViewportGenPending{false};

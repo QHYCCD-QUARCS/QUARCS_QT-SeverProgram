@@ -2572,26 +2572,34 @@ void Tools::ImageSoftAWB(cv::Mat sourceImg16, cv::Mat& targetImg16, QString CFA,
   Logger::Log("CFA:" + std::string(CFA.toStdString()), LogLevel::INFO, DeviceType::MAIN);
   Logger::Log("gainR:" + std::to_string(gainR) + "," + "gainB:" + std::to_string(gainB), LogLevel::INFO, DeviceType::MAIN);
 
-  if (CFA == "RGGB") {
+  gain1 = 1.0;
+  gain2 = 1.0;
+  gain3 = 1.0;
+  gain4 = 1.0;
+
+  if (CFA == "RGGB" || CFA == "RG") {
     gain1 = 1.0 * gainR;
     gain2 = 1.0;
     gain3 = 1.0;
     gain4 = 1.0 * gainB;
-  } else if (CFA == "GR") {
+  } else if (CFA == "GRBG" || CFA == "GR") {
     gain1 = 1.0;
     gain2 = 1.0 * gainR;
     gain3 = 1.0 * gainB;
     gain4 = 1.0;
-  } else if (CFA == "GB") {
+  } else if (CFA == "GBRG" || CFA == "GB") {
     gain1 = 1.0;
     gain2 = 1.0 * gainB;
     gain3 = 1.0 * gainR;
     gain4 = 1.0;
-  } else if (CFA == "BG") {
+  } else if (CFA == "BGGR" || CFA == "BG") {
     gain1 = 1.0 * gainB;
     gain2 = 1.0;
     gain3 = 1.0;
     gain4 = 1.0 * gainR;
+  } else {
+    Logger::Log("ImageSoftAWB | unknown CFA, fallback to unity gains: " + std::string(CFA.toStdString()),
+                LogLevel::WARNING, DeviceType::MAIN);
   }
 
   // 遍历每个像素

@@ -5639,6 +5639,17 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + cameraCFA.toStdString() +
                 " source: " + sourceTag.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
+    auto applyAwbToRawBayer = [&](const cv::Mat& src, const char* tag) -> cv::Mat {
+        if (!isColor || src.empty()) {
+            return src.clone();
+        }
+        cv::Mat balanced(src.rows, src.cols, src.type());
+        Tools::ImageSoftAWB(src, balanced, cameraCFA, ImageGainR, ImageGainB, 30);
+        Logger::Log(std::string("Applied RAW AWB before tile/preview generation: ") + tag,
+                    LogLevel::INFO, DeviceType::CAMERA);
+        return balanced;
+    };
+
     // 记录预览/解析保存使用的软件 bin 因子（用于前端对照调试）
     int binningFactor = 1;
     if (ProcessBin) {
@@ -5686,6 +5697,11 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     else
     {
         image16 = originalImage16.clone();
+    }
+
+    if (isColor) {
+        originalImage16 = applyAwbToRawBayer(originalImage16, "tile-source");
+        image16 = applyAwbToRawBayer(image16, "preview-image");
     }
 
     // 软件 bin 后图仅用于另一路 FITS 保存；瓦片源统一使用原图，避免在瓦片构建前提前合并。
@@ -5759,6 +5775,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         tileFrame.maxZoomLevel = gpm.maxZoomLevel;
         tileFrame.cfa = cameraCFA;
         tileFrameImage16 = std::make_shared<cv::Mat>(tileSourceImage); // 共享底层buffer（ref-count）
+        tileFramePreviewImage16 = std::make_shared<cv::Mat>(image16);
     }
 
     // 先同步生成当前视口要显示的瓦片并落盘，再发 GPM，避免前端收到 GPM 后请求瓦片时 404（帧丢失）；无视口时退化为 z=0 全层
@@ -6630,10 +6647,12 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
 {
     TileFrameState st;
     std::shared_ptr<cv::Mat> img;
+    std::shared_ptr<cv::Mat> previewImg;
     {
         std::lock_guard<std::mutex> lk(tileFrameMutex);
         st = tileFrame;
         img = tileFrameImage16;
+        previewImg = tileFramePreviewImage16;
     }
     if (!img || img->empty() || st.sessionId.isEmpty() || st.imageWidth <= 0 || st.imageHeight <= 0) return;
     if (st.epoch != epoch || tilePyramidEpoch.load() != epoch) return;
@@ -6728,6 +6747,16 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                 const QString xDirPath = zDirPath + "/" + QString::number(tx);
                 if (!QDir().mkpath(xDirPath)) continue;
                 const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+
+                if (singlePreviewTile && previewImg && !previewImg->empty()) {
+                    cv::Mat previewTile;
+                    cv::copyMakeBorder(*previewImg, previewTile,
+                                       TILE_BORDER, TILE_BORDER, TILE_BORDER, TILE_BORDER,
+                                       cv::BORDER_REPLICATE);
+                    saveTileFast_NoMkdir(previewTile, tileFilePath, TILE_BORDER);
+                    readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+                    continue;
+                }
 
                 const int x0 = singlePreviewTile ? 0 : (tx * T);
                 const int y0 = singlePreviewTile ? 0 : (ty * T);
@@ -10026,6 +10055,27 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         {
             Logger::Log("AfterDeviceConnect | Processing SDK MainCamera connection", 
                        LogLevel::INFO, DeviceType::CAMERA);
+
+            const SdkDeviceHandle mainHandle = sdkMainCameraHandle;
+            auto sdkCallMain = [this, mainHandle](const SdkCommand &cmd) -> SdkResult {
+                if (mainHandle == nullptr)
+                {
+                    SdkResult r;
+                    r.success = false;
+                    r.errorCode = SdkErrorCode::InvalidParameter;
+                    r.message = "MainCamera handle is null during SDK initialization";
+                    return r;
+                }
+
+                if (sdkCamExec && sdkCamExec->isRunning())
+                {
+                    return sdkCamExec->postAndWait<SdkResult>([mainHandle, cmd]() {
+                        return SdkManager::instance().callByHandle(mainHandle, cmd);
+                    });
+                }
+
+                return SdkManager::instance().callByHandle(mainHandle, cmd);
+            };
             
             // ==================== SDK 主相机初始化流程 ====================
             // 记录“上一轮是否为相机内置 CFW”，用于在本轮未检测到 CFW 时清理前端残留状态
@@ -10044,7 +10094,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 rm.type = SdkCommandType::Custom;
                 rm.name = "SetReadMode";
                 rm.payload = 0;
-                SdkResult rmRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, rm);
+                SdkResult rmRes = sdkCallMain(rm);
                 if (!rmRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK SetReadMode(0) warn: " + rmRes.message,
                                 LogLevel::WARNING, DeviceType::CAMERA);
@@ -10058,7 +10108,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 streamCmd.type = SdkCommandType::Custom;
                 streamCmd.name = "SetStreamMode";
                 streamCmd.payload = streamMode;
-                SdkResult streamRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, streamCmd);
+                SdkResult streamRes = sdkCallMain(streamCmd);
                 if (!streamRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK SetStreamMode(pre-Init) failed: " + streamRes.message,
                                 LogLevel::ERROR, DeviceType::CAMERA);
@@ -10071,7 +10121,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 initCmd.type = SdkCommandType::Custom;
                 initCmd.name = "InitCamera";
                 initCmd.payload = std::any();
-                SdkResult initRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, initCmd);
+                SdkResult initRes = sdkCallMain(initCmd);
                 if (!initRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK InitCamera failed: " + initRes.message,
                                 LogLevel::ERROR, DeviceType::CAMERA);
@@ -10084,7 +10134,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             bitsCmd.name = "SetBitsMode";
             bitsCmd.payload = 16;
             // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult bitsRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, bitsCmd);
+            SdkResult bitsRes = sdkCallMain(bitsCmd);
             if (!bitsRes.success) {
                 Logger::Log("AfterDeviceConnect | SDK SetBitsMode failed: " + bitsRes.message, 
                            LogLevel::WARNING, DeviceType::CAMERA);
@@ -10096,7 +10146,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             chipInfoCmd.name = "GetChipInfo";
             chipInfoCmd.payload = std::any();
             // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult chipInfoRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, chipInfoCmd);
+            SdkResult chipInfoRes = sdkCallMain(chipInfoCmd);
             
             if (chipInfoRes.success) {
                 try {
@@ -10132,7 +10182,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 setUsbCmd.name = "SetUsbTraffic";
                 setUsbCmd.payload = static_cast<double>(glUsbTrafficValue);
                 // 直接通过设备句柄调用，无需指定驱动名称
-                SdkResult setUsbRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setUsbCmd);
+                SdkResult setUsbRes = sdkCallMain(setUsbCmd);
                 if (!setUsbRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK SetUsbTraffic failed: " + setUsbRes.message,
                                LogLevel::WARNING, DeviceType::CAMERA);
@@ -10153,7 +10203,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 setGainCmd.name = "SetGain";
                 setGainCmd.payload = static_cast<double>(CameraGain);
                 // 直接通过设备句柄调用，无需指定驱动名称
-                SdkResult setGainRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setGainCmd);
+                SdkResult setGainRes = sdkCallMain(setGainCmd);
                 if (!setGainRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK SetGain failed: " + setGainRes.message,
                                LogLevel::WARNING, DeviceType::CAMERA);
@@ -10170,7 +10220,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 setOffsetCmd.name = "SetOffset";
                 setOffsetCmd.payload = ImageOffset;
                 // 直接通过设备句柄调用，无需指定驱动名称
-                SdkResult setOffsetRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setOffsetCmd);
+                SdkResult setOffsetRes = sdkCallMain(setOffsetCmd);
                 if (!setOffsetRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK SetOffset failed: " + setOffsetRes.message,
                                LogLevel::WARNING, DeviceType::CAMERA);
@@ -10187,7 +10237,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 setTempCmd.name = "SetCoolerTargetTemperature";
                 setTempCmd.payload = CameraTemperature;
                 // 直接通过设备句柄调用，无需指定驱动名称
-                SdkResult setTempRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setTempCmd);
+                SdkResult setTempRes = sdkCallMain(setTempCmd);
                 if (!setTempRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK SetCoolerTargetTemperature failed: " + setTempRes.message,
                                LogLevel::WARNING, DeviceType::CAMERA);
@@ -10203,7 +10253,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             getGainCmd.name = "GetGain";
             getGainCmd.payload = std::any();
             // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult gainRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, getGainCmd);
+            SdkResult gainRes = sdkCallMain(getGainCmd);
             
             if (gainRes.success) {
                 try {
@@ -10232,7 +10282,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             getOffsetCmd.name = "GetOffset";
             getOffsetCmd.payload = std::any();
             // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult offsetRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, getOffsetCmd);
+            SdkResult offsetRes = sdkCallMain(getOffsetCmd);
             
             if (offsetRes.success) {
                 try {
@@ -10261,7 +10311,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             getUsbTrafficCmd.name = "GetUsbTraffic";
             getUsbTrafficCmd.payload = std::any();
             // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult usbRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, getUsbTrafficCmd);
+            SdkResult usbRes = sdkCallMain(getUsbTrafficCmd);
 
             if (usbRes.success) {
                 try {
@@ -10312,7 +10362,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             verCmd.name = "GetSdkVersion";
             verCmd.payload = std::any();
             // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult verRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, verCmd);
+            SdkResult verRes = sdkCallMain(verCmd);
             if (verRes.success) {
                 try {
                     std::string version = std::any_cast<std::string>(verRes.payload);
@@ -10329,7 +10379,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             colorCmd.name = "IsColorCamera";
             colorCmd.payload = std::any();
             // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult colorRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, colorCmd);
+            SdkResult colorRes = sdkCallMain(colorCmd);
             if (colorRes.success) {
                 try {
                     bool isColor = std::any_cast<bool>(colorRes.payload);
@@ -10381,7 +10431,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 plugCmd.name = "IsCFWPlugged";
                 plugCmd.payload = std::any();
                 // 直接通过设备句柄调用，无需指定驱动名称
-                SdkResult plugRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, plugCmd);
+                SdkResult plugRes = sdkCallMain(plugCmd);
                 if (plugRes.success && plugRes.payload.has_value())
                 {
                     bool plugged = false;
@@ -12659,16 +12709,16 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
     // -----------------------------
     // 2) 小工具：统一线程投递（可读性 + 去重）
     // -----------------------------
-    auto postToCamThread = [&](std::function<void()> fn) {
+    auto runOnCamThreadSync = [&](std::function<void()> fn) {
         if (sdkCamExec && sdkCamExec->isRunning())
-            sdkCamExec->post(std::move(fn));
+            sdkCamExec->postAndWait(std::move(fn));
         else
             fn();
     };
 
-    auto postToFocuserThread = [&](std::function<void()> fn) {
+    auto runOnFocuserThreadSync = [&](std::function<void()> fn) {
         if (sdkFocuserExec && sdkFocuserExec->isRunning())
-            sdkFocuserExec->post(std::move(fn));
+            sdkFocuserExec->postAndWait(std::move(fn));
         else
             fn();
     };
@@ -12733,7 +12783,7 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
     {
         const SdkDeviceHandle h = sdkFocuserHandle;
 
-        postToFocuserThread([h]() {
+        runOnFocuserThreadSync([h]() {
             // 直接通过设备句柄关闭，无需指定驱动名称
             SdkManager::instance().closeByHandle(h);
         });
@@ -12761,7 +12811,7 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
                 const SdkDeviceHandle mainHandle = sdkMainCameraHandle;
                 const int poolIndex = g_sdkMainCameraPoolIndex;
 
-                postToCamThread([=]() {
+                runOnCamThreadSync([=]() {
                     // 直接通过设备句柄调用，无需指定驱动名称
                     SdkManager::instance().callByHandle(mainHandle, makeCancelExposureCmd());
                     SdkManager::instance().closeByHandle(mainHandle);
@@ -12809,7 +12859,7 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
                 g_sdkQhyCamHandles[i] = nullptr;
             }
 
-            postToCamThread([=]() mutable {
+            runOnCamThreadSync([=]() mutable {
                 // 关闭所有句柄（尽量先取消曝光）
                 for (auto h : handles)
                 {
