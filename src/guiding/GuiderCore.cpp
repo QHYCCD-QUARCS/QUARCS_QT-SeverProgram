@@ -700,8 +700,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             else
             {
                 ++m_selectingNoStarFrameCount;
-                if (m_selectingNoStarFrameCount == 1 || (m_selectingNoStarFrameCount % 3) == 0)
-                    emit infoMessage(QStringLiteral("自动选星：当前帧未识别到可用星点，继续等待下一帧。"));
+                emit infoMessage(QStringLiteral("自动选星：当前帧未识别到可用星点，继续等待下一帧。"));
             }
         }
     }
@@ -2052,5 +2051,4 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     // 继续下一帧曝光（若本帧发了导星脉冲，则按 PHD2 风格延后：pulse->settle->next exposure）
     scheduleNextExposure(nextExposureDelayMs);
 }
-
 

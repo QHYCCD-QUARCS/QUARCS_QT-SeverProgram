@@ -3595,14 +3595,42 @@ QVector<FocusDataPoint> AutoFocus::removeOutliers(const QVector<FocusDataPoint>&
     
     // 方法3：基于位置分布的异常检测
     QVector<FocusDataPoint> cleanData3 = removeOutliersByPosition(data);
-    
-    // 优先选择保留最多数据点的方法，确保拟合有足够的数据点
-    QVector<FocusDataPoint> bestCleanData = cleanData1;
-    if (cleanData2.size() > bestCleanData.size()) {
-        bestCleanData = cleanData2; // IQR方法通常最宽松
-    }
-    if (cleanData3.size() > bestCleanData.size()) {
-        bestCleanData = cleanData3;
+
+    auto evaluateCandidate = [this](const QVector<FocusDataPoint>& candidate) -> double {
+        if (candidate.size() < g_autoFocusConfig.minDataPoints) {
+            return -std::numeric_limits<double>::infinity();
+        }
+
+        FitResult fit = performStandardLeastSquares(candidate);
+        if (!std::isfinite(fit.a) || !std::isfinite(fit.b) || !std::isfinite(fit.c) ||
+            !std::isfinite(fit.bestPosition) || !std::isfinite(fit.minHFR)) {
+            return -std::numeric_limits<double>::infinity();
+        }
+
+        const double minPos = getDataMinPosition(candidate);
+        const double maxPos = getDataMaxPosition(candidate);
+        if (qAbs(fit.a) < 1e-10 || fit.bestPosition < minPos || fit.bestPosition > maxPos) {
+            return -std::numeric_limits<double>::infinity();
+        }
+
+        const double r2 = calculateRSquared(candidate, fit, minPos);
+        if (!std::isfinite(r2)) {
+            return -std::numeric_limits<double>::infinity();
+        }
+
+        // 质量优先，其次轻微偏向保留更多点，避免“过滤最少的方案”总是获胜。
+        return r2 + 0.01 * static_cast<double>(candidate.size());
+    };
+
+    QVector<FocusDataPoint> bestCleanData = data;
+    double bestScore = evaluateCandidate(data);
+    const QVector<QVector<FocusDataPoint>> candidates = {cleanData1, cleanData2, cleanData3};
+    for (const QVector<FocusDataPoint>& candidate : candidates) {
+        const double score = evaluateCandidate(candidate);
+        if (score > bestScore) {
+            bestScore = score;
+            bestCleanData = candidate;
+        }
     }
     
     // 如果过滤后数据点太少，直接使用原始数据，确保拟合能够进行
@@ -3647,6 +3675,7 @@ QVector<FocusDataPoint> AutoFocus::removeOutliersByResidual(const QVector<FocusD
     double minPos = getDataMinPosition(data);
     QVector<double> residuals;
     QVector<int> outlierIndices;
+    residuals.reserve(data.size());
     
     for (int i = 0; i < data.size(); ++i) {
         const FocusDataPoint &point = data[i];
@@ -3657,12 +3686,27 @@ QVector<FocusDataPoint> AutoFocus::removeOutliersByResidual(const QVector<FocusD
     }
     
     // 计算残差的统计信息
-    std::sort(residuals.begin(), residuals.end());
-    int n = residuals.size();
-    double q1 = residuals[n / 4];
-    double q3 = residuals[3 * n / 4];
+    QVector<double> sortedResiduals = residuals;
+    std::sort(sortedResiduals.begin(), sortedResiduals.end());
+    int n = sortedResiduals.size();
+    double q1 = sortedResiduals[n / 4];
+    double q3 = sortedResiduals[3 * n / 4];
     double iqr = q3 - q1;
-    double threshold = q3 + 3.0 * iqr; // 使用3倍IQR作为阈值，更宽松以忽略识别出错的点
+    double threshold = q3 + 1.5 * iqr;
+
+    // 当 IQR 很小或为 0 时，补一层基于 MAD 的下限，避免单个误点被“零 IQR”放过。
+    double medianResidual = sortedResiduals[n / 2];
+    QVector<double> absDeviations;
+    absDeviations.reserve(n);
+    for (double residual : residuals) {
+        absDeviations.append(qAbs(residual - medianResidual));
+    }
+    std::sort(absDeviations.begin(), absDeviations.end());
+    const double mad = absDeviations[n / 2];
+    const double robustSigma = 1.4826 * mad;
+    if (std::isfinite(robustSigma) && robustSigma > 0.0) {
+        threshold = qMin(threshold, medianResidual + 3.0 * robustSigma);
+    }
     
     // 识别异常点
     QVector<FocusDataPoint> cleanData;
