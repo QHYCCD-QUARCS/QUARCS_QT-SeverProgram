@@ -1,4 +1,5 @@
 build*
+!build_and_deploy_rpi.sh
 build/build.ninja
 build/cmake_install.cmake
 build/CMakeCache.txt
@@ -96,3 +97,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example

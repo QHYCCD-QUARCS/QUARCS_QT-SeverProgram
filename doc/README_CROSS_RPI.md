@@ -49,6 +49,31 @@ cmake -S src -B build-rpi \
 cmake --build build-rpi -j$(nproc)
 ```
 
+### 一键编译并部署到业务机
+
+若你平时主要走“开发机交叉编译 + 直接同步到业务机”的流程，可直接在仓库根目录执行：
+
+```bash
+chmod +x build_and_deploy_rpi.sh
+./build_and_deploy_rpi.sh
+```
+
+脚本会自动完成：
+
+- 使用 `toolchain-rpi-arm64.cmake` 配置 `build-rpi`
+- 执行交叉编译
+- 校验产物是 `aarch64`
+- 调用 `deploy/rpi/deploy_build_to_pi.sh` 同步到业务机 `src/BUILD`
+
+常用环境变量示例：
+
+```bash
+PI_HOST=192.168.31.42 ./build_and_deploy_rpi.sh
+CLEAN_BUILD=1 ./build_and_deploy_rpi.sh
+JOBS=8 ./build_and_deploy_rpi.sh
+BUILD_DIR=/home/q/workspace_origin/QUARCS_QT-SeverProgram/build-rpi-verify ./build_and_deploy_rpi.sh
+```
+
 ### 在 `src/BUILD` 目录下配置与编译（构建目录为当前文件夹）
 
 若已使用或习惯在源码下的 `BUILD` 目录工作：

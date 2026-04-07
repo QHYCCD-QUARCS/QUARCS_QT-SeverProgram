@@ -270,7 +270,39 @@ sudo nmcli -t -f NAME con show
 
 ---
 
-## 10. 回退/卸载（需要恢复到原始状态时）
+## 10. 开发机交叉编译后同步到业务机
+
+若你在开发机上完成了树莓派交叉编译，可直接使用仓库内脚本把产物同步到业务机：
+
+```bash
+cd /home/q/workspace_origin/QUARCS_QT-SeverProgram
+chmod +x deploy/rpi/deploy_build_to_pi.sh
+deploy/rpi/deploy_build_to_pi.sh
+```
+
+默认会把以下文件同步到业务机：
+
+- `build-rpi/client`
+- `build-rpi/guiding_offline_test`
+- `build-rpi/qhyccd.ini`
+
+默认目标目录：
+
+```bash
+/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD
+```
+
+如需覆盖默认值，可在执行时传环境变量：
+
+```bash
+PI_HOST=192.168.31.42 \
+LOCAL_BUILD_DIR=/home/q/workspace_origin/QUARCS_QT-SeverProgram/build-rpi-verify \
+deploy/rpi/deploy_build_to_pi.sh
+```
+
+---
+
+## 11. 回退/卸载（需要恢复到原始状态时）
 
 ```bash
 # 停止并禁用服务
@@ -283,4 +315,3 @@ sudo rm -f /etc/sudoers.d/quarcs-net
 sudo rm -f /etc/systemd/system/quarcs-qt-server.service
 sudo systemctl daemon-reload
 ```
-
