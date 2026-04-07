@@ -5639,17 +5639,6 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + cameraCFA.toStdString() +
                 " source: " + sourceTag.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
-    auto applyAwbToRawBayer = [&](const cv::Mat& src, const char* tag) -> cv::Mat {
-        if (!isColor || src.empty()) {
-            return src.clone();
-        }
-        cv::Mat balanced(src.rows, src.cols, src.type());
-        Tools::ImageSoftAWB(src, balanced, cameraCFA, ImageGainR, ImageGainB, 30);
-        Logger::Log(std::string("Applied RAW AWB before tile/preview generation: ") + tag,
-                    LogLevel::INFO, DeviceType::CAMERA);
-        return balanced;
-    };
-
     // 记录预览/解析保存使用的软件 bin 因子（用于前端对照调试）
     int binningFactor = 1;
     if (ProcessBin) {
@@ -5699,11 +5688,6 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         image16 = originalImage16.clone();
     }
 
-    if (isColor) {
-        originalImage16 = applyAwbToRawBayer(originalImage16, "tile-source");
-        image16 = applyAwbToRawBayer(image16, "preview-image");
-    }
-
     // 软件 bin 后图仅用于另一路 FITS 保存；瓦片源统一使用原图，避免在瓦片构建前提前合并。
     const cv::Mat& tileSourceImage = originalImage16;
 
@@ -5722,6 +5706,22 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     {
         Logger::Log("saveFitsAsPNG | unsupported image type: " + std::to_string(tileSourceImage.type()), LogLevel::WARNING, DeviceType::CAMERA);
         return -1;
+    }
+
+    // 彩色相机：每帧根据当前全分辨率 RAW 自动估计 R/B 增益（与 CalcWhiteBalance 相同算法），供 TileGPM 与前端渲染
+    if (isColor && tileSourceImage.type() == CV_16UC1)
+    {
+        QPair<double, double> gains = calculateWhiteBalanceGains(tileSourceImage, cameraCFA);
+        ImageGainR = gains.first;
+        ImageGainB = gains.second;
+        Tools::saveParameter("MainCamera", "ImageGainR", QString::number(ImageGainR));
+        Tools::saveParameter("MainCamera", "ImageGainB", QString::number(ImageGainB));
+        // 不发送 WhiteBalanceGains：若先于 TileGPM 到达，前端会对「上一帧已缓存的 RAW 瓦片」执行
+        // applyStoredAutoWhiteBalance(reprocess)，导致新增益套在旧图上。每帧增益已由随后 sendGPMToClient(TileGPM) 下发，
+        // 前端 handleTileGPM 会更新增益并在新会话/新帧上拉瓦片。手动 CalcWhiteBalance 路径仍会单独发 WhiteBalanceGains。
+        Logger::Log("Per-frame auto WB gains: R=" + std::to_string(ImageGainR) +
+                        ", B=" + std::to_string(ImageGainB) + " (via TileGPM only; no duplicate WhiteBalanceGains)",
+                    LogLevel::INFO, DeviceType::CAMERA);
     }
 
     // ========================= 瓦片（视口驱动生成） =========================
@@ -5931,55 +5931,112 @@ QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& imag
         Logger::Log("无法计算白平衡：图像为空或非彩色图像", LogLevel::WARNING, DeviceType::MAIN);
         return QPair<double, double>(1.0, 1.0);
     }
-    
-    // 1. 去拜耳（Debayer）
-    cv::Mat rgb;
-    int cvCode = -1;
-    
-    if (cfa == "RGGB") {
-        cvCode = cv::COLOR_BayerBG2RGB;  // OpenCV的Bayer命名与实际相反
-    } else if (cfa == "BGGR") {
-        cvCode = cv::COLOR_BayerRG2RGB;
-    } else if (cfa == "GRBG") {
-        cvCode = cv::COLOR_BayerGB2RGB;
-    } else if (cfa == "GBRG") {
-        cvCode = cv::COLOR_BayerGR2RGB;
+
+    if (image16.type() != CV_16UC1 || image16.rows < 2 || image16.cols < 2) {
+        Logger::Log("无法计算白平衡：图像类型不是 CV_16UC1 或尺寸过小", LogLevel::WARNING, DeviceType::MAIN);
+        return QPair<double, double>(1.0, 1.0);
+    }
+
+    std::vector<cv::Point> rOffsets;
+    std::vector<cv::Point> gOffsets;
+    std::vector<cv::Point> bOffsets;
+    const QString normalizedCfa = cfa.trimmed().toUpper();
+
+    if (normalizedCfa == "RGGB" || normalizedCfa == "RG") {
+        rOffsets = { cv::Point(0, 0) };
+        gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
+        bOffsets = { cv::Point(1, 1) };
+    } else if (normalizedCfa == "GRBG" || normalizedCfa == "GR") {
+        gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
+        rOffsets = { cv::Point(1, 0) };
+        bOffsets = { cv::Point(0, 1) };
+    } else if (normalizedCfa == "GBRG" || normalizedCfa == "GB") {
+        gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
+        bOffsets = { cv::Point(1, 0) };
+        rOffsets = { cv::Point(0, 1) };
+    } else if (normalizedCfa == "BGGR" || normalizedCfa == "BG") {
+        bOffsets = { cv::Point(0, 0) };
+        gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
+        rOffsets = { cv::Point(1, 1) };
     } else {
         Logger::Log("未知的CFA模式: " + cfa.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
         return QPair<double, double>(1.0, 1.0);
     }
-    
-    cv::cvtColor(image16, rgb, cvCode);
-    
-    // 2. 分离RGB通道
-    std::vector<cv::Mat> channels;
-    cv::split(rgb, channels);
-    cv::Mat& r = channels[0];
-    cv::Mat& g = channels[1];
-    cv::Mat& b = channels[2];
-    
-    // 3. 计算每个通道的平均值（使用中心80%的区域，避免边缘影响）
-    int startX = image16.cols * 0.1;
-    int startY = image16.rows * 0.1;
-    int width = image16.cols * 0.8;
-    int height = image16.rows * 0.8;
-    
-    cv::Rect roi(startX, startY, width, height);
-    cv::Scalar avgR = cv::mean(r(roi));
-    cv::Scalar avgG = cv::mean(g(roi));
-    cv::Scalar avgB = cv::mean(b(roi));
-    
-    // 4. 计算增益（使用绿色通道作为参考）
-    double gainR = avgG[0] / (avgR[0] + 1e-6);  // 避免除零
-    double gainB = avgG[0] / (avgB[0] + 1e-6);
-    
-    // 5. 限制增益范围 [0.1, 3.0]
-    gainR = std::max(0.1, std::min(3.0, gainR));
-    gainB = std::max(0.1, std::min(3.0, gainB));
-    
-    Logger::Log("白平衡增益计算完成: R=" + std::to_string(gainR) + 
+
+    std::vector<uint16_t> rValues;
+    std::vector<uint16_t> gValues;
+    std::vector<uint16_t> bValues;
+    const int rows = image16.rows;
+    const int cols = image16.cols;
+    const int sampleStep = std::max(2, static_cast<int>(std::floor(std::min(rows, cols) / 200.0)) * 2);
+
+    auto sampleChannel = [&](std::vector<uint16_t>& out, int y, int x) {
+        if (y >= 0 && y < rows && x >= 0 && x < cols) {
+            out.push_back(image16.at<uint16_t>(y, x));
+        }
+    };
+
+    for (int y = 0; y < rows; y += sampleStep) {
+        for (int x = 0; x < cols; x += sampleStep) {
+            if ((y % (sampleStep * 2)) != 0 || (x % (sampleStep * 2)) != 0) continue;
+            for (const auto& pos : rOffsets) sampleChannel(rValues, y + pos.y, x + pos.x);
+            for (const auto& pos : gOffsets) sampleChannel(gValues, y + pos.y, x + pos.x);
+            for (const auto& pos : bOffsets) sampleChannel(bValues, y + pos.y, x + pos.x);
+        }
+    }
+
+    auto truncatedMean = [](const std::vector<uint16_t>& values) -> double {
+        if (values.empty()) return 0.0;
+
+        std::vector<uint16_t> filtered;
+        filtered.reserve(values.size());
+        for (uint16_t v : values) {
+            if (v > 100 && v < 65000) filtered.push_back(v);
+        }
+        if (filtered.empty()) return static_cast<double>(values.front());
+
+        std::vector<uint16_t> working;
+        if (filtered.size() > 10000) {
+            const size_t step = std::max<size_t>(1, static_cast<size_t>(std::ceil(filtered.size() / 5000.0)));
+            working.reserve((filtered.size() + step - 1) / step);
+            for (size_t i = 0; i < filtered.size(); i += step) {
+                working.push_back(filtered[i]);
+            }
+        } else {
+            working = std::move(filtered);
+        }
+
+        std::sort(working.begin(), working.end());
+        const size_t lowerCutoff = static_cast<size_t>(std::floor(working.size() * 0.05));
+        const size_t upperCutoff = static_cast<size_t>(std::floor(working.size() * 0.95));
+        if (upperCutoff <= lowerCutoff || upperCutoff > working.size()) {
+            return static_cast<double>(working[working.size() / 2]);
+        }
+
+        double sum = 0.0;
+        size_t count = 0;
+        for (size_t i = lowerCutoff; i < upperCutoff; ++i) {
+            sum += static_cast<double>(working[i]);
+            ++count;
+        }
+        return count > 0 ? (sum / static_cast<double>(count))
+                         : static_cast<double>(working[working.size() / 2]);
+    };
+
+    if (rValues.empty() || gValues.empty() || bValues.empty()) {
+        Logger::Log("白平衡采样失败：有效通道样本不足", LogLevel::WARNING, DeviceType::MAIN);
+        return QPair<double, double>(1.0, 1.0);
+    }
+
+    const double rMean = truncatedMean(rValues);
+    const double gMean = truncatedMean(gValues);
+    const double bMean = truncatedMean(bValues);
+    const double gainR = std::max(0.1, std::min(3.0, gMean / std::max(rMean, 1.0)));
+    const double gainB = std::max(0.1, std::min(3.0, gMean / std::max(bMean, 1.0)));
+
+    Logger::Log("白平衡增益计算完成(与前端统一算法): R=" + std::to_string(gainR) +
                 ", B=" + std::to_string(gainB), LogLevel::INFO, DeviceType::MAIN);
-    
+
     return QPair<double, double>(gainR, gainB);
 }
 
