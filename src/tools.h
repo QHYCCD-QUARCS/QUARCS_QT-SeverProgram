@@ -394,7 +394,9 @@ class Tools : public QObject {
                                                      double minSNR = 3.0,
                                                      int bgKsize = 51,
                                                      double smoothSigma = 1.0,
-                                                     bool verbose = false);
+                                                     bool verbose = false,
+                                                     DeviceType logDeviceType = DeviceType::MAIN,
+                                                     const QString& logPrefix = QString());
 
   /**
    * @brief 从FITS文件直接检测合焦小星（C++实现）

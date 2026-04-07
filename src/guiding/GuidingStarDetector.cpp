@@ -1,11 +1,31 @@
 #include "GuidingStarDetector.h"
 
 #include "../tools.h"
+#include "../Logger.h"
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 
 namespace guiding {
+
+namespace {
+
+std::string formatCandidateBrief(const StarCandidate& c)
+{
+    std::ostringstream oss;
+    oss.setf(std::ios::fixed);
+    oss.precision(2);
+    oss << "x=" << c.x
+        << " y=" << c.y
+        << " snr=" << c.snr
+        << " hfd=" << c.hfd
+        << " edge=" << c.edgeDistPx
+        << " peak=" << c.peakADU;
+    return oss.str();
+}
+
+} // namespace
 
 double GuidingStarDetector::maxADUForMat(const cv::Mat& img)
 {
@@ -53,9 +73,29 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
         return std::nullopt;
 
     // Step0：峰值检测 + 质心（复用现有 C++ 实现）
-    auto stars = Tools::DetectFocusedStars(image16, p.kSigma, p.minArea, p.maxArea, p.detectMinSNR);
+    constexpr const char* kLogPrefix = "[AutoGuideSelect]";
+    auto stars = Tools::DetectFocusedStars(image16,
+                                           p.kSigma,
+                                           p.minArea,
+                                           p.maxArea,
+                                           p.detectMinSNR,
+                                           51,
+                                           1.0,
+                                           true,
+                                           DeviceType::GUIDER,
+                                           QString::fromUtf8(kLogPrefix));
     if (stars.empty())
+    {
+        Logger::Log(std::string(kLogPrefix) +
+                        " fail_at=base_detect reason=DetectFocusedStars returned 0 candidates"
+                        " | possible_steps=area_or_base_snr |"
+                        " params{kSigma=" + std::to_string(p.kSigma) +
+                        ", minArea=" + std::to_string(p.minArea) +
+                        ", maxArea=" + std::to_string(p.maxArea) +
+                        ", detectMinSNR=" + std::to_string(p.detectMinSNR) + "}",
+                    LogLevel::INFO, DeviceType::GUIDER);
         return std::nullopt;
+    }
 
     const double aduMax = maxADUForMat(image16);
     const double nearSat = aduMax * p.nearSaturationRatio;
@@ -81,32 +121,107 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
     // Step1：SNR 过滤（区分星点与噪点）
     std::vector<StarCandidate> s1;
     s1.reserve(candidates.size());
+    std::vector<StarCandidate> rejectedSNR;
     for (const auto& c : candidates)
+    {
         if (c.snr >= p.minSNR)
             s1.push_back(c);
+        else if (rejectedSNR.size() < 3)
+            rejectedSNR.push_back(c);
+    }
 
     // Step2：HFD 范围过滤（热像素/团块）
     std::vector<StarCandidate> s2;
     s2.reserve(s1.size());
+    std::vector<StarCandidate> rejectedHFD;
     for (const auto& c : s1)
+    {
         if (c.hfd >= p.minHFD && c.hfd <= p.maxHFD)
             s2.push_back(c);
+        else if (rejectedHFD.size() < 3)
+            rejectedHFD.push_back(c);
+    }
 
     // Step3：饱和 + 边缘过滤
     std::vector<StarCandidate> s3;
     s3.reserve(s2.size());
+    std::vector<StarCandidate> rejectedEdge;
+    std::vector<StarCandidate> rejectedSaturation;
+    int rejectedEdgeCount = 0;
+    int rejectedSaturationCount = 0;
     for (const auto& c : s2)
     {
         if (c.edgeDistPx < p.edgeMarginPx)
+        {
+            ++rejectedEdgeCount;
+            if (rejectedEdge.size() < 3)
+                rejectedEdge.push_back(c);
             continue;
+        }
         // 仅对 8/16bit 做饱和判定（float 的 nearSat 没意义）
         if ((image16.depth() == CV_8U || image16.depth() == CV_16U) && c.peakADU >= nearSat)
+        {
+            ++rejectedSaturationCount;
+            if (rejectedSaturation.size() < 3)
+                rejectedSaturation.push_back(c);
             continue;
+        }
         s3.push_back(c);
     }
 
+    Logger::Log(std::string(kLogPrefix) +
+                    " summary base=" + std::to_string(candidates.size()) +
+                    " pass_snr=" + std::to_string(s1.size()) +
+                    " pass_hfd=" + std::to_string(s2.size()) +
+                    " pass_edge_sat=" + std::to_string(s3.size()) +
+                    " reject_snr=" + std::to_string(candidates.size() - s1.size()) +
+                    " reject_hfd=" + std::to_string(s1.size() - s2.size()) +
+                    " reject_edge=" + std::to_string(rejectedEdgeCount) +
+                    " reject_sat=" + std::to_string(rejectedSaturationCount) +
+                    " | thresholds{minSNR=" + std::to_string(p.minSNR) +
+                    ", minHFD=" + std::to_string(p.minHFD) +
+                    ", maxHFD=" + std::to_string(p.maxHFD) +
+                    ", edgeMarginPx=" + std::to_string(p.edgeMarginPx) +
+                    ", nearSatRatio=" + std::to_string(p.nearSaturationRatio) + "}",
+                LogLevel::INFO, DeviceType::GUIDER);
+
+    for (const auto& c : rejectedSNR)
+    {
+        Logger::Log(std::string(kLogPrefix) +
+                        " fail_at=SNR " + formatCandidateBrief(c) +
+                        " threshold.minSNR=" + std::to_string(p.minSNR),
+                    LogLevel::INFO, DeviceType::GUIDER);
+    }
+    for (const auto& c : rejectedHFD)
+    {
+        Logger::Log(std::string(kLogPrefix) +
+                        " fail_at=HFD " + formatCandidateBrief(c) +
+                        " threshold.range=[" + std::to_string(p.minHFD) +
+                        "," + std::to_string(p.maxHFD) + "]",
+                    LogLevel::INFO, DeviceType::GUIDER);
+    }
+    for (const auto& c : rejectedEdge)
+    {
+        Logger::Log(std::string(kLogPrefix) +
+                        " fail_at=edge " + formatCandidateBrief(c) +
+                        " threshold.edgeMarginPx=" + std::to_string(p.edgeMarginPx),
+                    LogLevel::INFO, DeviceType::GUIDER);
+    }
+    for (const auto& c : rejectedSaturation)
+    {
+        Logger::Log(std::string(kLogPrefix) +
+                        " fail_at=saturation " + formatCandidateBrief(c) +
+                        " threshold.nearSatADU=" + std::to_string(nearSat),
+                    LogLevel::INFO, DeviceType::GUIDER);
+    }
+
     if (s3.empty())
+    {
+        Logger::Log(std::string(kLogPrefix) +
+                        " fail_at=final reason=no candidates after SNR/HFD/edge/saturation filtering",
+                    LogLevel::INFO, DeviceType::GUIDER);
         return std::nullopt;
+    }
 
     // 计算图像中心
     const double centerX = image16.cols / 2.0;
@@ -133,10 +248,11 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                                    [&](const StarCandidate& a, const StarCandidate& b) {
                                        return score(a) < score(b);
                                    });
+    Logger::Log(std::string(kLogPrefix) +
+                    " selected " + formatCandidateBrief(*bestIt),
+                LogLevel::INFO, DeviceType::GUIDER);
     return *bestIt;
 }
 
 } // namespace guiding
-
-
 
