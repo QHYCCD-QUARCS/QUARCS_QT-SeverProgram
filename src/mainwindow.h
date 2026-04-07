@@ -259,9 +259,10 @@ public:
 
     /**
      * @brief 清空 INDI 驱动选择
+     * @param deviceCode 目标设备槽位
      * @return 成功返回 true
      */
-    bool indi_Driver_Clear();
+    bool indi_Driver_Clear(int deviceCode);
 
     /**
      * @brief 🆕 获取指定设备类型当前使用的 SDK 驱动名（完全自动化）

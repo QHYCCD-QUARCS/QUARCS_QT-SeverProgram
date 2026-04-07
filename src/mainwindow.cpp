@@ -118,6 +118,11 @@ SyncCommandResult runSudoSync(const QString &program, const QStringList &args, i
     sudoArgs << args;
     return runCommandSync("sudo", sudoArgs, timeoutMs);
 }
+
+bool isValidSystemDeviceIndex(const SystemDeviceList &deviceList, int index)
+{
+    return index >= 0 && index < deviceList.system_devices.size();
+}
 }
 
 // 索引转换辅助函数
@@ -1070,7 +1075,25 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "ClearIndiDriver")
     {
         Logger::Log("ClearIndiDriver", LogLevel::DEBUG, DeviceType::MAIN);
-        indi_Driver_Clear();
+        if (!indi_Driver_Clear(systemdevicelist.currentDeviceCode))
+        {
+            Logger::Log("ClearIndiDriver | Legacy command failed because currentDeviceCode is invalid",
+                        LogLevel::ERROR, DeviceType::MAIN);
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "ClearIndiDriver")
+    {
+        const QString deviceCodeText = parts[1].trimmed();
+        bool ok = false;
+        const int deviceCode = deviceCodeText.toInt(&ok);
+        Logger::Log("ClearIndiDriver:" + deviceCodeText.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        if (!ok)
+        {
+            Logger::Log("ClearIndiDriver | Invalid deviceCode: " + deviceCodeText.toStdString(),
+                        LogLevel::ERROR, DeviceType::MAIN);
+            return;
+        }
+        indi_Driver_Clear(deviceCode);
     }
     else if (parts.size() == 3 && parts[0].trimmed() == "ConfirmIndiDevice")
     {
@@ -7696,10 +7719,12 @@ void MainWindow::printDevGroups2(const DriversList drivers_list, int ListNum, QS
 {
     Logger::Log("Printing device groups for group: " + group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("=============================== Print DevGroups ===============================", LogLevel::INFO, DeviceType::MAIN);
+    bool foundGroup = false;
     for (int i = 0; i < drivers_list.dev_groups.size(); i++)
     {
         if (drivers_list.dev_groups[i].group == group)
         {
+            foundGroup = true;
             Logger::Log("Processing device group: " + drivers_list.dev_groups[i].group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
             // Uncomment and modify the following lines if you want to log device details and send messages
             // for (int j = 0; j < drivers_list.dev_groups[i].devices.size(); j++)
@@ -7710,6 +7735,14 @@ void MainWindow::printDevGroups2(const DriversList drivers_list, int ListNum, QS
             // }
             DeviceSelect(ListNum, i);
         }
+    }
+    if (!foundGroup)
+    {
+        systemdevicelist.currentDeviceCode = -1;
+        ::drivers_list.selectedGrounp = -1;
+        Logger::Log("printDevGroups2 | Device group not found: " + group.toStdString() +
+                        ", currentDeviceCode reset to -1",
+                    LogLevel::ERROR, DeviceType::MAIN);
     }
     Logger::Log("Completed printing device groups.", LogLevel::INFO, DeviceType::MAIN);
 }
@@ -7722,6 +7755,24 @@ void MainWindow::DeviceSelect(int systemNumber, int grounpNumber)
 
 void MainWindow::SelectIndiDevice(int systemNumber, int grounpNumber)
 {
+    if (!isValidSystemDeviceIndex(systemdevicelist, systemNumber))
+    {
+        systemdevicelist.currentDeviceCode = -1;
+        drivers_list.selectedGrounp = -1;
+        Logger::Log("SelectIndiDevice | Invalid systemNumber: " + std::to_string(systemNumber),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
+
+    if (grounpNumber < 0 || grounpNumber >= drivers_list.dev_groups.size())
+    {
+        systemdevicelist.currentDeviceCode = -1;
+        drivers_list.selectedGrounp = -1;
+        Logger::Log("SelectIndiDevice | Invalid grounpNumber: " + std::to_string(grounpNumber),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
+
     systemdevicelist.currentDeviceCode = systemNumber;
     drivers_list.selectedGrounp = grounpNumber;
 
@@ -7770,51 +7821,44 @@ void MainWindow::SelectIndiDevice(int systemNumber, int grounpNumber)
 
 bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
 {
+    if (!isValidSystemDeviceIndex(systemdevicelist, systemdevicelist.currentDeviceCode))
+    {
+        Logger::Log("indi_Driver_Confirm | currentDeviceCode out of bounds: " + std::to_string(systemdevicelist.currentDeviceCode),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
     switch (systemdevicelist.currentDeviceCode)
     {
     case 0:
-        // 修复：检查currentDeviceCode索引是否有效
-        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Mount";
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-            Logger::Log("indi_Driver_Confirm | Mount | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        }
-        
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Mount";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        Logger::Log("indi_Driver_Confirm | Mount | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         break;
     case 1:
-        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Guider";
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-            Logger::Log("indi_Driver_Confirm | Guider | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        }
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Guider";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        Logger::Log("indi_Driver_Confirm | Guider | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         break;
     case 2:
-        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "PoleCamera";
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-            Logger::Log("indi_Driver_Confirm | PoleCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        }
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "PoleCamera";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        Logger::Log("indi_Driver_Confirm | PoleCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         break;
     case 20:
-        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "MainCamera";
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-            Logger::Log("indi_Driver_Confirm | MainCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        }   
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "MainCamera";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        Logger::Log("indi_Driver_Confirm | MainCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         break;
     case 21:
-        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "CFW";
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-            Logger::Log("indi_Driver_Confirm | CFW | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        }
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "CFW";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        Logger::Log("indi_Driver_Confirm | CFW | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         break;
     case 22:
-        if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Focuser";
-            systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-            Logger::Log("indi_Driver_Confirm | Focuser | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        }
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Focuser";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        Logger::Log("indi_Driver_Confirm | Focuser | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         break;
 
     default:
@@ -7822,58 +7866,52 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
         break;
     }
 
-    // 修复：检查索引有效性后再访问
-    if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-        auto &slot = systemdevicelist.system_devices[systemdevicelist.currentDeviceCode];
-        slot.DriverIndiName = DriverName;
-        slot.isConnect = false;
-        slot.isBind = false;
+    auto &slot = systemdevicelist.system_devices[systemdevicelist.currentDeviceCode];
+    slot.DriverIndiName = DriverName;
+    slot.isConnect = false;
+    slot.isBind = false;
 
-        // 🔥 自动从 SdkDriverRegistry 查询是否支持 SDK 模式
-        bool supportsSDK = SdkDriverRegistry::instance().supportsSDK(DriverName.toStdString());
+    // 🔥 自动从 SdkDriverRegistry 查询是否支持 SDK 模式
+    bool supportsSDK = SdkDriverRegistry::instance().supportsSDK(DriverName.toStdString());
+    
+    if (supportsSDK)
+    {
+        // 获取 SDK 首选名称
+        std::string sdkDriverName = SdkDriverRegistry::instance().getSDKDriverName(
+            DriverName.toStdString()
+        );
         
-        if (supportsSDK)
+        // 标记支持 SDK（用于前端显示"连接模式"切换选项）
+        if (!slot.DriverFrom.contains("SDK", Qt::CaseInsensitive))
         {
-            // 获取 SDK 首选名称
-            std::string sdkDriverName = SdkDriverRegistry::instance().getSDKDriverName(
-                DriverName.toStdString()
-            );
-            
-            // 标记支持 SDK（用于前端显示"连接模式"切换选项）
-            if (!slot.DriverFrom.contains("SDK", Qt::CaseInsensitive))
-            {
-                slot.DriverFrom = DriverName + "SDK";  // 例如 "indi_qhy_ccdSDK"
-            }
-            
-            // 🆕 保存 SDK 驱动名（用于后续切换到 SDK 模式时自动选择正确的驱动）
-            slot.SDKDriverName = QString::fromStdString(sdkDriverName);
-            
-            Logger::Log("indi_Driver_Confirm | Driver supports SDK: " + 
-                       DriverName.toStdString() + " -> " + sdkDriverName,
-                       LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            // 纯 INDI 驱动，不支持 SDK
-            slot.DriverFrom = "INDI";
-            slot.SDKDriverName = "";
-            // 若驱动不支持 SDK，则强制切回 INDI 模式，避免沿用上次的 isSDKConnect=true 导致后续 ConnectDriver 误走 SDK 流程
-            slot.isSDKConnect = false;
-            
-            Logger::Log("indi_Driver_Confirm | Driver is INDI-only (no SDK support): " + 
-                       DriverName.toStdString(),
-                       LogLevel::INFO, DeviceType::MAIN);
+            slot.DriverFrom = DriverName + "SDK";  // 例如 "indi_qhy_ccdSDK"
         }
 
-        // 持久化：否则重启/重连后 DriverFrom 会丢失，前端收到 SelectedDriverList(...:false:...)
-        Tools::saveSystemDeviceList(systemdevicelist);
-
-        // 立即刷新前端缓存：让 supportSDK/connectionMode 立刻生效，UI 及时显示"连接模式"下拉框
-        loadSelectedDriverList();
-    } else {
-        Logger::Log("indi_Driver_Confirm | currentDeviceCode out of bounds: " + std::to_string(systemdevicelist.currentDeviceCode), LogLevel::ERROR, DeviceType::MAIN);
-        return false;
+        // 🆕 保存 SDK 驱动名（用于后续切换到 SDK 模式时自动选择正确的驱动）
+        slot.SDKDriverName = QString::fromStdString(sdkDriverName);
+        
+        Logger::Log("indi_Driver_Confirm | Driver supports SDK: " +
+                   DriverName.toStdString() + " -> " + sdkDriverName,
+                   LogLevel::INFO, DeviceType::MAIN);
     }
+    else
+    {
+        // 纯 INDI 驱动，不支持 SDK
+        slot.DriverFrom = "INDI";
+        slot.SDKDriverName = "";
+        // 若驱动不支持 SDK，则强制切回 INDI 模式，避免沿用上次的 isSDKConnect=true 导致后续 ConnectDriver 误走 SDK 流程
+        slot.isSDKConnect = false;
+        
+        Logger::Log("indi_Driver_Confirm | Driver is INDI-only (no SDK support): " +
+                   DriverName.toStdString(),
+                   LogLevel::INFO, DeviceType::MAIN);
+    }
+
+    // 持久化：否则重启/重连后 DriverFrom 会丢失，前端收到 SelectedDriverList(...:false:...)
+    Tools::saveSystemDeviceList(systemdevicelist);
+
+    // 立即刷新前端缓存：让 supportSDK/connectionMode 立刻生效，UI 及时显示"连接模式"下拉框
+    loadSelectedDriverList();
 
     return true;
 }
@@ -7911,26 +7949,38 @@ QString MainWindow::getSDKDriverName(const QString& deviceType)
     return "";
 }
 
-bool MainWindow::indi_Driver_Clear()
+bool MainWindow::indi_Driver_Clear(int deviceCode)
 {
-    // 修复：检查索引有效性
-    if (systemdevicelist.system_devices.size() > systemdevicelist.currentDeviceCode) {
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].DriverIndiName = "";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].SDKDriverName = "";  // 🆕 清空 SDK 驱动名
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = 9600;
-        
-        // 保存配置到文件，确保清除操作持久化
-        Tools::saveSystemDeviceList(systemdevicelist);
-        
-        // 发送更新后的驱动列表给前端，确保前端UI同步更新
-        loadSelectedDriverList();
-        
-        Logger::Log("indi_Driver_Clear | Driver cleared and configuration saved", LogLevel::INFO, DeviceType::MAIN);
-    } else {
-        Logger::Log("indi_Driver_Clear | currentDeviceCode out of bounds: " + std::to_string(systemdevicelist.currentDeviceCode), LogLevel::ERROR, DeviceType::MAIN);
+    if (!isValidSystemDeviceIndex(systemdevicelist, deviceCode)) {
+        Logger::Log("indi_Driver_Clear | deviceCode out of bounds: " + std::to_string(deviceCode), LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
+
+    systemdevicelist.system_devices[deviceCode].Description = "";
+    systemdevicelist.system_devices[deviceCode].DriverIndiName = "";
+    systemdevicelist.system_devices[deviceCode].SDKDriverName = "";
+    systemdevicelist.system_devices[deviceCode].BaudRate = 9600;
+    systemdevicelist.system_devices[deviceCode].DeviceIndiName = "";
+    systemdevicelist.system_devices[deviceCode].DeviceIndiGroup = -1;
+    systemdevicelist.system_devices[deviceCode].isConnect = false;
+    systemdevicelist.system_devices[deviceCode].isBind = false;
+    systemdevicelist.system_devices[deviceCode].isSDKConnect = false;
+    systemdevicelist.system_devices[deviceCode].dp = nullptr;
+
+    if (systemdevicelist.currentDeviceCode == deviceCode)
+        systemdevicelist.currentDeviceCode = -1;
+    if (drivers_list.selectedGrounp >= 0)
+        drivers_list.selectedGrounp = -1;
+
+    // 保存配置到文件，确保清除操作持久化
+    Tools::saveSystemDeviceList(systemdevicelist);
+
+    // 发送更新后的驱动列表给前端，确保前端UI同步更新
+    loadSelectedDriverList();
+
+    Logger::Log("indi_Driver_Clear | Driver cleared for deviceCode=" + std::to_string(deviceCode) +
+                    " and configuration saved",
+                LogLevel::INFO, DeviceType::MAIN);
     return true;
 }
 
@@ -7940,6 +7990,13 @@ void MainWindow::indi_Device_Confirm(QString DeviceName, QString DriverName)
 
     int deviceCode;
     deviceCode = systemdevicelist.currentDeviceCode;
+
+    if (!isValidSystemDeviceIndex(systemdevicelist, deviceCode))
+    {
+        Logger::Log("indi_Device_Confirm | currentDeviceCode out of bounds: " + std::to_string(deviceCode),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return;
+    }
 
     systemdevicelist.system_devices[deviceCode].DriverIndiName = DriverName;
     systemdevicelist.system_devices[deviceCode].DeviceIndiGroup = drivers_list.selectedGrounp;
