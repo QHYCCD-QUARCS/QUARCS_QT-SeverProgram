@@ -1,462 +1,236 @@
-// 独立文件：合焦星点检测（C++实现，源自 findstars.py 合焦路径）
-// 实现 Tools::DetectFocusedStars / DetectFocusedStarsFromFITS / MedianHFR
+// 简化版 ROI 星点检测：
+// 1) 在整幅 ROI 图上寻找全局峰值
+// 2) 在峰值附近固定窗口内，以像素强度做加权质心
+// 3) 输出单颗星点结果
 #include "tools.h"
+
 #include <algorithm>
-#include <numeric>
 #include <limits>
+#include <numeric>
 
 namespace {
 
-// 转 float32 并归一化到 [0,1]
-static cv::Mat toFloat32Normalized(const cv::Mat& image) {
-	cv::Mat gray;
-	if (image.channels() == 1) {
-		gray = image;
-	} else {
-		cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-	}
-	cv::Mat f32;
-	if (gray.depth() == CV_32F) {
-		f32 = gray.clone();
-	} else {
-		gray.convertTo(f32, CV_32F);
-	}
-	double minv = 0.0, maxv = 0.0;
-	cv::minMaxLoc(f32, &minv, &maxv);
-	if (maxv > 0.0) {
-		f32 /= static_cast<float>(maxv);
-	}
-	return f32;
+static cv::Mat toSingleChannelGray(const cv::Mat& image)
+{
+    cv::Mat gray;
+    if (image.channels() == 1) {
+        gray = image;
+    } else {
+        cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+    }
+    return gray;
 }
 
-// 背景扣除（高斯模糊），随后轻微平滑
-static cv::Mat preprocessFocused(const cv::Mat& image16, int bgKsize, double smoothSigma) {
-	cv::Mat img = toFloat32Normalized(image16);
-	if (bgKsize % 2 == 0) bgKsize += 1;
-	cv::Mat bg;
-	cv::GaussianBlur(img, bg, cv::Size(bgKsize, bgKsize), 0.0);
-	cv::Mat fg = img - bg;
-	cv::threshold(fg, fg, 0.0, 0.0, cv::THRESH_TOZERO);
-	if (smoothSigma > 0.0) {
-		cv::GaussianBlur(fg, fg, cv::Size(), smoothSigma);
-	}
-	return fg;
+static cv::Mat toFloat32Normalized(const cv::Mat& image)
+{
+    cv::Mat gray = toSingleChannelGray(image);
+    cv::Mat f32;
+    if (gray.depth() == CV_32F) {
+        f32 = gray.clone();
+    } else {
+        gray.convertTo(f32, CV_32F);
+    }
+    double minv = 0.0;
+    double maxv = 0.0;
+    cv::minMaxLoc(f32, &minv, &maxv);
+    if (maxv > 0.0) {
+        f32 /= static_cast<float>(maxv);
+    }
+    return f32;
 }
 
-static double estimateThreshold(const cv::Mat& img, double kSigma) {
-	cv::Scalar mean, stddev;
-	cv::meanStdDev(img, mean, stddev);
-	return static_cast<double>(mean[0]) + kSigma * static_cast<double>(stddev[0]);
+static double computeHFR(const cv::Mat& roiNorm, double cx, double cy)
+{
+    CV_Assert(roiNorm.type() == CV_32F);
+    std::vector<float> vals;
+    std::vector<float> rs;
+    vals.reserve(static_cast<size_t>(roiNorm.total()));
+    rs.reserve(static_cast<size_t>(roiNorm.total()));
+
+    for (int y = 0; y < roiNorm.rows; ++y) {
+        const float* row = roiNorm.ptr<float>(y);
+        for (int x = 0; x < roiNorm.cols; ++x) {
+            const float v = row[x];
+            if (v <= 0.0f) continue;
+            vals.push_back(v);
+            const double dx = static_cast<double>(x) - cx;
+            const double dy = static_cast<double>(y) - cy;
+            rs.push_back(static_cast<float>(std::sqrt(dx * dx + dy * dy)));
+        }
+    }
+    if (vals.empty()) return 0.0;
+
+    const double totalFlux = std::accumulate(vals.begin(), vals.end(), 0.0);
+    if (totalFlux <= 0.0) return 0.0;
+
+    std::vector<int> order(vals.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return rs[a] < rs[b]; });
+
+    const double halfFlux = totalFlux * 0.5;
+    double acc = 0.0;
+    for (int idx : order) {
+        acc += vals[idx];
+        if (acc >= halfFlux) {
+            return static_cast<double>(rs[idx]);
+        }
+    }
+    return static_cast<double>(rs[order.back()]);
 }
 
-// ROI内基于前景亮度计算HFR
-static double computeHFR(const cv::Mat& fgROI, const cv::Mat& maskROI, double cx, double cy) {
-	CV_Assert(fgROI.type() == CV_32F);
-	CV_Assert(maskROI.type() == CV_8U);
-	std::vector<float> vals;
-	std::vector<float> rs;
-	vals.reserve(static_cast<size_t>(maskROI.total()));
-	rs.reserve(static_cast<size_t>(maskROI.total()));
-	for (int y = 0; y < maskROI.rows; ++y) {
-		const uint8_t* m = maskROI.ptr<uint8_t>(y);
-		const float* f = fgROI.ptr<float>(y);
-		for (int x = 0; x < maskROI.cols; ++x) {
-			if (m[x]) {
-				vals.push_back(f[x]);
-				double dx = static_cast<double>(x) - cx;
-				double dy = static_cast<double>(y) - cy;
-				rs.push_back(static_cast<float>(std::sqrt(dx * dx + dy * dy)));
-			}
-		}
-	}
-	if (vals.empty()) return 0.0;
-	double totalFlux = std::accumulate(vals.begin(), vals.end(), 0.0);
-	if (totalFlux <= 0.0) return 0.0;
-	// 按半径排序
-	std::vector<int> order(vals.size());
-	std::iota(order.begin(), order.end(), 0);
-	std::sort(order.begin(), order.end(), [&](int a, int b){ return rs[a] < rs[b]; });
-	double halfFlux = totalFlux * 0.5;
-	double csum = 0.0;
-	for (int idx : order) {
-		csum += vals[idx];
-		if (csum >= halfFlux) {
-			return static_cast<double>(rs[idx]);
-		}
-	}
-	return static_cast<double>(rs[order.back()]);
-}
+static std::vector<Tools::FocusedStar> detectPeakCentroidInternal(const cv::Mat& image16,
+                                                                  int windowSize,
+                                                                  bool verbose)
+{
+    std::vector<Tools::FocusedStar> stars;
+    if (image16.empty()) return stars;
 
-// 计算SNR与质量标签
-static std::pair<double, QString> computeSNR(const cv::Mat& fgROI,
-                                             const cv::Mat& maskROI,
-                                             const cv::Mat& bgROI,
-                                             double cx, double cy) {
-	CV_Assert(fgROI.type() == CV_32F);
-	CV_Assert(maskROI.type() == CV_8U);
-	CV_Assert(bgROI.empty() || bgROI.type() == CV_32F);
-	std::vector<cv::Point> pts;
-	pts.reserve(static_cast<size_t>(maskROI.total()));
-	for (int y = 0; y < maskROI.rows; ++y) {
-		const uint8_t* m = maskROI.ptr<uint8_t>(y);
-		for (int x = 0; x < maskROI.cols; ++x) {
-			if (m[x]) pts.emplace_back(x, y);
-		}
-	}
-	if (pts.empty()) return {0.0, QStringLiteral("无信号")};
-	std::vector<double> dists;
-	dists.reserve(pts.size());
-	for (const auto& p : pts) {
-		double dx = static_cast<double>(p.x) - cx;
-		double dy = static_cast<double>(p.y) - cy;
-		dists.push_back(std::sqrt(dx * dx + dy * dy));
-	}
-	double maxr = *std::max_element(dists.begin(), dists.end());
-	if (!(maxr > 0.0)) return {0.0, QStringLiteral("无信号")};
-	// 中心区域掩膜
-	std::vector<float> centerValues;
-	centerValues.reserve(pts.size());
-	for (size_t i = 0; i < pts.size(); ++i) {
-		if (dists[i] < maxr * 0.3) {
-			const cv::Point& p = pts[i];
-			float v = bgROI.empty() ? fgROI.at<float>(p) : bgROI.at<float>(p);
-			centerValues.push_back(v);
-		}
-	}
-	if (centerValues.empty()) {
-		for (size_t i = 0; i < pts.size(); ++i) {
-			if (dists[i] < maxr * 0.5) {
-				const cv::Point& p = pts[i];
-				float v = bgROI.empty() ? fgROI.at<float>(p) : bgROI.at<float>(p);
-				centerValues.push_back(v);
-			}
-		}
-	}
-	double peak = 0.0;
-	if (!centerValues.empty()) {
-		peak = static_cast<double>(*std::max_element(centerValues.begin(), centerValues.end()));
-	}
-	// 背景值：非mask区域
-	std::vector<float> bgValues;
-	for (int y = 0; y < maskROI.rows; ++y) {
-		const uint8_t* m = maskROI.ptr<uint8_t>(y);
-		for (int x = 0; x < maskROI.cols; ++x) {
-			if (!m[x]) {
-				bgValues.push_back(bgROI.empty() ? fgROI.at<float>(y, x)
-				                                 : bgROI.at<float>(y, x));
-			}
-		}
-	}
-	if (bgValues.empty()) return {0.0, QStringLiteral("无背景")};
-	double mean = 0.0;
-	for (float v : bgValues) mean += v;
-	mean /= static_cast<double>(bgValues.size());
-	double var = 0.0;
-	for (float v : bgValues) {
-		double d = static_cast<double>(v) - mean;
-		var += d * d;
-	}
-	var /= static_cast<double>(bgValues.size());
-	double stddev = std::sqrt(std::max(var, 0.0));
-	if (!(stddev > 0.0)) return {0.0, QStringLiteral("背景标准差为0")};
-	double snr = (peak - mean) / stddev;
-	QString quality;
-	if (snr >= 100.0) quality = QStringLiteral("极佳");
-	else if (snr >= 30.0) quality = QStringLiteral("良好");
-	else if (snr >= 10.0) quality = QStringLiteral("正常");
-	else if (snr >= 5.0)  quality = QStringLiteral("较差");
-	else quality = QStringLiteral("很差");
-	return { snr, quality };
-}
+    cv::Mat gray = toSingleChannelGray(image16);
+    cv::Mat gray32;
+    if (gray.depth() == CV_32F) {
+        gray32 = gray.clone();
+    } else {
+        gray.convertTo(gray32, CV_32F);
+    }
 
-static double percentile(std::vector<double> vals, double p) {
-	if (vals.empty()) return 0.0;
-	if (p <= 0.0) return *std::min_element(vals.begin(), vals.end());
-	if (p >= 100.0) return *std::max_element(vals.begin(), vals.end());
-	std::sort(vals.begin(), vals.end());
-	double rank = (p / 100.0) * (static_cast<double>(vals.size()) - 1.0);
-	size_t lo = static_cast<size_t>(std::floor(rank));
-	size_t hi = static_cast<size_t>(std::ceil(rank));
-	if (lo == hi) return vals[lo];
-	double w = rank - static_cast<double>(lo);
-	return vals[lo] * (1.0 - w) + vals[hi] * w;
-}
+    double maxVal = 0.0;
+    cv::Point maxLoc(0, 0);
+    cv::minMaxLoc(gray32, nullptr, &maxVal, nullptr, &maxLoc);
+    if (!(maxVal > 0.0)) {
+        if (verbose) {
+            Logger::Log("[PeakCentroid] maxVal<=0, no valid peak", LogLevel::INFO, DeviceType::MAIN);
+        }
+        return stars;
+    }
 
-static std::vector<Tools::FocusedStar> filterNoiseFocused(std::vector<Tools::FocusedStar> stars,
-                                                          double minHFR = 0.5,
-                                                          double maxHFR = 50.0,
-                                                          double fluxPercentile = 10.0,
-                                                          bool verbose = false,
-                                                          DeviceType logDeviceType = DeviceType::MAIN,
-                                                          const QString& logPrefix = QString()) {
-    const std::string prefix = logPrefix.isEmpty() ? std::string() : (logPrefix.toStdString() + " ");
-	if (stars.empty()) {
-		if (verbose) {
-			Logger::Log(prefix + "[Focused][Filter] 输入星点为空，跳过噪声过滤",
-			            LogLevel::DEBUG, logDeviceType);
-		}
-		return stars;
-	}
-	if (verbose) {
-		Logger::Log(prefix + "[Focused][Filter] Step0 输入星点数量 = " + std::to_string(stars.size()),
-		            LogLevel::DEBUG, logDeviceType);
-		for (size_t i = 0; i < stars.size(); ++i) {
-			const auto &s = stars[i];
-			std::string msg = "  原始星点 " + std::to_string(i) +
-			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
-			                  " flux=" + std::to_string(s.flux) +
-			                  " hfr=" + std::to_string(s.hfr) +
-			                  " radius=" + std::to_string(s.radius);
-			Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-		}
-	}
-	// 这里原本有“星点数量<=3 直接视为噪声”的规则，
-	// 但在小视场/单星 ROI 场景下会误杀目标星，故取消此硬性数量阈值，
-	// 改为完全依赖后续的 flux/HFR/半径 等约束进行过滤。
-	// 过滤 HFR == 1
-	std::vector<Tools::FocusedStar> filtered;
-	filtered.reserve(stars.size());
-	for (size_t i = 0; i < stars.size(); ++i) {
-		const auto &s = stars[i];
-		if (std::abs(s.hfr - 1.0) <= 0.01) {
-			if (verbose) {
-				std::string msg = "[Focused][Filter] 丢弃星点(索引 " + std::to_string(i) +
-				                  ") 原因:HFR≈1.0 pos=(" + std::to_string(s.x) + "," +
-				                  std::to_string(s.y) + ") hfr=" + std::to_string(s.hfr);
-				Logger::Log(prefix + msg, LogLevel::INFO, logDeviceType);
-			}
-			continue;
-		}
-		filtered.push_back(s);
-	}
-	if (filtered.empty()) {
-		if (verbose) {
-			Logger::Log(prefix + "[Focused][Filter] 经过 HFR==1 过滤后星点为空",
-			            LogLevel::DEBUG, logDeviceType);
-		}
-		return filtered;
-	}
-	// 计算 min_flux
-	std::vector<double> fluxes;
-	for (const auto& s : filtered) if (s.flux > 0.0) fluxes.push_back(s.flux);
-	double minFlux = 0.0;
-	if (!fluxes.empty()) minFlux = percentile(fluxes, fluxPercentile);
-	if (verbose) {
-		std::string msg = "[Focused][Filter] 根据 flux 百分位计算得到 minFlux = " +
-		                  std::to_string(minFlux) + " (percentile = " +
-		                  std::to_string(fluxPercentile) + ")";
-		Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-	}
-	// 一般约束
-	std::vector<Tools::FocusedStar> filtered2;
-	for (size_t i = 0; i < filtered.size(); ++i) {
-		const auto &s = filtered[i];
-		if (s.flux < minFlux) {
-			if (verbose) {
-				std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
-				                  ") 原因:flux < minFlux flux=" + std::to_string(s.flux) +
-				                  " minFlux=" + std::to_string(minFlux);
-				Logger::Log(prefix + msg, LogLevel::INFO, logDeviceType);
-			}
-			continue;
-		}
-		if (s.hfr < minHFR || s.hfr > maxHFR) {
-			if (verbose) {
-				std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
-				                  ") 原因:HFR越界 hfr=" + std::to_string(s.hfr) +
-				                  " 允许范围[" + std::to_string(minHFR) + "," +
-				                  std::to_string(maxHFR) + "]";
-				Logger::Log(prefix + msg, LogLevel::INFO, logDeviceType);
-			}
-			continue;
-		}
-		if (s.hfr > 0.0 && s.radius > 0.0) {
-			double ratio = s.hfr / s.radius;
-			if (ratio > 2.5) {
-				if (verbose) {
-					std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
-					                  ") 原因:HFR/半径比过大 ratio=" + std::to_string(ratio);
-					Logger::Log(prefix + msg, LogLevel::INFO, logDeviceType);
-				}
-				continue;
-			}
-			if (ratio < 0.1) {
-				if (verbose) {
-					std::string msg = "[Focused][Filter] 丢弃星点(中间索引 " + std::to_string(i) +
-					                  ") 原因:HFR/半径比过小 ratio=" + std::to_string(ratio);
-					Logger::Log(prefix + msg, LogLevel::INFO, logDeviceType);
-				}
-				continue;
-			}
-		}
-		filtered2.push_back(s);
-	}
-	// 这里原先还有一个“过滤后若数量仍<=3 且 HFR/半径变化很小则全部丢弃”的特判，
-	// 同样会在单星 / 少星 ROI 场景下误杀目标星，已移除，仅保留上面的物理约束过滤。
-	if (verbose) {
-		Logger::Log(prefix + "[Focused][Filter] 最终保留星点数量 = " + std::to_string(filtered2.size()),
-		            LogLevel::DEBUG, logDeviceType);
-		for (size_t i = 0; i < filtered2.size(); ++i) {
-			const auto &s = filtered2[i];
-			std::string msg = "  保留星点 " + std::to_string(i) +
-			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
-			                  " flux=" + std::to_string(s.flux) +
-			                  " hfr=" + std::to_string(s.hfr) +
-			                  " radius=" + std::to_string(s.radius);
-					Logger::Log(prefix + msg, LogLevel::INFO, logDeviceType);
-		}
-	}
-	return filtered2;
-}
+    if (windowSize < 3) windowSize = 3;
+    if (windowSize % 2 != 0) windowSize += 1;
+    const int half = windowSize / 2;
+    const int x0 = std::max(0, maxLoc.x - half);
+    const int y0 = std::max(0, maxLoc.y - half);
+    const int x1 = std::min(gray32.cols, maxLoc.x + half);
+    const int y1 = std::min(gray32.rows, maxLoc.y + half);
+    if (x1 <= x0 || y1 <= y0) return stars;
 
-static std::vector<Tools::FocusedStar> removeDuplicatesFocused(const std::vector<Tools::FocusedStar>& stars) {
-	if (stars.empty()) return stars;
-	// 计算距离阈值（基于avg半径与avg HFR）
-	std::vector<double> radii, hfrs;
-	radii.reserve(stars.size()); hfrs.reserve(stars.size());
-	for (const auto& s : stars) {
-		if (s.radius > 0.0) radii.push_back(s.radius);
-		if (s.hfr > 0.0) hfrs.push_back(s.hfr);
-	}
-	double avgR = radii.empty() ? 0.0 : std::accumulate(radii.begin(), radii.end(), 0.0) / static_cast<double>(radii.size());
-	double avgH = hfrs.empty() ? 0.0 : std::accumulate(hfrs.begin(), hfrs.end(), 0.0) / static_cast<double>(hfrs.size());
-	double minDist = std::max(3.0, std::max(avgR, avgH) * 2.0);
-	// 按 flux 降序
-	std::vector<Tools::FocusedStar> sorted = stars;
-	std::sort(sorted.begin(), sorted.end(), [](const Tools::FocusedStar& a, const Tools::FocusedStar& b){
-		return a.flux > b.flux;
-	});
-	std::vector<Tools::FocusedStar> uniq;
-	for (const auto& s : sorted) {
-		bool dup = false;
-		for (const auto& u : uniq) {
-			double dx = s.x - u.x;
-			double dy = s.y - u.y;
-			if (std::sqrt(dx * dx + dy * dy) < minDist) { dup = true; break; }
-		}
-		if (!dup) uniq.push_back(s);
-	}
-	return uniq;
-}
+    const cv::Rect roi(x0, y0, x1 - x0, y1 - y0);
+    cv::Mat roi32 = gray32(roi).clone();
 
-// 小星检测（合焦）
-static std::vector<Tools::FocusedStar> detectSmallStarsFocused(const cv::Mat& fg,
-                                                               const cv::Mat& bgImage,
-                                                               double kSigma,
-                                                               int minArea,
-                                                               int maxArea,
-                                                               double minSNR,
-                                                               bool verbose,
-                                                               DeviceType logDeviceType,
-                                                               const QString& logPrefix) {
-    const std::string prefix = logPrefix.isEmpty() ? std::string() : (logPrefix.toStdString() + " ");
-	cv::Mat bin;
-	double thr = estimateThreshold(fg, kSigma);
-	if (verbose) {
-		std::string msg = "[Focused][Detect] Step2 阈值估计 kSigma=" +
-		                  std::to_string(kSigma) + " thr=" + std::to_string(thr);
-		Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-	}
-	cv::threshold(fg, bin, thr, 1.0, cv::THRESH_BINARY);
-	cv::Mat binU8;
-	bin.convertTo(binU8, CV_8U, 255.0);
-	cv::Mat labels, stats, centroids;
-	int numLabels = cv::connectedComponentsWithStats(binU8, labels, stats, centroids, 8, CV_32S);
-	if (verbose) {
-		Logger::Log(prefix + "[Focused][Detect] 初始连通域个数(含背景) = " + std::to_string(numLabels),
-		            LogLevel::DEBUG, logDeviceType);
-	}
-	std::vector<Tools::FocusedStar> stars;
-	for (int lab = 1; lab < numLabels; ++lab) {
-		int area = stats.at<int>(lab, cv::CC_STAT_AREA);
-		if (area <= 10) { // 排除超小噪点（对齐Python逻辑）
-			if (verbose) {
-				std::string msg = "[Focused][Detect] 丢弃连通域 label=" +
-				                  std::to_string(lab) +
-				                  " 原因: area <= 30 area=" + std::to_string(area);
-				Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-			}
-			continue;
-		}
-		// 若 maxArea <= 0，则不做“最大面积”限制，仅限制最小面积；
-		// 若 maxArea > 0，则要求 area 落在 [minArea, maxArea] 区间内
-		if (area < minArea || (maxArea > 0 && area > maxArea)) {
-			if (verbose) {
-				std::string msg = "[Focused][Detect] 丢弃连通域 label=" +
-				                  std::to_string(lab) +
-				                  " 原因: area 不在允许范围; minArea=" +
-				                  std::to_string(minArea) +
-				                  " maxArea=" + std::to_string(maxArea) +
-				                  " area=" + std::to_string(area);
-				Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-			}
-			continue;
-		}
-		double cx = centroids.at<double>(lab, 0);
-		double cy = centroids.at<double>(lab, 1);
-		int x = stats.at<int>(lab, cv::CC_STAT_LEFT);
-		int y = stats.at<int>(lab, cv::CC_STAT_TOP);
-		int w = stats.at<int>(lab, cv::CC_STAT_WIDTH);
-		int h = stats.at<int>(lab, cv::CC_STAT_HEIGHT);
-		cv::Rect roi(x, y, w, h);
-		cv::Mat roiFG = fg(roi);
-		cv::Mat roiLabels = labels(roi);
-		cv::Mat roiMask = (roiLabels == lab);
-		cv::Mat roiMaskU8; roiMask.convertTo(roiMaskU8, CV_8U, 255.0);
-		// flux
-		double flux = 0.0;
-		for (int yy = 0; yy < roiFG.rows; ++yy) {
-			const float* f = roiFG.ptr<float>(yy);
-			const uint8_t* m = roiMaskU8.ptr<uint8_t>(yy);
-			for (int xx = 0; xx < roiFG.cols; ++xx) if (m[xx]) flux += static_cast<double>(f[xx]);
-		}
-		double cxROI = cx - static_cast<double>(x);
-		double cyROI = cy - static_cast<double>(y);
-		double hfr = computeHFR(roiFG, roiMaskU8, cxROI, cyROI);
-		double radius = std::sqrt(static_cast<double>(area) / CV_PI);
-		cv::Mat roiBG;
-		if (!bgImage.empty()) roiBG = bgImage(roi);
-		auto snrRes = computeSNR(roiFG, roiMaskU8, roiBG, cxROI, cyROI);
-		double snr = snrRes.first;
-		if (snr < minSNR) {
-			if (verbose) {
-				std::string msg = "[Focused][Detect] SNR过滤 label=" +
-				                  std::to_string(lab) +
-				                  " 位置(" + std::to_string(cx) + "," + std::to_string(cy) +
-				                  ") SNR=" + std::to_string(snr) +
-				                  "<" + std::to_string(minSNR) +
-				                  " 质量=" + snrRes.second.toStdString();
-				Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-			}
-			continue;
-		}
-		Tools::FocusedStar s{};
-		s.x = cx; s.y = cy; s.flux = flux; s.hfr = hfr; s.radius = radius; s.area = area;
-		s.snr = snr; s.snrQuality = snrRes.second;
-		stars.push_back(s);
-	}
-	if (verbose) {
-		int totalDetected = static_cast<int>(stars.size());
-		Logger::Log(prefix + "[Focused][Detect] 合焦小星（面积+SNR过滤后）数量: " + std::to_string(totalDetected),
-		            LogLevel::DEBUG, logDeviceType);
-		for (int i = 0; i < totalDetected; ++i) {
-			const auto &s = stars[i];
-			std::string msg = "  通过小星检测星点 " + std::to_string(i) +
-			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
-			                  " area=" + std::to_string(s.area) +
-			                  " flux=" + std::to_string(s.flux) +
-			                  " hfr=" + std::to_string(s.hfr) +
-			                  " snr=" + std::to_string(s.snr) +
-			                  " 质量=" + s.snrQuality.toStdString();
-			Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-		}
-	}
-	return stars;
+    cv::Mat bgMask(gray32.size(), CV_8U, cv::Scalar(255));
+    bgMask(roi).setTo(cv::Scalar(0));
+    cv::Scalar bgMeanScalar;
+    cv::Scalar bgStdScalar;
+    cv::meanStdDev(gray32, bgMeanScalar, bgStdScalar, bgMask);
+    const double bgStd = bgStdScalar[0];
+
+    double localMin = 0.0;
+    double localMax = 0.0;
+    cv::minMaxLoc(roi32, &localMin, &localMax);
+    const cv::Scalar roiMeanScalar = cv::mean(roi32);
+    const double localMean = roiMeanScalar[0];
+    const double peakAboveMean = std::max(0.0, localMax - localMean);
+    if (!(peakAboveMean > 0.0)) {
+        if (verbose) {
+            Logger::Log("[PeakCentroid] peakAboveMean<=0, fallback to maxLoc",
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+        Tools::FocusedStar star{};
+        star.x = static_cast<double>(maxLoc.x);
+        star.y = static_cast<double>(maxLoc.y);
+        star.flux = localMax;
+        star.hfr = 0.0;
+        star.radius = 0.0;
+        star.area = 1;
+        star.snr = 0.0;
+        star.localMax = localMax;
+        star.bgStd = bgStd;
+        star.snrQuality = QStringLiteral("peak-only");
+        stars.push_back(star);
+        return stars;
+    }
+
+    // 天文图像里窗口大部分通常是本底，用区域均值近似本底，
+    // 再取 (峰值-均值)*0.3 作为阈值，较半高宽更宽松一些，减少均值被星点抬高后的偏差。
+    const double threshold = localMean + peakAboveMean * 0.3;
+    cv::Mat signal32 = roi32.clone();
+    signal32 -= static_cast<float>(threshold);
+    cv::threshold(signal32, signal32, 0.0, 0.0, cv::THRESH_TOZERO);
+
+    double flux = 0.0;
+    double sumX = 0.0;
+    double sumY = 0.0;
+    int supportArea = 0;
+    for (int y = 0; y < signal32.rows; ++y) {
+        const float* row = signal32.ptr<float>(y);
+        for (int x = 0; x < signal32.cols; ++x) {
+            const double w = std::max(0.0, static_cast<double>(row[x]));
+            if (w <= 0.0) continue;
+            flux += w;
+            sumX += w * static_cast<double>(x0 + x);
+            sumY += w * static_cast<double>(y0 + y);
+            supportArea++;
+        }
+    }
+    if (!(flux > 0.0)) {
+        if (verbose) {
+            Logger::Log("[PeakCentroid] threshold removed all support, fallback to maxLoc",
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+        Tools::FocusedStar star{};
+        star.x = static_cast<double>(maxLoc.x);
+        star.y = static_cast<double>(maxLoc.y);
+        star.flux = localMax;
+        star.hfr = 0.0;
+        star.radius = 0.0;
+        star.area = 1;
+        star.snr = 0.0;
+        star.localMax = localMax;
+        star.bgStd = bgStd;
+        star.snrQuality = QStringLiteral("peak-only");
+        stars.push_back(star);
+        return stars;
+    }
+
+    const double cx = sumX / flux;
+    const double cy = sumY / flux;
+    const cv::Mat roiNorm = toFloat32Normalized(signal32);
+    const double hfr = computeHFR(roiNorm, cx - x0, cy - y0);
+    const double radius = std::sqrt(static_cast<double>(std::max(1, supportArea)) / CV_PI);
+
+    Tools::FocusedStar star{};
+    star.x = cx;
+    star.y = cy;
+    star.flux = flux;
+    star.hfr = hfr;
+    star.radius = radius;
+    star.area = supportArea;
+    star.snr = (bgStd > 0.0) ? (localMax / bgStd) : 0.0;
+    star.localMax = localMax;
+    star.bgStd = bgStd;
+    star.snrQuality = QStringLiteral("peak-centroid");
+    stars.push_back(star);
+
+    if (verbose) {
+        Logger::Log("[PeakCentroid] maxLoc=(" + std::to_string(maxLoc.x) + "," + std::to_string(maxLoc.y) +
+                        "), roi=(" + std::to_string(x0) + "," + std::to_string(y0) + "," +
+                        std::to_string(roi.width) + "x" + std::to_string(roi.height) + ")" +
+                        ", localMin=" + std::to_string(localMin) +
+                        ", localMean=" + std::to_string(localMean) +
+                        ", localMax=" + std::to_string(localMax) +
+                        ", bgStd=" + std::to_string(bgStd) +
+                        ", threshold=" + std::to_string(threshold) +
+                        ", supportArea=" + std::to_string(supportArea) +
+                        ", centroid=(" + std::to_string(cx) + "," + std::to_string(cy) + ")" +
+                        ", flux=" + std::to_string(flux) +
+                        ", hfr=" + std::to_string(hfr) +
+                        ", snr=" + std::to_string(star.snr),
+                    LogLevel::INFO, DeviceType::MAIN);
+    }
+
+    return stars;
 }
 
 } // namespace
 
-// ------------------------ Focused star detection public APIs ------------------------
 std::vector<Tools::FocusedStar> Tools::DetectFocusedStars(const cv::Mat& image16,
                                                           double kSigma,
                                                           int minArea,
@@ -464,75 +238,40 @@ std::vector<Tools::FocusedStar> Tools::DetectFocusedStars(const cv::Mat& image16
                                                           double minSNR,
                                                           int bgKsize,
                                                           double smoothSigma,
-                                                          bool verbose,
-                                                          DeviceType logDeviceType,
-                                                          const QString& logPrefix) {
-    const std::string prefix = logPrefix.isEmpty() ? std::string() : (logPrefix.toStdString() + " ");
-	if (image16.empty()) return {};
-	// Step 1: 前景图（背景扣除）
-	if (verbose) {
-		Logger::Log(prefix + "[Focused] Step 1 预处理（背景扣除+平滑）",
-		            LogLevel::DEBUG, logDeviceType);
-	}
-	cv::Mat fg = preprocessFocused(image16, bgKsize, smoothSigma);
-	// Step 2: 小星检测（全图）
-	if (verbose) {
-		Logger::Log(prefix + "[Focused] Step 2 小星检测（全图阈值+连通域）",
-		            LogLevel::DEBUG, logDeviceType);
-	}
-	cv::Mat bgForSnr = toFloat32Normalized(image16);
-	std::vector<Tools::FocusedStar> allStars = detectSmallStarsFocused(
-        fg, bgForSnr, kSigma, minArea, maxArea, minSNR, verbose, logDeviceType, logPrefix);
-	// Step 3: 噪声过滤（合焦策略）
-	if (verbose) {
-		Logger::Log(prefix + "[Focused] Step 3 噪声过滤（合焦规则）",
-		            LogLevel::DEBUG, logDeviceType);
-	}
-	allStars = filterNoiseFocused(allStars, 0.5, 50.0, 10.0, verbose, logDeviceType, logPrefix);
-	// Step 4: 去重
-	if (verbose) {
-		Logger::Log(prefix + "[Focused] Step 4 去重", LogLevel::DEBUG, logDeviceType);
-		Logger::Log(prefix + "[Focused][BeforeDedup] 星点数量 = " + std::to_string(allStars.size()),
-		            LogLevel::DEBUG, logDeviceType);
-	}
-	allStars = removeDuplicatesFocused(allStars);
-	if (verbose) {
-		Logger::Log(prefix + "[Focused] 完成，星点数量: " + std::to_string(static_cast<int>(allStars.size())),
-		            LogLevel::DEBUG, logDeviceType);
-		for (size_t i = 0; i < allStars.size(); ++i) {
-			const auto &s = allStars[i];
-			std::string msg = "  最终星点 " + std::to_string(i) +
-			                  " pos=(" + std::to_string(s.x) + "," + std::to_string(s.y) + ")" +
-			                  " flux=" + std::to_string(s.flux) +
-			                  " hfr=" + std::to_string(s.hfr) +
-			                  " radius=" + std::to_string(s.radius) +
-			                  " snr=" + std::to_string(s.snr) +
-			                  " 质量=" + s.snrQuality.toStdString();
-			Logger::Log(prefix + msg, LogLevel::DEBUG, logDeviceType);
-		}
-	}
-	return allStars;
+                                                          bool verbose)
+{
+    Q_UNUSED(kSigma);
+    Q_UNUSED(minArea);
+    Q_UNUSED(maxArea);
+    Q_UNUSED(minSNR);
+    Q_UNUSED(bgKsize);
+    Q_UNUSED(smoothSigma);
+    return detectPeakCentroidInternal(image16, 50, verbose);
 }
 
 int Tools::DetectFocusedStarsFromFITS(const char* fileName,
                                       std::vector<Tools::FocusedStar>& outStars,
-                                      bool verbose) {
-	outStars.clear();
-	cv::Mat img;
-	int status = Tools::readFits(fileName, img);
-	if (status != 0) return status;
-	// 这里将 maxArea 设为 0，表示“不限制最大面积”，仅由 minArea 等参数约束
-	outStars = Tools::DetectFocusedStars(img, 3.5, 3, 0, 3.0, 51, 1.0, verbose);
-	return 0;
+                                      bool verbose)
+{
+    outStars.clear();
+    cv::Mat img;
+    const int status = Tools::readFits(fileName, img);
+    if (status != 0) return status;
+    outStars = detectPeakCentroidInternal(img, 50, verbose);
+    return 0;
 }
 
-double Tools::MedianHFR(const std::vector<Tools::FocusedStar>& stars) {
-	if (stars.empty()) return 0.0;
-	std::vector<double> hfrs; hfrs.reserve(stars.size());
-	for (const auto& s : stars) if (s.hfr > 0.0) hfrs.push_back(s.hfr);
-	if (hfrs.empty()) return 0.0;
-	std::sort(hfrs.begin(), hfrs.end());
-	size_t n = hfrs.size();
-	if (n % 2 == 1) return hfrs[n / 2];
-	return 0.5 * (hfrs[n / 2 - 1] + hfrs[n / 2]);
+double Tools::MedianHFR(const std::vector<Tools::FocusedStar>& stars)
+{
+    if (stars.empty()) return 0.0;
+    std::vector<double> hfrs;
+    hfrs.reserve(stars.size());
+    for (const auto& s : stars) {
+        if (s.hfr > 0.0) hfrs.push_back(s.hfr);
+    }
+    if (hfrs.empty()) return 0.0;
+    std::sort(hfrs.begin(), hfrs.end());
+    const size_t n = hfrs.size();
+    if (n % 2 == 1) return hfrs[n / 2];
+    return 0.5 * (hfrs[n / 2 - 1] + hfrs[n / 2]);
 }

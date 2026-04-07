@@ -123,6 +123,33 @@ bool isValidSystemDeviceIndex(const SystemDeviceList &deviceList, int index)
 {
     return index >= 0 && index < deviceList.system_devices.size();
 }
+
+void drawFocusDebugCrosshair(cv::Mat &image16, double x, double y)
+{
+    if (image16.empty() || image16.type() != CV_16UC1) {
+        return;
+    }
+
+    const int cx = static_cast<int>(std::lround(x));
+    const int cy = static_cast<int>(std::lround(y));
+    if (cx < 0 || cy < 0 || cx >= image16.cols || cy >= image16.rows) {
+        return;
+    }
+
+    const int armBase = std::max(6, std::min(image16.cols, image16.rows) / 20);
+    const int arm = armBase * 10;
+    const int x0 = std::max(0, cx - arm);
+    const int x1 = std::min(image16.cols - 1, cx + arm);
+    const int y0 = std::max(0, cy - arm);
+    const int y1 = std::min(image16.rows - 1, cy + arm);
+    const cv::Scalar white(std::numeric_limits<unsigned short>::max());
+    const cv::Scalar black(0);
+
+    cv::line(image16, cv::Point(x0, cy), cv::Point(x1, cy), black, 3, cv::LINE_8);
+    cv::line(image16, cv::Point(cx, y0), cv::Point(cx, y1), black, 3, cv::LINE_8);
+    cv::line(image16, cv::Point(x0, cy), cv::Point(x1, cy), white, 1, cv::LINE_8);
+    cv::line(image16, cv::Point(cx, y0), cv::Point(cx, y1), white, 1, cv::LINE_8);
+}
 }
 
 // 索引转换辅助函数
@@ -24639,13 +24666,21 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         return;
     }
 
+    Logger::Log("saveFitsAsJPG | input FITS filename=" + filename.toStdString() +
+                    ", raw image=" + std::to_string(image.cols) + "x" + std::to_string(image.rows),
+                LogLevel::INFO, DeviceType::FOCUSER);
+
     QList<FITSImage::Star> stars = Tools::FindStarsByFocusedCpp(true, true);
+    Logger::Log("saveFitsAsJPG | star detection call currently uses default focused-cpp source; current ROI frame is " +
+                    filename.toStdString(),
+                LogLevel::WARNING, DeviceType::FOCUSER);
     currentSelectStarPosition = selectStar(stars);
 
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
-    emit wsThread->sendMessageToClient("setSelectStarPosition:" + QString::number(roiAndFocuserInfo["SelectStarX"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarY"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
+    emit wsThread->sendMessageToClient("setSelectStarPosition:" + QString::number(roiAndFocuserInfo["SelectStarX"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarY"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarSNR"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarLocalMax"]) + ":" + QString::number(roiAndFocuserInfo["SelectStarBgStd"]));
     emit wsThread->sendMessageToClient("addFwhmNow:" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
-    Logger::Log("saveFitsAsJPG | 星点位置更新为 x:" + std::to_string(roiAndFocuserInfo["SelectStarX"]) + ",y:" + std::to_string(roiAndFocuserInfo["SelectStarY"]) + ",HFR:" + std::to_string(roiAndFocuserInfo["SelectStarHFR"]), LogLevel::INFO, DeviceType::FOCUSER);
+    emit wsThread->sendMessageToClient("addSnrNow:" + QString::number(roiAndFocuserInfo["SelectStarSNR"]));
+    Logger::Log("saveFitsAsJPG | 星点位置更新为 x:" + std::to_string(roiAndFocuserInfo["SelectStarX"]) + ",y:" + std::to_string(roiAndFocuserInfo["SelectStarY"]) + ",HFR:" + std::to_string(roiAndFocuserInfo["SelectStarHFR"]) + ",SNR:" + std::to_string(roiAndFocuserInfo["SelectStarSNR"]) + ",localMax:" + std::to_string(roiAndFocuserInfo["SelectStarLocalMax"]) + ",bgStd:" + std::to_string(roiAndFocuserInfo["SelectStarBgStd"]), LogLevel::INFO, DeviceType::FOCUSER);
 
     cv::Mat originalImage16;
     if (image.type() == CV_8UC1 || image.type() == CV_8UC3 || image.type() == CV_16UC1)
@@ -24722,6 +24757,16 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     Logger::Log("saveFitsAsJPG | output image16 " + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
     originalImage16.release();
 
+    const double debugSelectStarX = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1.0;
+    const double debugSelectStarY = roiAndFocuserInfo.count("SelectStarY") ? roiAndFocuserInfo["SelectStarY"] : -1.0;
+    if (debugSelectStarX >= 0.0 && debugSelectStarY >= 0.0)
+    {
+        drawFocusDebugCrosshair(image16, debugSelectStarX, debugSelectStarY);
+        Logger::Log("saveFitsAsJPG | drew backend debug crosshair at ROI(" +
+                        std::to_string(debugSelectStarX) + "," + std::to_string(debugSelectStarY) + ")",
+                    LogLevel::DEBUG, DeviceType::FOCUSER);
+    }
+
     // ROI 循环频率可能高于 1Hz：若文件名只精确到秒，会在同一秒内反复覆盖同名文件，
     // 造成前端拉取到旧内容/404（尤其在前端处理变慢、跳帧时）。这里改为毫秒级并追加序号，保证全局唯一。
     static std::atomic_uint64_t roiFileSeq{0};
@@ -24784,6 +24829,10 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         }
 
         // 与前端 parseFloat 一致，保留小数（非瓦片 bin 缩放下 emit 可能为小数）
+        Logger::Log("saveFitsAsJPG | ROI frame mapping file=" + fileName +
+                        ", emitRoi=(" + std::to_string(emitRoiX) + "," + std::to_string(emitRoiY) + ")" +
+                        ", image16=" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows),
+                    LogLevel::INFO, DeviceType::FOCUSER);
         emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(emitRoiX, 'g', 9) + ":" + QString::number(emitRoiY, 'g', 9));
 
         // 挂起的 ROI 居中更新：在本帧图像已发出后再改 roiAndFocuserInfo，并单独通知前端（与 SaveJpgSuccess 解耦）
@@ -24908,6 +24957,9 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     if (stars.size() <= 0) {
         Logger::Log("selectStar | no stars", LogLevel::INFO, DeviceType::FOCUSER);
         roiAndFocuserInfo["SelectStarHFR"] = 0.0;
+        roiAndFocuserInfo["SelectStarSNR"] = 0.0;
+        roiAndFocuserInfo["SelectStarLocalMax"] = 0.0;
+        roiAndFocuserInfo["SelectStarBgStd"] = 0.0;
         return QPointF(CurrentPosition, 0);
     }
 
@@ -24919,6 +24971,12 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     const double roi_y    = roiAndFocuserInfo.count("ROI_y") ? roiAndFocuserInfo["ROI_y"] * roiCoordScale : 0;
     const double selXFull = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1;
     const double selYFull = roiAndFocuserInfo.count("SelectStarY") ? roiAndFocuserInfo["SelectStarY"] : -1;
+    Logger::Log("selectStar | inputs stars=" + std::to_string(stars.size()) +
+                    ", boxSide=" + std::to_string(boxSide) +
+                    ", roi=(" + std::to_string(roi_x) + "," + std::to_string(roi_y) + ")" +
+                    ", prevSelect=(" + std::to_string(selXFull) + "," + std::to_string(selYFull) + ")" +
+                    ", roiCoordScale=" + std::to_string(roiCoordScale),
+                LogLevel::INFO, DeviceType::FOCUSER);
 
     // 3) 若已锁定目标星，则优先在本帧中追踪最近的那颗
     const int edgeMargin = 5;
@@ -24961,9 +25019,12 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
             roiAndFocuserInfo["SelectStarX"] = best.x;
             roiAndFocuserInfo["SelectStarY"] = best.y;
             roiAndFocuserInfo["SelectStarHFR"] = best.HFR;
+            roiAndFocuserInfo["SelectStarSNR"] = best.theta;
+            roiAndFocuserInfo["SelectStarLocalMax"] = best.a;
+            roiAndFocuserInfo["SelectStarBgStd"] = best.b;
             // 更新锁定星点的全图坐标
             lockedStarFull = QPointF(bestXFull, bestYFull);
-            Logger::Log("selectStar | tracking locked star: ROI(" + std::to_string(best.x) + "," + std::to_string(best.y) + ") Full(" + std::to_string(bestXFull) + "," + std::to_string(bestYFull) + ") HFR=" + std::to_string(best.HFR), LogLevel::DEBUG, DeviceType::FOCUSER);
+            Logger::Log("selectStar | tracking locked star: ROI(" + std::to_string(best.x) + "," + std::to_string(best.y) + ") Full(" + std::to_string(bestXFull) + "," + std::to_string(bestYFull) + ") HFR=" + std::to_string(best.HFR) + " SNR=" + std::to_string(best.theta) + " localMax=" + std::to_string(best.a) + " bgStd=" + std::to_string(best.b), LogLevel::DEBUG, DeviceType::FOCUSER);
             // 判断是否需要居中（挂起到下一帧应用）
             const double centerX = roi_x + boxSide / 2.0;
             const double centerY = roi_y + boxSide / 2.0;
@@ -25032,10 +25093,13 @@ QPointF MainWindow::selectStar(QList<FITSImage::Star> stars){
     roiAndFocuserInfo["SelectStarX"] = autoBest.x;
     roiAndFocuserInfo["SelectStarY"] = autoBest.y;
     roiAndFocuserInfo["SelectStarHFR"] = autoBest.HFR;
+    roiAndFocuserInfo["SelectStarSNR"] = autoBest.theta;
+    roiAndFocuserInfo["SelectStarLocalMax"] = autoBest.a;
+    roiAndFocuserInfo["SelectStarBgStd"] = autoBest.b;
     // 锁定星点的全图坐标
     lockedStarFull = QPointF(bestXFullAuto, bestYFullAuto);
     selectedStarLocked = true; // 锁定
-    Logger::Log("selectStar | auto-selected and locked new star ROI(x,y,HFR)=(" + std::to_string(autoBest.x) + "," + std::to_string(autoBest.y) + "," + std::to_string(autoBest.HFR) + ") Full(" + std::to_string(bestXFullAuto) + "," + std::to_string(bestYFullAuto) + ")", LogLevel::INFO, DeviceType::FOCUSER);
+    Logger::Log("selectStar | auto-selected and locked new star ROI(x,y,HFR,SNR,localMax,bgStd)=(" + std::to_string(autoBest.x) + "," + std::to_string(autoBest.y) + "," + std::to_string(autoBest.HFR) + "," + std::to_string(autoBest.theta) + "," + std::to_string(autoBest.a) + "," + std::to_string(autoBest.b) + ") Full(" + std::to_string(bestXFullAuto) + "," + std::to_string(bestYFullAuto) + ")", LogLevel::INFO, DeviceType::FOCUSER);
     return lockedStarFull;
 
     // 旧分支与重复逻辑清理完毕
