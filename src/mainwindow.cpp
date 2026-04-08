@@ -9460,7 +9460,38 @@ void MainWindow::continueConnectAllDeviceOnce()
         return;
     }
 
+    auto savedDeviceNameByDescription = [&](const QString &description) -> QString
+    {
+        for (int idx = 0; idx < systemdevicelist.system_devices.size(); ++idx)
+        {
+            if (systemdevicelist.system_devices[idx].Description == description)
+                return systemdevicelist.system_devices[idx].DeviceIndiName.trimmed();
+        }
+        return QString();
+    };
+
+    auto findConnectedIndexBySavedName = [&](const QVector<int> &connectedList, const QString &savedName,
+                                             const QSet<int> &reserved = QSet<int>()) -> int
+    {
+        if (savedName.isEmpty())
+            return -1;
+        for (int idx : connectedList)
+        {
+            if (reserved.contains(idx))
+                continue;
+            if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                continue;
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+            if (device == nullptr || device->getDeviceName() == nullptr)
+                continue;
+            if (QString::fromUtf8(device->getDeviceName()) == savedName)
+                return idx;
+        }
+        return -1;
+    };
+
     bool EachDeviceOne = true;
+    bool hasPendingAllocation = false;
 
     if (SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1)
     {
@@ -9512,12 +9543,60 @@ void MainWindow::continueConnectAllDeviceOnce()
     else if (SelectedCameras.size() > 1 || ConnectedCCDList.size() > 1)
     {
         EachDeviceOne = false;
+        QSet<int> boundCcdIndexes;
+
+        auto autoBindCcdRole = [&](const QString &description) {
+            const int idx = findConnectedIndexBySavedName(ConnectedCCDList,
+                                                          savedDeviceNameByDescription(description),
+                                                          boundCcdIndexes);
+            if (idx < 0)
+                return;
+
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+            if (device == nullptr)
+                return;
+
+            if (description == "Guider")
+            {
+                dpGuider = device;
+                if (systemdevicelist.system_devices.size() > 1)
+                    systemdevicelist.system_devices[1].isConnect = true;
+                AfterDeviceConnect(dpGuider);
+            }
+            else if (description == "PoleCamera")
+            {
+                dpPoleScope = device;
+                if (systemdevicelist.system_devices.size() > 2)
+                    systemdevicelist.system_devices[2].isConnect = true;
+                AfterDeviceConnect(dpPoleScope);
+            }
+            else if (description == "MainCamera")
+            {
+                dpMainCamera = device;
+                if (systemdevicelist.system_devices.size() > 20)
+                    systemdevicelist.system_devices[20].isConnect = true;
+                AfterDeviceConnect(dpMainCamera);
+            }
+
+            boundCcdIndexes.insert(idx);
+            Logger::Log("continueConnectAllDeviceOnce | INDI CCD auto-bound by saved name: " +
+                            description.toStdString() + " -> " + QString::fromUtf8(device->getDeviceName()).toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        };
+
+        autoBindCcdRole("MainCamera");
+        autoBindCcdRole("Guider");
+        autoBindCcdRole("PoleCamera");
+
         for (int i = 0; i < ConnectedCCDList.size(); i++)
         {
+            if (boundCcdIndexes.contains(ConnectedCCDList[i]))
+                continue;
             // 修复：检查索引是否有效
             if (ConnectedCCDList[i] >= 0 && ConnectedCCDList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(device->getDeviceName())); // already allocated
                 }
             }
@@ -9542,12 +9621,31 @@ void MainWindow::continueConnectAllDeviceOnce()
     else if (ConnectedTELESCOPEList.size() > 1)
     {
         EachDeviceOne = false;
+        const int boundMountIndex = findConnectedIndexBySavedName(ConnectedTELESCOPEList, savedDeviceNameByDescription("Mount"));
+        if (boundMountIndex >= 0)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundMountIndex);
+            if (device != nullptr)
+            {
+                dpMount = device;
+                if (systemdevicelist.system_devices.size() > 0)
+                    systemdevicelist.system_devices[0].isConnect = true;
+                AfterDeviceConnect(dpMount);
+                Logger::Log("continueConnectAllDeviceOnce | INDI Mount auto-bound by saved name: " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+
         for (int i = 0; i < ConnectedTELESCOPEList.size(); i++)
         {
+            if (ConnectedTELESCOPEList[i] == boundMountIndex)
+                continue;
             // 修复：检查索引有效性
             if (ConnectedTELESCOPEList[i] >= 0 && ConnectedTELESCOPEList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
                 }
             }
@@ -9572,12 +9670,31 @@ void MainWindow::continueConnectAllDeviceOnce()
     else if (ConnectedFOCUSERList.size() > 1)
     {
         EachDeviceOne = false;
+        const int boundFocuserIndex = findConnectedIndexBySavedName(ConnectedFOCUSERList, savedDeviceNameByDescription("Focuser"));
+        if (boundFocuserIndex >= 0)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundFocuserIndex);
+            if (device != nullptr)
+            {
+                dpFocuser = device;
+                if (systemdevicelist.system_devices.size() > 22)
+                    systemdevicelist.system_devices[22].isConnect = true;
+                AfterDeviceConnect(dpFocuser);
+                Logger::Log("continueConnectAllDeviceOnce | INDI Focuser auto-bound by saved name: " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+
         for (int i = 0; i < ConnectedFOCUSERList.size(); i++)
         {
+            if (ConnectedFOCUSERList[i] == boundFocuserIndex)
+                continue;
             // 修复：检查索引有效性
             if (ConnectedFOCUSERList[i] >= 0 && ConnectedFOCUSERList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
                 }
             }
@@ -9602,12 +9719,31 @@ void MainWindow::continueConnectAllDeviceOnce()
     else if (ConnectedFILTERList.size() > 1)
     {
         EachDeviceOne = false;
+        const int boundFilterIndex = findConnectedIndexBySavedName(ConnectedFILTERList, savedDeviceNameByDescription("CFW"));
+        if (boundFilterIndex >= 0)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundFilterIndex);
+            if (device != nullptr)
+            {
+                dpCFW = device;
+                if (systemdevicelist.system_devices.size() > 21)
+                    systemdevicelist.system_devices[21].isConnect = true;
+                AfterDeviceConnect(dpCFW);
+                Logger::Log("continueConnectAllDeviceOnce | INDI CFW auto-bound by saved name: " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+
         for (int i = 0; i < ConnectedFILTERList.size(); i++)
         {
+            if (ConnectedFILTERList[i] == boundFilterIndex)
+                continue;
             // 修复：检查索引有效性
             if (ConnectedFILTERList[i] >= 0 && ConnectedFILTERList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
                 }
             }
@@ -9615,10 +9751,7 @@ void MainWindow::continueConnectAllDeviceOnce()
     }
 
     Logger::Log("Each Device Only Has One:" + std::to_string(EachDeviceOne), LogLevel::INFO, DeviceType::MAIN);
-    if (EachDeviceOne)
-    {
-    }
-    else
+    if (!EachDeviceOne && hasPendingAllocation)
     {
         emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
     }
@@ -9689,6 +9822,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         if (!systemdevicelist.system_devices[20].DriverFrom.contains("SDK", Qt::CaseInsensitive)) {
             systemdevicelist.system_devices[20].DriverFrom = "SDK";
         }
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         Logger::Log("BindingDevice | Bind SDK MainCamera success: " + sdkMainCameraId.toStdString() +
                         " (poolIndex=" + std::to_string(poolIndex) + ")",
@@ -9730,6 +9864,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
         if (!systemdevicelist.system_devices[1].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[1].DriverFrom = "SDK";
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         // 注册设备到 SdkManager
         QString driverName = getSDKDriverName("Guider");
@@ -9853,6 +9988,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         systemdevicelist.system_devices[22].isBind = false;
         if (!systemdevicelist.system_devices[22].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[22].DriverFrom = "SDK";
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         Logger::Log("BindingDevice | Bind SDK Focuser requested. port=" + sdkFocuserPort.toStdString(),
                     LogLevel::INFO, DeviceType::FOCUSER);
@@ -9887,6 +10023,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             systemdevicelist.system_devices[1].isConnect = true;
             systemdevicelist.system_devices[1].isBind = true;
         }
+        Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpGuider);
         Logger::Log("Binding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -9898,6 +10035,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             systemdevicelist.system_devices[20].isConnect = true;
             systemdevicelist.system_devices[20].isBind = true;
         }
+        Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpMainCamera);
         Logger::Log("Binding MainCamera Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -9909,6 +10047,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             systemdevicelist.system_devices[0].isConnect = true;
             systemdevicelist.system_devices[0].isBind = true;
         }
+        Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpMount);
         Logger::Log("Binding Mount Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -9920,6 +10059,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             systemdevicelist.system_devices[22].isConnect = true;
             systemdevicelist.system_devices[22].isBind = true;
         }
+        Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpFocuser);
         Logger::Log("Binding Focuser Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -9932,6 +10072,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             systemdevicelist.system_devices[2].isConnect = true;
             systemdevicelist.system_devices[2].isBind = true;
         }
+        Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpPoleScope);
         Logger::Log("Binding PoleCamera Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -9941,6 +10082,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         dpCFW = indi_Client->GetDeviceFromList(DeviceIndex);
         systemdevicelist.system_devices[21].isConnect = true;
         systemdevicelist.system_devices[21].isBind = true;
+        Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpCFW);
         Logger::Log("Binding CFW Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -9981,6 +10123,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
 
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
             emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+            Tools::saveSystemDeviceList(systemdevicelist);
             Logger::Log("UnBinding Guider (SDK) end.", LogLevel::INFO, DeviceType::MAIN);
             return;
         }
@@ -10015,6 +10158,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         systemdevicelist.system_devices[1].isBind = false;
         systemdevicelist.system_devices[1].DeviceIndiName = "";
         dpGuider = nullptr;
+        Tools::saveSystemDeviceList(systemdevicelist);
         Logger::Log("UnBinding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
         if (DeviceIndex >= 0 && DeviceIndex < indi_Client->GetDeviceCount())
             emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
@@ -10050,6 +10194,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
             sdkMainCameraHandle = nullptr;
             // sdkMainCameraId 保留最后一次选择，便于自动重连/CFW key（不影响连接判断）
 
+            Tools::saveSystemDeviceList(systemdevicelist);
             Logger::Log("UnBinding MainCamera (SDK) end.", LogLevel::INFO, DeviceType::MAIN);
             return;
         }
@@ -10074,6 +10219,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         systemdevicelist.system_devices[20].isBind = false;
         systemdevicelist.system_devices[20].DeviceIndiName = "";
         dpMainCamera = nullptr;
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName())); // already allocated
     }
@@ -10090,6 +10236,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         systemdevicelist.system_devices[0].isBind = false;
         systemdevicelist.system_devices[0].DeviceIndiName = "";
         dpMount = nullptr;
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
     }
@@ -10129,6 +10276,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
             {
                 Logger::Log("UnBinding Focuser (SDK) | skip DeviceToBeAllocated: no valid port/name", LogLevel::WARNING, DeviceType::FOCUSER);
             }
+            Tools::saveSystemDeviceList(systemdevicelist);
             return;
         }
 
@@ -10143,6 +10291,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         systemdevicelist.system_devices[22].isBind = false;
         systemdevicelist.system_devices[22].DeviceIndiName = "";
         dpFocuser = nullptr;
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
     }
@@ -10159,6 +10308,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         systemdevicelist.system_devices[2].isBind = false;
         systemdevicelist.system_devices[2].DeviceIndiName = "";
         dpPoleScope = nullptr;
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
     }
@@ -10175,6 +10325,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         systemdevicelist.system_devices[21].isBind = false;
         systemdevicelist.system_devices[21].DeviceIndiName = "";
         dpCFW = nullptr;
+        Tools::saveSystemDeviceList(systemdevicelist);
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
     }
@@ -22643,8 +22794,39 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     Logger::Log("ConnectDriver | Number of Connected FOCUSER:" + std::to_string(ConnectedFOCUSERList.size()), LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("ConnectDriver | Number of Connected FILTER:" + std::to_string(ConnectedFILTERList.size()), LogLevel::INFO, DeviceType::MAIN);
 
+    auto savedDeviceNameByDescription = [&](const QString &description) -> QString
+    {
+        for (int idx = 0; idx < systemdevicelist.system_devices.size(); ++idx)
+        {
+            if (systemdevicelist.system_devices[idx].Description == description)
+                return systemdevicelist.system_devices[idx].DeviceIndiName.trimmed();
+        }
+        return QString();
+    };
+
+    auto findConnectedIndexBySavedName = [&](const QVector<int> &connectedList, const QString &savedName,
+                                             const QSet<int> &reserved = QSet<int>()) -> int
+    {
+        if (savedName.isEmpty())
+            return -1;
+        for (int idx : connectedList)
+        {
+            if (reserved.contains(idx))
+                continue;
+            if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                continue;
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+            if (device == nullptr || device->getDeviceName() == nullptr)
+                continue;
+            if (QString::fromUtf8(device->getDeviceName()) == savedName)
+                return idx;
+        }
+        return -1;
+    };
+
     // 判断连接设备的数量,
     bool EachDeviceOne = true;
+    bool hasPendingAllocation = false;
 
     if (SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1)
     {
@@ -22690,12 +22872,60 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     else if (SelectedCameras.size() > 1 || ConnectedCCDList.size() > 1)
     {
         EachDeviceOne = false;
+        QSet<int> boundCcdIndexes;
+
+        auto autoBindCcdRole = [&](const QString &description) {
+            const int idx = findConnectedIndexBySavedName(ConnectedCCDList,
+                                                          savedDeviceNameByDescription(description),
+                                                          boundCcdIndexes);
+            if (idx < 0)
+                return;
+
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+            if (device == nullptr)
+                return;
+
+            if (description == "Guider")
+            {
+                dpGuider = device;
+                if (systemdevicelist.system_devices.size() > 1)
+                    systemdevicelist.system_devices[1].isConnect = true;
+                AfterDeviceConnect(dpGuider);
+            }
+            else if (description == "PoleCamera")
+            {
+                dpPoleScope = device;
+                if (systemdevicelist.system_devices.size() > 2)
+                    systemdevicelist.system_devices[2].isConnect = true;
+                AfterDeviceConnect(dpPoleScope);
+            }
+            else if (description == "MainCamera")
+            {
+                dpMainCamera = device;
+                if (systemdevicelist.system_devices.size() > 20)
+                    systemdevicelist.system_devices[20].isConnect = true;
+                AfterDeviceConnect(dpMainCamera);
+            }
+
+            boundCcdIndexes.insert(idx);
+            Logger::Log("ConnectDriver | INDI CCD auto-bound by saved name: " +
+                            description.toStdString() + " -> " + QString::fromUtf8(device->getDeviceName()).toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        };
+
+        autoBindCcdRole("MainCamera");
+        autoBindCcdRole("Guider");
+        autoBindCcdRole("PoleCamera");
+
         for (int i = 0; i < ConnectedCCDList.size(); i++)
         {
+            if (boundCcdIndexes.contains(ConnectedCCDList[i]))
+                continue;
             // 修复：检查索引有效性
             if (ConnectedCCDList[i] >= 0 && ConnectedCCDList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(ConnectedCCDList[i]) + ":" + QString::fromUtf8(device->getDeviceName())); // already allocated
                 }
             }
@@ -22720,12 +22950,31 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     else if (ConnectedTELESCOPEList.size() > 1)
     {
         EachDeviceOne = false;
+        const int boundMountIndex = findConnectedIndexBySavedName(ConnectedTELESCOPEList, savedDeviceNameByDescription("Mount"));
+        if (boundMountIndex >= 0)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundMountIndex);
+            if (device != nullptr)
+            {
+                dpMount = device;
+                if (systemdevicelist.system_devices.size() > 0)
+                    systemdevicelist.system_devices[0].isConnect = true;
+                AfterDeviceConnect(dpMount);
+                Logger::Log("ConnectDriver | INDI Mount auto-bound by saved name: " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+
         for (int i = 0; i < ConnectedTELESCOPEList.size(); i++)
         {
+            if (ConnectedTELESCOPEList[i] == boundMountIndex)
+                continue;
             // 修复：检查索引有效性
             if (ConnectedTELESCOPEList[i] >= 0 && ConnectedTELESCOPEList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:Mount:" + QString::number(ConnectedTELESCOPEList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
                 }
             }
@@ -22750,12 +22999,31 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     else if (ConnectedFOCUSERList.size() > 1)
     {
         EachDeviceOne = false;
+        const int boundFocuserIndex = findConnectedIndexBySavedName(ConnectedFOCUSERList, savedDeviceNameByDescription("Focuser"));
+        if (boundFocuserIndex >= 0)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundFocuserIndex);
+            if (device != nullptr)
+            {
+                dpFocuser = device;
+                if (systemdevicelist.system_devices.size() > 22)
+                    systemdevicelist.system_devices[22].isConnect = true;
+                AfterDeviceConnect(dpFocuser);
+                Logger::Log("ConnectDriver | INDI Focuser auto-bound by saved name: " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+
         for (int i = 0; i < ConnectedFOCUSERList.size(); i++)
         {
+            if (ConnectedFOCUSERList[i] == boundFocuserIndex)
+                continue;
             // 修复：检查索引有效性
             if (ConnectedFOCUSERList[i] >= 0 && ConnectedFOCUSERList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:Focuser:" + QString::number(ConnectedFOCUSERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
                 }
             }
@@ -22780,12 +23048,31 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     else if (ConnectedFILTERList.size() > 1)
     {
         EachDeviceOne = false;
+        const int boundFilterIndex = findConnectedIndexBySavedName(ConnectedFILTERList, savedDeviceNameByDescription("CFW"));
+        if (boundFilterIndex >= 0)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundFilterIndex);
+            if (device != nullptr)
+            {
+                dpCFW = device;
+                if (systemdevicelist.system_devices.size() > 21)
+                    systemdevicelist.system_devices[21].isConnect = true;
+                AfterDeviceConnect(dpCFW);
+                Logger::Log("ConnectDriver | INDI CFW auto-bound by saved name: " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+
         for (int i = 0; i < ConnectedFILTERList.size(); i++)
         {
+            if (ConnectedFILTERList[i] == boundFilterIndex)
+                continue;
             // 修复：检查索引有效性
             if (ConnectedFILTERList[i] >= 0 && ConnectedFILTERList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[i]);
                 if (device != nullptr) {
+                    hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
                 }
             }
@@ -22793,10 +23080,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     }
 
     Logger::Log("Each Device Only Has One:" + std::to_string(EachDeviceOne), LogLevel::INFO, DeviceType::MAIN);
-    if (EachDeviceOne)
-    {
-    }
-    else
+    if (!EachDeviceOne && hasPendingAllocation)
     {
         emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
     }

@@ -908,8 +908,6 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
         outfile << "DriverFrom=" << driverFromUtf8.constData() << "\n";
         outfile << "SDKDriverName=" << sdkDriverNameUtf8.constData() << "\n";
         outfile << "BaudRate=" << device.BaudRate << "\n";
-        outfile << "isConnect=" << (device.isConnect ? "true" : "false") << "\n";
-        outfile << "isBind=" << (device.isBind ? "true" : "false") << "\n";
         outfile << "isSDKConnect=" << (device.isSDKConnect ? "true" : "false") << "\n";
         outfile << "\n";  // 每个设备之间空一行，便于阅读
     }
@@ -966,13 +964,10 @@ SystemDeviceList Tools::readSystemDeviceList() {
                 currentDevice.BaudRate = baud;
         }
         currentDevice.dp = NULL;
+        // isConnect / isBind 是运行时状态，不能从配置恢复。
+        // 否则刷新或重启后前端会把“上一次连接状态”误判成“当前在线状态”。
         currentDevice.isConnect = false;
         currentDevice.isBind = false;
-
-        if (sectionData.count("isConnect") > 0)
-            currentDevice.isConnect = (sectionData["isConnect"] == "true");
-        if (sectionData.count("isBind") > 0)
-            currentDevice.isBind = (sectionData["isBind"] == "true");
 
         // 迁移/修复旧配置：历史文件里可能没有写 DriverFrom，
         // 但 QHY 驱动（indi_qhy_ccd/indi_qhy_ccd2/libqhyccd）应被视为支持 SDK。
