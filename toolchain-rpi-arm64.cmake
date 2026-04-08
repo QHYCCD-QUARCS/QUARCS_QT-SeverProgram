@@ -51,6 +51,14 @@ if(_QUARCS_SYSROOT_GCC_MAJOR STREQUAL "")
 endif()
 set(QUARCS_SYSROOT_GCC_MAJOR "${_QUARCS_SYSROOT_GCC_MAJOR}" CACHE INTERNAL "GCC major version detected from target sysroot")
 
+# CMake 会缓存 find_program 结果；如果之前配置过不同主版本的交叉工具链，
+# 这里需要先清掉旧缓存，避免重新配置时继续沿用旧的 -11/-12 路径。
+unset(_QUARCS_CC CACHE)
+unset(_QUARCS_CXX CACHE)
+unset(_QUARCS_AR CACHE)
+unset(_QUARCS_RANLIB CACHE)
+unset(_QUARCS_NM CACHE)
+
 find_program(_QUARCS_CC
   NAMES
     "aarch64-linux-gnu-gcc-${_QUARCS_SYSROOT_GCC_MAJOR}"
@@ -61,6 +69,24 @@ find_program(_QUARCS_CXX
   NAMES
     "aarch64-linux-gnu-g++-${_QUARCS_SYSROOT_GCC_MAJOR}"
     aarch64-linux-gnu-g++
+  NO_CMAKE_FIND_ROOT_PATH
+  REQUIRED)
+find_program(_QUARCS_AR
+  NAMES
+    "aarch64-linux-gnu-gcc-ar-${_QUARCS_SYSROOT_GCC_MAJOR}"
+    aarch64-linux-gnu-gcc-ar
+  NO_CMAKE_FIND_ROOT_PATH
+  REQUIRED)
+find_program(_QUARCS_RANLIB
+  NAMES
+    "aarch64-linux-gnu-gcc-ranlib-${_QUARCS_SYSROOT_GCC_MAJOR}"
+    aarch64-linux-gnu-gcc-ranlib
+  NO_CMAKE_FIND_ROOT_PATH
+  REQUIRED)
+find_program(_QUARCS_NM
+  NAMES
+    "aarch64-linux-gnu-gcc-nm-${_QUARCS_SYSROOT_GCC_MAJOR}"
+    aarch64-linux-gnu-gcc-nm
   NO_CMAKE_FIND_ROOT_PATH
   REQUIRED)
 
@@ -80,8 +106,13 @@ if(NOT _QUARCS_CXX_MAJOR STREQUAL _QUARCS_SYSROOT_GCC_MAJOR)
     "g++-${_QUARCS_SYSROOT_GCC_MAJOR}-aarch64-linux-gnu")
 endif()
 
-set(CMAKE_C_COMPILER   "${_QUARCS_CC}")
-set(CMAKE_CXX_COMPILER "${_QUARCS_CXX}")
+set(CMAKE_C_COMPILER   "${_QUARCS_CC}" CACHE FILEPATH "Cross C compiler" FORCE)
+set(CMAKE_CXX_COMPILER "${_QUARCS_CXX}" CACHE FILEPATH "Cross CXX compiler" FORCE)
+set(CMAKE_C_COMPILER_AR "${_QUARCS_AR}" CACHE FILEPATH "Cross C compiler archiver" FORCE)
+set(CMAKE_CXX_COMPILER_AR "${_QUARCS_AR}" CACHE FILEPATH "Cross CXX compiler archiver" FORCE)
+set(CMAKE_C_COMPILER_RANLIB "${_QUARCS_RANLIB}" CACHE FILEPATH "Cross C compiler ranlib" FORCE)
+set(CMAKE_CXX_COMPILER_RANLIB "${_QUARCS_RANLIB}" CACHE FILEPATH "Cross CXX compiler ranlib" FORCE)
+set(CMAKE_NM "${_QUARCS_NM}" CACHE FILEPATH "Cross nm" FORCE)
 
 set(CMAKE_FIND_ROOT_PATH "${CMAKE_SYSROOT}")
 
@@ -111,3 +142,6 @@ set(CMAKE_MODULE_LINKER_FLAGS_INIT "--sysroot=${CMAKE_SYSROOT} ${_QUARCS_RL}")
 unset(_QUARCS_RL)
 unset(_QUARCS_GCC_DIR)
 unset(_QUARCS_SYSROOT_GCC_DIRS)
+unset(_QUARCS_AR)
+unset(_QUARCS_RANLIB)
+unset(_QUARCS_NM)

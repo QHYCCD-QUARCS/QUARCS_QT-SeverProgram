@@ -80,9 +80,14 @@ static double computeHFR(const cv::Mat& roiNorm, double cx, double cy)
 
 static std::vector<Tools::FocusedStar> detectPeakCentroidInternal(const cv::Mat& image16,
                                                                   int windowSize,
-                                                                  bool verbose)
+                                                                  bool verbose,
+                                                                  DeviceType logDeviceType,
+                                                                  const QString& logPrefix)
 {
     std::vector<Tools::FocusedStar> stars;
+    const std::string prefix = logPrefix.isEmpty()
+        ? std::string("[PeakCentroid]")
+        : logPrefix.toStdString();
     if (image16.empty()) return stars;
 
     cv::Mat gray = toSingleChannelGray(image16);
@@ -98,7 +103,7 @@ static std::vector<Tools::FocusedStar> detectPeakCentroidInternal(const cv::Mat&
     cv::minMaxLoc(gray32, nullptr, &maxVal, nullptr, &maxLoc);
     if (!(maxVal > 0.0)) {
         if (verbose) {
-            Logger::Log("[PeakCentroid] maxVal<=0, no valid peak", LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log(prefix + " maxVal<=0, no valid peak", LogLevel::INFO, logDeviceType);
         }
         return stars;
     }
@@ -130,8 +135,8 @@ static std::vector<Tools::FocusedStar> detectPeakCentroidInternal(const cv::Mat&
     const double peakAboveMean = std::max(0.0, localMax - localMean);
     if (!(peakAboveMean > 0.0)) {
         if (verbose) {
-            Logger::Log("[PeakCentroid] peakAboveMean<=0, fallback to maxLoc",
-                        LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log(prefix + " peakAboveMean<=0, fallback to maxLoc",
+                        LogLevel::INFO, logDeviceType);
         }
         Tools::FocusedStar star{};
         star.x = static_cast<double>(maxLoc.x);
@@ -172,8 +177,8 @@ static std::vector<Tools::FocusedStar> detectPeakCentroidInternal(const cv::Mat&
     }
     if (!(flux > 0.0)) {
         if (verbose) {
-            Logger::Log("[PeakCentroid] threshold removed all support, fallback to maxLoc",
-                        LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log(prefix + " threshold removed all support, fallback to maxLoc",
+                        LogLevel::INFO, logDeviceType);
         }
         Tools::FocusedStar star{};
         star.x = static_cast<double>(maxLoc.x);
@@ -210,7 +215,7 @@ static std::vector<Tools::FocusedStar> detectPeakCentroidInternal(const cv::Mat&
     stars.push_back(star);
 
     if (verbose) {
-        Logger::Log("[PeakCentroid] maxLoc=(" + std::to_string(maxLoc.x) + "," + std::to_string(maxLoc.y) +
+        Logger::Log(prefix + " maxLoc=(" + std::to_string(maxLoc.x) + "," + std::to_string(maxLoc.y) +
                         "), roi=(" + std::to_string(x0) + "," + std::to_string(y0) + "," +
                         std::to_string(roi.width) + "x" + std::to_string(roi.height) + ")" +
                         ", localMin=" + std::to_string(localMin) +
@@ -223,7 +228,7 @@ static std::vector<Tools::FocusedStar> detectPeakCentroidInternal(const cv::Mat&
                         ", flux=" + std::to_string(flux) +
                         ", hfr=" + std::to_string(hfr) +
                         ", snr=" + std::to_string(star.snr),
-                    LogLevel::INFO, DeviceType::MAIN);
+                    LogLevel::INFO, logDeviceType);
     }
 
     return stars;
@@ -238,7 +243,9 @@ std::vector<Tools::FocusedStar> Tools::DetectFocusedStars(const cv::Mat& image16
                                                           double minSNR,
                                                           int bgKsize,
                                                           double smoothSigma,
-                                                          bool verbose)
+                                                          bool verbose,
+                                                          DeviceType logDeviceType,
+                                                          const QString& logPrefix)
 {
     Q_UNUSED(kSigma);
     Q_UNUSED(minArea);
@@ -246,7 +253,7 @@ std::vector<Tools::FocusedStar> Tools::DetectFocusedStars(const cv::Mat& image16
     Q_UNUSED(minSNR);
     Q_UNUSED(bgKsize);
     Q_UNUSED(smoothSigma);
-    return detectPeakCentroidInternal(image16, 50, verbose);
+    return detectPeakCentroidInternal(image16, 50, verbose, logDeviceType, logPrefix);
 }
 
 int Tools::DetectFocusedStarsFromFITS(const char* fileName,
@@ -257,7 +264,7 @@ int Tools::DetectFocusedStarsFromFITS(const char* fileName,
     cv::Mat img;
     const int status = Tools::readFits(fileName, img);
     if (status != 0) return status;
-    outStars = detectPeakCentroidInternal(img, 50, verbose);
+    outStars = detectPeakCentroidInternal(img, 50, verbose, DeviceType::MAIN, QString());
     return 0;
 }
 
