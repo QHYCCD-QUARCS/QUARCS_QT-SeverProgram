@@ -159,6 +159,7 @@ constexpr const char *kPreferredWpaSupplicantConf = "/etc/wpa_supplicant/wpa_sup
 constexpr const char *kPreferredWlanDhcpService = "wlan0-dhcp.service";
 constexpr const char *kPreferredHostapdService = "hostapd@uap0";
 constexpr const char *kPreferredWpaService = "wpa_supplicant@wlan0";
+constexpr const char *kSavedStaProfilesConfigKey = "SavedStaProfilesJson";
 constexpr const char *kLegacyHotspotConnectionName = "RaspBerryPi-WiFi";
 constexpr const char *kDefaultHotspotName = "LQ";
 constexpr const char *kDefaultCountryCode = "CN";
@@ -205,6 +206,14 @@ QString normalizeWpaQuotedValue(QString value)
     value.replace("\\\"", "\"");
     value.replace("\\\\", "\\");
     return value;
+}
+
+QString normalizeWifiSsidForMatch(QString value)
+{
+    value = value.trimmed();
+    static const QRegularExpression trailingSignalRe(QStringLiteral(R"(\s+\d{1,3}%$)"));
+    value.remove(trailingSignalRe);
+    return value.trimmed();
 }
 
 QString escapeWpaQuotedValue(QString value)
@@ -284,6 +293,117 @@ bool writePreferredWpaSupplicantConf(const QString &ssid, const QString &psk, QS
         return false;
     }
     return true;
+}
+
+QJsonArray sanitizeSavedStaProfiles(const QJsonArray &profiles)
+{
+    QJsonArray cleaned;
+    QSet<QString> seenExactSsids;
+    for (const QJsonValue &value : profiles) {
+        if (!value.isObject()) continue;
+        const QJsonObject obj = value.toObject();
+        const QString ssid = obj.value("ssid").toString().trimmed();
+        const QString psk = obj.value("psk").toString();
+        const QString name = obj.value("name").toString("wan-uplink").trimmed();
+        if (ssid.isEmpty() || psk.isEmpty()) continue;
+        if (seenExactSsids.contains(ssid)) continue;
+        seenExactSsids.insert(ssid);
+        QJsonObject saved;
+        saved["ssid"] = ssid;
+        saved["psk"] = psk;
+        saved["name"] = name.isEmpty() ? QStringLiteral("wan-uplink") : name;
+        cleaned.append(saved);
+    }
+    return cleaned;
+}
+
+QJsonArray readSavedStaProfilesFromConfig()
+{
+    Tools::makeConfigFile();
+    std::unordered_map<std::string, std::string> config;
+    Tools::readClientSettings("config/config.ini", config);
+
+    const auto it = config.find(kSavedStaProfilesConfigKey);
+    if (it == config.end() || it->second.empty()) {
+        return QJsonArray();
+    }
+
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromStdString(it->second), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isArray()) {
+        Logger::Log(("readSavedStaProfilesFromConfig | bad_json: " + err.errorString()).toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return QJsonArray();
+    }
+
+    return sanitizeSavedStaProfiles(doc.array());
+}
+
+void writeSavedStaProfilesToConfig(const QJsonArray &profiles)
+{
+    Tools::makeConfigFile();
+    std::unordered_map<std::string, std::string> config;
+    const QJsonDocument doc(sanitizeSavedStaProfiles(profiles));
+    config[kSavedStaProfilesConfigKey] = doc.toJson(QJsonDocument::Compact).toStdString();
+    Tools::saveClientSettings("config/config.ini", config);
+}
+
+QJsonObject findSavedStaProfileBySsid(const QJsonArray &profiles, const QString &ssid)
+{
+    const QString target = ssid.trimmed();
+    const QString normalizedTarget = normalizeWifiSsidForMatch(ssid);
+
+    for (const QJsonValue &value : profiles) {
+        if (!value.isObject()) continue;
+        const QJsonObject obj = value.toObject();
+        if (obj.value("ssid").toString().trimmed() == target) {
+            return obj;
+        }
+    }
+
+    for (const QJsonValue &value : profiles) {
+        if (!value.isObject()) continue;
+        const QJsonObject obj = value.toObject();
+        if (normalizeWifiSsidForMatch(obj.value("ssid").toString()) == normalizedTarget) {
+            return obj;
+        }
+    }
+
+    return QJsonObject();
+}
+
+QJsonArray upsertSavedStaProfile(const QJsonArray &profiles, const QString &ssid, const QString &psk, const QString &name)
+{
+    const QString normalizedSsid = normalizeWifiSsidForMatch(ssid);
+    QJsonArray updated;
+    bool replaced = false;
+
+    for (const QJsonValue &value : profiles) {
+        if (!value.isObject()) continue;
+        QJsonObject obj = value.toObject();
+        const QString existingSsid = obj.value("ssid").toString().trimmed();
+        const bool sameProfile =
+            existingSsid == ssid.trimmed() ||
+            normalizeWifiSsidForMatch(existingSsid) == normalizedSsid;
+
+        if (sameProfile) {
+            obj["ssid"] = ssid.trimmed();
+            obj["psk"] = psk;
+            obj["name"] = name;
+            replaced = true;
+        }
+        updated.append(obj);
+    }
+
+    if (!replaced) {
+        QJsonObject obj;
+        obj["ssid"] = ssid.trimmed();
+        obj["psk"] = psk;
+        obj["name"] = name;
+        updated.append(obj);
+    }
+
+    return sanitizeSavedStaProfiles(updated);
 }
 
 QString readPreferredCountryCode()
@@ -489,7 +609,8 @@ QJsonObject buildPreferredNetStatusJson()
 {
     const QString hotspotName = readPreferredHotspotName();
     const QString staSsid = readWpaCliField("ssid");
-    const QJsonObject savedSta = readPreferredSavedStaConfig();
+    const QJsonObject currentWpaProfile = readPreferredSavedStaConfig();
+    const QJsonArray savedStaProfiles = readSavedStaProfilesFromConfig();
     const QString wlanIp = readInterfaceIpv4("wlan0");
     const QString ethIp = readInterfaceIpv4("eth0");
     const QString uapIp = readInterfaceIpv4("uap0");
@@ -511,6 +632,14 @@ QJsonObject buildPreferredNetStatusJson()
     obj["stack"] = "ap_sta_systemd";
     obj["hotspot_ssid"] = hotspotName;
     obj["sta_ssid"] = staSsid;
+    obj["saved_sta_profiles"] = savedStaProfiles;
+    QJsonObject savedSta = findSavedStaProfileBySsid(savedStaProfiles, staSsid);
+    if (savedSta.isEmpty()) {
+        savedSta = findSavedStaProfileBySsid(savedStaProfiles, currentWpaProfile.value("ssid").toString());
+    }
+    if (savedSta.isEmpty()) {
+        savedSta = currentWpaProfile;
+    }
     obj["saved_sta_ssid"] = savedSta.value("ssid").toString();
     obj["saved_sta_psk"] = savedSta.value("psk").toString();
     obj["wlan_ip"] = wlanIp;
@@ -4624,6 +4753,7 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
             emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + writeErr.left(200));
             return;
         }
+        writeSavedStaProfilesToConfig(upsertSavedStaProfile(readSavedStaProfilesFromConfig(), ssid, psk, name));
 
         const SyncCommandResult chmodRes =
             runSudoSync("/bin/chmod", {"600", QString::fromUtf8(kPreferredWpaSupplicantConf)}, 2000);
@@ -4663,7 +4793,8 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
                      const QStringList names = out.split('\n', Qt::SkipEmptyParts);
                      const bool exists = names.contains(name);
 
-                     auto finishOk = [this]() {
+                     auto finishOk = [this, name, ssid, psk]() {
+                         writeSavedStaProfilesToConfig(upsertSavedStaProfile(readSavedStaProfilesFromConfig(), ssid, psk, name));
                          emit wsThread->sendMessageToClient("WiFiSaveResult|save|ok");
                      };
                      auto finishFail = [this](const QString &e) {
