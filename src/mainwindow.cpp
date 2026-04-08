@@ -296,6 +296,33 @@ QString readPreferredCountryCode()
     return QString::fromUtf8(kDefaultCountryCode);
 }
 
+QJsonObject readPreferredSavedStaConfig()
+{
+    const QString content = readTextFile(QString::fromUtf8(kPreferredWpaSupplicantConf));
+    QJsonObject obj;
+    obj["ssid"] = QString();
+    obj["psk"] = QString();
+
+    if (content.isEmpty()) {
+        return obj;
+    }
+
+    QRegularExpression ssidRe(R"(ssid\s*=\s*("(?:\\.|[^"])*"|[^\n]+))");
+    QRegularExpression pskRe(R"(psk\s*=\s*("(?:\\.|[^"])*"|[^\n]+))");
+
+    const QRegularExpressionMatch ssidMatch = ssidRe.match(content);
+    if (ssidMatch.hasMatch()) {
+        obj["ssid"] = normalizeWpaQuotedValue(ssidMatch.captured(1));
+    }
+
+    const QRegularExpressionMatch pskMatch = pskRe.match(content);
+    if (pskMatch.hasMatch()) {
+        obj["psk"] = normalizeWpaQuotedValue(pskMatch.captured(1));
+    }
+
+    return obj;
+}
+
 QString buildPreferredWpaSupplicantConf(const QString &ssid, const QString &psk)
 {
     const QString country = readPreferredCountryCode();
@@ -462,6 +489,7 @@ QJsonObject buildPreferredNetStatusJson()
 {
     const QString hotspotName = readPreferredHotspotName();
     const QString staSsid = readWpaCliField("ssid");
+    const QJsonObject savedSta = readPreferredSavedStaConfig();
     const QString wlanIp = readInterfaceIpv4("wlan0");
     const QString ethIp = readInterfaceIpv4("eth0");
     const QString uapIp = readInterfaceIpv4("uap0");
@@ -483,6 +511,8 @@ QJsonObject buildPreferredNetStatusJson()
     obj["stack"] = "ap_sta_systemd";
     obj["hotspot_ssid"] = hotspotName;
     obj["sta_ssid"] = staSsid;
+    obj["saved_sta_ssid"] = savedSta.value("ssid").toString();
+    obj["saved_sta_psk"] = savedSta.value("psk").toString();
     obj["wlan_ip"] = wlanIp;
     obj["eth_ip"] = ethIp;
     obj["uap_ip"] = uapIp;
