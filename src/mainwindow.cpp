@@ -125,6 +125,18 @@ bool isValidSystemDeviceIndex(const SystemDeviceList &deviceList, int index)
 }
 }
 
+QString MainWindow::latestMainCaptureFitsPath() const
+{
+    if (!lastMainCaptureFitsPath.isEmpty() && QFile::exists(lastMainCaptureFitsPath))
+        return lastMainCaptureFitsPath;
+
+    const QString fallback = QStringLiteral("/dev/shm/ccd_simulator.fits");
+    if (QFile::exists(fallback))
+        return fallback;
+
+    return QString();
+}
+
 // 索引转换辅助函数
 static inline int sdkUiIndexFromPoolIndex(int poolIndex)
 {
@@ -4284,6 +4296,7 @@ void MainWindow::initINDIClient()
             {
                 if (dpMainCamera->getDeviceName() == devname)
                 {
+                    lastMainCaptureFitsPath = QString::fromStdString(filename);
                     glMainCameraStatu = "Displaying";
                     ShootStatus = "Completed";
                     if (autoFocuserIsROI && isAutoFocus)
@@ -14005,6 +14018,9 @@ void MainWindow::onSdkExposureTimerTimeout()
                     }
                     else
                     {
+                        SaveQhyFrameDataToFits(*framePtr, fitsPath);
+                        lastMainCaptureFitsPath = QString::fromStdString(fitsPath);
+
                         ShootStatus = "Completed";
                         emit wsThread->sendMessageToClient("ExposureCompleted");
                         Logger::Log("onSdkExposureTimerTimeout | Full resolution mode, ExposureCompleted",
@@ -14014,7 +14030,6 @@ void MainWindow::onSdkExposureTimerTimeout()
                         {
                             // PolarAlignment 后续会立即读取 /dev/shm/ccd_simulator.fits，
                             // 这里必须先把本次 SDK 新帧落盘，再通知拍摄结束。
-                            SaveQhyFrameDataToFits(*framePtr, fitsPath);
                             polarAlignment->setCaptureEnd(true);
                             Logger::Log("onSdkExposureTimerTimeout | ExposureCompleted -> polarAlignment capture end, FITS updated: " + fitsPath,
                                         LogLevel::INFO, DeviceType::MAIN);
@@ -18464,15 +18479,15 @@ int MainWindow::calculateScheduleProgress(int stepNumber, double stepProgress)
 int MainWindow::CaptureImageSave()
 {
     Logger::Log("CaptureImageSave...", LogLevel::INFO, DeviceType::MAIN);
-    const char *sourcePath = "/dev/shm/ccd_simulator.fits";
+    const QString sourcePath = latestMainCaptureFitsPath();
 
-    if (!QFile::exists("/dev/shm/ccd_simulator.fits"))
+    if (sourcePath.isEmpty())
     {
         emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
         return 1;
     }
 
-    QString CaptureTime = Tools::getFitsCaptureTime("/dev/shm/ccd_simulator.fits");
+    QString CaptureTime = Tools::getFitsCaptureTime(sourcePath.toUtf8().constData());
     Logger::Log("CaptureImageSave | getFitsCaptureTime returned: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     
     // 如果无法从 FITS 文件获取时间，优先使用文件的修改时间
@@ -18662,7 +18677,13 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
 
 int MainWindow::ScheduleImageSave(QString name, int num)
 {
-    const char *sourcePath = "/dev/shm/ccd_simulator.fits";
+    const QString sourcePath = latestMainCaptureFitsPath();
+
+    if (sourcePath.isEmpty())
+    {
+        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
+        return 1;
+    }
 
     name.replace(' ', '_');
     
@@ -19188,7 +19209,10 @@ int MainWindow::saveImageFile(const QString &sourcePath,
             absoluteDestinationPath = QDir::currentPath() + "/" + destinationPath;
             Logger::Log(functionName.toStdString() + " | Converted relative path to absolute: " + destinationPath.toStdString() + " -> " + absoluteDestinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         }
-        const char *destinationPathChar = absoluteDestinationPath.toUtf8().constData();
+        const QByteArray destinationPathBytes = absoluteDestinationPath.toUtf8();
+        const char *destinationPathChar = destinationPathBytes.constData();
+        const QByteArray sourcePathBytes = sourcePath.toUtf8();
+        const char *sourcePathChar = sourcePathBytes.constData();
 
         // 确保目标目录存在
         std::filesystem::path destPath(destinationPathChar);
@@ -19247,7 +19271,7 @@ int MainWindow::saveImageFile(const QString &sourcePath,
             }
         }
 
-        std::ifstream sourceFile(sourcePath.toUtf8().constData(), std::ios::binary);
+        std::ifstream sourceFile(sourcePathChar, std::ios::binary);
         if (!sourceFile.is_open())
         {
             Logger::Log(functionName.toStdString() + " | Unable to open source file: " + sourcePath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);

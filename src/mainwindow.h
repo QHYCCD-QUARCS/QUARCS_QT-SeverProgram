@@ -643,6 +643,7 @@ public:
     int saveFitsAsPNG_FromSdkFrame_Worker(std::shared_ptr<SdkFrameData> frame, bool ProcessBin);
     int processImageForFrontend(const cv::Mat& originalImage16, const QString& cameraCFA, bool ProcessBin, const QString& sourceTag);
     void CaptureImageSaveAsync();
+    QString latestMainCaptureFitsPath() const;
 
     // 视口驱动的瓦片生成（按当前 zoom/位置优先生成视口内 z/x/y）
     void scheduleViewportTileGeneration();
@@ -1279,6 +1280,7 @@ public:
     bool EndCaptureAndSolve = false;  // 结束采集并解算
     bool TakeNewCapture = true;       // 是否需要新拍
     bool isSavePngSuccess = false;    // PNG 保存状态
+    QString lastMainCaptureFitsPath = "/dev/shm/ccd_simulator.fits"; // 最近一次主相机拍摄的真实 FITS 路径
 
     /**
      * @brief 调度表消息输出（状态同步）
