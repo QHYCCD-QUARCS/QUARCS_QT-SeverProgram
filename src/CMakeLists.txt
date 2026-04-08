@@ -50,6 +50,10 @@ if(CMAKE_SYSROOT)
   set(QUARCS_TARGET_LIBDIR "${CMAKE_SYSROOT}/usr/lib/${QUARCS_DEB_MULTIARCH}")
   set(QUARCS_TARGET_LIBDIR_ALT "${CMAKE_SYSROOT}/usr/lib")
   set(QUARCS_TARGET_LOCAL_LIBDIR "${CMAKE_SYSROOT}/usr/local/lib")
+  set(QUARCS_TARGET_GCC_LIBDIR "${CMAKE_SYSROOT}/usr/lib/gcc/${QUARCS_DEB_MULTIARCH}/${QUARCS_SYSROOT_GCC_VERSION}")
+  set(QUARCS_TARGET_CXX_INCLUDE "${CMAKE_SYSROOT}/usr/include/c++/${QUARCS_SYSROOT_GCC_VERSION}")
+  set(QUARCS_TARGET_CXX_INCLUDE_MULTIARCH "${CMAKE_SYSROOT}/usr/include/${QUARCS_DEB_MULTIARCH}/c++/${QUARCS_SYSROOT_GCC_VERSION}")
+  set(QUARCS_TARGET_CXX_INCLUDE_BACKWARD "${CMAKE_SYSROOT}/usr/include/c++/${QUARCS_SYSROOT_GCC_VERSION}/backward")
 else()
   set(QUARCS_INDI_INCLUDE "/usr/include/libindi")
   set(QUARCS_STELLARSOLVER_INCLUDE "/usr/local/include/libstellarsolver")
@@ -76,6 +80,21 @@ set(QT_COMPONENTS
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(CMAKE_SYSROOT)
+  # Ubuntu 24.04 的 aarch64 交叉编译器会默认优先使用宿主机自带的 libstdc++ 头，
+  # 这会把产物 ABI 抬高到树莓派 bookworm 运行时之上。
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-nostdinc++>)
+  include_directories(SYSTEM BEFORE
+    "${CMAKE_SYSROOT}/usr/include/${QUARCS_DEB_MULTIARCH}"
+    "${CMAKE_SYSROOT}/usr/include"
+  )
+  include_directories(SYSTEM BEFORE
+    "${QUARCS_TARGET_CXX_INCLUDE}"
+    "${QUARCS_TARGET_CXX_INCLUDE_MULTIARCH}"
+    "${QUARCS_TARGET_CXX_INCLUDE_BACKWARD}"
+  )
+endif()
 
 # 仅使用 Qt5（去掉 Qt6）
 find_package(Qt5 REQUIRED COMPONENTS ${QT_COMPONENTS} SerialPort)
@@ -264,5 +283,3 @@ endif()
 # 复制配置文件到构建目录
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/../qhyccd.ini
      DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-
-

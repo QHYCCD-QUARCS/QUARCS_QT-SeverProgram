@@ -3286,13 +3286,21 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHF
 
 QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
 {
+  return FindStarsByFocusedCppFromFile(QStringLiteral("/dev/shm/ccd_simulator.fits"), AllStars, runHFR);
+}
+
+QList<FITSImage::Star> Tools::FindStarsByFocusedCppFromFile(const QString &fileName, bool AllStars, bool runHFR)
+{
   Q_UNUSED(AllStars);
   Q_UNUSED(runHFR);
   QList<FITSImage::Star> out;
-  loadFitsResult result = loadFits("/dev/shm/ccd_simulator.fits");
+  Logger::Log("FindStarsByFocusedCpp | loading FITS file: " + fileName.toStdString(),
+              LogLevel::INFO, DeviceType::MAIN);
+  loadFitsResult result = loadFits(fileName);
   if (!result.success)
   {
-    Logger::Log("FindStarsByFocusedCpp | Error in loading FITS file", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("FindStarsByFocusedCpp | Error in loading FITS file: " + fileName.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
     return out;
   }
   const FITSImage::Statistic &st = result.imageStats;
@@ -3311,9 +3319,10 @@ QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
   {
     cv::cvtColor(src, gray, cv::COLOR_RGB2GRAY);
   }
-  // 使用C++合焦算法检测
-  // 为了调试ROI/星点识别过程，这里开启 verbose=true，打印每一步过滤信息
-  std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, false);
+  // 当前固定走简化 ROI 识星：全局峰值 + 50x50 局部加权质心。
+  std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, true);
+  Logger::Log("FindStarsByFocusedCpp | using simplified peak-centroid detector",
+              LogLevel::INFO, DeviceType::MAIN);
   // 转换为 FITSImage::Star
   for (const auto &s : fs)
   {
@@ -3346,16 +3355,20 @@ QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
     star.peak = peak;
     // 近似flux：以归一化通量放大到16位空间
     star.flux = s.flux * 65535.0;
-    star.a = 0.0;
-    star.b = 0.0;
-    star.theta = 0.0;
+    // 兼容复用：ROI 对焦路径当前用 a/b/theta 暂存 localMax/bgStd/SNR，避免改动外部 FITSImage::Star 定义。
+    star.a = s.localMax;
+    star.b = s.bgStd;
+    star.theta = s.snr;
     out.append(star);
   }
   if (result.imageBuffer != nullptr)
   {
     delete[] result.imageBuffer;
   }
-  Logger::Log("FindStarsByFocusedCpp | Detected " + std::to_string(out.size()) + " stars.", LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("FindStarsByFocusedCpp | Detected " + std::to_string(out.size()) +
+                  " stars in file: " + fileName.toStdString() +
+                  ", image=" + std::to_string(width) + "x" + std::to_string(height),
+              LogLevel::INFO, DeviceType::MAIN);
   return out;
 }
 
