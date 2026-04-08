@@ -29,11 +29,14 @@
 #include <QSaveFile>
 #include <QDataStream>
 #include <QPointer>
+#include <QSet>
 #include <QVector>
+#include <QTemporaryFile>
 #include <QCoreApplication>
 #include <QThread>
 #include <QProcess>
 #include <QElapsedTimer>
+#include <QRegularExpression>
 #include <QtConcurrent/QtConcurrentRun>
 
 // 系统调用相关头文件（用于 FIFO 操作）
@@ -149,6 +152,345 @@ void drawFocusDebugCrosshair(cv::Mat &image16, double x, double y)
     cv::line(image16, cv::Point(cx, y0), cv::Point(cx, y1), black, 3, cv::LINE_8);
     cv::line(image16, cv::Point(x0, cy), cv::Point(x1, cy), white, 1, cv::LINE_8);
     cv::line(image16, cv::Point(cx, y0), cv::Point(cx, y1), white, 1, cv::LINE_8);
+}
+
+constexpr const char *kPreferredHostapdConf = "/etc/hostapd/uap0.conf";
+constexpr const char *kPreferredWpaSupplicantConf = "/etc/wpa_supplicant/wpa_supplicant-wlan0.conf";
+constexpr const char *kPreferredWlanDhcpService = "wlan0-dhcp.service";
+constexpr const char *kPreferredHostapdService = "hostapd@uap0";
+constexpr const char *kPreferredWpaService = "wpa_supplicant@wlan0";
+constexpr const char *kLegacyHotspotConnectionName = "RaspBerryPi-WiFi";
+constexpr const char *kDefaultHotspotName = "LQ";
+constexpr const char *kDefaultCountryCode = "CN";
+
+bool preferApStaStack()
+{
+    const bool hostapdConf = QFile::exists(QString::fromUtf8(kPreferredHostapdConf));
+    const bool wpaConf = QFile::exists(QString::fromUtf8(kPreferredWpaSupplicantConf));
+    return hostapdConf || wpaConf;
+}
+
+QString readTextFile(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const SyncCommandResult result = runSudoSync("/bin/cat", {path}, 2000);
+        if (result.exitCode == 0) {
+            return result.out;
+        }
+        return QString();
+    }
+    return QString::fromUtf8(file.readAll());
+}
+
+QString parseKeyValueLine(const QString &content, const QString &key)
+{
+    const QStringList lines = content.split('\n');
+    for (const QString &rawLine : lines) {
+        const QString line = rawLine.trimmed();
+        if (line.startsWith('#') || !line.startsWith(key + '=')) {
+            continue;
+        }
+        return line.mid(key.length() + 1).trimmed();
+    }
+    return QString();
+}
+
+QString normalizeWpaQuotedValue(QString value)
+{
+    value = value.trimmed();
+    if (value.size() >= 2 && value.startsWith('"') && value.endsWith('"')) {
+        value = value.mid(1, value.size() - 2);
+    }
+    value.replace("\\\"", "\"");
+    value.replace("\\\\", "\\");
+    return value;
+}
+
+QString escapeWpaQuotedValue(QString value)
+{
+    value.replace("\\", "\\\\");
+    value.replace("\"", "\\\"");
+    return value;
+}
+
+QString readPreferredHotspotName()
+{
+    const QString content = readTextFile(QString::fromUtf8(kPreferredHostapdConf));
+    const QString ssid = parseKeyValueLine(content, "ssid");
+    if (!ssid.isEmpty()) {
+        return ssid;
+    }
+    return QString::fromUtf8(kDefaultHotspotName);
+}
+
+QString buildPreferredWpaSupplicantConf(const QString &ssid, const QString &psk);
+
+bool writePreferredHotspotName(const QString &newName, QString *errorOut = nullptr)
+{
+    const QString path = QString::fromUtf8(kPreferredHostapdConf);
+    QString content = readTextFile(path);
+    if (content.isEmpty() && !QFile::exists(path)) {
+        if (errorOut) *errorOut = QStringLiteral("hostapd_conf_missing");
+        return false;
+    }
+
+    QString updated = content;
+    QRegularExpression re(R"((^|\n)\s*ssid=.*(?=\n|$))");
+    QRegularExpressionMatch match = re.match(updated);
+    if (match.hasMatch()) {
+        const int start = match.capturedStart();
+        const int length = match.capturedLength();
+        const QString prefix = (updated.mid(start, 1) == "\n") ? "\n" : "";
+        updated.replace(start, length, prefix + "ssid=" + newName);
+    } else {
+        if (!updated.isEmpty() && !updated.endsWith('\n')) {
+            updated.append('\n');
+        }
+        updated += "ssid=" + newName + "\n";
+    }
+
+    QTemporaryFile file(QDir::tempPath() + "/quarcs-hostapd-XXXXXX.conf");
+    if (!file.open()) {
+        if (errorOut) *errorOut = file.errorString();
+        return false;
+    }
+    file.write(updated.toUtf8());
+    file.flush();
+
+    const SyncCommandResult installRes =
+        runSudoSync("/usr/bin/install", {"-m", "644", file.fileName(), path}, 3000);
+    if (installRes.exitCode != 0) {
+        if (errorOut) *errorOut = (installRes.err.isEmpty() ? installRes.out : installRes.err).trimmed();
+        return false;
+    }
+    return true;
+}
+
+bool writePreferredWpaSupplicantConf(const QString &ssid, const QString &psk, QString *errorOut = nullptr)
+{
+    QTemporaryFile file(QDir::tempPath() + "/quarcs-wpa-XXXXXX.conf");
+    if (!file.open()) {
+        if (errorOut) *errorOut = file.errorString();
+        return false;
+    }
+    file.write(buildPreferredWpaSupplicantConf(ssid, psk).toUtf8());
+    file.flush();
+
+    const SyncCommandResult installRes =
+        runSudoSync("/usr/bin/install", {"-m", "600", file.fileName(), QString::fromUtf8(kPreferredWpaSupplicantConf)}, 3000);
+    if (installRes.exitCode != 0) {
+        if (errorOut) *errorOut = (installRes.err.isEmpty() ? installRes.out : installRes.err).trimmed();
+        return false;
+    }
+    return true;
+}
+
+QString readPreferredCountryCode()
+{
+    const QString content = readTextFile(QString::fromUtf8(kPreferredWpaSupplicantConf));
+    const QString country = parseKeyValueLine(content, "country");
+    if (!country.isEmpty()) {
+        return country;
+    }
+    return QString::fromUtf8(kDefaultCountryCode);
+}
+
+QString buildPreferredWpaSupplicantConf(const QString &ssid, const QString &psk)
+{
+    const QString country = readPreferredCountryCode();
+    return QStringLiteral(
+               "ctrl_interface=/var/run/wpa_supplicant\n"
+               "update_config=1\n"
+               "country=%1\n"
+               "\n"
+               "network={\n"
+               "    ssid=\"%2\"\n"
+               "    psk=\"%3\"\n"
+               "}\n")
+        .arg(country,
+             escapeWpaQuotedValue(ssid),
+             escapeWpaQuotedValue(psk));
+}
+
+QString parseIpAddrOutput(const QString &out)
+{
+    QRegularExpression re(R"(\binet\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+))");
+    const QRegularExpressionMatch match = re.match(out);
+    if (match.hasMatch()) {
+        return match.captured(1);
+    }
+    return QString();
+}
+
+int signalDbmToPercent(double dbm)
+{
+    if (dbm <= -100.0) return 0;
+    if (dbm >= -50.0) return 100;
+    return static_cast<int>(std::lround((dbm + 100.0) * 2.0));
+}
+
+QJsonArray parseIwScanOutput(const QString &out)
+{
+    struct Entry {
+        QString ssid;
+        int signal = 0;
+        QString security;
+    };
+
+    QVector<Entry> entries;
+    Entry current;
+    bool inBlock = false;
+    bool blockHasPrivacy = false;
+    bool blockHasRsn = false;
+    bool blockHasWpa = false;
+
+    auto flush = [&]() {
+        if (!inBlock || current.ssid.trimmed().isEmpty()) {
+            current = Entry{};
+            inBlock = false;
+            blockHasPrivacy = false;
+            blockHasRsn = false;
+            blockHasWpa = false;
+            return;
+        }
+        if (blockHasRsn) current.security = "WPA2";
+        else if (blockHasWpa) current.security = "WPA";
+        else if (blockHasPrivacy) current.security = "WEP";
+        else current.security = "OPEN";
+        entries.push_back(current);
+        current = Entry{};
+        inBlock = false;
+        blockHasPrivacy = false;
+        blockHasRsn = false;
+        blockHasWpa = false;
+    };
+
+    const QStringList lines = out.split('\n');
+    for (const QString &rawLine : lines) {
+        const QString line = rawLine.trimmed();
+        if (line.startsWith("BSS ")) {
+            flush();
+            inBlock = true;
+            continue;
+        }
+        if (!inBlock) continue;
+
+        if (line.startsWith("SSID:")) {
+            current.ssid = line.mid(QStringLiteral("SSID:").length()).trimmed();
+        } else if (line.startsWith("signal:")) {
+            bool ok = false;
+            const double dbm = line.mid(QStringLiteral("signal:").length()).trimmed().split(' ').value(0).toDouble(&ok);
+            if (ok) current.signal = signalDbmToPercent(dbm);
+        } else if (line.startsWith("RSN:")) {
+            blockHasRsn = true;
+        } else if (line.startsWith("WPA:")) {
+            blockHasWpa = true;
+        } else if (line.contains("capability:") && line.contains("Privacy")) {
+            blockHasPrivacy = true;
+        }
+    }
+    flush();
+
+    QJsonArray arr;
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        return a.signal > b.signal;
+    });
+
+    QSet<QString> seenSsids;
+    for (const Entry &entry : entries) {
+        const QString ssid = entry.ssid.trimmed();
+        if (ssid.isEmpty() || seenSsids.contains(ssid)) continue;
+        seenSsids.insert(ssid);
+        QJsonObject obj;
+        obj["ssid"] = ssid;
+        obj["signal"] = entry.signal;
+        obj["security"] = entry.security;
+        arr.append(obj);
+    }
+    return arr;
+}
+
+QString readWpaCliField(const QString &field)
+{
+    const SyncCommandResult result = runSudoSync("/usr/bin/wpa_cli", {"-i", "wlan0", "status"}, 2500);
+    if (result.exitCode != 0 || result.out.isEmpty()) {
+        return QString();
+    }
+    const QStringList lines = result.out.split('\n');
+    for (const QString &line : lines) {
+        if (line.startsWith(field + '=')) {
+            return normalizeWpaQuotedValue(line.mid(field.length() + 1));
+        }
+    }
+    return QString();
+}
+
+QString readDefaultGateway()
+{
+    const SyncCommandResult result = runCommandSync("/sbin/ip", {"route", "show", "default"}, 2000);
+    if (result.exitCode != 0) {
+        return QString();
+    }
+    QRegularExpression re(R"(\bvia\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+))");
+    const QRegularExpressionMatch match = re.match(result.out);
+    if (match.hasMatch()) {
+        return match.captured(1);
+    }
+    return QString();
+}
+
+QString readInterfaceIpv4(const QString &ifname)
+{
+    const SyncCommandResult result = runCommandSync("/sbin/ip", {"-4", "-o", "addr", "show", "dev", ifname}, 2000);
+    if (result.exitCode != 0) {
+        return QString();
+    }
+    return parseIpAddrOutput(result.out);
+}
+
+QString readSystemdIsActive(const QString &service)
+{
+    const SyncCommandResult result = runSudoSync("/usr/bin/systemctl", {"is-active", service}, 2500);
+    if (result.exitCode == 0) {
+        return result.out.trimmed();
+    }
+    return QStringLiteral("inactive");
+}
+
+QJsonObject buildPreferredNetStatusJson()
+{
+    const QString hotspotName = readPreferredHotspotName();
+    const QString staSsid = readWpaCliField("ssid");
+    const QString wlanIp = readInterfaceIpv4("wlan0");
+    const QString ethIp = readInterfaceIpv4("eth0");
+    const QString uapIp = readInterfaceIpv4("uap0");
+    const QString gateway = readDefaultGateway();
+    const QString hostapdState = readSystemdIsActive(QString::fromUtf8(kPreferredHostapdService));
+    const QString wpaState = readWpaCliField("wpa_state");
+
+    QString mode = "ap";
+    if (hostapdState == "active" && !staSsid.isEmpty() && !wlanIp.isEmpty()) {
+        mode = "ap+sta";
+    } else if (hostapdState == "active") {
+        mode = "ap";
+    } else if (!wlanIp.isEmpty() || !ethIp.isEmpty()) {
+        mode = "wan";
+    }
+
+    QJsonObject obj;
+    obj["mode"] = mode;
+    obj["stack"] = "ap_sta_systemd";
+    obj["hotspot_ssid"] = hotspotName;
+    obj["sta_ssid"] = staSsid;
+    obj["wlan_ip"] = wlanIp;
+    obj["eth_ip"] = ethIp;
+    obj["uap_ip"] = uapIp;
+    obj["gateway"] = gateway;
+    obj["zerotier"] = readSystemdIsActive("zerotier-one");
+    obj["hostapd"] = hostapdState;
+    obj["wpa_state"] = wpaState;
+    return obj;
 }
 }
 
@@ -4087,6 +4429,12 @@ void MainWindow::runSudoAsync(const QString &program, const QStringList &args,
 
 void MainWindow::requestNetStatus()
 {
+    if (preferApStaStack()) {
+        const QJsonDocument doc(buildPreferredNetStatusJson());
+        emit wsThread->sendMessageToClient("NetStatus|" + QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+        return;
+    }
+
     runSudoAsync("/usr/local/sbin/net-mode.sh", {"status"},
                  [this](int exitCode, const QString &out, const QString &err) {
                      if (exitCode != 0) {
@@ -4108,6 +4456,42 @@ void MainWindow::switchNetMode(const QString &mode)
         return;
     }
 
+    if (preferApStaStack()) {
+        auto finish = [this, m](int exitCode, const QString &detail) {
+            if (exitCode == 0) emit wsThread->sendMessageToClient("NetModeResult|" + m + "|ok");
+            else emit wsThread->sendMessageToClient("NetModeResult|" + m + "|fail|" + detail.left(200));
+            QTimer::singleShot(500, this, [this]() { requestNetStatus(); });
+        };
+
+        if (m == "ap") {
+            runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredHostapdService)},
+                         [this, finish](int codeHostapd, const QString &outHostapd, const QString &errHostapd) {
+                             finish(codeHostapd, (errHostapd.isEmpty() ? outHostapd : errHostapd).trimmed());
+                         });
+            return;
+        }
+
+        runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredHostapdService)},
+                     [this, finish](int codeHostapd, const QString &outHostapd, const QString &errHostapd) {
+                         if (codeHostapd != 0) {
+                             finish(codeHostapd, (errHostapd.isEmpty() ? outHostapd : errHostapd).trimmed());
+                             return;
+                         }
+                         runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWpaService)},
+                                      [this, finish](int codeWpa, const QString &outWpa, const QString &errWpa) {
+                                          if (codeWpa != 0) {
+                                              finish(codeWpa, (errWpa.isEmpty() ? outWpa : errWpa).trimmed());
+                                              return;
+                                          }
+                                          runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWlanDhcpService)},
+                                                       [finish](int codeDhcp, const QString &outDhcp, const QString &errDhcp) {
+                                                           finish(codeDhcp, (errDhcp.isEmpty() ? outDhcp : errDhcp).trimmed());
+                                                       });
+                                      });
+                     });
+        return;
+    }
+
     runSudoAsync("/usr/local/sbin/net-mode.sh", {m},
                  [this, m](int exitCode, const QString &out, const QString &err) {
                      if (exitCode == 0) {
@@ -4123,6 +4507,33 @@ void MainWindow::switchNetMode(const QString &mode)
 
 void MainWindow::wifiScan()
 {
+    if (preferApStaStack()) {
+        runSudoAsync("/sbin/ip", {"link", "set", "wlan0", "up"},
+                     [this](int codeUp, const QString &outUp, const QString &errUp) {
+                         if (codeUp != 0) {
+                             const QString detail = (errUp.isEmpty() ? outUp : errUp).trimmed();
+                             emit wsThread->sendMessageToClient("WiFiScan|[]");
+                             emit wsThread->sendMessageToClient("WiFiSaveResult|scan|fail|" + detail.left(200));
+                             return;
+                         }
+                         runSudoAsync("/sbin/iw", {"dev", "wlan0", "scan"},
+                                      [this](int exitCode, const QString &out, const QString &err) {
+                                          if (exitCode != 0) {
+                                              Logger::Log(("wifiScan(iw) failed: " + err).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+                                              emit wsThread->sendMessageToClient("WiFiScan|[]");
+                                              emit wsThread->sendMessageToClient("WiFiSaveResult|scan|fail|" + err.left(200));
+                                              return;
+                                          }
+                                          const QJsonArray arr = parseIwScanOutput(out);
+                                          const QJsonDocument doc(arr);
+                                          const QString json = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+                                          emit wsThread->sendMessageToClient("WiFiScan|" + json);
+                                          emit wsThread->sendMessageToClient("WiFiSaveResult|scan|ok");
+                                      });
+                     });
+        return;
+    }
+
     // nmcli will output lines like: SSID:SIGNAL:SECURITY
     // (If SSID contains ':', parsing may be imperfect; typical consumer SSID does not.)
     runSudoAsync("/usr/bin/nmcli",
@@ -4174,6 +4585,41 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
     const QString psk  = obj.value("psk").toString();
     if (name.isEmpty() || ssid.isEmpty() || psk.isEmpty()) {
         emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|need_name_ssid_psk");
+        return;
+    }
+
+    if (preferApStaStack()) {
+        QString writeErr;
+        if (!writePreferredWpaSupplicantConf(ssid, psk, &writeErr)) {
+            emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + writeErr.left(200));
+            return;
+        }
+
+        const SyncCommandResult chmodRes =
+            runSudoSync("/bin/chmod", {"600", QString::fromUtf8(kPreferredWpaSupplicantConf)}, 2000);
+        if (chmodRes.exitCode != 0) {
+            const QString detail = (chmodRes.err.isEmpty() ? chmodRes.out : chmodRes.err).trimmed();
+            emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + detail.left(200));
+            return;
+        }
+
+        runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWpaService)},
+                     [this](int codeWpa, const QString &outWpa, const QString &errWpa) {
+                         if (codeWpa != 0) {
+                             emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" +
+                                                                (errWpa.isEmpty() ? outWpa : errWpa).trimmed().left(200));
+                             return;
+                         }
+                         runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWlanDhcpService)},
+                                      [this](int codeDhcp, const QString &outDhcp, const QString &errDhcp) {
+                                          if (codeDhcp == 0) {
+                                              emit wsThread->sendMessageToClient("WiFiSaveResult|save|ok");
+                                          } else {
+                                              emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" +
+                                                                                 (errDhcp.isEmpty() ? outDhcp : errDhcp).trimmed().left(200));
+                                          }
+                                      });
+                     });
         return;
     }
 
@@ -20968,7 +21414,32 @@ void MainWindow::RecoverySloveResul()
 void MainWindow::editHotspotName(QString newName)
 {
     Logger::Log("editHotspotName(" + newName.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
-    const QString connectionName = "RaspBerryPi-WiFi";
+
+    if (preferApStaStack()) {
+        QString writeErr;
+        const bool writeOk = writePreferredHotspotName(newName, &writeErr);
+        if (!writeOk) {
+            emit wsThread->sendMessageToClient("EditHotspotNameFailed");
+            Logger::Log("editHotspotName | write hostapd conf failed: " + writeErr.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+            return;
+        }
+
+        const SyncCommandResult restartRes =
+            runSudoSync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredHostapdService)}, 5000);
+        const QString HostpotName = getHotspotName();
+        if (restartRes.exitCode == 0 && HostpotName == newName) {
+            emit wsThread->sendMessageToClient("EditHotspotNameSuccess");
+        } else {
+            emit wsThread->sendMessageToClient("EditHotspotNameFailed");
+            Logger::Log("editHotspotName | restart hostapd failed: " +
+                            (restartRes.err.isEmpty() ? restartRes.out : restartRes.err).toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+        return;
+    }
+
+    const QString connectionName = QString::fromUtf8(kLegacyHotspotConnectionName);
 
     // Remote control is optional. When sudoers is not configured, fail fast instead of
     // blocking the Qt backend on a password prompt.
@@ -21002,7 +21473,13 @@ void MainWindow::editHotspotName(QString newName)
 
 QString MainWindow::getHotspotName()
 {
-    const QString connectionName = "RaspBerryPi-WiFi";
+    if (preferApStaStack()) {
+        const QString ssid = readPreferredHotspotName();
+        Logger::Log("getHotspotName | hostapd ssid:" + ssid.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+        return ssid;
+    }
+
+    const QString connectionName = QString::fromUtf8(kLegacyHotspotConnectionName);
 
     // Prefer nmcli query (stable) over parsing the nmconnection file.
     {
@@ -21022,14 +21499,10 @@ QString MainWindow::getHotspotName()
 
     // Fallback: parse file directly when readable. If permissions are insufficient,
     // keep returning "N/A" so AP mode / Qt startup remain unaffected.
-    QFile file("/etc/NetworkManager/system-connections/RaspBerryPi-WiFi.nmconnection");
-    QString output;
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        output = QString::fromUtf8(file.readAll());
-    } else {
-        Logger::Log("getHotspotName | file open failed:" + file.errorString().toStdString(),
-                    LogLevel::WARNING, DeviceType::MAIN);
-    }
+    const QString output =
+        readTextFile(QStringLiteral("/etc/NetworkManager/system-connections/") +
+                     QString::fromUtf8(kLegacyHotspotConnectionName) +
+                     QStringLiteral(".nmconnection"));
     Logger::Log("getHotspotName | file output:" + output.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
     QString ssidPattern = "ssid=";
@@ -21054,8 +21527,38 @@ void MainWindow::restartHotspotWithDelay(int delaySeconds)
     Logger::Log("restartHotspotWithDelay(" + std::to_string(delaySeconds) + ") start ...",
                 LogLevel::INFO, DeviceType::MAIN);
 
+    if (preferApStaStack()) {
+        const SyncCommandResult stopRes =
+            runSudoSync("/usr/bin/systemctl", {"stop", QString::fromUtf8(kPreferredHostapdService)}, 5000);
+        if (!stopRes.out.isEmpty()) {
+            Logger::Log("restartHotspotWithDelay | hostapd stop output:" + stopRes.out.toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+        if (!stopRes.err.isEmpty()) {
+            Logger::Log("restartHotspotWithDelay | hostapd stop error:" + stopRes.err.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+
+        const int delayMs = std::max(0, delaySeconds) * 1000;
+        QTimer::singleShot(delayMs, this, []() {
+            const SyncCommandResult startRes =
+                runSudoSync("/usr/bin/systemctl", {"start", QString::fromUtf8(kPreferredHostapdService)}, 5000);
+            if (!startRes.out.isEmpty()) {
+                Logger::Log("restartHotspotWithDelay | hostapd start output:" + startRes.out.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+            if (!startRes.err.isEmpty()) {
+                Logger::Log("restartHotspotWithDelay | hostapd start error:" + startRes.err.toStdString(),
+                            LogLevel::WARNING, DeviceType::MAIN);
+            }
+            Logger::Log("restartHotspotWithDelay | hostapd restart sequence finished",
+                        LogLevel::INFO, DeviceType::MAIN);
+        });
+        return;
+    }
+
     // 当前热点连接名称（与 getHotspotName 读取的配置文件一致）
-    const QString connectionName = "RaspBerryPi-WiFi";
+    const QString connectionName = QString::fromUtf8(kLegacyHotspotConnectionName);
 
     // 先关闭当前热点
     {
