@@ -41,7 +41,7 @@ MIN_AREA = 4            # --min-area 4
 BORDER_MARGIN = 10       # 原脚本默认值
 MAX_STARS = 100          # --max-stars 100
 MEDIAN_SIZE = 0          # 不做中值滤波
-DOWNSAMPLE = 5           # --downsample 5
+DOWNSAMPLE = 6           # --downsample 6
 
 # 圆形度（circularity）筛选：4πA / P^2，1 为完美圆，越小越“不圆”
 # 设置成稍微宽松的阈值，避免误杀正常星点
