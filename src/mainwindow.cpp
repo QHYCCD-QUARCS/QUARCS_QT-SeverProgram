@@ -26670,16 +26670,6 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     Logger::Log("saveFitsAsJPG | output image16 " + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
     originalImage16.release();
 
-    const double debugSelectStarX = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1.0;
-    const double debugSelectStarY = roiAndFocuserInfo.count("SelectStarY") ? roiAndFocuserInfo["SelectStarY"] : -1.0;
-    if (debugSelectStarX >= 0.0 && debugSelectStarY >= 0.0)
-    {
-        drawFocusDebugCrosshair(image16, debugSelectStarX, debugSelectStarY);
-        Logger::Log("saveFitsAsJPG | drew backend debug crosshair at ROI(" +
-                        std::to_string(debugSelectStarX) + "," + std::to_string(debugSelectStarY) + ")",
-                    LogLevel::DEBUG, DeviceType::FOCUSER);
-    }
-
     // ROI 循环频率可能高于 1Hz：若文件名只精确到秒，会在同一秒内反复覆盖同名文件，
     // 造成前端拉取到旧内容/404（尤其在前端处理变慢、跳帧时）。这里改为毫秒级并追加序号，保证全局唯一。
     static std::atomic_uint64_t roiFileSeq{0};
