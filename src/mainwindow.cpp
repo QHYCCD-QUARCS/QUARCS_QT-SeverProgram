@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <sstream>
 #include <unordered_set>
 #include <chrono>
 
@@ -2112,8 +2113,17 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts.size() == 3 && parts[0].trimmed() == "setROIPosition")
     {
         Logger::Log("setROIPosition:" + parts[1].trimmed().toStdString() + "*" + parts[2].trimmed().toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        roiAndFocuserInfo["ROI_x"] = parts[1].trimmed().toDouble();
-        roiAndFocuserInfo["ROI_y"] = parts[2].trimmed().toDouble();
+        const int roiBox = roiAndFocuserInfo.count("BoxSideLength")
+            ? static_cast<int>(std::lround(roiAndFocuserInfo["BoxSideLength"]))
+            : std::max(2, BoxSideLength);
+        const QPointF snapped = snapRoiOriginToBayerSafePhase(parts[1].trimmed().toDouble(),
+                                                              parts[2].trimmed().toDouble(),
+                                                              roiBox, roiBox);
+        roiAndFocuserInfo["ROI_x"] = snapped.x();
+        roiAndFocuserInfo["ROI_y"] = snapped.y();
+        Logger::Log("setROIPosition | snapped ROI to Bayer-safe origin (" +
+                        std::to_string(snapped.x()) + "," + std::to_string(snapped.y()) + ")",
+                    LogLevel::DEBUG, DeviceType::MAIN);
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "RedBoxSizeChange")
     {
@@ -2482,7 +2492,8 @@ void MainWindow::onMessageReceived(const QString &message)
                         LogLevel::DEBUG, DeviceType::MAIN);
             
             // 计算白平衡增益（使用当前相机的CFA类型）
-            QPair<double, double> gains = calculateWhiteBalanceGains(tempImage, MainCameraCFA);
+            const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
+            QPair<double, double> gains = calculateWhiteBalanceGains(tempImage, MainCameraCFA, offset);
             
             // 更新全局增益值
             ImageGainR = gains.first;
@@ -2588,9 +2599,12 @@ void MainWindow::onMessageReceived(const QString &message)
         
         if (validCFAValues.contains(cfaValue))
         {
-            MainCameraCFA = cfaValue;
+            MainCameraCFA = normalizeCfaPattern(cfaValue);
+            if (MainCameraCFA == "NULL" || MainCameraCFA == "MONO") {
+                MainCameraCFA.clear();
+            }
             Logger::Log("ImageCFA is set to " + MainCameraCFA.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-            Tools::saveParameter("MainCamera", "ImageCFA", cfaValue);
+            Tools::saveParameter("MainCamera", "ImageCFA", MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA);
         }
         else
         {
@@ -4228,10 +4242,16 @@ void MainWindow::onMessageReceived(const QString &message)
         }
         BoxSideLength = parts[1].trimmed().toInt();
         roiAndFocuserInfo["BoxSideLength"] = BoxSideLength;
-        roiAndFocuserInfo["ROI_x"] = parts[2].trimmed().toDouble();
-        roiAndFocuserInfo["ROI_y"] = parts[3].trimmed().toDouble();
-        Tools::saveParameter("MainCamera", "ROI_x", parts[2].trimmed());
-        Tools::saveParameter("MainCamera", "ROI_y", parts[3].trimmed());
+        const QPointF snapped = snapRoiOriginToBayerSafePhase(parts[2].trimmed().toDouble(),
+                                                              parts[3].trimmed().toDouble(),
+                                                              BoxSideLength, BoxSideLength);
+        roiAndFocuserInfo["ROI_x"] = snapped.x();
+        roiAndFocuserInfo["ROI_y"] = snapped.y();
+        Tools::saveParameter("MainCamera", "ROI_x", QString::number(snapped.x(), 'g', 9));
+        Tools::saveParameter("MainCamera", "ROI_y", QString::number(snapped.y(), 'g', 9));
+        Logger::Log("sendRedBoxState | snapped ROI to Bayer-safe origin (" +
+                        std::to_string(snapped.x()) + "," + std::to_string(snapped.y()) + ")",
+                    LogLevel::DEBUG, DeviceType::MAIN);
         Logger::Log("sendRedBoxState finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
     else if (parts[0].trimmed() == "sendVisibleArea" && (parts.size() == 4 || parts.size() == 5))
@@ -5460,18 +5480,110 @@ DeviceType MainWindow::getDeviceTypeFromPartialString(const std::string &typeStr
     }
 }
 
+namespace
+{
+/** sysfs GPIO 节点在 export 后可能延迟出现，对 ENOENT/EINTR 做短重试。 */
+int openSysfsGpioRetry(const char *path, int flags)
+{
+    int fd = -1;
+    for (int i = 0; i < 80; ++i)
+    {
+        fd = open(path, flags);
+        if (fd >= 0)
+            return fd;
+        if (errno != ENOENT && errno != EINTR)
+            break;
+        usleep(2500);
+    }
+    return -1;
+}
+
+bool readSysfsGpioText(const char *path, char *buffer, size_t bufferSize)
+{
+    if (!buffer || bufferSize == 0)
+        return false;
+
+    const int fd = openSysfsGpioRetry(path, O_RDONLY);
+    if (fd < 0)
+        return false;
+
+    errno = 0;
+    const ssize_t bytesRead = read(fd, buffer, bufferSize - 1);
+    close(fd);
+    if (bytesRead <= 0)
+        return false;
+
+    buffer[bytesRead] = '\0';
+    return true;
+}
+
+bool gpioDirectionIsOut(const char *pin)
+{
+    char path[128];
+    char direction[16];
+
+    snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/direction", pin);
+    if (!readSysfsGpioText(path, direction, sizeof(direction)))
+        return false;
+
+    return strncmp(direction, "out", 3) == 0;
+}
+
+std::string formatBayerPhaseDebug(const QString& baseCfa, int cfaOffsetX, int cfaOffsetY,
+                                  int frameStartX, int frameStartY, const QString& resolvedCfa)
+{
+    const int totalShiftX = cfaOffsetX + frameStartX;
+    const int totalShiftY = cfaOffsetY + frameStartY;
+    return "baseCFA=" + baseCfa.toStdString() +
+           ", cfaOffset=(" + std::to_string(cfaOffsetX) + "," + std::to_string(cfaOffsetY) + ")" +
+           ", frameStart=(" + std::to_string(frameStartX) + "," + std::to_string(frameStartY) + ")" +
+           ", totalShift=(" + std::to_string(totalShiftX) + "," + std::to_string(totalShiftY) + ")" +
+           ", parity=(" + std::to_string(totalShiftX & 1) + "," + std::to_string(totalShiftY & 1) + ")" +
+           ", resolvedCFA=" + resolvedCfa.toStdString();
+}
+
+std::string sampleBayer2x2Debug(const cv::Mat& image16)
+{
+    if (image16.empty() || image16.type() != CV_16UC1) {
+        return "2x2=unavailable";
+    }
+
+    const int maxY = std::min(2, image16.rows);
+    const int maxX = std::min(2, image16.cols);
+    std::ostringstream oss;
+    oss << "2x2=[";
+    for (int y = 0; y < maxY; ++y) {
+        if (y > 0) oss << ";";
+        for (int x = 0; x < maxX; ++x) {
+            if (x > 0) oss << ",";
+            oss << image16.at<uint16_t>(y, x);
+        }
+    }
+    oss << "]";
+    return oss.str();
+}
+} // namespace
+
 void MainWindow::initGPIO()
 {
     Logger::Log("Initializing GPIO...", LogLevel::INFO, DeviceType::MAIN);
     // Initialize GPIO_PIN_1
     exportGPIO(GPIO_PIN_1);
     setGPIODirection(GPIO_PIN_1, "out");
-    Logger::Log("Set direction of GPIO_PIN_1 to output completed!", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log(gpioDirectionIsOut(GPIO_PIN_1)
+                    ? "Set direction of GPIO_PIN_1 to output completed!"
+                    : "GPIO_PIN_1 direction is not out after initialization",
+                gpioDirectionIsOut(GPIO_PIN_1) ? LogLevel::INFO : LogLevel::WARNING,
+                DeviceType::MAIN);
 
     // Initialize GPIO_PIN_2
     exportGPIO(GPIO_PIN_2);
     setGPIODirection(GPIO_PIN_2, "out");
-    Logger::Log("Set direction of GPIO_PIN_2 to output completed!", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log(gpioDirectionIsOut(GPIO_PIN_2)
+                    ? "Set direction of GPIO_PIN_2 to output completed!"
+                    : "GPIO_PIN_2 direction is not out after initialization",
+                gpioDirectionIsOut(GPIO_PIN_2) ? LogLevel::INFO : LogLevel::WARNING,
+                DeviceType::MAIN);
 
     // Set GPIO_PIN_1 to high level
     setGPIOValue(GPIO_PIN_1, "1");
@@ -5522,10 +5634,11 @@ void MainWindow::setGPIODirection(const char *pin, const char *direction)
 
     // Set GPIO direction
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/direction", pin);
-    fd = open(path, O_WRONLY);
+    fd = openSysfsGpioRetry(path, O_WRONLY);
     if (fd < 0)
     {
-        Logger::Log("Failed to open GPIO direction file for writing", LogLevel::WARNING, DeviceType::MAIN);
+        Logger::Log(std::string("Failed to open GPIO direction file for writing: ") + path + " " + strerror(errno),
+                    LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
     errno = 0;
@@ -5543,12 +5656,26 @@ void MainWindow::setGPIOValue(const char *pin, const char *value)
     int fd;
     char path[128];
 
+    if (!gpioDirectionIsOut(pin))
+    {
+        Logger::Log(std::string("GPIO direction is not out before writing value, trying to repair: pin=") + pin,
+                    LogLevel::WARNING, DeviceType::MAIN);
+        setGPIODirection(pin, "out");
+        if (!gpioDirectionIsOut(pin))
+        {
+            Logger::Log(std::string("GPIO direction is still not out, abort writing value: pin=") + pin,
+                        LogLevel::WARNING, DeviceType::MAIN);
+            return;
+        }
+    }
+
     // Set GPIO value
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/value", pin);
-    fd = open(path, O_WRONLY);
+    fd = openSysfsGpioRetry(path, O_WRONLY);
     if (fd < 0)
     {
-        Logger::Log("Failed to open GPIO value file for writing", LogLevel::WARNING, DeviceType::MAIN);
+        Logger::Log(std::string("Failed to open GPIO value file for writing: ") + path + " " + strerror(errno),
+                    LogLevel::WARNING, DeviceType::MAIN);
         return;
     }
     errno = 0;
@@ -5563,30 +5690,18 @@ void MainWindow::setGPIOValue(const char *pin, const char *value)
 }
 int MainWindow::readGPIOValue(const char *pin)
 {
-    int fd;
     char path[128];
-    char value[3]; // Store the read value
+    char value[8]; // Store the read value
 
     // Construct the path to the GPIO value file
     snprintf(path, sizeof(path), GPIO_PATH "/gpio%s/value", pin);
 
-    // Open the GPIO value file for reading
-    fd = open(path, O_RDONLY);
-    if (fd < 0)
+    if (!readSysfsGpioText(path, value, sizeof(value)))
     {
-        Logger::Log("Failed to open GPIO value file for reading", LogLevel::WARNING, DeviceType::MAIN);
+        Logger::Log(std::string("Failed to read GPIO value file: ") + path + " " + strerror(errno),
+                    LogLevel::WARNING, DeviceType::MAIN);
         return -1; // Return -1 to indicate read failure
     }
-
-    // Read the file content
-    if (read(fd, value, sizeof(value)) < 0)
-    {
-        Logger::Log("Failed to read GPIO value", LogLevel::INFO, DeviceType::MAIN);
-        close(fd);
-        return -1; // Return -1 to indicate read failure
-    }
-
-    close(fd);
 
     // Determine if the read value is '1' or '0'
     if (value[0] == '1')
@@ -6263,6 +6378,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     const quint64 epochAtStart = tilePyramidEpoch.load();
     cv::Mat originalImage16 = inputImage16.clone();
     cv::Mat image16;
+    QString effectiveCameraCFA = cameraCFA;
 
     // 中值滤波（可选）：大图上会显著增加耗时；默认在 fast 模式关闭
     if (tilePyramidFastEnableMedianBlur) {
@@ -6282,8 +6398,8 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     }
 
     // 使用局部CFA副本，避免全局变量在多线程环境中被污染
-    bool isColor = !(cameraCFA == "" || cameraCFA == "null");
-    Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + cameraCFA.toStdString() +
+    bool isColor = !(effectiveCameraCFA == "" || effectiveCameraCFA == "null");
+    Logger::Log("Camera color mode: " + std::string(isColor ? "Color" : "Mono") + " CFA: " + effectiveCameraCFA.toStdString() +
                 " source: " + sourceTag.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     // 记录预览/解析保存使用的软件 bin 因子（用于前端对照调试）
@@ -6309,19 +6425,19 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
             cv::resize(originalImage16, image16, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
         }
         // 使用新的Mat版本的PixelsDataSoftBin_Bayer函数
-        else if (cameraCFA == "RGGB" || cameraCFA == "RG")
+        else if (effectiveCameraCFA == "RGGB" || effectiveCameraCFA == "RG")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_RGGB);
         }
-        else if (cameraCFA == "BGGR" || cameraCFA == "BG")
+        else if (effectiveCameraCFA == "BGGR" || effectiveCameraCFA == "BG")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_BGGR);
         }
-        else if (cameraCFA == "GRBG" || cameraCFA == "GR")
+        else if (effectiveCameraCFA == "GRBG" || effectiveCameraCFA == "GR")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_GRBG);
         }
-        else if (cameraCFA == "GBRG" || cameraCFA == "GB")
+        else if (effectiveCameraCFA == "GBRG" || effectiveCameraCFA == "GB")
         {
             image16 = Tools::PixelsDataSoftBin_Bayer(originalImage16, binningFactor, binningFactor, BAYER_GBRG);
         }
@@ -6358,7 +6474,8 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     // 彩色相机：每帧根据当前全分辨率 RAW 自动估计 R/B 增益（与 CalcWhiteBalance 相同算法），供 TileGPM 与前端渲染
     if (isColor && tileSourceImage.type() == CV_16UC1)
     {
-        QPair<double, double> gains = calculateWhiteBalanceGains(tileSourceImage, cameraCFA);
+        const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
+        QPair<double, double> gains = calculateWhiteBalanceGains(tileSourceImage, effectiveCameraCFA, offset);
         ImageGainR = gains.first;
         ImageGainB = gains.second;
         Tools::saveParameter("MainCamera", "ImageGainR", QString::number(ImageGainR));
@@ -6399,7 +6516,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     // - 大图会走子采样统计，尽快把可显示的 black/white 发给前端
     // 完整直方图与更细统计放到后台补发，避免首帧额外等待 1s+
     int maxMergeFactor = 16;
-    TileGPM gpm = calculateGPM(tileSourceImage, cameraCFA, maxMergeFactor, /*enableHistogram=*/false);
+    TileGPM gpm = calculateGPM(tileSourceImage, effectiveCameraCFA, maxMergeFactor, /*enableHistogram=*/false);
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
     gpm.previewHeight = image16.rows;
@@ -6420,7 +6537,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         tileFrame.previewBinningFactor = binningFactor;
         tileFrame.tileSize = tilePyramidTileSize;
         tileFrame.maxZoomLevel = gpm.maxZoomLevel;
-        tileFrame.cfa = cameraCFA;
+        tileFrame.cfa = effectiveCameraCFA;
         tileFrameImage16 = std::make_shared<cv::Mat>(tileSourceImage); // 共享底层buffer（ref-count）
         tileFramePreviewImage16 = std::make_shared<cv::Mat>(image16);
     }
@@ -6572,7 +6689,122 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
  * @param cfa CFA模式
  * @return QPair<gainR, gainB> R和B通道的增益值
  */
-QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& image16, const QString& cfa)
+QString MainWindow::normalizeCfaPattern(const QString& cfa)
+{
+    const QString normalized = cfa.trimmed().toUpper();
+    if (normalized == "RG" || normalized == "RGGB") return QStringLiteral("RGGB");
+    if (normalized == "BG" || normalized == "BGGR") return QStringLiteral("BGGR");
+    if (normalized == "GR" || normalized == "GRBG") return QStringLiteral("GRBG");
+    if (normalized == "GB" || normalized == "GBRG") return QStringLiteral("GBRG");
+    return normalized;
+}
+
+QPointF MainWindow::snapRoiOriginToBayerSafePhase(double roiX, double roiY, int roiWidth, int roiHeight) const
+{
+    const bool tileModeActive = (isStagingImage && !SavedImage.empty());
+    const int roiCoordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
+
+    int effMinX = 0;
+    int effMinY = 0;
+    int effW = std::max(0, glMainCCDSizeX);
+    int effH = std::max(0, glMainCCDSizeY);
+    if (sdkMainEffectiveAreaCacheValid) {
+        effMinX = sdkMainEffectiveAreaMinX;
+        effMinY = sdkMainEffectiveAreaMinY;
+        effW = sdkMainEffectiveAreaWidth;
+        effH = sdkMainEffectiveAreaHeight;
+    }
+
+    int scaledX = static_cast<int>(std::lround(roiX * roiCoordScale));
+    int scaledY = static_cast<int>(std::lround(roiY * roiCoordScale));
+    scaledX = std::max(0, scaledX);
+    scaledY = std::max(0, scaledY);
+
+    if (roiWidth > 0 && effW > 0) scaledX = std::min(scaledX, std::max(0, effW - roiWidth));
+    if (roiHeight > 0 && effH > 0) scaledY = std::min(scaledY, std::max(0, effH - roiHeight));
+
+    if (((effMinX + scaledX) & 1) != 0) {
+        if (roiWidth > 0 && effW > 0 && scaledX + 1 <= std::max(0, effW - roiWidth)) {
+            scaledX += 1;
+        } else {
+            scaledX = std::max(0, scaledX - 1);
+        }
+    }
+    if (((effMinY + scaledY) & 1) != 0) {
+        if (roiHeight > 0 && effH > 0 && scaledY + 1 <= std::max(0, effH - roiHeight)) {
+            scaledY += 1;
+        } else {
+            scaledY = std::max(0, scaledY - 1);
+        }
+    }
+
+    if (roiWidth > 0 && effW > 0) scaledX = std::min(scaledX, std::max(0, effW - roiWidth));
+    if (roiHeight > 0 && effH > 0) scaledY = std::min(scaledY, std::max(0, effH - roiHeight));
+
+    return QPointF(static_cast<double>(scaledX) / static_cast<double>(roiCoordScale),
+                   static_cast<double>(scaledY) / static_cast<double>(roiCoordScale));
+}
+
+int MainWindow::getOpenCvBayerToBgrCode(const QString& cfa)
+{
+    const QString normalizedCfa = normalizeCfaPattern(cfa);
+    if (normalizedCfa == "RGGB") return cv::COLOR_BayerRG2BGR;
+    if (normalizedCfa == "BGGR") return cv::COLOR_BayerBG2BGR;
+    if (normalizedCfa == "GRBG") return cv::COLOR_BayerGR2BGR;
+    if (normalizedCfa == "GBRG") return cv::COLOR_BayerGB2BGR;
+    return -1;
+}
+
+QString MainWindow::deriveCfaPatternForOffset(const QString& baseCfa, int shiftX, int shiftY)
+{
+    const QString normalizedCfa = normalizeCfaPattern(baseCfa);
+    if (normalizedCfa.isEmpty() || normalizedCfa == "NULL" || normalizedCfa == "MONO" || normalizedCfa == "NULL") {
+        return QString();
+    }
+
+    const bool oddX = (shiftX & 1) != 0;
+    const bool oddY = (shiftY & 1) != 0;
+
+    if (normalizedCfa == "RGGB") {
+        if (!oddX && !oddY) return QStringLiteral("RGGB");
+        if ( oddX && !oddY) return QStringLiteral("GRBG");
+        if (!oddX &&  oddY) return QStringLiteral("GBRG");
+        return QStringLiteral("BGGR");
+    }
+    if (normalizedCfa == "GRBG") {
+        if (!oddX && !oddY) return QStringLiteral("GRBG");
+        if ( oddX && !oddY) return QStringLiteral("RGGB");
+        if (!oddX &&  oddY) return QStringLiteral("BGGR");
+        return QStringLiteral("GBRG");
+    }
+    if (normalizedCfa == "GBRG") {
+        if (!oddX && !oddY) return QStringLiteral("GBRG");
+        if ( oddX && !oddY) return QStringLiteral("BGGR");
+        if (!oddX &&  oddY) return QStringLiteral("RGGB");
+        return QStringLiteral("GRBG");
+    }
+    if (normalizedCfa == "BGGR") {
+        if (!oddX && !oddY) return QStringLiteral("BGGR");
+        if ( oddX && !oddY) return QStringLiteral("GBRG");
+        if (!oddX &&  oddY) return QStringLiteral("GRBG");
+        return QStringLiteral("RGGB");
+    }
+
+    return normalizedCfa;
+}
+
+QString MainWindow::resolveFrameCfa(int frameStartX, int frameStartY) const
+{
+    const QString normalizedBase = normalizeCfaPattern(MainCameraCFA);
+    if (normalizedBase.isEmpty() || normalizedBase == "NULL" || normalizedBase == "MONO") {
+        return QString();
+    }
+    const int totalShiftX = MainCameraCFAOffsetX + frameStartX;
+    const int totalShiftY = MainCameraCFAOffsetY + frameStartY;
+    return deriveCfaPatternForOffset(normalizedBase, totalShiftX, totalShiftY);
+}
+
+QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& image16, const QString& cfa, uint16_t offset)
 {
     if (image16.empty() || cfa == "null" || cfa.isEmpty()) {
         Logger::Log("无法计算白平衡：图像为空或非彩色图像", LogLevel::WARNING, DeviceType::MAIN);
@@ -6587,21 +6819,21 @@ QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& imag
     std::vector<cv::Point> rOffsets;
     std::vector<cv::Point> gOffsets;
     std::vector<cv::Point> bOffsets;
-    const QString normalizedCfa = cfa.trimmed().toUpper();
+    const QString normalizedCfa = normalizeCfaPattern(cfa);
 
-    if (normalizedCfa == "RGGB" || normalizedCfa == "RG") {
+    if (normalizedCfa == "RGGB") {
         rOffsets = { cv::Point(0, 0) };
         gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
         bOffsets = { cv::Point(1, 1) };
-    } else if (normalizedCfa == "GRBG" || normalizedCfa == "GR") {
+    } else if (normalizedCfa == "GRBG") {
         gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
         rOffsets = { cv::Point(1, 0) };
         bOffsets = { cv::Point(0, 1) };
-    } else if (normalizedCfa == "GBRG" || normalizedCfa == "GB") {
+    } else if (normalizedCfa == "GBRG") {
         gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
         bOffsets = { cv::Point(1, 0) };
         rOffsets = { cv::Point(0, 1) };
-    } else if (normalizedCfa == "BGGR" || normalizedCfa == "BG") {
+    } else if (normalizedCfa == "BGGR") {
         bOffsets = { cv::Point(0, 0) };
         gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
         rOffsets = { cv::Point(1, 1) };
@@ -6610,79 +6842,132 @@ QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& imag
         return QPair<double, double>(1.0, 1.0);
     }
 
-    std::vector<uint16_t> rValues;
-    std::vector<uint16_t> gValues;
-    std::vector<uint16_t> bValues;
     const int rows = image16.rows;
     const int cols = image16.cols;
     const int sampleStep = std::max(2, static_cast<int>(std::floor(std::min(rows, cols) / 200.0)) * 2);
 
-    auto sampleChannel = [&](std::vector<uint16_t>& out, int y, int x) {
-        if (y >= 0 && y < rows && x >= 0 && x < cols) {
-            out.push_back(image16.at<uint16_t>(y, x));
-        }
+    struct SampleTriplet {
+        double r = 0.0;
+        double g1 = 0.0;
+        double g2 = 0.0;
+        double g = 0.0;
+        double b = 0.0;
+        double luma = 0.0;
+    };
+    std::vector<SampleTriplet> samples;
+    samples.reserve(static_cast<size_t>((rows / sampleStep + 1) * (cols / sampleStep + 1)));
+
+    auto correctedPixelAt = [&](int y, int x) -> double {
+        if (y < 0 || y >= rows || x < 0 || x >= cols) return 0.0;
+        const uint16_t raw = image16.at<uint16_t>(y, x);
+        return static_cast<double>(raw > offset ? (raw - offset) : 0);
     };
 
     for (int y = 0; y < rows; y += sampleStep) {
         for (int x = 0; x < cols; x += sampleStep) {
             if ((y % (sampleStep * 2)) != 0 || (x % (sampleStep * 2)) != 0) continue;
-            for (const auto& pos : rOffsets) sampleChannel(rValues, y + pos.y, x + pos.x);
-            for (const auto& pos : gOffsets) sampleChannel(gValues, y + pos.y, x + pos.x);
-            for (const auto& pos : bOffsets) sampleChannel(bValues, y + pos.y, x + pos.x);
+
+            double r = 0.0;
+            double g1 = 0.0;
+            double g2 = 0.0;
+            double b = 0.0;
+
+            for (const auto& pos : rOffsets) r += correctedPixelAt(y + pos.y, x + pos.x);
+            for (const auto& pos : bOffsets) b += correctedPixelAt(y + pos.y, x + pos.x);
+            if (gOffsets.size() >= 1) g1 = correctedPixelAt(y + gOffsets[0].y, x + gOffsets[0].x);
+            if (gOffsets.size() >= 2) g2 = correctedPixelAt(y + gOffsets[1].y, x + gOffsets[1].x);
+            const double g = (g1 + g2) * 0.5;
+
+            // 过滤黑电平附近样本与异常色块，避免整体发灰、ROI 发绿。
+            if (r <= 32.0 || g1 <= 32.0 || g2 <= 32.0 || b <= 32.0) continue;
+            const double maxRgb = std::max({r, g, b});
+            const double minRgb = std::min({r, g, b});
+            if (minRgb <= 0.0 || (maxRgb / minRgb) > 2.5) continue;
+
+            samples.push_back({r, g1, g2, g, b, (r + 2.0 * g + b) * 0.25});
         }
     }
 
-    auto truncatedMean = [](const std::vector<uint16_t>& values) -> double {
-        if (values.empty()) return 0.0;
+    if (samples.empty()) {
+        Logger::Log("白平衡采样失败：有效 Bayer block 样本不足", LogLevel::WARNING, DeviceType::MAIN);
+        return QPair<double, double>(1.0, 1.0);
+    }
 
-        std::vector<uint16_t> filtered;
-        filtered.reserve(values.size());
-        for (uint16_t v : values) {
-            if (v > 100 && v < 65000) filtered.push_back(v);
-        }
-        if (filtered.empty()) return static_cast<double>(values.front());
+    std::vector<double> lumas;
+    lumas.reserve(samples.size());
+    for (const auto& sample : samples) lumas.push_back(sample.luma);
+    std::sort(lumas.begin(), lumas.end());
 
-        std::vector<uint16_t> working;
-        if (filtered.size() > 10000) {
-            const size_t step = std::max<size_t>(1, static_cast<size_t>(std::ceil(filtered.size() / 5000.0)));
-            working.reserve((filtered.size() + step - 1) / step);
-            for (size_t i = 0; i < filtered.size(); i += step) {
-                working.push_back(filtered[i]);
-            }
-        } else {
-            working = std::move(filtered);
-        }
+    const size_t lowerIndex = std::min(lumas.size() - 1, static_cast<size_t>(std::floor((lumas.size() - 1) * 0.15)));
+    const size_t upperIndex = std::min(lumas.size() - 1, static_cast<size_t>(std::floor((lumas.size() - 1) * 0.85)));
+    const double lumaMin = lumas[lowerIndex];
+    const double lumaMax = lumas[upperIndex];
 
-        std::sort(working.begin(), working.end());
-        const size_t lowerCutoff = static_cast<size_t>(std::floor(working.size() * 0.05));
-        const size_t upperCutoff = static_cast<size_t>(std::floor(working.size() * 0.95));
-        if (upperCutoff <= lowerCutoff || upperCutoff > working.size()) {
-            return static_cast<double>(working[working.size() / 2]);
+    std::vector<double> g1Values;
+    std::vector<double> g2Values;
+    std::vector<double> greenPlaneRatios;
+    std::vector<double> ratiosR;
+    std::vector<double> ratiosB;
+    g1Values.reserve(samples.size());
+    g2Values.reserve(samples.size());
+    greenPlaneRatios.reserve(samples.size());
+    ratiosR.reserve(samples.size());
+    ratiosB.reserve(samples.size());
+    for (const auto& sample : samples) {
+        if (sample.luma < lumaMin || sample.luma > lumaMax) continue;
+        g1Values.push_back(sample.g1);
+        g2Values.push_back(sample.g2);
+        greenPlaneRatios.push_back(std::max(sample.g1, sample.g2) / std::max(std::min(sample.g1, sample.g2), 1.0));
+        ratiosR.push_back(sample.g / std::max(sample.r, 1.0));
+        ratiosB.push_back(sample.g / std::max(sample.b, 1.0));
+    }
+
+    if (g1Values.empty() || g2Values.empty() || ratiosR.empty() || ratiosB.empty()) {
+        Logger::Log("白平衡采样失败：中亮度样本不足", LogLevel::WARNING, DeviceType::MAIN);
+        return QPair<double, double>(1.0, 1.0);
+    }
+
+    auto trimmedMean = [](std::vector<double>& values) -> double {
+        std::sort(values.begin(), values.end());
+        const size_t lower = static_cast<size_t>(std::floor(values.size() * 0.1));
+        const size_t upper = static_cast<size_t>(std::ceil(values.size() * 0.9));
+        if (upper <= lower || upper > values.size()) {
+            return values[values.size() / 2];
         }
 
         double sum = 0.0;
         size_t count = 0;
-        for (size_t i = lowerCutoff; i < upperCutoff; ++i) {
-            sum += static_cast<double>(working[i]);
+        for (size_t i = lower; i < upper; ++i) {
+            sum += values[i];
             ++count;
         }
         return count > 0 ? (sum / static_cast<double>(count))
-                         : static_cast<double>(working[working.size() / 2]);
+                         : values[values.size() / 2];
     };
 
-    if (rValues.empty() || gValues.empty() || bValues.empty()) {
-        Logger::Log("白平衡采样失败：有效通道样本不足", LogLevel::WARNING, DeviceType::MAIN);
+    const double g1Mean = trimmedMean(g1Values);
+    const double g2Mean = trimmedMean(g2Values);
+    const double greenPlaneMismatch = std::abs(g1Mean - g2Mean) / std::max((g1Mean + g2Mean) * 0.5, 1.0);
+    const double greenPlaneRatio = trimmedMean(greenPlaneRatios);
+    if (greenPlaneMismatch > 0.12 || greenPlaneRatio > 1.15) {
+        Logger::Log("白平衡已跳过：G1/G2 平面失衡过大, g1Mean=" + std::to_string(g1Mean) +
+                    ", g2Mean=" + std::to_string(g2Mean) +
+                    ", mismatch=" + std::to_string(greenPlaneMismatch) +
+                    ", ratio=" + std::to_string(greenPlaneRatio),
+                    LogLevel::WARNING, DeviceType::MAIN);
         return QPair<double, double>(1.0, 1.0);
     }
 
-    const double rMean = truncatedMean(rValues);
-    const double gMean = truncatedMean(gValues);
-    const double bMean = truncatedMean(bValues);
-    const double gainR = std::max(0.1, std::min(3.0, gMean / std::max(rMean, 1.0)));
-    const double gainB = std::max(0.1, std::min(3.0, gMean / std::max(bMean, 1.0)));
+    const double gainR = std::max(0.1, std::min(3.0, trimmedMean(ratiosR)));
+    const double gainB = std::max(0.1, std::min(3.0, trimmedMean(ratiosB)));
 
-    Logger::Log("白平衡增益计算完成(与前端统一算法): R=" + std::to_string(gainR) +
-                ", B=" + std::to_string(gainB), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("白平衡增益计算完成: R=" + std::to_string(gainR) +
+                ", B=" + std::to_string(gainB) +
+                ", offset=" + std::to_string(offset) +
+                ", samples=" + std::to_string(samples.size()) +
+                ", g1Mean=" + std::to_string(g1Mean) +
+                ", g2Mean=" + std::to_string(g2Mean),
+                LogLevel::INFO, DeviceType::MAIN);
 
     return QPair<double, double>(gainR, gainB);
 }
@@ -8220,6 +8505,7 @@ void MainWindow::cleanupOldTileSessionDirs(const QString& keepSessionId)
 cv::Mat MainWindow::colorImage(cv::Mat img16)
 {
     Logger::Log("Starting color image processing...", LogLevel::INFO, DeviceType::MAIN);
+    QString effectiveCameraCFA = MainCameraCFA;
     // color camera, need to do debayer and color balance
     cv::Mat AWBImg16;
     cv::Mat AWBImg16color;
@@ -8234,10 +8520,17 @@ cv::Mat MainWindow::colorImage(cv::Mat img16)
     AWBImg16mono.create(img16.rows, img16.cols, CV_16UC1);
     AWBImg8color.create(img16.rows, img16.cols, CV_8UC3);
 
+    const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
     Logger::Log("Matrices for image processing created.", LogLevel::INFO, DeviceType::MAIN);
-    Tools::ImageSoftAWB(img16, AWBImg16, MainCameraCFA, ImageGainR, ImageGainB, 30); // image software Auto White Balance is done in RAW image.
+    Tools::ImageSoftAWB(img16, AWBImg16, effectiveCameraCFA, ImageGainR, ImageGainB, offset); // image software Auto White Balance is done in RAW image.
     Logger::Log("Auto White Balance applied.", LogLevel::INFO, DeviceType::MAIN);
-    cv::cvtColor(AWBImg16, AWBImg16color, CV_BayerRG2BGR);
+    const int demosaicCode = getOpenCvBayerToBgrCode(effectiveCameraCFA);
+    if (demosaicCode < 0) {
+        Logger::Log("colorImage | invalid CFA for Bayer->BGR conversion: " + effectiveCameraCFA.toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return cv::Mat();
+    }
+    cv::cvtColor(AWBImg16, AWBImg16color, demosaicCode);
     Logger::Log("Image converted from Bayer to BGR.", LogLevel::INFO, DeviceType::MAIN);
 
     cv::cvtColor(AWBImg16color, AWBImg16mono, cv::COLOR_BGR2GRAY);
@@ -10981,6 +11274,18 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
                 return SdkManager::instance().callByHandle(mainHandle, cmd);
             };
+
+            bool mainSdkInitOk = true;
+            QString mainSdkInitFailStep;
+            QString mainSdkInitFailMsg;
+            auto markMainSdkInitFailed = [&](const QString& step, const std::string& msg) {
+                if (!mainSdkInitOk) {
+                    return;
+                }
+                mainSdkInitOk = false;
+                mainSdkInitFailStep = step;
+                mainSdkInitFailMsg = QString::fromStdString(msg);
+            };
             
             // ==================== SDK 主相机初始化流程 ====================
             // 记录“上一轮是否为相机内置 CFW”，用于在本轮未检测到 CFW 时清理前端残留状态
@@ -11017,6 +11322,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 if (!streamRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK SetStreamMode(pre-Init) failed: " + streamRes.message,
                                 LogLevel::ERROR, DeviceType::CAMERA);
+                    markMainSdkInitFailed(QStringLiteral("SetStreamMode(pre-Init)"), streamRes.message);
                 }
             }
 
@@ -11030,6 +11336,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 if (!initRes.success) {
                     Logger::Log("AfterDeviceConnect | SDK InitCamera failed: " + initRes.message,
                                 LogLevel::ERROR, DeviceType::CAMERA);
+                    markMainSdkInitFailed(QStringLiteral("InitCamera"), initRes.message);
                 }
             }
             
@@ -11043,6 +11350,20 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             if (!bitsRes.success) {
                 Logger::Log("AfterDeviceConnect | SDK SetBitsMode failed: " + bitsRes.message, 
                            LogLevel::WARNING, DeviceType::CAMERA);
+            }
+
+            // 对齐 Demo/重开流程：确保单帧曝光链路工作在 1x1 硬件 Bin。
+            // 否则部分机型在 SetResolution(full) 后会出现 memLength/实际读帧尺寸不一致，进而导致 GetSingleFrame 崩溃。
+            {
+                SdkCommand binCmd;
+                binCmd.type = SdkCommandType::Custom;
+                binCmd.name = "SetBinMode";
+                binCmd.payload = std::make_pair(1, 1);
+                SdkResult binRes = sdkCallMain(binCmd);
+                if (!binRes.success) {
+                    Logger::Log("AfterDeviceConnect | SDK SetBinMode(1,1) failed: " + binRes.message,
+                               LogLevel::WARNING, DeviceType::CAMERA);
+                }
             }
             
             // 4. 获取芯片信息（分辨率、像素大小等）
@@ -11076,7 +11397,23 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 } catch (const std::bad_any_cast& e) {
                     Logger::Log("AfterDeviceConnect | Failed to cast ChipInfo: " + std::string(e.what()), 
                                LogLevel::ERROR, DeviceType::CAMERA);
+                    glMainCCDSizeX = 0;
+                    glMainCCDSizeY = 0;
+                    markMainSdkInitFailed(QStringLiteral("GetChipInfo(any_cast)"), e.what());
                 }
+            } else {
+                glMainCCDSizeX = 0;
+                glMainCCDSizeY = 0;
+                Logger::Log("AfterDeviceConnect | SDK GetChipInfo failed: " + chipInfoRes.message,
+                           LogLevel::ERROR, DeviceType::CAMERA);
+                markMainSdkInitFailed(QStringLiteral("GetChipInfo"), chipInfoRes.message);
+            }
+
+            if (mainSdkInitOk && (glMainCCDSizeX <= 0 || glMainCCDSizeY <= 0)) {
+                Logger::Log("AfterDeviceConnect | SDK ChipInfo returned invalid image size: " +
+                               std::to_string(glMainCCDSizeX) + "x" + std::to_string(glMainCCDSizeY),
+                           LogLevel::ERROR, DeviceType::CAMERA);
+                markMainSdkInitFailed(QStringLiteral("GetChipInfo(size)"), "invalid image size");
             }
 
             // 5. 应用本地保存参数到 SDK（先 set，再 get 范围/当前值，避免前端看到旧的 current）
@@ -11289,14 +11626,55 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 try {
                     bool isColor = std::any_cast<bool>(colorRes.payload);
                     if (isColor) {
-                        // 这里可以根据 Bayer 模式设置 CFA
-                        MainCameraCFA = "RGGB"; // 默认值，实际应从 SDK 获取
-                        Logger::Log("AfterDeviceConnect | SDK Camera is color camera, CFA: " + MainCameraCFA.toStdString(), 
-                                   LogLevel::INFO, DeviceType::CAMERA);
-                        emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
+                        MainCameraCFAOffsetX = 0;
+                        MainCameraCFAOffsetY = 0;
+                        const QString savedCameraCfa = normalizeCfaPattern(MainCameraCFA);
+                        SdkCommand cfaCmd;
+                        cfaCmd.type = SdkCommandType::Custom;
+                        cfaCmd.name = "GetCameraCfa";
+                        cfaCmd.payload = std::any();
+                        SdkResult cfaRes = sdkCallMain(cfaCmd);
+
+                        if (cfaRes.success) {
+                            try {
+                                MainCameraCFA = normalizeCfaPattern(QString::fromStdString(std::any_cast<std::string>(cfaRes.payload)));
+                                Logger::Log("AfterDeviceConnect | SDK camera CFA detected by GetCameraCfa: " + MainCameraCFA.toStdString(),
+                                            LogLevel::INFO, DeviceType::CAMERA);
+                            } catch (const std::bad_any_cast&) {
+                                MainCameraCFA.clear();
+                                Logger::Log("AfterDeviceConnect | Failed to cast SDK camera CFA payload",
+                                            LogLevel::WARNING, DeviceType::CAMERA);
+                            }
+                        } else {
+                            MainCameraCFA.clear();
+                            Logger::Log("AfterDeviceConnect | Failed to get SDK camera CFA: " + cfaRes.message,
+                                        LogLevel::WARNING, DeviceType::CAMERA);
+                        }
+
+                        if (MainCameraCFA.isEmpty() &&
+                            (savedCameraCfa == "RGGB" || savedCameraCfa == "BGGR" ||
+                             savedCameraCfa == "GRBG" || savedCameraCfa == "GBRG")) {
+                            MainCameraCFA = savedCameraCfa;
+                            Logger::Log("AfterDeviceConnect | Fallback to saved SDK camera CFA: " + MainCameraCFA.toStdString(),
+                                        LogLevel::WARNING, DeviceType::CAMERA);
+                        }
+
+                        if (!MainCameraCFA.isEmpty()) {
+                            Tools::saveParameter("MainCamera", "ImageCFA", MainCameraCFA);
+                            Logger::Log("AfterDeviceConnect | SDK Camera is color camera, CFA: " + MainCameraCFA.toStdString(),
+                                       LogLevel::INFO, DeviceType::CAMERA);
+                            emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
+                        } else {
+                            Tools::saveParameter("MainCamera", "ImageCFA", QStringLiteral("null"));
+                            Logger::Log("AfterDeviceConnect | SDK Camera is color camera, but CFA detection failed",
+                                        LogLevel::WARNING, DeviceType::CAMERA);
+                            emit wsThread->sendMessageToClient("MainCameraCFA:null");
+                        }
                     } else {
                         MainCameraCFA = "";
+                        Tools::saveParameter("MainCamera", "ImageCFA", QStringLiteral("null"));
                         Logger::Log("AfterDeviceConnect | SDK Camera is mono camera", LogLevel::INFO, DeviceType::CAMERA);
+                        emit wsThread->sendMessageToClient("MainCameraCFA:null");
                     }
                 } catch (const std::bad_any_cast&) {
                     Logger::Log("AfterDeviceConnect | Failed to get color camera info", LogLevel::WARNING, DeviceType::CAMERA);
@@ -11304,6 +11682,25 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             }
             
             // ==================== 完成初始化 ====================
+            if (!mainSdkInitOk)
+            {
+                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[20].isConnect = false;
+                sdkMainAppliedModeValid = false;
+                sdkMainLiveReady = false;
+                sdkMainBurstModeReady = false;
+
+                const QString failDetail = mainSdkInitFailMsg.isEmpty()
+                    ? mainSdkInitFailStep
+                    : (mainSdkInitFailStep + ": " + mainSdkInitFailMsg);
+
+                Logger::Log("AfterDeviceConnect | SDK MainCamera initialization aborted, treat as connect failed. step=" +
+                               mainSdkInitFailStep.toStdString() + " msg=" + mainSdkInitFailMsg.toStdString(),
+                           LogLevel::ERROR, DeviceType::CAMERA);
+                emit wsThread->sendMessageToClient("ConnectDriverFailed:MainCamera:SDK init failed");
+                emit wsThread->sendMessageToClient("ConnectFailed:MainCamera:SDK init failed:" + failDetail);
+                return;
+            }
             
             // 标记设备已绑定
             systemdevicelist.system_devices[20].isBind = true;
@@ -11811,8 +12208,15 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         int offsetX, offsetY;
         indi_Client->getCCDCFA(dpMainCamera, offsetX, offsetY, MainCameraCFA);
+        MainCameraCFAOffsetX = offsetX;
+        MainCameraCFAOffsetY = offsetY;
+        MainCameraCFA = normalizeCfaPattern(MainCameraCFA);
+        if (MainCameraCFA == "NULL" || MainCameraCFA == "MONO") {
+            MainCameraCFA.clear();
+        }
+        Tools::saveParameter("MainCamera", "ImageCFA", MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA);
         Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
+        emit wsThread->sendMessageToClient("MainCameraCFA:" + (MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA));
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
 
@@ -14777,6 +15181,12 @@ void MainWindow::onSdkExposureTimerTimeout()
         getFrameCmd.type = SdkCommandType::Custom;
         getFrameCmd.name = "GetSingleFrame";
         getFrameCmd.payload = std::any();
+        Logger::Log("onSdkExposureTimerTimeout | dispatch GetSingleFrame to SDK thread: handle=" +
+                        std::to_string(reinterpret_cast<uintptr_t>(handleSnap)) +
+                        " elapsed=" + std::to_string(elapsed) +
+                        "ms expected=" + std::to_string(expected) +
+                        "ms isROI=" + std::string(isRoiSnap ? "true" : "false"),
+                    LogLevel::INFO, DeviceType::CAMERA);
         // 直接通过设备句柄调用，无需指定驱动名称
         const long long acquireStartNs =
             std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -14903,6 +15313,24 @@ void MainWindow::onSdkExposureTimerTimeout()
                 // 获取失败，继续等待（主线程只做定时器调度，不做阻塞 SDK 调用）
                 Logger::Log("onSdkExposureTimerTimeout | GetSingleFrame failed: " + frameRes.message,
                             LogLevel::DEBUG, DeviceType::CAMERA);
+
+                const bool unsupportedFormat =
+                    (frameRes.message.find("unsupported format") != std::string::npos);
+                if (unsupportedFormat) {
+                    Logger::Log("onSdkExposureTimerTimeout | unsupported frame format is not retryable, stop exposure polling",
+                                LogLevel::ERROR, DeviceType::CAMERA);
+                    glMainCameraStatu = "IDLE";
+                    ShootStatus = "IDLE";
+                    sdkExposureIsROI = false;
+                    if (isRoiSnap) {
+                        glIsFocusingLooping = false;
+                        isFocusLoopShooting = false;
+                        emit wsThread->sendMessageToClient("startFocusLoopFailed:SDK unsupported frame format");
+                    } else {
+                        emit wsThread->sendMessageToClient("ExposureFailed:SDK unsupported frame format");
+                    }
+                    return;
+                }
 
                 // 检查：如果是 ROI 模式但 ROI 循环已停止，不要重启定时器
                 if (isRoiSnap && !isFocusLoopShooting) {
@@ -15181,25 +15609,47 @@ void MainWindow::FocusingLooping()
         int effW = glMainCCDSizeX;
         int effH = glMainCCDSizeY;
         if (isMainCameraSDK && sdkMainCameraHandle != nullptr) {
-            SdkCommand effCmd;
-            effCmd.type = SdkCommandType::Custom;
-            effCmd.name = "GetEffectiveArea";
-            effCmd.payload = std::any();
-            SdkResult effRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, effCmd);
-            if (effRes.success) {
-                try {
-                    SdkAreaInfo eff = std::any_cast<SdkAreaInfo>(effRes.payload);
-                    if (eff.sizeX > 0U && eff.sizeY > 0U) {
-                        effMinX = static_cast<int>(eff.startX);
-                        effMinY = static_cast<int>(eff.startY);
-                        effW = static_cast<int>(eff.sizeX);
-                        effH = static_cast<int>(eff.sizeY);
-                        Logger::Log("FocusingLooping | GetEffectiveArea: start=(" + std::to_string(effMinX) + "," +
-                                    std::to_string(effMinY) + ") size=(" + std::to_string(effW) + "x" + std::to_string(effH) + ")",
-                                    LogLevel::DEBUG, DeviceType::FOCUSER);
+            if (sdkMainEffectiveAreaCacheHandle != sdkMainCameraHandle) {
+                sdkMainEffectiveAreaCacheValid = false;
+                sdkMainEffectiveAreaCacheHandle = sdkMainCameraHandle;
+            }
+
+            if (!sdkMainEffectiveAreaCacheValid) {
+                SdkCommand effCmd;
+                effCmd.type = SdkCommandType::Custom;
+                effCmd.name = "GetEffectiveArea";
+                effCmd.payload = std::any();
+                SdkResult effRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, effCmd);
+                if (effRes.success) {
+                    try {
+                        SdkAreaInfo eff = std::any_cast<SdkAreaInfo>(effRes.payload);
+                        if (eff.sizeX > 0U && eff.sizeY > 0U) {
+                            sdkMainEffectiveAreaMinX = static_cast<int>(eff.startX);
+                            sdkMainEffectiveAreaMinY = static_cast<int>(eff.startY);
+                            sdkMainEffectiveAreaWidth = static_cast<int>(eff.sizeX);
+                            sdkMainEffectiveAreaHeight = static_cast<int>(eff.sizeY);
+                            sdkMainEffectiveAreaCacheValid = true;
+                            Logger::Log("FocusingLooping | cached GetEffectiveArea: start=(" +
+                                            std::to_string(sdkMainEffectiveAreaMinX) + "," +
+                                            std::to_string(sdkMainEffectiveAreaMinY) + ") size=(" +
+                                            std::to_string(sdkMainEffectiveAreaWidth) + "x" +
+                                            std::to_string(sdkMainEffectiveAreaHeight) + ")",
+                                        LogLevel::DEBUG, DeviceType::FOCUSER);
+                        }
+                    } catch (const std::bad_any_cast&) {
                     }
-                } catch (const std::bad_any_cast&) {
                 }
+            }
+
+            if (sdkMainEffectiveAreaCacheValid) {
+                effMinX = sdkMainEffectiveAreaMinX;
+                effMinY = sdkMainEffectiveAreaMinY;
+                effW = sdkMainEffectiveAreaWidth;
+                effH = sdkMainEffectiveAreaHeight;
+                Logger::Log("FocusingLooping | effective area baseline: start=(" + std::to_string(effMinX) + "," +
+                                std::to_string(effMinY) + ") size=(" + std::to_string(effW) + "x" +
+                                std::to_string(effH) + ")",
+                            LogLevel::DEBUG, DeviceType::FOCUSER);
             }
         }
         // 使用局部变量，避免把全局 BoxSideLength 夹成 0（会导致后续一直 0x0 ROI）
@@ -15282,6 +15732,18 @@ void MainWindow::FocusingLooping()
                 lastFocusExposureRoiW = roiW;
                 lastFocusExposureRoiH = roiH;
 
+                const QString focusResolvedCfa = resolveFrameCfa(sensorStartX, sensorStartY);
+                Logger::Log("FocusingLooping | ROI Bayer debug | previewROI=(" + std::to_string(cameraX) + "," + std::to_string(cameraY) +
+                                ") scaled=(" + std::to_string(scaledX) + "," + std::to_string(scaledY) + ")" +
+                                ", roiCoordScale=" + std::to_string(roiCoordScale) +
+                                ", effRect=(" + std::to_string(effMinX) + "," + std::to_string(effMinY) + "," +
+                                std::to_string(effW) + "x" + std::to_string(effH) + ")" +
+                                ", roiSize=" + std::to_string(roiW) + "x" + std::to_string(roiH) +
+                                ", sensorParity=(" + std::to_string(sensorStartX & 1) + "," + std::to_string(sensorStartY & 1) + ")" +
+                                ", " + formatBayerPhaseDebug(MainCameraCFA, MainCameraCFAOffsetX, MainCameraCFAOffsetY,
+                                                             sensorStartX, sensorStartY, focusResolvedCfa),
+                            LogLevel::INFO, DeviceType::FOCUSER);
+
                 SdkAreaInfo roi;
                 roi.startX = static_cast<unsigned int>(sensorStartX);
                 roi.startY = static_cast<unsigned int>(sensorStartY);
@@ -15300,6 +15762,9 @@ void MainWindow::FocusingLooping()
                     Logger::Log("FocusingLooping | SDK SetResolution failed: " + roiRes.message, 
                                LogLevel::ERROR, DeviceType::FOCUSER);
                     glMainCameraStatu = "IDLE";
+                    glIsFocusingLooping = false;
+                    isFocusLoopShooting = false;
+                    emit wsThread->sendMessageToClient("startFocusLoopFailed:SDK SetResolution failed");
                     return;
                 }
                 
@@ -15355,6 +15820,18 @@ void MainWindow::FocusingLooping()
                 lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
                 lastFocusExposureRoiW = BoxSideLength;
                 lastFocusExposureRoiH = BoxSideLength;
+
+                const QString focusResolvedCfa = resolveFrameCfa(indiX, indiY);
+                Logger::Log("FocusingLooping | ROI Bayer debug | previewROI=(" + std::to_string(cameraX) + "," + std::to_string(cameraY) +
+                                ") scaled=(" + std::to_string(scaledX) + "," + std::to_string(scaledY) + ")" +
+                                ", roiCoordScale=" + std::to_string(roiCoordScale) +
+                                ", effRect=(" + std::to_string(effMinX) + "," + std::to_string(effMinY) + "," +
+                                std::to_string(effW) + "x" + std::to_string(effH) + ")" +
+                                ", roiSize=" + std::to_string(BoxSideLength) + "x" + std::to_string(BoxSideLength) +
+                                ", sensorParity=(" + std::to_string(indiX & 1) + "," + std::to_string(indiY & 1) + ")" +
+                                ", " + formatBayerPhaseDebug(MainCameraCFA, MainCameraCFAOffsetX, MainCameraCFAOffsetY,
+                                                             indiX, indiY, focusResolvedCfa),
+                            LogLevel::INFO, DeviceType::FOCUSER);
 
                 Logger::Log("FocusingLooping | INDI setCCDFrameInfo | (" + std::to_string(indiX) + "," + std::to_string(indiY) + ") " + std::to_string(BoxSideLength) + "x" + std::to_string(BoxSideLength),
                             LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -15416,6 +15893,18 @@ void MainWindow::FocusingLooping()
                 lastFocusExposureRoiW = roiW;
                 lastFocusExposureRoiH = roiH;
 
+                const QString focusResolvedCfa = resolveFrameCfa(sensorStartXEdge, sensorStartYEdge);
+                Logger::Log("FocusingLooping | ROI Bayer debug(edge) | previewROI=(" + std::to_string(cameraX) + "," + std::to_string(cameraY) +
+                                ") scaled=(" + std::to_string(scaledX) + "," + std::to_string(scaledY) + ")" +
+                                ", roiCoordScale=" + std::to_string(roiCoordScale) +
+                                ", effRect=(" + std::to_string(effMinX) + "," + std::to_string(effMinY) + "," +
+                                std::to_string(effW) + "x" + std::to_string(effH) + ")" +
+                                ", roiSize=" + std::to_string(roiW) + "x" + std::to_string(roiH) +
+                                ", sensorParity=(" + std::to_string(sensorStartXEdge & 1) + "," + std::to_string(sensorStartYEdge & 1) + ")" +
+                                ", " + formatBayerPhaseDebug(MainCameraCFA, MainCameraCFAOffsetX, MainCameraCFAOffsetY,
+                                                             sensorStartXEdge, sensorStartYEdge, focusResolvedCfa),
+                            LogLevel::INFO, DeviceType::FOCUSER);
+
                 SdkAreaInfo roi;
                 roi.startX = static_cast<unsigned int>(sensorStartXEdge);
                 roi.startY = static_cast<unsigned int>(sensorStartYEdge);
@@ -15434,6 +15923,9 @@ void MainWindow::FocusingLooping()
                     Logger::Log("FocusingLooping | SDK SetResolution failed: " + roiRes.message, 
                                LogLevel::ERROR, DeviceType::FOCUSER);
                     glMainCameraStatu = "IDLE";
+                    glIsFocusingLooping = false;
+                    isFocusLoopShooting = false;
+                    emit wsThread->sendMessageToClient("startFocusLoopFailed:SDK SetResolution failed");
                     return;
                 }
                 
@@ -15480,6 +15972,18 @@ void MainWindow::FocusingLooping()
                 lastFocusExposureRoiCoordScale = std::max(1, roiCoordScale);
                 lastFocusExposureRoiW = ROI.width();
                 lastFocusExposureRoiH = ROI.height();
+
+                const QString focusResolvedCfa = resolveFrameCfa(indiXe, indiYe);
+                Logger::Log("FocusingLooping | ROI Bayer debug(edge) | previewROI=(" + std::to_string(cameraX) + "," + std::to_string(cameraY) +
+                                ") scaled=(" + std::to_string(scaledX) + "," + std::to_string(scaledY) + ")" +
+                                ", roiCoordScale=" + std::to_string(roiCoordScale) +
+                                ", effRect=(" + std::to_string(effMinX) + "," + std::to_string(effMinY) + "," +
+                                std::to_string(effW) + "x" + std::to_string(effH) + ")" +
+                                ", roiSize=" + std::to_string(ROI.width()) + "x" + std::to_string(ROI.height()) +
+                                ", sensorParity=(" + std::to_string(indiXe & 1) + "," + std::to_string(indiYe & 1) + ")" +
+                                ", " + formatBayerPhaseDebug(MainCameraCFA, MainCameraCFAOffsetX, MainCameraCFAOffsetY,
+                                                             indiXe, indiYe, focusResolvedCfa),
+                            LogLevel::INFO, DeviceType::FOCUSER);
 
                 Logger::Log("FocusingLooping | INDI setCCDFrameInfo | (" + std::to_string(indiXe) + "," + std::to_string(indiYe) + ") " + std::to_string(ROI.width()) + "x" + std::to_string(ROI.height()),
                             LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -25667,6 +26171,7 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
 {
     // 创建MainCameraCFA的局部副本，防止多线程竞态条件导致的值污染
     QString localCameraCFA = MainCameraCFA;
+    QString roiCameraCFA = localCameraCFA;
     
     // 验证CFA值的合法性
     QStringList validCFAValues = {"RGGB", "BGGR", "GRBG", "GBRG", "RG", "BG", "GR", "GB", "", "null"};
@@ -25723,18 +26228,9 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     }
     Logger::Log("saveFitsAsJPG | image16 size:" + std::to_string(originalImage16.cols) + "x" + std::to_string(originalImage16.rows), LogLevel::INFO, DeviceType::FOCUSER);
 
-    // 中值滤波
-    Logger::Log("Starting median blur...", LogLevel::INFO, DeviceType::CAMERA);
-    try
-    {
-        cv::medianBlur(originalImage16, originalImage16, 3);
-    }
-    catch (const cv::Exception &e)
-    {
-        Logger::Log(std::string("saveFitsAsJPG | medianBlur failed: ") + e.what(), LogLevel::ERROR, DeviceType::CAMERA);
-        return;
-    }
-    Logger::Log("Median blur applied successfully.", LogLevel::INFO, DeviceType::CAMERA);
+    // 最小验证：ROI 导出链路暂时不对 Bayer RAW 做 medianBlur。
+    // 若颜色恢复正常，可基本确认“RAW 上的滤波破坏 CFA 采样结构”就是偏色根因。
+    Logger::Log("saveFitsAsJPG | median blur skipped for ROI Bayer validation", LogLevel::WARNING, DeviceType::CAMERA);
 
     // 下发给前端的 ROI .bin：不做软件合并，与相机 ROI 读出尺寸一致（与前端红框/瓦片传感器坐标对齐）。
     (void)ProcessBin;
@@ -25746,9 +26242,9 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
     {
         const int cw = lastFocusExposureRoiW;
         const int ch = lastFocusExposureRoiH;
-        // 快照为「有效区内」相对坐标；全幅 FITS 缓冲以芯片左上角为原点，需加上有效区偏移
         const int sx = lastFocusExposureEffMinX + lastFocusExposureScaledX;
         const int sy = lastFocusExposureEffMinY + lastFocusExposureScaledY;
+        roiCameraCFA = resolveFrameCfa(sx, sy);
         if (image16.cols == cw && image16.rows == ch)
         {
             // 已是 ROI 子帧（像素 (0,0) 即 ROI 左上角）
@@ -25773,6 +26269,29 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
                             LogLevel::WARNING, DeviceType::FOCUSER);
             }
         }
+    }
+    roiCameraCFA = normalizeCfaPattern(roiCameraCFA);
+    if (roiCameraCFA.isEmpty() && !localCameraCFA.isEmpty()) {
+        roiCameraCFA = normalizeCfaPattern(localCameraCFA);
+    }
+    Logger::Log("saveFitsAsJPG | ROI CFA base=" + localCameraCFA.toStdString() +
+                    " resolved=" + roiCameraCFA.toStdString() +
+                    " cfaOffset=(" + std::to_string(MainCameraCFAOffsetX) + "," +
+                    std::to_string(MainCameraCFAOffsetY) + ")",
+                LogLevel::INFO, DeviceType::FOCUSER);
+    if (lastFocusExposureSnapshotValid)
+    {
+        const int snapSensorX = lastFocusExposureEffMinX + lastFocusExposureScaledX;
+        const int snapSensorY = lastFocusExposureEffMinY + lastFocusExposureScaledY;
+        Logger::Log("saveFitsAsJPG | ROI Bayer debug | " +
+                        formatBayerPhaseDebug(localCameraCFA, MainCameraCFAOffsetX, MainCameraCFAOffsetY,
+                                             snapSensorX, snapSensorY, roiCameraCFA) +
+                        ", snapshotScaled=(" + std::to_string(lastFocusExposureScaledX) + "," + std::to_string(lastFocusExposureScaledY) + ")" +
+                        ", snapshotEffMin=(" + std::to_string(lastFocusExposureEffMinX) + "," + std::to_string(lastFocusExposureEffMinY) + ")" +
+                        ", snapshotRoiSize=" + std::to_string(lastFocusExposureRoiW) + "x" + std::to_string(lastFocusExposureRoiH) +
+                        ", outputImage=" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows) +
+                        ", " + sampleBayer2x2Debug(image16),
+                    LogLevel::INFO, DeviceType::FOCUSER);
     }
     Logger::Log("saveFitsAsJPG | output image16 " + std::to_string(image16.cols) + "x" + std::to_string(image16.rows), LogLevel::DEBUG, DeviceType::FOCUSER);
     originalImage16.release();
@@ -25851,9 +26370,13 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
         // 与前端 parseFloat 一致，保留小数（非瓦片 bin 缩放下 emit 可能为小数）
         Logger::Log("saveFitsAsJPG | ROI frame mapping file=" + fileName +
                         ", emitRoi=(" + std::to_string(emitRoiX) + "," + std::to_string(emitRoiY) + ")" +
-                        ", image16=" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows),
+                        ", image16=" + std::to_string(image16.cols) + "x" + std::to_string(image16.rows) +
+                        ", roiCFA=" + roiCameraCFA.toStdString(),
                     LogLevel::INFO, DeviceType::FOCUSER);
-        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" + QString::number(emitRoiX, 'g', 9) + ":" + QString::number(emitRoiY, 'g', 9));
+        emit wsThread->sendMessageToClient("SaveJpgSuccess:" + QString::fromStdString(fileName) + ":" +
+                                           QString::number(emitRoiX, 'g', 9) + ":" +
+                                           QString::number(emitRoiY, 'g', 9) + ":" +
+                                           (roiCameraCFA.isEmpty() ? QStringLiteral("null") : roiCameraCFA));
 
         // 挂起的 ROI 居中更新：在本帧图像已发出后再改 roiAndFocuserInfo，并单独通知前端（与 SaveJpgSuccess 解耦）
         if (hasPendingRoiUpdate)
@@ -25873,8 +26396,11 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
             // pendingRoiX/Y 已为传感器像素（见 selectStar 全图坐标）；瓦片模式下勿再除以 previewBinning。
             const bool tileModeActive = (isStagingImage && !SavedImage.empty());
             const int coordScale = tileModeActive ? 1 : std::max(1, glMainCameraBinning);
-            roiAndFocuserInfo["ROI_x"] = static_cast<int>(applyX / coordScale);
-            roiAndFocuserInfo["ROI_y"] = static_cast<int>(applyY / coordScale);
+            const QPointF snapped = snapRoiOriginToBayerSafePhase(static_cast<double>(applyX) / coordScale,
+                                                                  static_cast<double>(applyY) / coordScale,
+                                                                  boxSideToSend, boxSideToSend);
+            roiAndFocuserInfo["ROI_x"] = snapped.x();
+            roiAndFocuserInfo["ROI_y"] = snapped.y();
             // 勿在此处 emit SetRedBoxState：本帧 SaveJpgSuccess 已带「当前曝光」ROI；若再发「下一帧居中」坐标，前端会在叠加层仍为当前帧像素时把红框/选星圆改到新 ROI，造成错位。下一帧 SaveJpgSuccess 会携带新快照坐标并同步 UI。sendRoiInfo() 仍会发 SetRedBoxState 供重连等场景。
         }
 
@@ -26981,6 +27507,13 @@ void MainWindow::sendRoiInfo()
     double scale = roiAndFocuserInfo.count("scale") ? roiAndFocuserInfo["scale"] : 1;
     double selectStarX = roiAndFocuserInfo.count("SelectStarX") ? roiAndFocuserInfo["SelectStarX"] : -1;
     double selectStarY = roiAndFocuserInfo.count("SelectStarY") ? roiAndFocuserInfo["SelectStarY"] : -1;
+    const QPointF snapped = snapRoiOriginToBayerSafePhase(roi_x, roi_y,
+                                                          static_cast<int>(std::lround(boxSideLength)),
+                                                          static_cast<int>(std::lround(boxSideLength)));
+    roi_x = snapped.x();
+    roi_y = snapped.y();
+    roiAndFocuserInfo["ROI_x"] = roi_x;
+    roiAndFocuserInfo["ROI_y"] = roi_y;
 
     Logger::Log("sendRoiInfo | 发送参数 roi_x:" + std::to_string(roi_x) + " roi_y:" + std::to_string(roi_y) + " boxSideLength:" + std::to_string(boxSideLength) + " visibleX:" + std::to_string(visibleX) + " visibleY:" + std::to_string(visibleY) + " scale:" + std::to_string(scale) + " selectStarX:" + std::to_string(selectStarX) + " selectStarY:" + std::to_string(selectStarY), LogLevel::INFO, DeviceType::FOCUSER);
 
@@ -27028,9 +27561,16 @@ void MainWindow::getMainCameraParameters()
     QMap<QString, QString> parameters = Tools::readParameters("MainCamera");
     QString order = "setMainCameraParameters";
     bool hasTileBuildMode = false;
+    bool hasImageCfa = false;
     for (auto it = parameters.begin(); it != parameters.end(); ++it)
     {
         Logger::Log("getMainCameraParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        if (it.key() == "ImageCFA") {
+            hasImageCfa = true;
+            const QString normalizedCfa = normalizeCfaPattern(it.value());
+            MainCameraCFA = (normalizedCfa == "NULL" || normalizedCfa == "MONO") ? QString() : normalizedCfa;
+            it.value() = MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA;
+        }
         if (it.key() == "Save Folder" ) {
             QString oldSaveFolder = it.value();
             // 兼容旧的"default"，转换为"local"
@@ -27093,10 +27633,16 @@ void MainWindow::getMainCameraParameters()
             : QStringLiteral("pyramid");
         order += ":Tile Build Mode:" + tileBuildMode;
     }
+    if (!hasImageCfa) {
+        MainCameraCFA = normalizeCfaPattern(MainCameraCFA);
+        if (MainCameraCFA == "NULL" || MainCameraCFA == "MONO") {
+            MainCameraCFA.clear();
+        }
+    }
     Logger::Log("getMainCameraParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
     emit wsThread->sendMessageToClient(order);
 
-    emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
+    emit wsThread->sendMessageToClient("MainCameraCFA:" + (MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA));
 }
 
 void MainWindow::getMountParameters()
