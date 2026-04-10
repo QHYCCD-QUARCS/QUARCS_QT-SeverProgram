@@ -3287,17 +3287,22 @@ cv::Mat Tools::SubBackGround(cv::Mat image)
 
 QList<FITSImage::Star> Tools::FindStarsByStellarSolver(bool AllStars, bool runHFR)
 {
+  return FindStarsByStellarSolverFromFile(QStringLiteral("/dev/shm/ccd_simulator.fits"),
+                                          AllStars,
+                                          runHFR);
+}
+
+QList<FITSImage::Star> Tools::FindStarsByStellarSolverFromFile(const QString& fileName, bool AllStars, bool runHFR)
+{
   Tools tempTool;
 
-  loadFitsResult result;
-
+  loadFitsResult result = loadFits(fileName);
   QList<FITSImage::Star> stars;
-
-  result = loadFits("/dev/shm/ccd_simulator.fits");
 
   if (!result.success)
   {
-    Logger::Log("Error in loading FITS file", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("FindStarsByStellarSolverFromFile | Error in loading FITS file: " + fileName.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
     return stars;
   }
 

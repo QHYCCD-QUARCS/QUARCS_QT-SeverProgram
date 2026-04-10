@@ -67,53 +67,88 @@ double GuidingStarDetector::localPeakADU(const cv::Mat& img, double x, double y,
 
 std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat& image16,
                                                                   const StarSelectionParams& p,
+                                                                  const QString& fitsPath,
                                                                   std::vector<StarCandidate>* outCandidates) const
 {
     if (image16.empty() || image16.cols <= 0 || image16.rows <= 0)
         return std::nullopt;
 
-    // Step0：峰值检测 + 质心（复用现有 C++ 实现）
+    // Step0：优先使用 StellarSolver 检星；若失败则回退到旧的 FocusedCpp 检星
     constexpr const char* kLogPrefix = "[AutoGuideSelect]";
-    auto stars = Tools::DetectFocusedStars(image16,
-                                           p.kSigma,
-                                           p.minArea,
-                                           p.maxArea,
-                                           p.detectMinSNR,
-                                           51,
-                                           1.0,
-                                           true,
-                                           DeviceType::GUIDER,
-                                           QString::fromUtf8(kLogPrefix));
-    if (stars.empty())
+    std::vector<StarCandidate> candidates;
+    bool usedStellarSolver = false;
+
+    if (!fitsPath.isEmpty())
+    {
+        const QList<FITSImage::Star> ssStars = Tools::FindStarsByStellarSolverFromFile(fitsPath, true, true);
+        if (!ssStars.isEmpty())
+        {
+            usedStellarSolver = true;
+            candidates.reserve(static_cast<size_t>(ssStars.size()));
+            for (const auto& s : ssStars)
+            {
+                StarCandidate c;
+                c.x = s.x;
+                c.y = s.y;
+                c.hfd = std::isfinite(s.HFR) ? (s.HFR * 2.0) : 0.0;
+                // FITSImage::Star 在 StellarSolver 路径不保证直接提供 SNR；用 flux/HFD 构造稳定评分值。
+                const double flux = std::max(0.0, static_cast<double>(s.flux));
+                const double den = std::max(0.5, c.hfd);
+                c.snr = flux / den;
+                c.edgeDistPx = std::min({c.x, c.y, (double)(image16.cols - 1) - c.x, (double)(image16.rows - 1) - c.y});
+                c.peakADU = localPeakADU(image16, c.x, c.y, 4);
+                candidates.push_back(c);
+            }
+            Logger::Log(std::string(kLogPrefix) +
+                            " base_detect engine=StellarSolver candidates=" + std::to_string(candidates.size()) +
+                            " fits=" + fitsPath.toStdString(),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
+    }
+
+    if (candidates.empty())
+    {
+        auto stars = Tools::DetectFocusedStars(image16,
+                                               p.kSigma,
+                                               p.minArea,
+                                               p.maxArea,
+                                               p.detectMinSNR,
+                                               51,
+                                               1.0,
+                                               true,
+                                               DeviceType::GUIDER,
+                                               QString::fromUtf8(kLogPrefix));
+        if (!stars.empty())
+        {
+            candidates.reserve(stars.size());
+            for (const auto& s : stars)
+            {
+                StarCandidate c;
+                c.x = s.x;
+                c.y = s.y;
+                c.snr = s.snr;
+                c.hfd = s.hfr * 2.0; // HFD = 2*HFR
+                c.edgeDistPx = std::min({c.x, c.y, (double)(image16.cols - 1) - c.x, (double)(image16.rows - 1) - c.y});
+                c.peakADU = localPeakADU(image16, c.x, c.y, 4);
+                candidates.push_back(c);
+            }
+            Logger::Log(std::string(kLogPrefix) +
+                            " base_detect engine=FocusedCpp candidates=" + std::to_string(candidates.size()),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
+    }
+
+    if (candidates.empty())
     {
         Logger::Log(std::string(kLogPrefix) +
-                        " fail_at=base_detect reason=DetectFocusedStars returned 0 candidates"
-                        " | possible_steps=area_or_base_snr |"
-                        " params{kSigma=" + std::to_string(p.kSigma) +
-                        ", minArea=" + std::to_string(p.minArea) +
-                        ", maxArea=" + std::to_string(p.maxArea) +
-                        ", detectMinSNR=" + std::to_string(p.detectMinSNR) + "}",
+                        " fail_at=base_detect reason=no_candidates_from_stellarsolver_and_fallback"
+                        " | possible_steps=exposure_gain_or_focus",
                     LogLevel::INFO, DeviceType::GUIDER);
         return std::nullopt;
     }
 
     const double aduMax = maxADUForMat(image16);
     const double nearSat = aduMax * p.nearSaturationRatio;
-
-    std::vector<StarCandidate> candidates;
-    candidates.reserve(stars.size());
-
-    for (const auto& s : stars)
-    {
-        StarCandidate c;
-        c.x = s.x;
-        c.y = s.y;
-        c.snr = s.snr;
-        c.hfd = s.hfr * 2.0; // HFD = 2*HFR
-        c.edgeDistPx = std::min({c.x, c.y, (double)(image16.cols - 1) - c.x, (double)(image16.rows - 1) - c.y});
-        c.peakADU = localPeakADU(image16, c.x, c.y, 4);
-        candidates.push_back(c);
-    }
 
     if (outCandidates)
         *outCandidates = candidates;
@@ -178,6 +213,7 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                     " reject_hfd=" + std::to_string(s1.size() - s2.size()) +
                     " reject_edge=" + std::to_string(rejectedEdgeCount) +
                     " reject_sat=" + std::to_string(rejectedSaturationCount) +
+                    " engine=" + std::string(usedStellarSolver ? "StellarSolver" : "FocusedCpp") +
                     " | thresholds{minSNR=" + std::to_string(p.minSNR) +
                     ", minHFD=" + std::to_string(p.minHFD) +
                     ", maxHFD=" + std::to_string(p.maxHFD) +
@@ -255,4 +291,3 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
 }
 
 } // namespace guiding
-

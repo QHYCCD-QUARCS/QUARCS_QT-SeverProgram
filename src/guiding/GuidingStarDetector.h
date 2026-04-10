@@ -1,6 +1,7 @@
 #pragma once
 
 #include <opencv2/core/core.hpp>
+#include <QString>
 #include <optional>
 #include <vector>
 
@@ -38,6 +39,7 @@ public:
     // 三遍扫描：SNR → HFD → 饱和 + 边缘，最后按评分选最佳星
     std::optional<StarCandidate> selectGuideStar(const cv::Mat& image16,
                                                  const StarSelectionParams& p,
+                                                 const QString& fitsPath = QString(),
                                                  std::vector<StarCandidate>* outCandidates = nullptr) const;
 
 private:
@@ -46,6 +48,5 @@ private:
 };
 
 } // namespace guiding
-
 
 

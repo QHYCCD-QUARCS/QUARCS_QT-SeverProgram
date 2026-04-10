@@ -446,6 +446,9 @@ class Tools : public QObject {
   static cv::Mat CalMoments(cv::Mat image);
 
   static QList<FITSImage::Star> FindStarsByStellarSolver(bool AllStars, bool runHFR);
+  static QList<FITSImage::Star> FindStarsByStellarSolverFromFile(const QString& fileName,
+                                                                  bool AllStars = true,
+                                                                  bool runHFR = true);
   // 基于当前 ROI 简化识星算法的星点识别（仿照上面两个接口）
   static QList<FITSImage::Star> FindStarsByFocusedCpp(bool AllStars, bool runHFR);
   static QList<FITSImage::Star> FindStarsByFocusedCppFromFile(const QString &fileName, bool AllStars, bool runHFR);
