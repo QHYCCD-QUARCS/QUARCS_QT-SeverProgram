@@ -85,7 +85,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260408"  // 手动指定版本号
+#define QT_Client_Version "20260410"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -1056,6 +1056,8 @@ public:
 
     // 是否允许 selectStar 自动更新 ROI 位置（默认关闭用于排查抖动）
     bool enableAutoRoiCentering = true;
+    // ROI 识星/统计参数模式：false 复用全帧参数，true 使用 ROI 自身重新计算
+    bool roiUseSelfCalcParams = false;
     // 追踪窗口比例（相对于 ROI 边长），当锁定星点超出该窗口时允许更新 ROI 使其回到中心
     double trackWindowRatio = 0.06;
     // 选星防抖动参数：粘滞半径（像素）。若上一帧锁定星在该半径内有匹配，则保持锁定，避免在近邻星之间跳动

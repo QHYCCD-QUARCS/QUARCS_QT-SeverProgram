@@ -2134,6 +2134,16 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("RedBoxSizeChange:" + std::to_string(BoxSideLength), LogLevel::DEBUG, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "ROICalcMode")
+    {
+        const QString mode = parts[1].trimmed().toLower();
+        roiUseSelfCalcParams = (mode == "roi" || mode == "self");
+        Tools::saveParameter("MainCamera", "ROICalcMode",
+                             roiUseSelfCalcParams ? QStringLiteral("roi") : QStringLiteral("full"));
+        Logger::Log("ROICalcMode is set to " +
+                        std::string(roiUseSelfCalcParams ? "roi(self-calc)" : "full(reuse-full-frame)"),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+    }
 
     else if (message.startsWith("AutoFocusConfirm:")) // [AUTO_FOCUS_UI_ENHANCEMENT]
     {
@@ -7368,10 +7378,14 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     constexpr int TILE_BORDER = 2;
 
     struct TileReq { int x; int y; double prio; };
+    bool interruptedByBudget = false;
     auto shouldStop = [&]() -> bool {
         if (tilePyramidEpoch.load() != epoch) return true;
         if (tileViewportRequestSeq.load() != requestSeq) return true;
-        if (budgetMs > 0 && timer.elapsed() > budgetMs) return true;
+        if (budgetMs > 0 && timer.elapsed() > budgetMs) {
+            interruptedByBudget = true;
+            return true;
+        }
         return false;
     };
 
@@ -7547,6 +7561,12 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     }
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+    }
+    if (!completedAllRequestedTiles &&
+        interruptedByBudget &&
+        tilePyramidEpoch.load() == epoch &&
+        tileViewportRequestSeq.load() == requestSeq) {
+        tileViewportGenPending = true;
     }
     if (completedAllRequestedTiles && !mergedSingleLevelMode) {
         sendTileGenerationCompleteToClient(st.sessionId, epoch);
@@ -13029,7 +13049,26 @@ void MainWindow::applySdkMainCameraCaptureMode()
             // 4.4 Bits/Debayer/Bin/USB/DDR（均为 best-effort，对齐 Demo）
             if (ok) {
                 (void)call("SetBitsMode", 16);
-                (void)call("SetDebayerOnOff", false);
+                bool shouldDisableDebayer = false;
+                {
+                    SdkResult colorRes = call("IsColorCamera", std::any());
+                    if (colorRes.success) {
+                        try {
+                            shouldDisableDebayer = std::any_cast<bool>(colorRes.payload);
+                        } catch (const std::bad_any_cast&) {
+                            shouldDisableDebayer = false;
+                            logWarn("reopenMainCameraByDemoFlow | IsColorCamera payload cast failed, skip SetDebayerOnOff");
+                        }
+                    } else {
+                        logWarn("reopenMainCameraByDemoFlow | IsColorCamera failed, skip SetDebayerOnOff: " + colorRes.message);
+                    }
+                }
+                if (shouldDisableDebayer) {
+                    (void)call("SetDebayerOnOff", false);
+                } else {
+                    Logger::Log("reopenMainCameraByDemoFlow | skip SetDebayerOnOff(false) for mono/unknown camera",
+                                LogLevel::INFO, DeviceType::CAMERA);
+                }
                 (void)call("SetBinMode", std::pair<int,int>(1,1));
                 (void)call("SetDDR", 1.0);
                 (void)call("SetUsbTraffic", usbTraffic);
@@ -26513,10 +26552,21 @@ void MainWindow::saveFitsAsJPG(QString filename, bool ProcessBin)
                     ", raw image=" + std::to_string(image.cols) + "x" + std::to_string(image.rows),
                 LogLevel::INFO, DeviceType::FOCUSER);
 
-    QList<FITSImage::Star> stars = Tools::FindStarsByFocusedCpp(true, true);
-    Logger::Log("saveFitsAsJPG | star detection call currently uses default focused-cpp source; current ROI frame is " +
-                    filename.toStdString(),
-                LogLevel::WARNING, DeviceType::FOCUSER);
+    QList<FITSImage::Star> stars;
+    if (roiUseSelfCalcParams)
+    {
+        stars = Tools::FindStarsByFocusedCppFromFile(filename, true, true);
+        Logger::Log("saveFitsAsJPG | ROI star detection uses ROI self-calculated params, source=" +
+                        filename.toStdString(),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+    }
+    else
+    {
+        stars = Tools::FindStarsByFocusedCpp(true, true);
+        Logger::Log("saveFitsAsJPG | ROI star detection reuses full-frame params/source, current ROI frame=" +
+                        filename.toStdString(),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+    }
     currentSelectStarPosition = selectStar(stars);
 
     emit wsThread->sendMessageToClient("FocusMoveDone:" + QString::number(FocuserControl_getPosition()) + ":" + QString::number(roiAndFocuserInfo["SelectStarHFR"]));
@@ -27880,6 +27930,7 @@ void MainWindow::getMainCameraParameters()
     QString order = "setMainCameraParameters";
     bool hasTileBuildMode = false;
     bool hasImageCfa = false;
+    bool hasRoiCalcMode = false;
     for (auto it = parameters.begin(); it != parameters.end(); ++it)
     {
         Logger::Log("getMainCameraParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
@@ -27888,6 +27939,12 @@ void MainWindow::getMainCameraParameters()
             const QString normalizedCfa = normalizeCfaPattern(it.value());
             MainCameraCFA = (normalizedCfa == "NULL" || normalizedCfa == "MONO") ? QString() : normalizedCfa;
             it.value() = MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA;
+        }
+        if (it.key() == "ROICalcMode") {
+            hasRoiCalcMode = true;
+            const QString mode = it.value().trimmed().toLower();
+            roiUseSelfCalcParams = (mode == "roi" || mode == "self");
+            it.value() = roiUseSelfCalcParams ? QStringLiteral("roi") : QStringLiteral("full");
         }
         if (it.key() == "Save Folder" ) {
             QString oldSaveFolder = it.value();
@@ -27950,6 +28007,10 @@ void MainWindow::getMainCameraParameters()
             ? QStringLiteral("merged_single_level")
             : QStringLiteral("pyramid");
         order += ":Tile Build Mode:" + tileBuildMode;
+    }
+    if (!hasRoiCalcMode) {
+        roiUseSelfCalcParams = false;
+        order += ":ROICalcMode:full";
     }
     if (!hasImageCfa) {
         MainCameraCFA = normalizeCfaPattern(MainCameraCFA);

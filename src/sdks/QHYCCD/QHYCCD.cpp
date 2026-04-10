@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <cstdint>
 #include <chrono>
 #include <thread>
 #include <mutex>
@@ -372,7 +373,18 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             if (!extractParam<int>(cmd.payload, readMode, r, "readMode")) {
                 return r;
             }
+            const auto t0 = std::chrono::steady_clock::now();
+            Logger::Log("QHYCCD SetReadMode | start | handle=" + std::to_string((uintptr_t)handle) +
+                        ", readMode=" + std::to_string(readMode),
+                        LogLevel::DEBUG, DeviceType::CAMERA);
             unsigned int ret = SetQHYCCDReadMode(handle, static_cast<uint32_t>(readMode));
+            const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            Logger::Log("QHYCCD SetReadMode | finish | handle=" + std::to_string((uintptr_t)handle) +
+                        ", ret=" + std::to_string(ret) +
+                        ", costMs=" + std::to_string(dt),
+                        (ret == QHYCCD_SUCCESS) ? LogLevel::DEBUG : LogLevel::ERROR,
+                        DeviceType::CAMERA);
             return makeResultFromRet("SetQHYCCDReadMode", ret);
         }
 
@@ -387,7 +399,18 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             if (!extractParam<int>(cmd.payload, mode, r, "mode")) {
                 return r;
             }
+            const auto t0 = std::chrono::steady_clock::now();
+            Logger::Log("QHYCCD SetStreamMode | start | handle=" + std::to_string((uintptr_t)handle) +
+                        ", mode=" + std::to_string(mode),
+                        LogLevel::DEBUG, DeviceType::CAMERA);
             unsigned int ret = SetQHYCCDStreamMode(handle, mode);
+            const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            Logger::Log("QHYCCD SetStreamMode | finish | handle=" + std::to_string((uintptr_t)handle) +
+                        ", ret=" + std::to_string(ret) +
+                        ", costMs=" + std::to_string(dt),
+                        (ret == QHYCCD_SUCCESS) ? LogLevel::DEBUG : LogLevel::ERROR,
+                        DeviceType::CAMERA);
             return makeResultFromRet("SetQHYCCDStreamMode", ret);
         }
 
@@ -398,7 +421,17 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
                 r.message = "InitCamera requires a valid device handle";
                 return r;
             }
+            const auto t0 = std::chrono::steady_clock::now();
+            Logger::Log("QHYCCD InitCamera | start | handle=" + std::to_string((uintptr_t)handle),
+                        LogLevel::DEBUG, DeviceType::CAMERA);
             unsigned int ret = InitQHYCCD(handle);
+            const auto dt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            Logger::Log("QHYCCD InitCamera | finish | handle=" + std::to_string((uintptr_t)handle) +
+                        ", ret=" + std::to_string(ret) +
+                        ", costMs=" + std::to_string(dt),
+                        (ret == QHYCCD_SUCCESS) ? LogLevel::DEBUG : LogLevel::ERROR,
+                        DeviceType::CAMERA);
             return makeResultFromRet("InitQHYCCD", ret);
         }
 
@@ -489,6 +522,14 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             }
             bool on = false;
             if (!extractParam<bool>(cmd.payload, on, r, "debayerOn")) {
+                return r;
+            }
+            // 部分单色机型/旧版 SDK 上直接调用 SetQHYCCDDebayerOnOff 可能触发底层崩溃。
+            // 只有在明确检测到彩色相机时才下发该调用；否则视为“无需处理”的成功 no-op。
+            const unsigned int colorRet = IsQHYCCDControlAvailable(handle, CAM_IS_COLOR);
+            if (colorRet != QHYCCD_SUCCESS) {
+                r.success = true;
+                r.message = "Skip SetQHYCCDDebayerOnOff: camera is monochrome or CAM_IS_COLOR unsupported";
                 return r;
             }
             unsigned int ret = SetQHYCCDDebayerOnOff(handle, on);
@@ -702,6 +743,14 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             }
             int bits = 16;
             if (!extractParam<int>(cmd.payload, bits, r, "bits")) {
+                return r;
+            }
+            // 某些机型不暴露 CONTROL_TRANSFERBIT；对这些机型跳过位深设置，
+            // 避免在 SDK 内部走到不稳定分支。
+            const unsigned int availRet = IsQHYCCDControlAvailable(handle, CONTROL_TRANSFERBIT);
+            if (availRet == QHYCCD_ERROR) {
+                r.success = true;
+                r.message = "Skip SetQHYCCDBitsMode: CONTROL_TRANSFERBIT unsupported";
                 return r;
             }
             unsigned int ret = SetQHYCCDBitsMode(handle, bits);

@@ -1,6 +1,23 @@
 #include "SdkManager.h"
 #include "../Logger.h"
 #include <unordered_set>
+#include <chrono>
+#include <sstream>
+#include <thread>
+
+namespace {
+bool isSdkInitKeyCommand(const std::string& name)
+{
+    return name == "SetReadMode" || name == "SetStreamMode" || name == "InitCamera";
+}
+
+std::string handleToString(SdkDeviceHandle handle)
+{
+    std::ostringstream oss;
+    oss << handle;
+    return oss.str();
+}
+}
 
 /**
  * @brief 获取SdkManager单例实例
@@ -102,20 +119,59 @@ SdkResult SdkManager::call(const std::string& driverName,
         return r;
     }
 
+    const bool skipNoisyLog = (command.name == "GetCurrentTemperature");
+    const bool keyInitCmd = isSdkInitKeyCommand(command.name);
+
     // 记录调试日志（跳过温度查询命令以避免频繁打印）
-    if (command.name != "GetCurrentTemperature") {
+    if (!skipNoisyLog) {
+        const std::string preLog =
+            "调用驱动: " + driverName +
+            ", 命令: " + command.name +
+            ", handle=" + handleToString(device) +
+            ", thread=" + std::to_string(
+                static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
         if (logger) {
-            logger->log(SdkLogLevel::Debug,
-                        "调用驱动: " + driverName +
-                        ", 命令: " + command.name);
+            logger->log(SdkLogLevel::Debug, preLog);
         } else {
-            Logger::Log("调用驱动: " + driverName + ", 命令: " + command.name,
-                        LogLevel::DEBUG, DeviceType::MAIN);
+            Logger::Log(preLog, LogLevel::DEBUG, DeviceType::MAIN);
         }
     }
 
     // 执行命令（此时已释放锁，不会阻塞其他操作）
-    return driver->execute(device, command);
+    const auto t0 = std::chrono::steady_clock::now();
+    SdkResult execResult;
+    try {
+        execResult = driver->execute(device, command);
+    } catch (const std::exception& e) {
+        execResult.success = false;
+        execResult.errorCode = SdkErrorCode::OperationFailed;
+        execResult.message = std::string("driver->execute exception: ") + e.what();
+    } catch (...) {
+        execResult.success = false;
+        execResult.errorCode = SdkErrorCode::OperationFailed;
+        execResult.message = "driver->execute unknown exception";
+    }
+    const auto dtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count();
+
+    // 对关键初始化命令和失败命令补充结束日志，便于定位崩溃前最后一步
+    if (!skipNoisyLog && (keyInitCmd || !execResult.success)) {
+        const std::string postLog =
+            "调用完成: " + driverName +
+            ", 命令: " + command.name +
+            ", ok=" + std::string(execResult.success ? "true" : "false") +
+            ", costMs=" + std::to_string(dtMs) +
+            ", errorCode=" + std::to_string(static_cast<int>(execResult.errorCode)) +
+            ", msg=" + execResult.message;
+        if (logger) {
+            logger->log(execResult.success ? SdkLogLevel::Debug : SdkLogLevel::Error, postLog);
+        } else {
+            Logger::Log(postLog,
+                        execResult.success ? LogLevel::DEBUG : LogLevel::ERROR,
+                        DeviceType::MAIN);
+        }
+    }
+    return execResult;
 }
 
 /**
@@ -972,5 +1028,3 @@ std::vector<std::string> SdkManager::findDriversByType(SdkDeviceType deviceType)
     
     return result;
 }
-
-
