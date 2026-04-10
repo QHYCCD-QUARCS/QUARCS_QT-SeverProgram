@@ -4184,6 +4184,44 @@ void MainWindow::onMessageReceived(const QString &message)
                     sdkFocuserPort.clear();
                 }
             }
+            else if (deviceDescription == "MainCamera" || deviceDescription == "Guider")
+            {
+                // 相机从 SDK 切到 INDI 时，必须清空 SDK 相机池与前端待分配列表残留。
+                // 否则后续 loadBindDeviceList 会把“旧 SDK 设备 + 新 INDI 设备”同时下发，造成重复显示。
+                QStringList staleSdkCameraNames;
+                for (const auto &id : g_sdkQhyCamIds)
+                {
+                    const QString name = id.trimmed();
+                    if (!name.isEmpty() && !staleSdkCameraNames.contains(name))
+                        staleSdkCameraNames.push_back(name);
+                }
+                if (idxMain >= 0 && idxMain < systemdevicelist.system_devices.size())
+                {
+                    const QString name = systemdevicelist.system_devices[idxMain].DeviceIndiName.trimmed();
+                    if (!name.isEmpty() && !staleSdkCameraNames.contains(name))
+                        staleSdkCameraNames.push_back(name);
+                    systemdevicelist.system_devices[idxMain].isConnect = false;
+                    systemdevicelist.system_devices[idxMain].isBind = false;
+                }
+                if (idxGuider >= 0 && idxGuider < systemdevicelist.system_devices.size())
+                {
+                    const QString name = systemdevicelist.system_devices[idxGuider].DeviceIndiName.trimmed();
+                    if (!name.isEmpty() && !staleSdkCameraNames.contains(name))
+                        staleSdkCameraNames.push_back(name);
+                    systemdevicelist.system_devices[idxGuider].isConnect = false;
+                    systemdevicelist.system_devices[idxGuider].isBind = false;
+                }
+
+                cleanupQhySdkPoolAndResource("SetConnectionMode: Camera SDK->INDI", "CameraPool");
+
+                if (wsThread != nullptr)
+                {
+                    for (const auto &name : staleSdkCameraNames)
+                    {
+                        emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + name);
+                    }
+                }
+            }
         }
 
         Logger::Log("SetConnectionMode | Device " + deviceDescription.toStdString() +
@@ -9289,7 +9327,16 @@ void MainWindow::ConnectAllDeviceOnce()
                                 LogLevel::ERROR, DeviceType::MAIN);
                     continue;
                 }
-                SdkResult openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
+                SdkResult openRes;
+                if (sdkCamExec && sdkCamExec->isRunning()) {
+                    const std::string driverNameStd = driverName.toStdString();
+                    const std::string cameraIdSnap = cameraId;
+                    openRes = sdkCamExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
+                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
+                    });
+                } else {
+                    openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
+                }
                 if (!openRes.success || !openRes.payload.has_value())
                 {
                     Logger::Log("ConnectAllDeviceOnce | Open failed for " + cameraId + ": " + openRes.message,
@@ -22924,7 +22971,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 LogLevel::ERROR, DeviceType::MAIN);
                     continue;
                 }
-                SdkResult openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
+                SdkResult openRes;
+                if (sdkCamExec && sdkCamExec->isRunning()) {
+                    const std::string driverNameStd = driverName.toStdString();
+                    const std::string cameraIdSnap = cameraId;
+                    openRes = sdkCamExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
+                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
+                    });
+                } else {
+                    openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
+                }
                 if (!openRes.success || !openRes.payload.has_value())
                 {
                     Logger::Log("ConnectDriver | Open camera failed for " + cameraId + ": " + openRes.message,
@@ -23143,7 +23199,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         if (alreadyOpen)
                             continue;
 
-                        SdkResult openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
+                        SdkResult openRes;
+                        if (sdkCamExec && sdkCamExec->isRunning()) {
+                            const std::string driverNameStd = driverName.toStdString();
+                            const std::string cameraIdSnap = cameraId;
+                            openRes = sdkCamExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
+                                return SdkManager::instance().open(driverNameStd, cameraIdSnap);
+                            });
+                        } else {
+                            openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
+                        }
                         if (!openRes.success || !openRes.payload.has_value())
                             continue;
 
@@ -23333,7 +23398,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     continue;
                 }
 
-                SdkResult openRes = SdkManager::instance().open(driverName2.toStdString(), cameraId);
+                SdkResult openRes;
+                if (sdkCamExec && sdkCamExec->isRunning()) {
+                    const std::string driverNameStd = driverName2.toStdString();
+                    const std::string cameraIdSnap = cameraId;
+                    openRes = sdkCamExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
+                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
+                    });
+                } else {
+                    openRes = SdkManager::instance().open(driverName2.toStdString(), cameraId);
+                }
                 if (!openRes.success || !openRes.payload.has_value())
                 {
                     Logger::Log("ConnectDriver | Open camera failed for " + cameraId + ": " + openRes.message,
@@ -24461,6 +24535,29 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
 
     Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") start...", LogLevel::INFO, DeviceType::MAIN);
 
+    auto eraseConnectedDeviceByType = [&](const QString &type) {
+        for (auto it = ConnectedDevices.begin(); it != ConnectedDevices.end();)
+        {
+            if (it->DeviceType == type)
+                it = ConnectedDevices.erase(it);
+            else
+                ++it;
+        }
+    };
+    auto appendDeleteCandidate = [](QStringList &names, const QString &name) {
+        const QString n = name.trimmed();
+        if (n.isEmpty()) return;
+        if (n.compare("Not Bind Device", Qt::CaseInsensitive) == 0) return;
+        if (!names.contains(n)) names.push_back(n);
+    };
+    auto emitDeleteDeviceAllocationListBatch = [&](const QStringList &names) {
+        if (wsThread == nullptr) return;
+        for (const auto &n : names)
+        {
+            emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + n);
+        }
+    };
+
     // ===== Guider SDK 模式断开 =====
     if (DeviceType == "Guider")
     {
@@ -24471,6 +24568,9 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         {
             Logger::Log("DisconnectDevice | Guider is in SDK mode, closing guider handle ...",
                         LogLevel::INFO, DeviceType::GUIDER);
+            QStringList sdkPoolNamesBeforeCleanup;
+            for (const auto &id : g_sdkQhyCamIds)
+                appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
 
             if (guiderLoopTimer)
                 guiderLoopTimer->stop();
@@ -24542,7 +24642,21 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 cleanupQhySdkPoolAndResource("DisconnectDevice: Guider no other device using SDK", "CameraPool");
             }
 
-            emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
+            eraseConnectedDeviceByType("Guider");
+            QStringList removeNames;
+            appendDeleteCandidate(removeNames, DeviceName);
+            if (systemdevicelist.system_devices.size() > 1)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
+            if (!anyOtherUsingSDK)
+            {
+                for (const auto &name : sdkPoolNamesBeforeCleanup)
+                    appendDeleteCandidate(removeNames, name);
+            }
+            emitDeleteDeviceAllocationListBatch(removeNames);
+            if (wsThread != nullptr)
+            {
+                emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
+            }
             Tools::saveSystemDeviceList(systemdevicelist);
             Logger::Log("DisconnectDevice | Guider (SDK) disconnected.", LogLevel::INFO, DeviceType::GUIDER);
             return;
@@ -24558,6 +24672,9 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         if (mainCameraMarkedSDK || sdkMainCameraHandle != nullptr || !g_sdkQhyCamHandles.isEmpty())
         {
             Logger::Log("DisconnectDevice | MainCamera is in SDK mode, disconnect flow with SDK pool ...", LogLevel::INFO, DeviceType::MAIN);
+            QStringList sdkPoolNamesBeforeCleanup;
+            for (const auto &id : g_sdkQhyCamIds)
+                appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
 
             // 小工具：把所有 SDK 调用串行投递到相机 SDK 线程，避免 UI 线程与 sdkCamExec 并发访问同一 handle 触发 SDK 内部崩溃
             auto postToCamThread = [&](std::function<void()> fn) {
@@ -24876,8 +24993,22 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             }
 
             // 7) 通知前端断开成功（SDK 模式不会命中 INDI 的循环）
+            eraseConnectedDeviceByType("MainCamera");
+            QStringList removeNames;
+            appendDeleteCandidate(removeNames, DeviceName);
+            appendDeleteCandidate(removeNames, closedCameraId);
+            if (systemdevicelist.system_devices.size() > 20)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
+            if (!anyOtherUsingSDK)
+            {
+                for (const auto &name : sdkPoolNamesBeforeCleanup)
+                    appendDeleteCandidate(removeNames, name);
+            }
+            emitDeleteDeviceAllocationListBatch(removeNames);
             if (wsThread != nullptr)
+            {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
+            }
 
             // 关键修复：
             // 走到这里说明 MainCamera 是 SDK 断开路径。此时不应继续执行下面的 INDI 断开流程，
@@ -24897,6 +25028,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         {
             Logger::Log("DisconnectDevice | Focuser is in SDK mode, closing serial handle ...",
                         LogLevel::INFO, DeviceType::FOCUSER);
+            const QString focuserPortBeforeClear = sdkFocuserPort;
 
             // 先停止焦点器移动（如果有的话），避免在关闭设备时还有异步任务在执行
             if (focusMoveTimer && focusMoveTimer->isActive())
@@ -24999,8 +25131,18 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 systemdevicelist.system_devices[22].dp = NULL;
             }
 
+            eraseConnectedDeviceByType("Focuser");
+            QStringList removeNames;
+            appendDeleteCandidate(removeNames, DeviceName);
+            appendDeleteCandidate(removeNames, focuserPortBeforeClear);
+            if (systemdevicelist.system_devices.size() > 22)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[22].DeviceIndiName);
+            emitDeleteDeviceAllocationListBatch(removeNames);
             if (wsThread != nullptr)
+            {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Focuser");
+            }
+            Tools::saveSystemDeviceList(systemdevicelist);
             return;
         }
     }
@@ -25584,6 +25726,18 @@ void MainWindow::loadBindDeviceTypeList()
 void MainWindow::loadBindDeviceList(MyClient *client)
 {
     QString order = "BindDeviceList";
+    QSet<QString> emittedKeys;
+    auto appendDeviceToOrder = [&](const QString &type, const QString &name, int index) {
+        const QString trimmedType = type.trimmed();
+        const QString trimmedName = name.trimmed();
+        if (trimmedType.isEmpty() || trimmedName.isEmpty())
+            return;
+        const QString dedupKey = trimmedType + ":" + trimmedName;
+        if (emittedKeys.contains(dedupKey))
+            return;
+        emittedKeys.insert(dedupKey);
+        order += ":" + trimmedType + ":" + trimmedName + ":" + QString::number(index);
+    };
 
     // 先把“SDK 已打开设备”也同步给前端：
     // - SDK 模式下，这些设备不在 INDI 设备列表里，旧逻辑会导致前端刷新后“待分配设备列表”为空。
@@ -25602,7 +25756,7 @@ void MainWindow::loadBindDeviceList(MyClient *client)
             if (g_sdkQhyCamIds[i].isEmpty()) continue;
             const int uiIdx = sdkUiIndexFromPoolIndex(i);
             // 直接在 BindDeviceList 中带上 Type，格式升级为三元组：Type:Name:Index
-            order += ":CCD:" + g_sdkQhyCamIds[i] + ":" + QString::number(uiIdx);
+            appendDeviceToOrder("CCD", g_sdkQhyCamIds[i], uiIdx);
         }
     }
 
@@ -25623,7 +25777,7 @@ void MainWindow::loadBindDeviceList(MyClient *client)
         // 只使用真实串口名，避免占位符导致前端出现“SDK_Focuser”
         if (!name.isEmpty())
         {
-            order += ":Focuser:" + name + ":" + QString::number(SDK_FOCUSER_UI_INDEX);
+            appendDeviceToOrder("Focuser", name, SDK_FOCUSER_UI_INDEX);
         }
         else
         {
@@ -25674,7 +25828,7 @@ void MainWindow::loadBindDeviceList(MyClient *client)
             else if (iface & INDI::BaseDevice::TELESCOPE_INTERFACE) type = "Mount";
             else if (iface & INDI::BaseDevice::FOCUSER_INTERFACE) type = "Focuser";
             // BindDeviceList 升级为：Type:Name:Index
-            order += ":" + type + ":" + qName + ":" + QString::number(i);
+            appendDeviceToOrder(type, qName, i);
         }
     }
 
