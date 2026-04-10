@@ -363,29 +363,31 @@ class Tools : public QObject {
 
   static int readFits_(const char* fileName, cv::Mat& image);
 
-  // ---------------- Focused star detection (C++ 实现，来自 findstars.py 的合焦算法) ----------------
+  // ---------------- Focused star detection (ROI 简化峰值算法) ----------------
   struct FocusedStar {
-    double x;       // 星心 x（全图坐标）
-    double y;       // 星心 y（全图坐标）
-    double flux;    // 前景总光通量
+    double x;       // 星心 x（当前输入图像坐标）
+    double y;       // 星心 y（当前输入图像坐标）
+    double flux;    // 局部窗口内的加权通量
     double hfr;     // Half Flux Radius
     double radius;  // 几何半径（像素）
     int area;       // 像素个数
     double snr;     // 信噪比
+    double localMax; // 峰值窗口内最大值
+    double bgStd;    // 峰值窗口外背景标准差
     QString snrQuality; // 信噪比评价
   };
 
   /**
-   * @brief 检测合焦小星（完整C++实现，不依赖Python）
+   * @brief ROI 简化识星：全局峰值 + 峰值附近窗口内加权质心
    * @param image16  原始16位（或8/16/32F可兼容）单通道图像，cv::Mat
-   * @param kSigma   阈值倍数（默认 3.5）
-   * @param minArea  最小面积（默认 3）
-   * @param maxArea  最大面积（默认 200，若 <=0 则表示不限制最大面积）
-   * @param minSNR   最小SNR阈值（默认 3.0）
-   * @param bgKsize  背景估计高斯核大小（默认 51，奇数）
-   * @param smoothSigma 前景轻微平滑sigma（默认 1.0）
+   * @param kSigma   兼容保留参数，当前未使用
+   * @param minArea  兼容保留参数，当前未使用
+   * @param maxArea  兼容保留参数，当前未使用
+   * @param minSNR   兼容保留参数，当前未使用
+   * @param bgKsize  兼容保留参数，当前未使用
+   * @param smoothSigma 兼容保留参数，当前未使用
    * @param verbose  输出调试信息
-   * @return         通过噪声过滤与去重后的合焦星点列表
+   * @return         检测到的星点列表（当前实现通常返回 0 或 1 颗）
    */
   static std::vector<FocusedStar> DetectFocusedStars(const cv::Mat& image16,
                                                      double kSigma = 3.5,
@@ -399,7 +401,7 @@ class Tools : public QObject {
                                                      const QString& logPrefix = QString());
 
   /**
-   * @brief 从FITS文件直接检测合焦小星（C++实现）
+   * @brief 从FITS文件直接执行 ROI 简化识星
    * @param fileName FITS 文件路径（UTF-8 C字符串）
    * @param outStars 输出星点列表
    * @param verbose  输出调试信息
@@ -447,8 +449,9 @@ class Tools : public QObject {
   static QList<FITSImage::Star> FindStarsByStellarSolverFromFile(const QString& fileName,
                                                                   bool AllStars = true,
                                                                   bool runHFR = true);
-  // 基于C++合焦算法的星点识别（仿照上面两个接口）
+  // 基于当前 ROI 简化识星算法的星点识别（仿照上面两个接口）
   static QList<FITSImage::Star> FindStarsByFocusedCpp(bool AllStars, bool runHFR);
+  static QList<FITSImage::Star> FindStarsByFocusedCppFromFile(const QString &fileName, bool AllStars, bool runHFR);
   
   /**
    * @brief 从文件路径读取FITS图像并识别星点数量

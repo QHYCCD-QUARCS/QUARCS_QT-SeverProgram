@@ -85,7 +85,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260403"  // 手动指定版本号
+#define QT_Client_Version "20260408"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -570,6 +570,14 @@ public:
     qint64 sdkExposureStartTime = 0;              // SDK 曝光开始时间戳（毫秒）
     int sdkExposureExpectedDuration = 0;          // SDK 预期曝光时长（毫秒）
     bool sdkExposureIsROI = false;                // SDK 当前曝光是否为 ROI 模式
+    // QHY 某些机型在进入 ROI 后，GetEffectiveArea 的 startX/startY 会返回“当前 ROI 起点”而不是固定有效区偏移。
+    // 聚焦循环需要一个稳定的有效区基准，否则会在每帧重心追踪时把偏移重复叠加，最终导致 ROI 越界。
+    bool sdkMainEffectiveAreaCacheValid = false;
+    SdkDeviceHandle sdkMainEffectiveAreaCacheHandle = nullptr;
+    int sdkMainEffectiveAreaMinX = 0;
+    int sdkMainEffectiveAreaMinY = 0;
+    int sdkMainEffectiveAreaWidth = 0;
+    int sdkMainEffectiveAreaHeight = 0;
 
     // SDK Burst（QHY Live）相关：不走 sdkExposureTimer 轮询，而是在 sdkCamExec 中串行抓帧
     std::atomic_bool sdkBurstActive{false};               // Burst 是否在执行
@@ -643,6 +651,7 @@ public:
     int saveFitsAsPNG_FromSdkFrame_Worker(std::shared_ptr<SdkFrameData> frame, bool ProcessBin);
     int processImageForFrontend(const cv::Mat& originalImage16, const QString& cameraCFA, bool ProcessBin, const QString& sourceTag);
     void CaptureImageSaveAsync();
+    QString latestMainCaptureFitsPath() const;
 
     // 视口驱动的瓦片生成（按当前 zoom/位置优先生成视口内 z/x/y）
     void scheduleViewportTileGeneration();
@@ -717,9 +726,46 @@ public:
      * @brief 计算白平衡增益（基于灰度世界算法）
      * @param image16 16位原始图像
      * @param cfa CFA模式
+     * @param offset 黑电平/offset，统计前先扣除，避免低信号区域被抬绿
      * @return QPair<gainR, gainB> R和B通道的增益值
      */
-    QPair<double, double> calculateWhiteBalanceGains(const cv::Mat& image16, const QString& cfa);
+    QPair<double, double> calculateWhiteBalanceGains(const cv::Mat& image16, const QString& cfa, uint16_t offset = 0);
+
+    /**
+     * @brief 规范化 CFA 名称（兼容短名/全名）
+     */
+    static QString normalizeCfaPattern(const QString& cfa);
+
+    /**
+     * @brief 根据 CFA 获取 Bayer 原图转 BGR 的 OpenCV 颜色转换码
+     * @return 非负值表示有效；-1 表示非彩色或未知 CFA
+     */
+    static int getOpenCvBayerToBgrCode(const QString& cfa);
+
+    /**
+     * @brief 按像素偏移推导当前帧/ROI 的实际 CFA
+     * @param baseCfa 基础 CFA（相机原始声明）
+     * @param shiftX 相对 CFA 原点的 X 偏移
+     * @param shiftY 相对 CFA 原点的 Y 偏移
+     */
+    static QString deriveCfaPatternForOffset(const QString& baseCfa, int shiftX, int shiftY);
+
+    /**
+     * @brief 结合相机 CFA 偏移与当前帧起点，计算实际应使用的 CFA
+     * @param frameStartX 当前帧/ROI 左上角在传感器坐标系中的 X
+     * @param frameStartY 当前帧/ROI 左上角在传感器坐标系中的 Y
+     */
+    QString resolveFrameCfa(int frameStartX, int frameStartY) const;
+
+    /**
+     * @brief 将 ROI 左上角吸附到不破坏 Bayer 相位的位置
+     * @param roiX ROI 左上角 X（当前预览/有效区坐标系）
+     * @param roiY ROI 左上角 Y（当前预览/有效区坐标系）
+     * @param roiWidth ROI 宽度（传感器像素）
+     * @param roiHeight ROI 高度（传感器像素）
+     * @return 吸附后的 ROI 左上角（当前预览/有效区坐标系）
+     */
+    QPointF snapRoiOriginToBayerSafePhase(double roiX, double roiY, int roiWidth, int roiHeight) const;
 
     /**
      * @brief 保存单个瓦片
@@ -797,6 +843,7 @@ public:
     mutable std::mutex tileFrameMutex;
     TileFrameState tileFrame;
     std::shared_ptr<cv::Mat> tileFrameImage16;        // CV_16UC1 原图（maxZoomLevel层）
+    std::shared_ptr<cv::Mat> tileFramePreviewImage16; // 预览图（image16），用于 z=0 首帧预览
 
     std::atomic_bool tileViewportGenInFlight{false};
     std::atomic_bool tileViewportGenPending{false};
@@ -1099,6 +1146,8 @@ public:
 
     QTimer FWHMTimer;          // FWHM 计算/采样定时器
     QString MainCameraCFA;     // 主相机 CFA
+    int MainCameraCFAOffsetX = 0; // 主相机 CFA 原点偏移 X
+    int MainCameraCFAOffsetY = 0; // 主相机 CFA 原点偏移 Y
     double ImageGainR = 1.0;   // 显示增益 R
     double ImageGainB = 1.0;   // 显示增益 B
     double ImageOffset = 0.0;  // 显示偏移
@@ -1278,6 +1327,7 @@ public:
     bool EndCaptureAndSolve = false;  // 结束采集并解算
     bool TakeNewCapture = true;       // 是否需要新拍
     bool isSavePngSuccess = false;    // PNG 保存状态
+    QString lastMainCaptureFitsPath = "/dev/shm/ccd_simulator.fits"; // 最近一次主相机拍摄的真实 FITS 路径
 
     /**
      * @brief 调度表消息输出（状态同步）

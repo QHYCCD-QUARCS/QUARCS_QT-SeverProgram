@@ -34,7 +34,7 @@ MIN_AREA = 4             # --min-area 4
 BORDER_MARGIN = 10       # 原脚本默认值
 MAX_STARS = 100          # --max-stars 100
 MEDIAN_SIZE = 0          # 不做中值滤波
-DOWNSAMPLE = 5           # --downsample 5
+DOWNSAMPLE = 6           # --downsample 6
 
 # 只有在 debug 模式才需要 matplotlib，避免无头环境报错
 try:

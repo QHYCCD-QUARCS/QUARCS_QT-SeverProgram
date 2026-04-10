@@ -898,6 +898,7 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
         QByteArray deviceIndiNameUtf8 = device.DeviceIndiName.toUtf8();
         QByteArray driverIndiNameUtf8 = device.DriverIndiName.toUtf8();
         QByteArray driverFromUtf8 = device.DriverFrom.toUtf8();
+        QByteArray sdkDriverNameUtf8 = device.SDKDriverName.toUtf8();
 
         // 写入设备信息到配置文件
         outfile << "Description=" << descriptionUtf8.constData() << "\n";
@@ -905,7 +906,8 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
         outfile << "DeviceIndiName=" << deviceIndiNameUtf8.constData() << "\n";
         outfile << "DriverIndiName=" << driverIndiNameUtf8.constData() << "\n";
         outfile << "DriverFrom=" << driverFromUtf8.constData() << "\n";
-        outfile << "isConnect=" << (device.isConnect ? "true" : "false") << "\n";
+        outfile << "SDKDriverName=" << sdkDriverNameUtf8.constData() << "\n";
+        outfile << "BaudRate=" << device.BaudRate << "\n";
         outfile << "isSDKConnect=" << (device.isSDKConnect ? "true" : "false") << "\n";
         outfile << "\n";  // 每个设备之间空一行，便于阅读
     }
@@ -930,52 +932,77 @@ SystemDeviceList Tools::readSystemDeviceList() {
     bool inLastConnectedDeviceSection = false;
     SystemDevice currentDevice;
     std::map<std::string, std::string> sectionData;
+    auto flushCurrentDevice = [&]() {
+        if (sectionData.empty()) {
+            return;
+        }
+
+        // 兼容文件尾标记，不把它当成普通设备字段
+        if (sectionData.count("(End of device list)") > 0 && sectionData.size() == 1) {
+            sectionData.clear();
+            return;
+        }
+
+        currentDevice = SystemDevice{};
+        currentDevice.Description = QString::fromStdString(sectionData["Description"]);
+        currentDevice.DeviceIndiGroup = -1;
+        if (sectionData.count("DeviceIndiGroup") > 0) {
+            bool ok = false;
+            const int group = QString::fromStdString(sectionData["DeviceIndiGroup"]).toInt(&ok);
+            if (ok)
+                currentDevice.DeviceIndiGroup = group;
+        }
+        currentDevice.DeviceIndiName = QString::fromStdString(sectionData["DeviceIndiName"]);
+        currentDevice.DriverIndiName = QString::fromStdString(sectionData["DriverIndiName"]);
+        currentDevice.DriverFrom = QString::fromStdString(sectionData["DriverFrom"]);
+        currentDevice.SDKDriverName = QString::fromStdString(sectionData["SDKDriverName"]);
+        currentDevice.BaudRate = 9600;
+        if (sectionData.count("BaudRate") > 0) {
+            bool ok = false;
+            const int baud = QString::fromStdString(sectionData["BaudRate"]).toInt(&ok);
+            if (ok)
+                currentDevice.BaudRate = baud;
+        }
+        currentDevice.dp = NULL;
+        // isConnect / isBind 是运行时状态，不能从配置恢复。
+        // 否则刷新或重启后前端会把“上一次连接状态”误判成“当前在线状态”。
+        currentDevice.isConnect = false;
+        currentDevice.isBind = false;
+
+        // 迁移/修复旧配置：历史文件里可能没有写 DriverFrom，
+        // 但 QHY 驱动（indi_qhy_ccd/indi_qhy_ccd2/libqhyccd）应被视为支持 SDK。
+        if (currentDevice.DriverFrom.trimmed().isEmpty()) {
+            const QString d = currentDevice.DriverIndiName.toLower();
+            if (d == "indi_qhy_ccd" || d == "indi_qhy_ccd2" || d == "libqhyccd") {
+                currentDevice.DriverFrom = "QHYCCDSDK";
+            }
+        }
+
+        auto itSDK = sectionData.find("isSDKConnect");
+        if (itSDK != sectionData.end()) {
+            currentDevice.isSDKConnect = (itSDK->second == "true");
+        } else {
+            // 兼容旧配置：根据 DriverFrom 推导
+            currentDevice.isSDKConnect = currentDevice.DriverFrom.contains("SDK", Qt::CaseInsensitive);
+        }
+
+        deviceList.system_devices.push_back(currentDevice);
+        sectionData.clear();
+    };
 
     // 逐行读取 INI 文件
     while (std::getline(infile, line)) {
         // 检查是否进入了 [LastConnectedDevice] 部分
         if (line.find("[LastConnectedDevice]") != std::string::npos) {
             inLastConnectedDeviceSection = true;
+            sectionData.clear();
             continue; // 跳过这一行，开始读取数据
         }
 
         if (inLastConnectedDeviceSection) {
-            // 遇到下一个部分或空行，停止读取当前部分
-            if (line.empty() || line[0] == '[') {
-                // 这里保存当前设备并重置
-                if (!sectionData.empty()) {
-                    // 用 sectionData 填充当前设备
-                    currentDevice.Description = QString::fromStdString(sectionData["Description"]);
-                    currentDevice.DeviceIndiGroup = -1;
-                    currentDevice.DeviceIndiName = "";
-                    currentDevice.DriverIndiName = QString::fromStdString(sectionData["DriverIndiName"]);
-                    currentDevice.DriverFrom = QString::fromStdString(sectionData["DriverFrom"]);
-                    currentDevice.dp = NULL;
-                    currentDevice.isConnect = false;
-                    currentDevice.isBind = false;
-
-                    // 迁移/修复旧配置：历史文件里可能没有写 DriverFrom，
-                    // 但 QHY 驱动（indi_qhy_ccd/indi_qhy_ccd2/libqhyccd）应被视为支持 SDK。
-                    if (currentDevice.DriverFrom.trimmed().isEmpty()) {
-                        const QString d = currentDevice.DriverIndiName.toLower();
-                        if (d == "indi_qhy_ccd" || d == "indi_qhy_ccd2" || d == "libqhyccd") {
-                            currentDevice.DriverFrom = "QHYCCDSDK";
-                        }
-                    }
-
-                    auto itSDK = sectionData.find("isSDKConnect");
-                    if (itSDK != sectionData.end()) {
-                        currentDevice.isSDKConnect = (itSDK->second == "true");
-                    } else {
-                        // 兼容旧配置：根据 DriverFrom 推导
-                        currentDevice.isSDKConnect = currentDevice.DriverFrom.contains("SDK", Qt::CaseInsensitive);
-                    }
-
-                    // 将当前设备添加到设备列表
-                    deviceList.system_devices.push_back(currentDevice);
-                }
-                // 重置
-                sectionData.clear();
+            // 遇到设备分隔空行、结束标记或新的 section，提交当前设备
+            if (line.empty() || line == "(End of device list)" || line[0] == '[') {
+                flushCurrentDevice();
 
                 if (!line.empty() && line[0] == '[') {
                     // 如果遇到新的节，跳出循环
@@ -991,6 +1018,10 @@ SystemDeviceList Tools::readSystemDeviceList() {
             }
         }
     }
+
+    // 处理文件结尾处最后一个设备块
+    if (inLastConnectedDeviceSection)
+        flushCurrentDevice();
 
     infile.close();
     return deviceList;
@@ -2572,26 +2603,34 @@ void Tools::ImageSoftAWB(cv::Mat sourceImg16, cv::Mat& targetImg16, QString CFA,
   Logger::Log("CFA:" + std::string(CFA.toStdString()), LogLevel::INFO, DeviceType::MAIN);
   Logger::Log("gainR:" + std::to_string(gainR) + "," + "gainB:" + std::to_string(gainB), LogLevel::INFO, DeviceType::MAIN);
 
-  if (CFA == "RGGB") {
+  gain1 = 1.0;
+  gain2 = 1.0;
+  gain3 = 1.0;
+  gain4 = 1.0;
+
+  if (CFA == "RGGB" || CFA == "RG") {
     gain1 = 1.0 * gainR;
     gain2 = 1.0;
     gain3 = 1.0;
     gain4 = 1.0 * gainB;
-  } else if (CFA == "GR") {
+  } else if (CFA == "GRBG" || CFA == "GR") {
     gain1 = 1.0;
     gain2 = 1.0 * gainR;
     gain3 = 1.0 * gainB;
     gain4 = 1.0;
-  } else if (CFA == "GB") {
+  } else if (CFA == "GBRG" || CFA == "GB") {
     gain1 = 1.0;
     gain2 = 1.0 * gainB;
     gain3 = 1.0 * gainR;
     gain4 = 1.0;
-  } else if (CFA == "BG") {
+  } else if (CFA == "BGGR" || CFA == "BG") {
     gain1 = 1.0 * gainB;
     gain2 = 1.0;
     gain3 = 1.0;
     gain4 = 1.0 * gainR;
+  } else {
+    Logger::Log("ImageSoftAWB | unknown CFA, fallback to unity gains: " + std::string(CFA.toStdString()),
+                LogLevel::WARNING, DeviceType::MAIN);
   }
 
   // 遍历每个像素
@@ -3283,13 +3322,21 @@ QList<FITSImage::Star> Tools::FindStarsByStellarSolverFromFile(const QString& fi
 
 QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
 {
+  return FindStarsByFocusedCppFromFile(QStringLiteral("/dev/shm/ccd_simulator.fits"), AllStars, runHFR);
+}
+
+QList<FITSImage::Star> Tools::FindStarsByFocusedCppFromFile(const QString &fileName, bool AllStars, bool runHFR)
+{
   Q_UNUSED(AllStars);
   Q_UNUSED(runHFR);
   QList<FITSImage::Star> out;
-  loadFitsResult result = loadFits("/dev/shm/ccd_simulator.fits");
+  Logger::Log("FindStarsByFocusedCpp | loading FITS file: " + fileName.toStdString(),
+              LogLevel::INFO, DeviceType::MAIN);
+  loadFitsResult result = loadFits(fileName);
   if (!result.success)
   {
-    Logger::Log("FindStarsByFocusedCpp | Error in loading FITS file", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("FindStarsByFocusedCpp | Error in loading FITS file: " + fileName.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
     return out;
   }
   const FITSImage::Statistic &st = result.imageStats;
@@ -3308,9 +3355,10 @@ QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
   {
     cv::cvtColor(src, gray, cv::COLOR_RGB2GRAY);
   }
-  // 使用C++合焦算法检测
-  // 为了调试ROI/星点识别过程，这里开启 verbose=true，打印每一步过滤信息
-  std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, false);
+  // 当前固定走简化 ROI 识星：全局峰值 + 50x50 局部加权质心。
+  std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, true);
+  Logger::Log("FindStarsByFocusedCpp | using simplified peak-centroid detector",
+              LogLevel::INFO, DeviceType::MAIN);
   // 转换为 FITSImage::Star
   for (const auto &s : fs)
   {
@@ -3343,16 +3391,20 @@ QList<FITSImage::Star> Tools::FindStarsByFocusedCpp(bool AllStars, bool runHFR)
     star.peak = peak;
     // 近似flux：以归一化通量放大到16位空间
     star.flux = s.flux * 65535.0;
-    star.a = 0.0;
-    star.b = 0.0;
-    star.theta = 0.0;
+    // 兼容复用：ROI 对焦路径当前用 a/b/theta 暂存 localMax/bgStd/SNR，避免改动外部 FITSImage::Star 定义。
+    star.a = s.localMax;
+    star.b = s.bgStd;
+    star.theta = s.snr;
     out.append(star);
   }
   if (result.imageBuffer != nullptr)
   {
     delete[] result.imageBuffer;
   }
-  Logger::Log("FindStarsByFocusedCpp | Detected " + std::to_string(out.size()) + " stars.", LogLevel::INFO, DeviceType::MAIN);
+  Logger::Log("FindStarsByFocusedCpp | Detected " + std::to_string(out.size()) +
+                  " stars in file: " + fileName.toStdString() +
+                  ", image=" + std::to_string(width) + "x" + std::to_string(height),
+              LogLevel::INFO, DeviceType::MAIN);
   return out;
 }
 

@@ -84,6 +84,21 @@ static void eraseLiveBuffer(qhyccd_handle* handle) {
     std::lock_guard<std::mutex> lk(g_liveBufMu);
     g_liveBufByHandle.erase(handle);
 }
+
+static std::string qhyBayerIdToCfaString(unsigned int bayerId) {
+    switch (bayerId) {
+        case BAYER_GB:
+            return "GBRG";
+        case BAYER_GR:
+            return "GRBG";
+        case BAYER_BG:
+            return "BGGR";
+        case BAYER_RG:
+            return "RGGB";
+        default:
+            return std::string();
+    }
+}
 } // namespace
 
 QhyCameraDriver::QhyCameraDriver()
@@ -143,7 +158,8 @@ std::vector<SdkCommandInfo> QhyCameraDriver::commandList() const
         {"ReleaseBurstIDLE",             "释放 Burst IDLE 触发输出（ReleaseQHYCCDBurstIDLE）"},
         {"SetBurstPatchNumber",          "设置 Burst 补包数据量（SetQHYCCDBurstModePatchNumber），payload=uint32_t"},
         {"CheckSingleFrameModeAvailable","检测是否支持单帧模式（IsQHYCCDControlAvailable CAM_SINGLEFRAMEMODE），返回 bool"},
-        {"IsColorCamera",                "检测当前相机是否为彩色相机，返回 bool（以及 Bayer 模式代码）"},
+        {"IsColorCamera",                "检测当前相机是否为彩色相机（CAM_IS_COLOR），返回 bool"},
+        {"GetCameraCfa",                 "按 CAM_IS_COLOR -> SetQHYCCDDebayerOnOff(true) -> CAM_COLOR 获取 CFA，返回 std::string"},
         {"GetCurrentTemperature",        "获取当前 CMOS/CCD 温度（CONTROL_CURTEMP），返回 double"},
         {"SetCoolerTargetTemperature",   "设置制冷目标温度（CONTROL_COOLER），payload 传入 double 摄氏度"},
         {"GetCoolerTargetTemperature",   "获取制冷目标温度的最小值/最大值/步进/当前值（SdkControlParamInfo）"},
@@ -762,6 +778,10 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             //
             // 备注：qhyccd.h 注释约定 “100 or less 100,it means exposoure is over”
             uint32_t remaining = GetQHYCCDExposureRemaining(handle);
+            Logger::Log("QHYCCD GetSingleFrame | exposure remaining query: handle=" +
+                            std::to_string(reinterpret_cast<uintptr_t>(handle)) +
+                            " remaining=" + std::to_string(remaining),
+                        LogLevel::DEBUG, DeviceType::CAMERA);
             // SDK 可能用 0xFFFFFFFF 表示错误（QHYCCD_ERROR）
             if (remaining == QHYCCD_ERROR) {
                 r.success = false;
@@ -775,14 +795,69 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             }
 
             uint32_t length = GetQHYCCDMemLength(handle);
+            Logger::Log("QHYCCD GetSingleFrame | mem length query: handle=" +
+                            std::to_string(reinterpret_cast<uintptr_t>(handle)) +
+                            " memLength=" + std::to_string(length),
+                        LogLevel::DEBUG, DeviceType::CAMERA);
             if (length == 0) {
                 r.success = false;
                 r.message = "GetQHYCCDMemLength returned 0";
                 return r;
             }
 
-            std::vector<unsigned char> buffer(length);
-            std::memset(buffer.data(), 0, buffer.size());
+            // 某些机型/SDK 版本下，GetQHYCCDMemLength() 在全幅/ROI/硬件 Bin 切换后可能短暂返回过小值，
+            // 直接把该长度传给 GetQHYCCDSingleFrame() 会导致 SDK 向外部缓冲区越界写，从而触发段错误。
+            // 另外，若相机处于 debayer/RGB 输出，SDK 可能返回 16-bit x 3 channels。
+            // 这里按“整幅 16-bit 3 通道”保守预留容量，先确保 SDK 写入安全；后续仍以返回的 roi/meta 校验有效字节。
+            uint32_t safeLength = length;
+            unsigned int chipRet = QHYCCD_ERROR;
+            double chipW = 0.0;
+            double chipH = 0.0;
+            double pixelW = 0.0;
+            double pixelH = 0.0;
+            unsigned int chipBpp = 0;
+            unsigned int maxImageX = 0;
+            unsigned int maxImageY = 0;
+            {
+                chipRet = GetQHYCCDChipInfo(handle,
+                                            &chipW,
+                                            &chipH,
+                                            &maxImageX,
+                                            &maxImageY,
+                                            &pixelW,
+                                            &pixelH,
+                                            &chipBpp);
+                if (chipRet == QHYCCD_SUCCESS && maxImageX > 0 && maxImageY > 0) {
+                    const unsigned long long fullFrameBytes =
+                        static_cast<unsigned long long>(maxImageX) *
+                        static_cast<unsigned long long>(maxImageY) *
+                        sizeof(uint16_t) *
+                        3ULL;
+                    if (fullFrameBytes > static_cast<unsigned long long>(safeLength) &&
+                        fullFrameBytes <= static_cast<unsigned long long>(std::numeric_limits<uint32_t>::max())) {
+                        safeLength = static_cast<uint32_t>(fullFrameBytes);
+                    }
+                }
+            }
+            Logger::Log("QHYCCD GetSingleFrame | chip info before read: handle=" +
+                            std::to_string(reinterpret_cast<uintptr_t>(handle)) +
+                            " chipRet=" + std::to_string(chipRet) +
+                            " maxImage=" + std::to_string(maxImageX) + "x" + std::to_string(maxImageY) +
+                            " chipMM=" + std::to_string(chipW) + "x" + std::to_string(chipH) +
+                            " pixelUM=" + std::to_string(pixelW) + "x" + std::to_string(pixelH) +
+                            " chipBpp=" + std::to_string(chipBpp) +
+                            " memLength=" + std::to_string(length) +
+                            " safeLength=" + std::to_string(safeLength),
+                        LogLevel::INFO, DeviceType::CAMERA);
+
+            auto buffer = std::make_shared<std::vector<unsigned char>>(static_cast<size_t>(safeLength));
+            std::memset(buffer->data(), 0, buffer->size());
+            Logger::Log("QHYCCD GetSingleFrame | about to call GetQHYCCDSingleFrame: handle=" +
+                            std::to_string(reinterpret_cast<uintptr_t>(handle)) +
+                            " bufferPtr=" + std::to_string(reinterpret_cast<uintptr_t>(buffer->data())) +
+                            " bufferSize=" + std::to_string(buffer->size()) +
+                            " remaining=" + std::to_string(remaining),
+                        LogLevel::INFO, DeviceType::CAMERA);
 
             unsigned int roiSizeX = 0;
             unsigned int roiSizeY = 0;
@@ -794,7 +869,13 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
                                                     &roiSizeY,
                                                     &bpp,
                                                     &channels,
-                                                    buffer.data());
+                                                    buffer->data());
+            Logger::Log("QHYCCD GetSingleFrame | GetQHYCCDSingleFrame returned: ret=" +
+                            std::to_string(ret) +
+                            " roi=" + std::to_string(roiSizeX) + "x" + std::to_string(roiSizeY) +
+                            " bpp=" + std::to_string(bpp) +
+                            " channels=" + std::to_string(channels),
+                        LogLevel::INFO, DeviceType::CAMERA);
             if (ret != QHYCCD_SUCCESS) {
                 r.success = false;
                 r.message = "GetQHYCCDSingleFrame failed, error code: " + std::to_string(ret);
@@ -828,15 +909,20 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
 
             const size_t pixelCount = static_cast<size_t>(roiSizeX) * static_cast<size_t>(roiSizeY);
             const size_t bytesNeeded = pixelCount * sizeof(uint16_t);
-            if (bytesNeeded > buffer.size()) {
+            if (bytesNeeded > buffer->size()) {
                 r.success = false;
                 r.message = "GetSingleFrame buffer too small: need " + std::to_string(bytesNeeded) +
-                            " bytes, have " + std::to_string(buffer.size());
+                            " bytes, have " + std::to_string(buffer->size());
                 return r;
             }
-            frame.pixels.resize(pixelCount);
-            const uint16_t* src = reinterpret_cast<const uint16_t*>(buffer.data());
-            std::memcpy(frame.pixels.data(), src, bytesNeeded);
+            frame.rawBuffer = buffer;
+            frame.rawBytes  = bytesNeeded;
+            Logger::Log("QHYCCD GetSingleFrame | frame prepared: bytesNeeded=" +
+                            std::to_string(bytesNeeded) +
+                            " rawBytes=" + std::to_string(frame.rawBytes) +
+                            " width=" + std::to_string(frame.width) +
+                            " height=" + std::to_string(frame.height),
+                        LogLevel::DEBUG, DeviceType::CAMERA);
 
             r.success = true;
             r.message = "GetQHYCCDSingleFrame success";
@@ -1145,25 +1231,65 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             return r;
         }
 
-        // 22. 判断彩色 / 黑白相机（CAM_COLOR）
+        // 22. 判断彩色 / 黑白相机（CAM_IS_COLOR）
         if (name == "IsColorCamera") {
             if (!handle) {
                 r.success = false;
                 r.message = "IsColorCamera requires a valid device handle";
                 return r;
             }
-            unsigned int ret = IsQHYCCDControlAvailable(handle, CAM_COLOR);
-            // SDK 约定：返回 BAYER_* 枚举值表示彩色相机
-            bool isColor =
-                (ret == BAYER_GB ||
-                 ret == BAYER_GR ||
-                 ret == BAYER_BG ||
-                 ret == BAYER_RG);
+            unsigned int ret = IsQHYCCDControlAvailable(handle, CAM_IS_COLOR);
+            bool isColor = (ret == QHYCCD_SUCCESS);
             r.success = true;
             r.payload = isColor;
             r.message = isColor
-                        ? ("Color camera, Bayer code: " + std::to_string(ret))
-                        : "Monochrome camera or CAM_COLOR not supported";
+                        ? "Color camera detected by CAM_IS_COLOR"
+                        : ("Monochrome camera or CAM_IS_COLOR not supported, ret=" + std::to_string(ret));
+            return r;
+        }
+
+        // 22-扩展. 获取彩色相机 CFA（CAM_IS_COLOR -> 临时 DebayerOn -> CAM_COLOR -> 恢复 DebayerOff）
+        if (name == "GetCameraCfa") {
+            if (!handle) {
+                r.success = false;
+                r.message = "GetCameraCfa requires a valid device handle";
+                return r;
+            }
+
+            unsigned int colorRet = IsQHYCCDControlAvailable(handle, CAM_IS_COLOR);
+            if (colorRet != QHYCCD_SUCCESS) {
+                r.success = true;
+                r.payload = std::string();
+                r.message = "Camera is monochrome or CAM_IS_COLOR not supported";
+                return r;
+            }
+
+            unsigned int debayerRet = SetQHYCCDDebayerOnOff(handle, true);
+            if (debayerRet != QHYCCD_SUCCESS) {
+                r.success = false;
+                r.errorCode = SdkErrorCode::OperationFailed;
+                r.message = "SetQHYCCDDebayerOnOff(true) failed, error code: " + std::to_string(debayerRet);
+                return r;
+            }
+
+            unsigned int bayerRet = IsQHYCCDControlAvailable(handle, CAM_COLOR);
+            const std::string cfa = qhyBayerIdToCfaString(bayerRet);
+            const unsigned int restoreRet = SetQHYCCDDebayerOnOff(handle, false);
+            if (restoreRet != QHYCCD_SUCCESS) {
+                Logger::Log("QHYCCD GetCameraCfa | failed to restore DebayerOff, error code: " +
+                                std::to_string(restoreRet),
+                            LogLevel::WARNING, DeviceType::CAMERA);
+            }
+            if (cfa.empty()) {
+                r.success = false;
+                r.errorCode = SdkErrorCode::OperationFailed;
+                r.message = "Unknown Bayer matrix code from CAM_COLOR: " + std::to_string(bayerRet);
+                return r;
+            }
+
+            r.success = true;
+            r.payload = cfa;
+            r.message = "CFA detected: " + cfa + " (Bayer code: " + std::to_string(bayerRet) + ")";
             return r;
         }
 
@@ -1470,6 +1596,3 @@ SdkDeviceCapabilities QhyCameraDriver::capabilities() const
     
     return caps;
 }
-
-
-
