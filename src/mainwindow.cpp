@@ -10667,6 +10667,35 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         indi_Client->PrintDevices();
     Logger::Log("BindingDevice:" + DeviceType.toStdString() + ":" + QString::number(DeviceIndex).toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
+    const auto refreshBindUi = [this]() {
+        loadBindDeviceTypeList();
+        loadBindDeviceList(indi_Client);
+    };
+    const auto boundNameOf = [](INDI::BaseDevice *dev) -> QString {
+        return dev ? QString::fromUtf8(dev->getDeviceName()) : QString();
+    };
+    const auto registerSdkRole = [this](const QString &role, SdkDeviceHandle handle, const QString &deviceName) {
+        if (handle == nullptr) return;
+        const QString driverName = getSDKDriverName(role);
+        if (driverName.isEmpty()) return;
+        const std::string description =
+            (role == "MainCamera") ? "主相机" :
+            (role == "Guider") ? "导星相机" :
+            role.toStdString();
+        SdkResult regRes = SdkManager::instance().registerDevice(
+            driverName.toStdString(),
+            role.toStdString(),
+            handle,
+            description,
+            std::any(deviceName.toStdString())
+        );
+        if (!regRes.success)
+        {
+            Logger::Log("BindingDevice | Failed to register SDK role " + role.toStdString() + ": " + regRes.message,
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+    };
+
     // ==================== SDK 多相机分配：复用 BindingDevice 协议 ====================
     // 仅当 MainCamera 槽位标记为 SDK 连接时启用（其它角色后续按需扩展）
     if (DeviceType == "MainCamera" &&
@@ -10688,15 +10717,50 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             return;
         }
 
-        // 绑定选中的 SDK 相机到 MainCamera
-        g_sdkMainCameraPoolIndex = poolIndex;
-        sdkMainCameraHandle = g_sdkQhyCamHandles[poolIndex];
-        sdkMainCameraId = g_sdkQhyCamIds[poolIndex];
+        const bool swapWithGuider = (poolIndex == g_sdkGuiderPoolIndex);
+        const int previousMainPoolIndex = g_sdkMainCameraPoolIndex;
+        const QString previousMainId =
+            (sdkPoolIndexValid(previousMainPoolIndex) && previousMainPoolIndex < g_sdkQhyCamIds.size())
+                ? g_sdkQhyCamIds[previousMainPoolIndex]
+                : QString();
+
+        if (swapWithGuider)
+        {
+            Logger::Log("BindingDevice | Swap SDK cameras between MainCamera and Guider. target poolIndex=" +
+                            std::to_string(poolIndex),
+                        LogLevel::INFO, DeviceType::MAIN);
+            g_sdkMainCameraPoolIndex = g_sdkGuiderPoolIndex;
+            sdkMainCameraHandle = g_sdkQhyCamHandles[g_sdkMainCameraPoolIndex];
+            sdkMainCameraId = g_sdkQhyCamIds[g_sdkMainCameraPoolIndex];
+
+            if (sdkPoolIndexValid(previousMainPoolIndex))
+            {
+                g_sdkGuiderPoolIndex = previousMainPoolIndex;
+                sdkGuiderHandle = g_sdkQhyCamHandles[previousMainPoolIndex];
+                systemdevicelist.system_devices[1].isConnect = true;
+                systemdevicelist.system_devices[1].isBind = false;
+                systemdevicelist.system_devices[1].DeviceIndiName = previousMainId;
+            }
+            else
+            {
+                g_sdkGuiderPoolIndex = -1;
+                sdkGuiderHandle = nullptr;
+                systemdevicelist.system_devices[1].isBind = false;
+                systemdevicelist.system_devices[1].DeviceIndiName.clear();
+            }
+        }
+        else
+        {
+            g_sdkMainCameraPoolIndex = poolIndex;
+            sdkMainCameraHandle = g_sdkQhyCamHandles[poolIndex];
+            sdkMainCameraId = g_sdkQhyCamIds[poolIndex];
+        }
 
         // 只设置 isConnect = true，isBind 应该由 AfterDeviceConnect 在完成初始化后设置
         // 这样可以确保 AfterDeviceConnect 中的 SDK 初始化流程能够执行（检查条件为 !isBind），
         // 并在初始化完成后发送 ConnectSuccess 消息给前端
         systemdevicelist.system_devices[20].isConnect = true;
+        systemdevicelist.system_devices[20].isBind = false;
         // 记录选择的相机 ID，便于下次自动重连/区分多相机
         systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
 
@@ -10717,6 +10781,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
                             LogLevel::WARNING, DeviceType::CAMERA);
             }
         }
+        if (swapWithGuider)
+            registerSdkRole("Guider", sdkGuiderHandle, systemdevicelist.system_devices[1].DeviceIndiName);
         // 注意：DriverIndiName 语义为“驱动名”（例如 indi_qhy_ccd），不能被 cameraId 覆盖；
         // SDK 相机的唯一标识（cameraId）只写入 DeviceIndiName。
         if (!systemdevicelist.system_devices[20].DriverFrom.contains("SDK", Qt::CaseInsensitive)) {
@@ -10730,6 +10796,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 
         // 复用 SDK 初始化流程，AfterDeviceConnect 会完成初始化并设置 isBind = true，同时发送 ConnectSuccess 消息给前端
         AfterDeviceConnect(nullptr);
+        refreshBindUi();
         return;
     }
 
@@ -10747,20 +10814,49 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             return;
         }
 
-        // 避免同一个句柄同时被 MainCamera/Guider 绑定
-        if (poolIndex == g_sdkMainCameraPoolIndex)
+        const bool swapWithMain = (poolIndex == g_sdkMainCameraPoolIndex);
+        const int previousGuiderPoolIndex = g_sdkGuiderPoolIndex;
+        const QString previousGuiderId =
+            (sdkPoolIndexValid(previousGuiderPoolIndex) && previousGuiderPoolIndex < g_sdkQhyCamIds.size())
+                ? g_sdkQhyCamIds[previousGuiderPoolIndex]
+                : QString();
+
+        if (swapWithMain)
         {
-            Logger::Log("BindingDevice | SDK camera already bound to MainCamera, cannot bind to Guider. poolIndex=" +
+            Logger::Log("BindingDevice | Swap SDK cameras between Guider and MainCamera. target poolIndex=" +
                             std::to_string(poolIndex),
-                        LogLevel::WARNING, DeviceType::GUIDER);
-            return;
+                        LogLevel::INFO, DeviceType::GUIDER);
+            g_sdkGuiderPoolIndex = g_sdkMainCameraPoolIndex;
+            sdkGuiderHandle = g_sdkQhyCamHandles[g_sdkGuiderPoolIndex];
+
+            if (sdkPoolIndexValid(previousGuiderPoolIndex))
+            {
+                g_sdkMainCameraPoolIndex = previousGuiderPoolIndex;
+                sdkMainCameraHandle = g_sdkQhyCamHandles[previousGuiderPoolIndex];
+                sdkMainCameraId = g_sdkQhyCamIds[previousGuiderPoolIndex];
+                systemdevicelist.system_devices[20].isConnect = true;
+                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
+            }
+            else
+            {
+                g_sdkMainCameraPoolIndex = -1;
+                sdkMainCameraHandle = nullptr;
+                sdkMainCameraId.clear();
+                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[20].DeviceIndiName.clear();
+            }
+        }
+        else
+        {
+            g_sdkGuiderPoolIndex = poolIndex;
+            sdkGuiderHandle = g_sdkQhyCamHandles[poolIndex];
         }
 
-        g_sdkGuiderPoolIndex = poolIndex;
-        sdkGuiderHandle = g_sdkQhyCamHandles[poolIndex];
         const QString guiderId = g_sdkQhyCamIds[poolIndex];
 
         systemdevicelist.system_devices[1].isConnect = true;
+        systemdevicelist.system_devices[1].isBind = false;
         systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
         if (!systemdevicelist.system_devices[1].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[1].DriverFrom = "SDK";
@@ -10783,6 +10879,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
                             LogLevel::WARNING, DeviceType::GUIDER);
             }
         }
+        if (swapWithMain)
+            registerSdkRole("MainCamera", sdkMainCameraHandle, systemdevicelist.system_devices[20].DeviceIndiName);
 
         Logger::Log("BindingDevice | Bind SDK Guider success: " + guiderId.toStdString() +
                         " (poolIndex=" + std::to_string(poolIndex) + ")",
@@ -10790,6 +10888,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 
         // AfterDeviceConnect 负责完成 SDK 初始化并设置 isBind，同时发送 ConnectSuccess
         AfterDeviceConnect(nullptr);
+        refreshBindUi();
         return;
     }
 
@@ -10914,6 +11013,69 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         Logger::Log("BindingDevice | GetDeviceFromList returned nullptr for DeviceIndex: " + std::to_string(DeviceIndex), LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
+
+    // 可扩展交换规则：在同一组内的角色彼此可交换，当前组为 MainCamera/Guider/PoleCamera。
+    // 若后续新增角色，只需补充 role 列表与 roleSystemIndex 即可复用该交换逻辑。
+    const QStringList swappableCameraRoles = {"MainCamera", "Guider", "PoleCamera"};
+    const auto roleSystemIndex = [](const QString &role) -> int {
+        if (role == "MainCamera") return 20;
+        if (role == "Guider") return 1;
+        if (role == "PoleCamera") return 2;
+        return -1;
+    };
+    const auto getRoleDevicePtr = [&](const QString &role) -> INDI::BaseDevice * {
+        if (role == "MainCamera") return dpMainCamera;
+        if (role == "Guider") return dpGuider;
+        if (role == "PoleCamera") return dpPoleScope;
+        return nullptr;
+    };
+    const auto setRoleDevicePtr = [&](const QString &role, INDI::BaseDevice *ptr) {
+        if (role == "MainCamera") dpMainCamera = ptr;
+        else if (role == "Guider") dpGuider = ptr;
+        else if (role == "PoleCamera") dpPoleScope = ptr;
+    };
+    const auto syncRoleBindState = [&](const QString &role) {
+        const int idx = roleSystemIndex(role);
+        if (idx < 0 || systemdevicelist.system_devices.size() <= idx) return;
+        INDI::BaseDevice *ptr = getRoleDevicePtr(role);
+        systemdevicelist.system_devices[idx].isConnect = (ptr != nullptr);
+        systemdevicelist.system_devices[idx].isBind = (ptr != nullptr);
+        systemdevicelist.system_devices[idx].DeviceIndiName = boundNameOf(ptr);
+    };
+
+    if (swappableCameraRoles.contains(DeviceType))
+    {
+        QString occupantRole;
+        for (const QString &role : swappableCameraRoles)
+        {
+            if (role == DeviceType) continue;
+            if (getRoleDevicePtr(role) == device)
+            {
+                occupantRole = role;
+                break;
+            }
+        }
+
+        if (!occupantRole.isEmpty())
+        {
+            Logger::Log("BindingDevice | Swap INDI cameras between " + DeviceType.toStdString() +
+                            " and " + occupantRole.toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+
+            INDI::BaseDevice *targetPrevious = getRoleDevicePtr(DeviceType);
+            setRoleDevicePtr(DeviceType, device);
+            setRoleDevicePtr(occupantRole, targetPrevious);
+
+            syncRoleBindState(DeviceType);
+            syncRoleBindState(occupantRole);
+
+            Tools::saveSystemDeviceList(systemdevicelist);
+            if (getRoleDevicePtr(DeviceType)) AfterDeviceConnect(getRoleDevicePtr(DeviceType));
+            if (getRoleDevicePtr(occupantRole)) AfterDeviceConnect(getRoleDevicePtr(occupantRole));
+            refreshBindUi();
+            return;
+        }
+    }
     
     if (DeviceType == "Guider")
     {
@@ -10925,6 +11087,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpGuider);
+        refreshBindUi();
         Logger::Log("Binding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "MainCamera")
@@ -10937,6 +11100,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpMainCamera);
+        refreshBindUi();
         Logger::Log("Binding MainCamera Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
     else if (DeviceType == "Mount")
