@@ -688,7 +688,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             QString::number(static_cast<int>(std::lround(lockPosPx.x()))) + ":" +
             QString::number(static_cast<int>(std::lround(lockPosPx.y()))));
     });
-    connect(guiderCore, &GuiderCore::lockStarSelected, this, [this](double x, double y, double, double) {
+    connect(guiderCore, &GuiderCore::lockStarSelected, this, [this](double x, double y, double snr, double hfd) {
         glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
         glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
         emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
@@ -697,6 +697,18 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             QString::number(glPHD_CurrentImageSizeY) + ":" +
             QString::number(static_cast<int>(std::lround(x))) + ":" +
             QString::number(static_cast<int>(std::lround(y))));
+        emit wsThread->sendMessageToClient(
+            "GuiderSelectedStar:" +
+            QString::number(x, 'f', 2) + ":" +
+            QString::number(y, 'f', 2) + ":" +
+            QString::number(snr, 'f', 2) + ":" +
+            QString::number(hfd, 'f', 2));
+        emit wsThread->sendMessageToClient(
+            QStringLiteral("SendDebugMessage|Info|导星选星成功：X=%1 Y=%2 SNR=%3 HFD=%4")
+                .arg(x, 0, 'f', 2)
+                .arg(y, 0, 'f', 2)
+                .arg(snr, 0, 'f', 2)
+                .arg(hfd, 0, 'f', 2));
     });
     connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
         glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
@@ -757,14 +769,17 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
         case guiding::State::Selecting:
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             emit wsThread->sendMessageToClient("GuiderStatus:InSelecting");
+            emit wsThread->sendMessageToClient("SendDebugMessage|Info|导星正在自动选星，请稍候");
             break;
         case guiding::State::Calibrating:
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
+            emit wsThread->sendMessageToClient("SendDebugMessage|Info|导星已锁定星点，正在校准");
             break;
         case guiding::State::Guiding:
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
+            emit wsThread->sendMessageToClient("SendDebugMessage|Info|导星已进入闭环导星");
             break;
         case guiding::State::Idle:
         case guiding::State::Looping:
@@ -778,10 +793,29 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(guiderCore, &GuiderCore::infoMessage, this, [this](const QString& msg) {
         Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
         emit wsThread->sendMessageToClient("GuiderCoreInfo:" + msg);
+        if (msg.contains(QStringLiteral("选星成功")))
+        {
+            emit wsThread->sendMessageToClient("GuiderStatus:StarSelected");
+            emit wsThread->sendMessageToClient("SendDebugMessage|Info|" + msg);
+        }
+        else if (msg.contains(QStringLiteral("自动选星进行中")) ||
+                 msg.contains(QStringLiteral("等待下一帧")) ||
+                 msg.contains(QStringLiteral("候选星点")))
+        {
+            emit wsThread->sendMessageToClient("GuiderStatus:SelectingProgress");
+            emit wsThread->sendMessageToClient("SendDebugMessage|Info|" + msg);
+        }
+        else if (msg.contains(QStringLiteral("进入校准阶段")) ||
+                 msg.contains(QStringLiteral("校准完成")))
+        {
+            emit wsThread->sendMessageToClient("SendDebugMessage|Info|" + msg);
+        }
     });
     connect(guiderCore, &GuiderCore::errorOccurred, this, [this](const QString& msg) {
         Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::WARNING, DeviceType::GUIDER);
         emit wsThread->sendMessageToClient("GuiderCoreError:" + msg);
+        emit wsThread->sendMessageToClient("ErrorMessage:导星错误 - " + msg);
+        emit wsThread->sendMessageToClient("SendDebugMessage|Warning|导星错误：" + msg);
         if (msg.contains(QStringLiteral("LostStar"), Qt::CaseInsensitive) ||
             msg.contains(QStringLiteral("丢星"), Qt::CaseInsensitive))
         {
@@ -14086,49 +14120,21 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                 }
                 else
                 {
-                    // 将帧转为 16-bit Mat（clone 避免 frame 生命周期问题）
-                    cv::Mat img16(frame.height, frame.width, CV_16UC1,
-                                  const_cast<uint16_t*>(frame.pixels.data()));
-                    cv::Mat img16c = img16.clone();
+                    // SDK 导星帧统一走内置导星链路：
+                    // 1) 先写固定 FITS 路径
+                    // 2) 交给 GuiderCore::onNewFrame（内部会触发 PersistGuidingFits + 识别）
+                    const QString sdkGuiderFitsPath = QStringLiteral("/dev/shm/guiding.fits");
+                    SaveQhyFrameDataToFits(frame, sdkGuiderFitsPath.toStdString());
 
-                    // 导星预览：默认自动拉伸（与 INDI 导星预览一致）
-                    double minVal = 0.0, maxVal = 0.0;
-                    cv::minMaxLoc(img16c, &minVal, &maxVal);
-                    uint16_t B = 0, W = 65535;
-                    Tools::GetAutoStretch(img16c, 0, B, W);
-                    if (maxVal > 0.0)
+                    if (guiderCore)
                     {
-                        const uint16_t maxU16 = (uint16_t)std::min(65535.0, std::max(0.0, maxVal));
-                        if (W > (uint16_t)std::min<uint32_t>(65535u, (uint32_t)maxU16 + 1024u))
-                        {
-                            B = 0;
-                            W = std::max<uint16_t>(1, maxU16);
-                        }
-                        if (W <= B) W = (uint16_t)std::min<uint32_t>(65535u, (uint32_t)B + 10u);
+                        QMetaObject::invokeMethod(guiderCore, "onNewFrame", Qt::QueuedConnection,
+                                                  Q_ARG(QString, sdkGuiderFitsPath));
                     }
-
-                    Logger::Log("GuiderPreviewStretch(SDK) | min=" + std::to_string(minVal) +
-                                    " max=" + std::to_string(maxVal) +
-                                    " B=" + std::to_string(B) +
-                                    " W=" + std::to_string(W),
-                                LogLevel::DEBUG, DeviceType::GUIDER);
-
-                    cv::Mat img8(img16c.rows, img16c.cols, CV_8UC1);
-                    Tools::Bit16To8_Stretch(img16c, img8, B, W);
-                    // 兜底：如果拉伸结果仍然全黑（通常是 B/W 异常或动态范围不匹配）
-                    double min8 = 0.0, max8 = 0.0;
-                    cv::minMaxLoc(img8, &min8, &max8);
-                    if (max8 <= 0.0 && maxVal > 0.0)
+                    else
                     {
-                        const uint16_t maxU16 = (uint16_t)std::min(65535.0, std::max(1.0, maxVal));
-                        B = 0;
-                        W = maxU16;
-                        Tools::Bit16To8_Stretch(img16c, img8, B, W);
-                        Logger::Log("GuiderPreviewStretch(SDK) | fallback restretch applied (img8 max==0). B=" +
-                                        std::to_string(B) + " W=" + std::to_string(W),
-                                    LogLevel::INFO, DeviceType::GUIDER);
+                        PersistGuidingFits(sdkGuiderFitsPath);
                     }
-                    saveGuiderImageAsJPG(img8);
                 }
 
                 // 一帧处理完成，放行下一帧

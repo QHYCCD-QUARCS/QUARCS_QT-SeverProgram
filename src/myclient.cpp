@@ -92,27 +92,33 @@ void MyClient::updateProperty(INDI::Property property)
     else if (property.getType() == INDI_TEXT)
     {
         auto tvp = property.getText();
-        if (tvp->isNameMatch("CCD_FILE_PATH"))
+        auto filepath = tvp->findWidgetByName("FILE_PATH");
+        if (filepath)
         {
-            auto filepath = tvp->findWidgetByName("FILE_PATH");
-            if (filepath)
+            // 循环曝光会高频刷这些日志：降为 DEBUG（默认关闭 DEBUG）避免刷屏
+            const std::string filePathStr = QString(filepath->getText()).toStdString();
+            Logger::Log("indi_client | updateProperty | New Capture Image Save To " + filePathStr,
+                        LogLevel::DEBUG, DeviceType::CAMERA);
+
+            CaptureTestTime = CaptureTestTimer.elapsed();
+            Logger::Log("indi_client | updateProperty | Exposure completed:" + std::to_string(CaptureTestTime) + "ms",
+                        LogLevel::DEBUG, DeviceType::CAMERA);
+            CaptureTestTimer.invalidate();
+
+            // 优先使用 INDI 属性携带的设备名（最可靠）；若为空再尝试 FITS 头。
+            std::string devname = property.getDeviceName() ? std::string(property.getDeviceName()) : std::string();
+            if (devname.empty())
             {
-                // 循环曝光会高频刷这些日志：降为 DEBUG（默认关闭 DEBUG）避免刷屏
-                Logger::Log("indi_client | updateProperty | New Capture Image Save To" + QString(filepath->getText()).toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
-                // qDebug() << "\033[32m" << "New Capture Image Save To" << QString(filepath->getText()) << "\033[0m";
-                // qInfo() << "New Capture Image Save To" << QString(filepath->getText());
-
-                CaptureTestTime = CaptureTestTimer.elapsed();
-                Logger::Log("indi_client | updateProperty | Exposure completed:" + std::to_string(CaptureTestTime) + "ms", LogLevel::DEBUG, DeviceType::CAMERA);
-                CaptureTestTimer.invalidate();
-
-                QString devname_;
-                Tools::readFitsHeadForDevName(QString(filepath->getText()).toStdString(), devname_);
-                std::string devname = devname_.toStdString();
-
-                receiveImage(QString(filepath->getText()).toStdString(), devname);
-                Logger::Log("indi_client | updateProperty | receiveImage | " + QString(filepath->getText()).toStdString() + ", " + devname, LogLevel::DEBUG, DeviceType::CAMERA);
+                QString devnameFromFits;
+                Tools::readFitsHeadForDevName(filePathStr, devnameFromFits);
+                devname = devnameFromFits.toStdString();
             }
+
+            receiveImage(filePathStr, devname);
+            Logger::Log("indi_client | updateProperty | receiveImage | property=" +
+                            std::string(property.getName() ? property.getName() : "") +
+                            " file=" + filePathStr + " dev=" + devname,
+                        LogLevel::DEBUG, DeviceType::CAMERA);
         }
     }
     else if (property.getType() == INDI_NUMBER)

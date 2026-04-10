@@ -1,10 +1,13 @@
 #include "GuiderCore.h"
 
 #include "../tools.h"
+#include "../Logger.h"
 
 #include "CentroidUtils.h"
 
+#include <QByteArray>
 #include <QDateTime>
+#include <QFile>
 #include <limits>
 
 namespace {
@@ -86,6 +89,46 @@ static int computePHD2StyleCalibPulseMs(const guiding::GuidingParams& p)
 
     pulseMs = std::min(maxPulseMs, pulseMs);
     return roundUpTo50ms(pulseMs);
+}
+
+static bool isTruthyEnvValue(const QByteArray& v)
+{
+    const QByteArray n = v.trimmed().toLower();
+    return n == "1" || n == "true" || n == "yes" || n == "on";
+}
+
+static QString resolveGuiderFrameFitsForTest(const QString& incomingPath)
+{
+    static bool s_loggedEnabled = false;
+    static bool s_loggedMissing = false;
+
+    const QByteArray enabledRaw = qgetenv("QUARCS_GUIDER_TEST_FITS_ENABLE");
+    if (!isTruthyEnvValue(enabledRaw))
+        return incomingPath;
+
+    QByteArray pathRaw = qgetenv("QUARCS_GUIDER_TEST_FITS");
+    if (pathRaw.trimmed().isEmpty())
+        pathRaw = QByteArray("/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/Current_View-5.fits");
+
+    const QString testFitsPath = QString::fromLocal8Bit(pathRaw);
+    if (QFile::exists(testFitsPath))
+    {
+        if (!s_loggedEnabled)
+        {
+            s_loggedEnabled = true;
+            Logger::Log("GuiderCore | Test FITS override enabled: " + testFitsPath.toStdString(),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
+        return testFitsPath;
+    }
+
+    if (!s_loggedMissing)
+    {
+        s_loggedMissing = true;
+        Logger::Log("GuiderCore | Test FITS override enabled but file missing: " + testFitsPath.toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+    }
+    return incomingPath;
 }
 } // namespace
 
@@ -650,11 +693,13 @@ void GuiderCore::startGuidingWithManualLock(double xPx, double yPx)
 
 void GuiderCore::onNewFrame(const QString& fitsPath)
 {
-    if (!m_loopActive)
-        return;
+    const QString effectiveFitsPath = resolveGuiderFrameFitsForTest(fitsPath);
 
     // 先按你的要求：每帧都固定命名并落盘（MainWindow 实现）
-    emit requestPersistGuidingFits(fitsPath);
+    emit requestPersistGuidingFits(effectiveFitsPath);
+
+    if (!m_loopActive)
+        return;
 
     // New frame cancels any pending pulse/exposure scheduling from the previous frame
     m_schedSeq++;
@@ -663,10 +708,11 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     if (m_state == guiding::State::Selecting && !m_hasLock)
     {
         cv::Mat img16;
-        if (Tools::readFits(fitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
+        if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
         {
             guiding::StarSelectionParams sp;
-            auto best = m_detector.selectGuideStar(img16, sp, nullptr);
+            std::vector<guiding::StarCandidate> candidates;
+            auto best = m_detector.selectGuideStar(img16, sp, effectiveFitsPath, &candidates);
             bool usedRelaxedParams = false;
             if (!best.has_value())
             {
@@ -676,7 +722,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 relaxed.minHFD = 1.0;
                 relaxed.edgeMarginPx = 20.0;
                 relaxed.kSigma = 3.0;
-                best = m_detector.selectGuideStar(img16, relaxed, nullptr);
+                best = m_detector.selectGuideStar(img16, relaxed, effectiveFitsPath, &candidates);
                 usedRelaxedParams = best.has_value();
             }
             if (best.has_value())
@@ -690,24 +736,34 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 emit lockStarSelected(best->x, best->y, best->snr, best->hfd);
                 if (usedRelaxedParams)
                     emit infoMessage(QStringLiteral("自动选星：默认阈值未命中，已使用宽松阈值锁定星点。"));
-                emit infoMessage(QStringLiteral("选星成功：x=%1 y=%2 SNR=%3 HFD=%4")
+                emit infoMessage(QStringLiteral("选星成功：x=%1 y=%2 SNR=%3 HFD=%4（候选=%5）")
                                  .arg(best->x, 0, 'f', 2)
                                  .arg(best->y, 0, 'f', 2)
                                  .arg(best->snr, 0, 'f', 1)
-                                 .arg(best->hfd, 0, 'f', 2));
+                                 .arg(best->hfd, 0, 'f', 2)
+                                 .arg(static_cast<int>(candidates.size())));
                 startGuidingFromLock(false);
             }
             else
             {
                 ++m_selectingNoStarFrameCount;
-                emit infoMessage(QStringLiteral("自动选星：当前帧未识别到可用星点，继续等待下一帧。"));
+                if (!candidates.empty())
+                {
+                    emit infoMessage(QStringLiteral("自动选星：检测到 %1 个候选星点，但未通过筛选，等待下一帧。")
+                                         .arg(static_cast<int>(candidates.size())));
+                }
+                else
+                {
+                    emit infoMessage(QStringLiteral("自动选星进行中：第 %1 帧未识别到可用星点，继续等待。")
+                                         .arg(m_selectingNoStarFrameCount));
+                }
             }
         }
     }
     else if (m_state == guiding::State::Calibrating && m_phd2Calib.isActive())
     {
         cv::Mat img16;
-        if (Tools::readFits(fitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
+        if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
         {
             // 校准阶段：方框跟随“当前星点质心”，十字线保持锁点不动
             if (m_lastGuideCentroid.isNull())
@@ -873,7 +929,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     {
         // 回差测量阶段：复用导星阶段的“锁星附近质心”跟踪
         cv::Mat img16;
-        if (Tools::readFits(fitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
+        if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
         {
             if (m_lastGuideCentroid.isNull())
                 m_lastGuideCentroid = m_lockPosPx;
@@ -947,7 +1003,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     else if (m_state == guiding::State::Guiding && m_calibResult.valid)
     {
         cv::Mat img16;
-        if (Tools::readFits(fitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
+        if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
         {
             m_guidingFrameCount++;
             if (!m_guidingDiagTimer.isValid())
@@ -2051,4 +2107,3 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     // 继续下一帧曝光（若本帧发了导星脉冲，则按 PHD2 风格延后：pulse->settle->next exposure）
     scheduleNextExposure(nextExposureDelayMs);
 }
-
