@@ -602,6 +602,71 @@ void AutoFocus::startFineHFRFromCurrentPosition()
     }
 }
 
+void AutoFocus::startLocalFineAdjustmentFromCurrentPosition()
+{
+    if (!initializeAutoFocusCommon()) {
+        return;
+    }
+
+    emit focusSeriesReset(QStringLiteral("super_fine"));
+    emit focusDataPointReady(-1, -1, QStringLiteral("clear"));
+
+    const int minPos = m_focuserMinPosition;
+    const int maxPos = m_focuserMaxPosition;
+    const int totalRange = std::max(1, maxPos - minPos);
+
+    int currentPos = getCurrentFocuserPosition();
+    currentPos = std::clamp(currentPos, minPos, maxPos);
+
+    m_currentPosition = currentPos;
+    m_fineCenter = currentPos;
+    m_fineBestPosition = currentPos;
+    m_fineBestSNR = -1.0;
+
+    // 独立“精调按钮”模式：当前位置附近做更保守的局部 HFR 精调。
+    // 这里沿用 super-fine 量级的步距（约总行程 1%），避免第一步就把星点拉得过大。
+    m_superFineStepSpan = std::max(1, static_cast<int>(std::round(totalRange * 0.01)));
+
+    m_focusData.clear();
+    m_fineFocusData.clear();
+    m_superFineFocusData.clear();
+    m_dataCollectionCount = 0;
+    m_superFineScanPositions.clear();
+    m_superFineScanIndex = 0;
+
+    auto push_unique = [&](int p) {
+        p = std::clamp(p, minPos, maxPos);
+        if (!m_superFineScanPositions.contains(p)) {
+            m_superFineScanPositions.push_back(p);
+        }
+    };
+
+    // 关键策略：第一张必须在当前位置，其后按 0, -1, +1, -2, +2... 双向展开。
+    push_unique(currentPos);
+    for (int k = 1; k <= 4; ++k) {
+        push_unique(currentPos - k * m_superFineStepSpan);
+        push_unique(currentPos + k * m_superFineStepSpan);
+    }
+
+    changeState(AutoFocusState::LOCAL_FINE_ADJUSTMENT);
+    updateAutoFocusStep(4, "Local fine adjustment in progress. The system will sample from the current focus position outward and perform precise HFR-based fitting.");
+
+    log(QString("从当前位置启动本地精调：center=%1，step=%2，计划采样点数=%3，首点为当前位置")
+            .arg(currentPos)
+            .arg(m_superFineStepSpan)
+            .arg(m_superFineScanPositions.size()));
+
+    if (m_timer) {
+        m_timer->start(100);
+        log("定时器已启动，开始本地精调流程");
+    } else {
+        log("错误: 定时器对象为空");
+        m_isRunning = false;
+        emit errorOccurred("定时器初始化失败");
+        return;
+    }
+}
+
 void AutoFocus::stopAutoFocus()
 {
     try {
@@ -762,6 +827,10 @@ void AutoFocus::getAutoFocusStep()
     {
         // 新 HFR 精调模式：在 UI 上视为 step 4，与 super-fine 一致
         updateAutoFocusStep(4, "Super fine adjustment in progress. The system is performing precise HFR-based fitting, please wait for the final best focus position.");
+    }
+    else if (m_currentState == AutoFocusState::LOCAL_FINE_ADJUSTMENT)
+    {
+        updateAutoFocusStep(4, "Local fine adjustment in progress. The system will sample from the current focus position outward and perform precise HFR-based fitting.");
     }
     else if (m_currentState == AutoFocusState::SUPER_FINE_ADJUSTMENT
              || m_currentState == AutoFocusState::FITTING_DATA
@@ -1205,6 +1274,9 @@ void AutoFocus::processCurrentState()
         break;
     case AutoFocusState::SUPER_FINE_ADJUSTMENT:
         processSuperFineAdjustment();        // 更细致精调状态（完整自动对焦流程）
+        break;
+    case AutoFocusState::LOCAL_FINE_ADJUSTMENT:
+        processLocalFineAdjustment();        // 本地精调状态（按钮 Fine Focus 触发）
         break;
     case AutoFocusState::FINE_HFR_ADJUSTMENT_NEW:
         processFineHFRNewAdjustment();       // 新：独立 HFR 精调状态（精调按钮触发）
@@ -2442,6 +2514,105 @@ void AutoFocus::processSuperFineAdjustment()
         beginMoveTo(m_superFineScanPositions[m_superFineScanIndex], "super-fine 扫描下一个点");
     } else {
         log("super-fine 采样已完成，等待拟合阶段");
+    }
+}
+
+void AutoFocus::processLocalFineAdjustment()
+{
+    if (!m_isRunning) {
+        log("自动对焦已停止，跳过本地精调");
+        return;
+    }
+
+    if (m_superFineScanIndex >= m_superFineScanPositions.size()) {
+        log(QString("本地精调采样完成（共%1点），进入拟合阶段")
+                .arg(m_superFineScanPositions.size()));
+        changeState(AutoFocusState::FITTING_DATA);
+        return;
+    }
+
+    const int target = m_superFineScanPositions[m_superFineScanIndex];
+    const int current = getCurrentFocuserPosition();
+    if (!isPositionReached(current, target, g_autoFocusConfig.positionTolerance)) {
+        beginMoveTo(target, QString("本地精调移动到第%1个点").arg(m_superFineScanIndex + 1));
+        return;
+    }
+
+    emit m_wsThread->sendMessageToClient("FocusPosition:" + QString::number(current) + ":" + QString::number(current));
+
+    const int shotsPerPosition = 3;
+    QVector<double> validHfrValues;
+    validHfrValues.reserve(shotsPerPosition);
+
+    for (int i = 0; i < shotsPerPosition; ++i) {
+        if (!captureFullImage()) {
+            log(QString("本地精调 第 %1/%2 张拍摄失败，本次拍摄丢弃").arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+        if (!waitForCaptureComplete()) {
+            log(QString("本地精调 第 %1/%2 张拍摄超时，本次拍摄丢弃").arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+
+        double hfrFrame = 0.0;
+        bool okHfr = detectMedianHFRByPython(hfrFrame);
+        if (!okHfr) {
+            log(QString("本地精调 第 %1/%2 张 Python median_HFR 失败，本次 HFR 不参与计算")
+                    .arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+
+        if (!std::isfinite(hfrFrame) || hfrFrame <= 0.0) {
+            log(QString("本地精调 第 %1/%2 张 HFR 无效或为 0，本次 HFR 不参与计算")
+                    .arg(i + 1).arg(shotsPerPosition));
+            continue;
+        }
+
+        validHfrValues.append(hfrFrame);
+    }
+
+    double hfr = 0.0;
+    if (validHfrValues.isEmpty()) {
+        log("本地精调当前位置未得到有效 HFR，本点 HFR 记为 0，不参与拟合");
+        emit starDetectionResult(false, 0.0);
+    } else {
+        std::sort(validHfrValues.begin(), validHfrValues.end());
+        if (validHfrValues.size() == 1) {
+            hfr = validHfrValues[0];
+        } else if (validHfrValues.size() == 2) {
+            hfr = 0.5 * (validHfrValues[0] + validHfrValues[1]);
+        } else {
+            hfr = validHfrValues[validHfrValues.size() / 2];
+        }
+
+        log(QString("本地精调位置多帧 HFR 中位数: %1（有效样本数=%2）")
+                .arg(hfr)
+                .arg(validHfrValues.size()));
+        emit starDetectionResult(true, hfr);
+    }
+
+    FocusDataPoint dp(target, hfr);
+    m_superFineFocusData.append(dp);
+    m_focusData.append(dp);
+    m_fineFocusData.append(dp);
+    m_dataCollectionCount++;
+    emit focusDataPointReady(target, hfr, QStringLiteral("super_fine"));
+
+    log(QString("本地精调数据点%1/%2：位置=%3，HFR=%4")
+            .arg(m_superFineScanIndex + 1)
+            .arg(m_superFineScanPositions.size())
+            .arg(target)
+            .arg(hfr));
+
+    emit captureProgressChanged(QStringLiteral("super_fine"),
+                                m_superFineScanIndex + 1,
+                                m_superFineScanPositions.size());
+
+    ++m_superFineScanIndex;
+    if (m_superFineScanIndex < m_superFineScanPositions.size()) {
+        beginMoveTo(m_superFineScanPositions[m_superFineScanIndex], "本地精调扫描下一个点");
+    } else {
+        log("本地精调采样已完成，等待拟合阶段");
     }
 }
 
