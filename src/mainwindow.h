@@ -84,8 +84,10 @@ namespace fs = std::filesystem;
 #include "sdks/SdkCommon.h"  // SDK 通用类型（SdkFrameData, SdkChipInfo, SdkAreaInfo 等）
 
 /**********************  宏与常量定义  **********************/
-// #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260410"  // 手动指定版本号
+#ifndef QUARCS_QT_CLIENT_VERSION
+#define QUARCS_QT_CLIENT_VERSION "000000000000"
+#endif
+#define QT_Client_Version QUARCS_QT_CLIENT_VERSION
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -826,6 +828,7 @@ public:
     std::atomic<double> tileViewportX{0.0};           // 视口中心 X（原图像素）
     std::atomic<double> tileViewportY{0.0};           // 视口中心 Y（原图像素）
     std::atomic<double> tileViewportScale{1.0};       // 缩放比例（0.1~1.0；越小越放大）
+    std::atomic<int> tileViewportMaxZCap{-1};         // 视口请求的最大瓦片层级；-1 表示不限制
     std::atomic_uint64_t tileViewportRequestSeq{0};   // 每次 sendVisibleArea ++，用于打断旧视口瓦片生成
     double tileViewportAspect = 16.0 / 9.0;           // 视口宽高比（与前端 CanvasWidth/CanvasHeight 一致；默认 16:9）
 

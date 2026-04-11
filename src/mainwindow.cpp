@@ -907,8 +907,8 @@ int LoopCaptureBurstFrames = 1;
 MainWindow *MainWindow::instance = nullptr;
 
 /**
- * @brief 获取构建日期字符串（从编译时宏 __DATE__ 解析）
- * @return 构建日期字符串（格式：YYYYMMDD）
+ * @brief 获取构建日期字符串（从编译时宏 __DATE__ / __TIME__ 解析）
+ * @return 构建日期字符串（格式：YYYYMMDDHHMM）
  */
 std::string MainWindow::getBuildDate()
 {
@@ -919,11 +919,16 @@ std::string MainWindow::getBuildDate()
     };
 
     std::string date = __DATE__;
+    std::string time = __TIME__;
     std::stringstream dateStream(date);
+    std::stringstream timeStream(time);
     std::string month, day, year;
+    std::string hour, minute;
     dateStream >> month >> day >> year;
+    std::getline(timeStream, hour, ':');
+    std::getline(timeStream, minute, ':');
 
-    return year + monthMap.at(month) + (day.size() == 1 ? "0" + day : day);
+    return year + monthMap.at(month) + (day.size() == 1 ? "0" + day : day) + hour + minute;
 }
 
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
@@ -4336,7 +4341,7 @@ void MainWindow::onMessageReceived(const QString &message)
                     LogLevel::DEBUG, DeviceType::MAIN);
         Logger::Log("sendRedBoxState finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    else if (parts[0].trimmed() == "sendVisibleArea" && (parts.size() == 4 || parts.size() == 5))
+    else if (parts[0].trimmed() == "sendVisibleArea" && (parts.size() == 4 || parts.size() == 5 || parts.size() == 6))
     {
         Logger::Log("sendVisibleArea ...", LogLevel::DEBUG, DeviceType::MAIN);
         const double vx = parts[1].trimmed().toDouble();
@@ -4350,11 +4355,17 @@ void MainWindow::onMessageReceived(const QString &message)
         if (parts.size() == 5) {
             (void)parts[4].trimmed().toULongLong();
         }
+        int maxZCap = -1;
+        if (parts.size() == 6) {
+            (void)parts[4].trimmed().toULongLong();
+            maxZCap = parts[5].trimmed().toInt();
+        }
 
         // 同步到瓦片视口参数（供后端按需生成视口瓦片）
         tileViewportX = vx;
         tileViewportY = vy;
         tileViewportScale = sc;
+        tileViewportMaxZCap = maxZCap;
         ++tileViewportRequestSeq;
 
         // 视口变化：调度“按需补瓦片”（不会阻塞主线程；会做合并/节流）
@@ -6554,6 +6565,16 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     }
 
     // 彩色相机：每帧根据当前全分辨率 RAW 自动估计 R/B 增益（与 CalcWhiteBalance 相同算法），供 TileGPM 与前端渲染
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | tileSourceImageSize = " +
+                    std::to_string(tileSourceImage.cols) + "x" + std::to_string(tileSourceImage.rows),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | tileSourceImageType = " +
+                    std::to_string(tileSourceImage.type()),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | effectiveCameraCFA = " +
+                    effectiveCameraCFA.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
+
     if (isColor && tileSourceImage.type() == CV_16UC1)
     {
         const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
@@ -6567,6 +6588,12 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         // 前端 handleTileGPM 会更新增益并在新会话/新帧上拉瓦片。手动 CalcWhiteBalance 路径仍会单独发 WhiteBalanceGains。
         Logger::Log("Per-frame auto WB gains: R=" + std::to_string(ImageGainR) +
                         ", B=" + std::to_string(ImageGainB) + " (via TileGPM only; no duplicate WhiteBalanceGains)",
+                    LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | ImageGainR = " +
+                        std::to_string(ImageGainR),
+                    LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | ImageGainB = " +
+                        std::to_string(ImageGainB),
                     LogLevel::INFO, DeviceType::CAMERA);
     }
 
@@ -6608,6 +6635,15 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     gpm.buildMode = (tileBuildMode.trimmed() == "merged_single_level")
         ? QStringLiteral("merged_single_level")
         : QStringLiteral("pyramid");
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | sessionId = " +
+                    sessionId.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | frameId = " +
+                    std::to_string(static_cast<unsigned long long>(gpm.frameId)),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | gpmBlackWhite = " +
+                    std::to_string(gpm.blackLevel) + "," + std::to_string(gpm.whiteLevel),
+                LogLevel::INFO, DeviceType::CAMERA);
 
     // 保存“最新帧”供视口拖动/缩放时按需补瓦片（避免反复 readFits）
     {
@@ -6888,6 +6924,15 @@ QString MainWindow::resolveFrameCfa(int frameStartX, int frameStartY) const
 
 QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& image16, const QString& cfa, uint16_t offset)
 {
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | imageSize = " +
+                    std::to_string(image16.cols) + "x" + std::to_string(image16.rows),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | cfa = " +
+                    cfa.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | offset = " +
+                    std::to_string(offset),
+                LogLevel::INFO, DeviceType::MAIN);
     if (image16.empty() || cfa == "null" || cfa.isEmpty()) {
         Logger::Log("无法计算白平衡：图像为空或非彩色图像", LogLevel::WARNING, DeviceType::MAIN);
         return QPair<double, double>(1.0, 1.0);
@@ -7050,6 +7095,18 @@ QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& imag
                 ", g1Mean=" + std::to_string(g1Mean) +
                 ", g2Mean=" + std::to_string(g2Mean),
                 LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | sampleCount = " +
+                    std::to_string(samples.size()),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | lumaRange = " +
+                    std::to_string(lumaMin) + "," + std::to_string(lumaMax),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | gainR = " +
+                    std::to_string(gainR),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | gainB = " +
+                    std::to_string(gainB),
+                LogLevel::INFO, DeviceType::MAIN);
 
     return QPair<double, double>(gainR, gainB);
 }
@@ -7087,6 +7144,91 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
     Logger::Log("Calculating GPM for image " + std::to_string(image16.cols) + "x" + std::to_string(image16.rows) + 
                 ", maxZoomLevel=" + std::to_string(gpm.maxZoomLevel) + " (" + std::to_string(maxMergeFactor) + "x" + std::to_string(maxMergeFactor) + " -> 1x1)" +
                 (enableHistogram ? ", histogram=on" : ", histogram=off"), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | cfa = " +
+                    cfa.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | enableHistogram = " +
+                    std::string(enableHistogram ? "true" : "false"),
+                LogLevel::INFO, DeviceType::CAMERA);
+
+    auto tryComputeColorLumaStats = [&](double& meanLumaOut, double& stdLumaOut, size_t& sampleCountOut) -> bool {
+        if (image16.type() != CV_16UC1 || image16.rows < 2 || image16.cols < 2) {
+            return false;
+        }
+
+        const QString normalizedCfa = normalizeCfaPattern(cfa);
+        std::vector<cv::Point> rOffsets;
+        std::vector<cv::Point> gOffsets;
+        std::vector<cv::Point> bOffsets;
+        if (normalizedCfa == "RGGB") {
+            rOffsets = { cv::Point(0, 0) };
+            gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
+            bOffsets = { cv::Point(1, 1) };
+        } else if (normalizedCfa == "GRBG") {
+            gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
+            rOffsets = { cv::Point(1, 0) };
+            bOffsets = { cv::Point(0, 1) };
+        } else if (normalizedCfa == "GBRG") {
+            gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
+            bOffsets = { cv::Point(1, 0) };
+            rOffsets = { cv::Point(0, 1) };
+        } else if (normalizedCfa == "BGGR") {
+            bOffsets = { cv::Point(0, 0) };
+            gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
+            rOffsets = { cv::Point(1, 1) };
+        } else {
+            return false;
+        }
+
+        const int rows = image16.rows;
+        const int cols = image16.cols;
+        const int sampleStep = std::max(2, static_cast<int>(std::floor(std::min(rows, cols) / 200.0)) * 2);
+
+        long double sumLuma = 0.0L;
+        long double sumSqLuma = 0.0L;
+        size_t sampleCount = 0;
+
+        auto rawPixelAt = [&](int y, int x) -> double {
+            if (y < 0 || y >= rows || x < 0 || x >= cols) return 0.0;
+            return static_cast<double>(image16.at<uint16_t>(y, x));
+        };
+
+        for (int y = 0; y < rows; y += sampleStep) {
+            for (int x = 0; x < cols; x += sampleStep) {
+                if ((y % (sampleStep * 2)) != 0 || (x % (sampleStep * 2)) != 0) continue;
+
+                double r = 0.0;
+                double g1 = 0.0;
+                double g2 = 0.0;
+                double b = 0.0;
+
+                for (const auto& pos : rOffsets) r += rawPixelAt(y + pos.y, x + pos.x);
+                for (const auto& pos : bOffsets) b += rawPixelAt(y + pos.y, x + pos.x);
+                if (gOffsets.size() >= 1) g1 = rawPixelAt(y + gOffsets[0].y, x + gOffsets[0].x);
+                if (gOffsets.size() >= 2) g2 = rawPixelAt(y + gOffsets[1].y, x + gOffsets[1].x);
+                const double g = (g1 + g2) * 0.5;
+                const double luma = (r + 2.0 * g + b) * 0.25;
+
+                sumLuma += static_cast<long double>(luma);
+                sumSqLuma += static_cast<long double>(luma) * static_cast<long double>(luma);
+                ++sampleCount;
+            }
+        }
+
+        if (sampleCount == 0) {
+            return false;
+        }
+
+        const long double dn = static_cast<long double>(sampleCount);
+        const long double meanLuma = sumLuma / dn;
+        long double varLuma = (sumSqLuma / dn) - meanLuma * meanLuma;
+        if (varLuma < 0.0L) varLuma = 0.0L;
+
+        meanLumaOut = static_cast<double>(meanLuma);
+        stdLumaOut = static_cast<double>(std::sqrt(varLuma));
+        sampleCountOut = sampleCount;
+        return true;
+    };
 
     // 目标：尽量把全局统计/拉伸/直方图合并到“一次全图扫描”里（对 CV_16UC1 生效）
     // 性能：若不需要直方图且图像很大，则采用“子采样统计”（把耗时压到 ~10ms 级别）
@@ -7165,13 +7307,50 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
         const long double stdDev = std::sqrt(var);
         gpm.globalMean = static_cast<double>(mean);
         gpm.globalStdDev = static_cast<double>(stdDev);
+        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | rawMean = " +
+                        std::to_string(gpm.globalMean),
+                    LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | rawStdDev = " +
+                        std::to_string(gpm.globalStdDev),
+                    LogLevel::INFO, DeviceType::CAMERA);
+
+        const bool isColorRaw =
+            !normalizeCfaPattern(cfa).isEmpty() &&
+            normalizeCfaPattern(cfa) != "null";
+        if (isColorRaw) {
+            double meanLuma = 0.0;
+            double stdLuma = 0.0;
+            size_t lumaSamples = 0;
+            if (tryComputeColorLumaStats(meanLuma, stdLuma, lumaSamples)) {
+                gpm.globalMean = meanLuma;
+                gpm.globalStdDev = stdLuma;
+                Logger::Log("GPM | color RAW luma stats override: meanLuma=" + std::to_string(meanLuma) +
+                                ", stdLuma=" + std::to_string(stdLuma) +
+                                ", sampledBlocks=" + std::to_string(lumaSamples),
+                            LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | meanLuma = " +
+                                std::to_string(meanLuma),
+                            LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | stdLuma = " +
+                                std::to_string(stdLuma),
+                            LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | lumaSampleCount = " +
+                                std::to_string(lumaSamples),
+                            LogLevel::INFO, DeviceType::CAMERA);
+            } else {
+                Logger::Log("GPM | color RAW luma stats unavailable, fallback to direct RAW stats",
+                            LogLevel::WARNING, DeviceType::CAMERA);
+            }
+        }
 
         // black/white（等价于 Tools::GetAutoStretch(mode=0)，但不再额外扫描图像）
         {
             constexpr int a = 3;
             constexpr int b = 5;
-            long double bx = mean - stdDev * a;
-            long double wx = mean + stdDev * b;
+            const long double stretchMean = static_cast<long double>(gpm.globalMean);
+            const long double stretchStdDev = static_cast<long double>(gpm.globalStdDev);
+            long double bx = stretchMean - stretchStdDev * a;
+            long double wx = stretchMean + stretchStdDev * b;
             if (bx == wx) wx = bx + 10;
 
             const uint16_t maxValue = 65535;
@@ -7206,7 +7385,7 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
 
             // 过曝保护：当画面整体接近饱和时，保留一个明显更亮的窗口，
             // 避免前端把“高亮满屏”拉成近黑。
-            if (mean >= static_cast<long double>(maxValue) * 0.85L ||
+            if (stretchMean >= static_cast<long double>(maxValue) * 0.85L ||
                 minV >= static_cast<uint16_t>(maxValue * 0.75)) {
                 wi = maxValue;
                 bi = std::min<long long>(bi, maxValue / 2);
@@ -7220,6 +7399,12 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
             }
             gpm.blackLevel = B;
             gpm.whiteLevel = W;
+            Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | blackLevel = " +
+                            std::to_string(gpm.blackLevel),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | whiteLevel = " +
+                            std::to_string(gpm.whiteLevel),
+                        LogLevel::INFO, DeviceType::CAMERA);
         }
     } else {
         // 兼容路径：非 16UC1 时，保留原策略（可按需扩展 8bit/3通道）
@@ -7245,6 +7430,12 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
                 ", stdDev=" + std::to_string(gpm.globalStdDev) +
                 ", blackLevel=" + std::to_string(gpm.blackLevel) +
                 ", whiteLevel=" + std::to_string(gpm.whiteLevel),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | globalMinMax = " +
+                    std::to_string(gpm.globalMin) + "," + std::to_string(gpm.globalMax),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | globalMeanStdDev = " +
+                    std::to_string(gpm.globalMean) + "," + std::to_string(gpm.globalStdDev),
                 LogLevel::INFO, DeviceType::CAMERA);
 
     return gpm;
@@ -7350,6 +7541,13 @@ void MainWindow::scheduleFullResTileCompletion()
         return;
     }
 
+    const int maxZCap = tileViewportMaxZCap.load();
+    if (maxZCap >= 0 && maxZCap < st.maxZoomLevel)
+    {
+        tileFullResGenInFlight = false;
+        return;
+    }
+
     const quint64 epoch = st.epoch;
     QPointer<MainWindow> self(this);
     QtConcurrent::run([self, epoch]() {
@@ -7389,6 +7587,10 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     const int H = st.imageHeight;
     const int T = (st.tileSize > 0) ? st.tileSize : 512;
     const int maxZ = std::max(0, st.maxZoomLevel);
+    const int requestedMaxZCap = tileViewportMaxZCap.load();
+    const int effectiveMaxZ = (requestedMaxZCap >= 0)
+        ? std::max(0, std::min(maxZ, requestedMaxZCap))
+        : maxZ;
 
     // 视口矩形（尽量与前端一致；aspect 使用默认 16:9）
     const double aspect = (tileViewportAspect > 0.1) ? tileViewportAspect : (16.0 / 9.0);
@@ -7402,7 +7604,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
 
     const double visibleWidth = W * scale;
     const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
-    const int currentZ = calculateTileLevelFromScale(scale, maxZ);
+    const int currentZ = std::min(calculateTileLevelFromScale(scale, maxZ), effectiveMaxZ);
     const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
 
     QElapsedTimer timer;
@@ -7432,8 +7634,8 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         // merged_single_level 下，z=0 预览已经由 generateVisibleTilesSync()
         // 在发出 TileGPM 前同步生成完成。这里的后台视口任务只负责
         // 当前视口的高分辨率原图瓦片，避免把 100ms 预算浪费在重复生成 z=0 上。
-        if (maxZ > 0) {
-            levelsToGenerate.push_back(maxZ);
+        if (effectiveMaxZ > 0) {
+            levelsToGenerate.push_back(effectiveMaxZ);
         } else {
             levelsToGenerate.push_back(0);
         }
@@ -7571,9 +7773,9 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     }
 
     std::string levelSummary;
-    if (mergedSingleLevelMode)
+        if (mergedSingleLevelMode)
     {
-        levelSummary = levelsToGenerate.empty() ? std::string("none") : ("0," + std::to_string(maxZ));
+        levelSummary = levelsToGenerate.empty() ? std::string("none") : ("0," + std::to_string(effectiveMaxZ));
     }
     else
     {
@@ -8289,6 +8491,18 @@ void MainWindow::sendGPMToClient(const TileGPM& gpm)
 
     emit wsThread->sendMessageToClient(gpmMessage);
     Logger::Log("GPM sent to client: " + gpmMessage.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | sessionId = " +
+                    gpm.sessionId.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | frameId = " +
+                    std::to_string(static_cast<unsigned long long>(gpm.frameId)),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | blackWhite = " +
+                    std::to_string(gpm.blackLevel) + "," + std::to_string(gpm.whiteLevel),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | gainRB = " +
+                    std::to_string(gpm.gainR) + "," + std::to_string(gpm.gainB),
+                LogLevel::INFO, DeviceType::CAMERA);
 }
 
 void MainWindow::sendTileBatchReadyToClient(const QString& sessionId, quint64 frameId, const QStringList& tileKeys)
