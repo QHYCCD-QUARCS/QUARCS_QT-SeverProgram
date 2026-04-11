@@ -7660,7 +7660,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
     constexpr int TILE_BORDER = 2;
 
-    struct TileReq { int x; int y; double prio; };
+    struct TileReq { int x; int y; double prio; bool prefetch; };
     bool interruptedByBudget = false;
     auto shouldStop = [&]() -> bool {
         if (tilePyramidEpoch.load() != epoch) return true;
@@ -7678,11 +7678,14 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     std::vector<int> levelsToGenerate = {coarseZ, currentZ};
     std::sort(levelsToGenerate.begin(), levelsToGenerate.end());
     levelsToGenerate.erase(std::unique(levelsToGenerate.begin(), levelsToGenerate.end()), levelsToGenerate.end());
+    const bool allowIdlePrefetch = !forceFullImageForCappedMode && currentZ > 0;
+    constexpr int PREFETCH_RING = 1;
 
     int totalWritten = 0;
     QStringList readyTileKeys;
     std::set<uint64_t> doneKeys;
-    bool completedAllRequestedTiles = true;
+    bool completedVisibleTiles = true;
+    bool completedAllWork = true;
     auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
         return (static_cast<uint64_t>(tz) << 40) |
                (static_cast<uint64_t>(tx) << 20) |
@@ -7691,7 +7694,8 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     for (int z : levelsToGenerate)
     {
         if (shouldStop()) {
-            completedAllRequestedTiles = false;
+            completedVisibleTiles = false;
+            completedAllWork = false;
             break;
         }
 
@@ -7721,31 +7725,40 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         const int startY = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelTop / T));
         const int endX = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelRight / T) - 1.0);
         const int endY = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelBottom / T) - 1.0);
+        const bool prefetchThisLevel = allowIdlePrefetch && (z == currentZ) && !singlePreviewTile;
         Logger::Log("[TileDebug] event=generateViewportTiles_OnceLevel session=" + st.sessionId.toStdString() +
                         " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
                         " z=" + std::to_string(z) +
                         " fullImage=" + std::string(fullImageForThisZ ? "true" : "false") +
                         " tileRange=[" + std::to_string(startX) + "," + std::to_string(startY) +
                         "]-[" + std::to_string(endX) + "," + std::to_string(endY) + "]" +
-                        " maxTiles=" + std::to_string(maxTilesX) + "x" + std::to_string(maxTilesY),
+                        " maxTiles=" + std::to_string(maxTilesX) + "x" + std::to_string(maxTilesY) +
+                        " prefetch=" + std::string(prefetchThisLevel ? "ring1" : "none"),
                     LogLevel::DEBUG, DeviceType::CAMERA);
 
         std::vector<TileReq> tiles;
-        tiles.reserve(static_cast<size_t>(std::max(0, (endX - startX + 1) * (endY - startY + 1))));
+        const int prefetchStartX = prefetchThisLevel ? std::max(0, startX - PREFETCH_RING) : startX;
+        const int prefetchStartY = prefetchThisLevel ? std::max(0, startY - PREFETCH_RING) : startY;
+        const int prefetchEndX = prefetchThisLevel ? std::min(maxTilesX - 1, endX + PREFETCH_RING) : endX;
+        const int prefetchEndY = prefetchThisLevel ? std::min(maxTilesY - 1, endY + PREFETCH_RING) : endY;
+        tiles.reserve(static_cast<size_t>(std::max(0, (prefetchEndX - prefetchStartX + 1) * (prefetchEndY - prefetchStartY + 1))));
 
         const int cxTile = singlePreviewTile ? 0 : static_cast<int>(std::floor((visibleX / levelScale) / T));
         const int cyTile = singlePreviewTile ? 0 : static_cast<int>(std::floor((visibleY / levelScale) / T));
 
-        for (int ty = startY; ty <= endY; ++ty)
+        for (int ty = prefetchStartY; ty <= prefetchEndY; ++ty)
         {
             if (ty < 0 || ty >= maxTilesY) continue;
-            for (int tx = startX; tx <= endX; ++tx)
+            for (int tx = prefetchStartX; tx <= prefetchEndX; ++tx)
             {
                 if (tx < 0 || tx >= maxTilesX) continue;
+                const bool isPrimaryTile = (tx >= startX && tx <= endX && ty >= startY && ty <= endY);
+                if (!isPrimaryTile && !prefetchThisLevel) continue;
                 const double dx = static_cast<double>(tx - cxTile);
                 const double dy = static_cast<double>(ty - cyTile);
                 const double dist = (z == 0) ? 0.0 : std::sqrt(dx * dx + dy * dy);
-                tiles.push_back({tx, ty, dist});
+                const double penalty = isPrimaryTile ? 0.0 : 10000.0;
+                tiles.push_back({tx, ty, penalty + dist, !isPrimaryTile});
             }
         }
 
@@ -7759,7 +7772,10 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         for (const auto& t : tiles)
         {
             if (shouldStop()) {
-                completedAllRequestedTiles = false;
+                if (!t.prefetch) {
+                    completedVisibleTiles = false;
+                }
+                completedAllWork = false;
                 break;
             }
 
@@ -7856,7 +7872,10 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
     }
-    if (!completedAllRequestedTiles &&
+    if (completedVisibleTiles) {
+        sendTileGenerationCompleteToClient(st.sessionId, epoch);
+    }
+    if (!completedAllWork &&
         interruptedByBudget &&
         tilePyramidEpoch.load() == epoch &&
         tileViewportRequestSeq.load() == requestSeq) {
@@ -7866,9 +7885,6 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
                         std::to_string(static_cast<unsigned long long>(epoch)),
                     LogLevel::INFO, DeviceType::CAMERA);
         tileViewportGenPending = true;
-    }
-    if (completedAllRequestedTiles) {
-        sendTileGenerationCompleteToClient(st.sessionId, epoch);
     }
 }
 
