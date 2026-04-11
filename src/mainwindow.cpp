@@ -3859,9 +3859,11 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraTileBuildMode")
     {
         const QString requestedMode = parts[1].trimmed();
-        tileBuildMode = (requestedMode == "merged_single_level")
-            ? QStringLiteral("merged_single_level")
-            : QStringLiteral("pyramid");
+        if (requestedMode == QStringLiteral("merged_single_level")) {
+            Logger::Log("SetMainCameraTileBuildMode: 'merged_single_level' is deprecated, forcing pyramid",
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+        tileBuildMode = QStringLiteral("pyramid");
         Logger::Log("Set MainCamera Tile Build Mode to " + tileBuildMode.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveParameter("MainCamera", "Tile Build Mode", tileBuildMode);
     }
@@ -4341,7 +4343,8 @@ void MainWindow::onMessageReceived(const QString &message)
                     LogLevel::DEBUG, DeviceType::MAIN);
         Logger::Log("sendRedBoxState finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    else if (parts[0].trimmed() == "sendVisibleArea" && (parts.size() == 4 || parts.size() == 5 || parts.size() == 6))
+    else if (parts[0].trimmed() == "sendVisibleArea" &&
+             (parts.size() == 4 || parts.size() == 5 || parts.size() == 6 || parts.size() == 7))
     {
         Logger::Log("sendVisibleArea ...", LogLevel::DEBUG, DeviceType::MAIN);
         const double vx = parts[1].trimmed().toDouble();
@@ -4350,23 +4353,35 @@ void MainWindow::onMessageReceived(const QString &message)
         roiAndFocuserInfo["VisibleX"] = vx;
         roiAndFocuserInfo["VisibleY"] = vy;
         roiAndFocuserInfo["scale"] = sc;
-        // 可选 frameId（v2）：用于跨帧不去抖（前端把 frameId 追加到命令末尾）
+        // 可选 frameId（旧协议 v2）：用于跨帧不去抖（前端把 frameId 追加到命令末尾）
         // 这里当前仅用于兼容解析；瓦片生成始终以最新 tileFrame.epoch 为准。
-        if (parts.size() == 5) {
+        if (parts.size() >= 5) {
             (void)parts[4].trimmed().toULongLong();
         }
+        int targetZ = -1;
         int maxZCap = -1;
         if (parts.size() == 6) {
-            (void)parts[4].trimmed().toULongLong();
-            maxZCap = parts[5].trimmed().toInt();
+            targetZ = parts[5].trimmed().toInt();
+        } else if (parts.size() == 7) {
+            targetZ = parts[5].trimmed().toInt();
+            maxZCap = parts[6].trimmed().toInt();
         }
 
         // 同步到瓦片视口参数（供后端按需生成视口瓦片）
         tileViewportX = vx;
         tileViewportY = vy;
         tileViewportScale = sc;
+        tileViewportTargetZ = targetZ;
         tileViewportMaxZCap = maxZCap;
         ++tileViewportRequestSeq;
+
+        Logger::Log("sendVisibleArea parsed: frameId=" +
+                        std::to_string(parts.size() >= 5
+                                           ? static_cast<unsigned long long>(parts[4].trimmed().toULongLong())
+                                           : 0ULL) +
+                        ", targetZ=" + std::to_string(targetZ) +
+                        ", maxZCap=" + std::to_string(maxZCap),
+                    LogLevel::DEBUG, DeviceType::MAIN);
 
         // 视口变化：调度“按需补瓦片”（不会阻塞主线程；会做合并/节流）
         scheduleViewportTileGeneration();
@@ -6632,9 +6647,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     gpm.previewBinningFactor = binningFactor;
     // 帧ID：与本次 saveFitsAsPNG() 的 epoch 对齐，用于前端/瓦片请求做“错帧丢弃”
     gpm.frameId = epochAtStart;
-    gpm.buildMode = (tileBuildMode.trimmed() == "merged_single_level")
-        ? QStringLiteral("merged_single_level")
-        : QStringLiteral("pyramid");
+    gpm.buildMode = QStringLiteral("pyramid");
     Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | sessionId = " +
                     sessionId.toStdString(),
                 LogLevel::INFO, DeviceType::CAMERA);
@@ -6666,9 +6679,6 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
 
     // 初次：按当前视口优先生成其它层级/视口瓦片，其余在视口变化时再按需补齐
     scheduleViewportTileGeneration();
-    if (gpm.buildMode == QStringLiteral("merged_single_level")) {
-        scheduleFullResTileCompletion();
-    }
 
     // 发送GPM到前端
     if (tilePyramidEpoch.load() != epochAtStart) {
@@ -7189,9 +7199,7 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
     gpm.cfa = cfa;
     gpm.gainR = ImageGainR;
     gpm.gainB = ImageGainB;
-    gpm.buildMode = (tileBuildMode.trimmed() == "merged_single_level")
-        ? QStringLiteral("merged_single_level")
-        : QStringLiteral("pyramid");
+    gpm.buildMode = QStringLiteral("pyramid");
 
     // 计算最大缩放层级（基于最低精度层的合并倍数 maxMergeFactor=2^N）
     // 例：maxMergeFactor=16 => level 0=16x16 ... level 4=1x1（共5层）
@@ -7585,53 +7593,7 @@ void MainWindow::scheduleViewportTileGeneration()
 
 void MainWindow::scheduleFullResTileCompletion()
 {
-    if (tileBuildMode.trimmed() != QStringLiteral("merged_single_level")) {
-        return;
-    }
-
-    if (tileFullResGenInFlight.exchange(true))
-    {
-        tileFullResGenPending = true;
-        return;
-    }
-
-    tileFullResGenPending = false;
-
-    TileFrameState st;
-    std::shared_ptr<cv::Mat> img;
-    {
-        std::lock_guard<std::mutex> lk(tileFrameMutex);
-        st = tileFrame;
-        img = tileFrameImage16;
-    }
-    if (!img || img->empty() || st.sessionId.isEmpty() || st.imageWidth <= 0 || st.imageHeight <= 0)
-    {
-        tileFullResGenInFlight = false;
-        return;
-    }
-
-    const int maxZCap = tileViewportMaxZCap.load();
-    if (maxZCap >= 0 && maxZCap < st.maxZoomLevel)
-    {
-        tileFullResGenInFlight = false;
-        return;
-    }
-
-    const quint64 epoch = st.epoch;
-    QPointer<MainWindow> self(this);
-    QtConcurrent::run([self, epoch]() {
-        if (!self) return;
-        self->generateFullResTiles_Once(epoch);
-
-        QMetaObject::invokeMethod(self, [self]() {
-            if (!self) return;
-            self->tileFullResGenInFlight = false;
-            if (self->tileFullResGenPending.exchange(false))
-            {
-                self->scheduleFullResTileCompletion();
-            }
-        }, Qt::QueuedConnection);
-    });
+    // 普通拍摄统一切换到标准金字塔视口策略后，不再后台补齐整张图最高层。
 }
 
 void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs)
@@ -7656,6 +7618,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     const int H = st.imageHeight;
     const int T = (st.tileSize > 0) ? st.tileSize : 512;
     const int maxZ = std::max(0, st.maxZoomLevel);
+    const int requestedTargetZ = tileViewportTargetZ.load();
     const int requestedMaxZCap = tileViewportMaxZCap.load();
     const int effectiveMaxZ = (requestedMaxZCap >= 0)
         ? std::max(0, std::min(maxZ, requestedMaxZCap))
@@ -7673,13 +7636,16 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
 
     const double visibleWidth = W * scale;
     const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
-    const int currentZ = std::min(calculateTileLevelFromScale(scale, maxZ), effectiveMaxZ);
-    const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
+    const int fallbackZ = std::min(calculateTileLevelFromScale(scale, maxZ), effectiveMaxZ);
+    const int currentZ = (requestedTargetZ >= 0)
+        ? std::max(0, std::min(effectiveMaxZ, requestedTargetZ))
+        : fallbackZ;
     const bool forceFullImageForCappedMode = (requestedMaxZCap >= 0);
     Logger::Log("[TileDebug] event=generateViewportTiles_OnceBegin session=" + st.sessionId.toStdString() +
                     " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
                     " epoch=" + std::to_string(static_cast<unsigned long long>(epoch)) +
                     " requestSeq=" + std::to_string(static_cast<unsigned long long>(requestSeq)) +
+                    " requestedTargetZ=" + std::to_string(requestedTargetZ) +
                     " requestedMaxZCap=" + std::to_string(requestedMaxZCap) +
                     " effectiveMaxZ=" + std::to_string(effectiveMaxZ) +
                     " currentZ=" + std::to_string(currentZ) +
@@ -7706,26 +7672,12 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         return false;
     };
 
-    // 与前端当前请求策略保持一致：
-    // - 始终优先 z=0 整图预览，保证首帧能尽快显示
-    // - 再补 currentZ-1 / currentZ，作为当前视口的渐进细化层
-    // 这样避免 pyramid 模式一次性生成 0..maxZ 全层，减少首帧等待和无效工作。
-    std::vector<int> levelsToGenerate;
-    if (mergedSingleLevelMode) {
-        // merged_single_level 下，z=0 预览已经由 generateVisibleTilesSync()
-        // 在发出 TileGPM 前同步生成完成。这里的后台视口任务只负责
-        // 当前视口的高分辨率原图瓦片，避免把 100ms 预算浪费在重复生成 z=0 上。
-        if (effectiveMaxZ > 0) {
-            levelsToGenerate.push_back(effectiveMaxZ);
-        } else {
-            levelsToGenerate.push_back(0);
-        }
-    } else {
-        const int coarseZ = std::max(0, currentZ - 1);
-        levelsToGenerate = {0, coarseZ, currentZ};
-        std::sort(levelsToGenerate.begin(), levelsToGenerate.end());
-        levelsToGenerate.erase(std::unique(levelsToGenerate.begin(), levelsToGenerate.end()), levelsToGenerate.end());
-    }
+    // 普通拍摄统一只围绕前端显式 targetZ 生成当前视口需要的层级；
+    // z=0 整图预览已由 generateVisibleTilesSync() 提前准备。
+    const int coarseZ = std::max(0, currentZ - 1);
+    std::vector<int> levelsToGenerate = {coarseZ, currentZ};
+    std::sort(levelsToGenerate.begin(), levelsToGenerate.end());
+    levelsToGenerate.erase(std::unique(levelsToGenerate.begin(), levelsToGenerate.end()), levelsToGenerate.end());
 
     int totalWritten = 0;
     QStringList readyTileKeys;
@@ -7745,7 +7697,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
 
         const int levelScaleInt = 1 << std::max(0, (maxZ - z)); // 2^(maxZ-z)
         const double levelScale = static_cast<double>(levelScaleInt);
-        const bool singlePreviewTile = mergedSingleLevelMode && (z == 0);
+        const bool singlePreviewTile = (z == 0);
 
         // 与前端请求策略保持一致：
         // - z=0：整图单瓦片预览
@@ -7884,18 +7836,11 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     }
 
     std::string levelSummary;
-        if (mergedSingleLevelMode)
+    levelSummary.clear();
+    for (size_t i = 0; i < levelsToGenerate.size(); ++i)
     {
-        levelSummary = levelsToGenerate.empty() ? std::string("none") : ("0," + std::to_string(effectiveMaxZ));
-    }
-    else
-    {
-        levelSummary.clear();
-        for (size_t i = 0; i < levelsToGenerate.size(); ++i)
-        {
-            if (i > 0) levelSummary += ",";
-            levelSummary += std::to_string(levelsToGenerate[i]);
-        }
+        if (i > 0) levelSummary += ",";
+        levelSummary += std::to_string(levelsToGenerate[i]);
     }
     Logger::Log("[TileDebug] event=generateViewportTiles_OnceEnd session=" + st.sessionId.toStdString() +
                " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
@@ -7922,7 +7867,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
                     LogLevel::INFO, DeviceType::CAMERA);
         tileViewportGenPending = true;
     }
-    if (completedAllRequestedTiles && !mergedSingleLevelMode) {
+    if (completedAllRequestedTiles) {
         sendTileGenerationCompleteToClient(st.sessionId, epoch);
     }
 }
@@ -8067,6 +8012,11 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
     const double vx = tileViewportX.load();
     const double vy = tileViewportY.load();
     const double sc = tileViewportScale.load();
+    const int requestedTargetZ = tileViewportTargetZ.load();
+    const int requestedMaxZCap = tileViewportMaxZCap.load();
+    const int effectiveMaxZ = (requestedMaxZCap >= 0)
+        ? std::max(0, std::min(maxZ, requestedMaxZCap))
+        : maxZ;
     const double aspect = (tileViewportAspect > 0.1) ? tileViewportAspect : (16.0 / 9.0);
     const double visibleX = std::isfinite(vx) ? vx : (W / 2.0);
     const double visibleY = std::isfinite(vy) ? vy : (H / 2.0);
@@ -8075,27 +8025,26 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
     const double scale = std::isfinite(sc) && sc > 0
         ? std::max(MIN_VIEW_SCALE, std::min(MAX_VIEW_SCALE, sc))
         : 1.0;
-    const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
+    const int fallbackZ = std::min(calculateTileLevelFromScale(scale, maxZ), effectiveMaxZ);
+    const int currentZ = (requestedTargetZ >= 0)
+        ? std::max(0, std::min(effectiveMaxZ, requestedTargetZ))
+        : fallbackZ;
+    const bool forceFullImageForCappedMode = (requestedMaxZCap >= 0);
     Logger::Log("[TileDebug] event=generateVisibleTilesSyncBegin session=" + st.sessionId.toStdString() +
                     " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
                     " epoch=" + std::to_string(static_cast<unsigned long long>(epoch)) +
+                    " requestedTargetZ=" + std::to_string(requestedTargetZ) +
                     " scale=" + std::to_string(scale) +
                     " visibleCenter=" + std::to_string(visibleX) + "," + std::to_string(visibleY) +
-                    " mergedSingleLevelMode=" + std::string(mergedSingleLevelMode ? "true" : "false"),
+                    " currentZ=" + std::to_string(currentZ) +
+                    " requestedMaxZCap=" + std::to_string(requestedMaxZCap),
                 LogLevel::INFO, DeviceType::CAMERA);
     // 同步预生成阶段：
-    // - merged_single_level：首帧只保证 z=0 整图粗预览就绪，尽快把 TileGPM 发给前端；
-    //   z=maxZ 的细节层交给后台视口任务补齐，避免首帧被整图高精度瓦片阻塞。
-    // - pyramid：至少准备 z=0 整图预览 + currentZ 当前视口层，
-    //   这样前端在收到 TileGPM 后，请求预览图和当前层时都能尽量命中，避免首帧黑屏/404。
-    std::vector<int> levelsToSync;
-    if (mergedSingleLevelMode) {
-        levelsToSync.push_back(0);
-    } else {
-        levelsToSync = {0, calculateTileLevelFromScale(scale, maxZ)};
-        std::sort(levelsToSync.begin(), levelsToSync.end());
-        levelsToSync.erase(std::unique(levelsToSync.begin(), levelsToSync.end()), levelsToSync.end());
-    }
+    // - 始终准备 z=0 整图预览，保证首帧快速可见
+    // - 再准备 targetZ-1 / targetZ 当前视口层，减少收到 GPM 后的首批请求 miss
+    std::vector<int> levelsToSync = {0, std::max(0, currentZ - 1), currentZ};
+    std::sort(levelsToSync.begin(), levelsToSync.end());
+    levelsToSync.erase(std::unique(levelsToSync.begin(), levelsToSync.end()), levelsToSync.end());
 
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
     constexpr int TILE_BORDER = 2;
@@ -8119,8 +8068,8 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         if (tilePyramidEpoch.load() != epoch) return;
         const int levelScaleInt = 1 << std::max(0, (maxZ - z));
         const double levelScale = static_cast<double>(levelScaleInt);
-        const bool singlePreviewTile = mergedSingleLevelMode && (z == 0);
-        const bool fullImage = (mergedSingleLevelMode || z == 0);
+        const bool singlePreviewTile = (z == 0);
+        const bool fullImage = singlePreviewTile || forceFullImageForCappedMode;
         const double left = fullImage ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
         const double top = fullImage ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
         const double right = fullImage ? static_cast<double>(W) : std::min(static_cast<double>(W), left + visibleWidth);
@@ -8224,24 +8173,16 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         }
     }
     std::string levelSummary;
-    if (mergedSingleLevelMode)
+    levelSummary.clear();
+    for (size_t i = 0; i < levelsToSync.size(); ++i)
     {
-        levelSummary = "0";
-    }
-    else
-    {
-        levelSummary.clear();
-        for (size_t i = 0; i < levelsToSync.size(); ++i)
-        {
-            if (i > 0) levelSummary += ",";
-            levelSummary += std::to_string(levelsToSync[i]);
-        }
+        if (i > 0) levelSummary += ",";
+        levelSummary += std::to_string(levelsToSync[i]);
     }
     Logger::Log("[TileDebug] event=generateVisibleTilesSyncEnd session=" + st.sessionId.toStdString() +
                " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
                " wroteTiles=" + std::to_string(totalCount) +
-               " levels=" + levelSummary +
-               (mergedSingleLevelMode ? " mergedSingleLevel=true" : ""),
+               " levels=" + levelSummary,
                LogLevel::DEBUG, DeviceType::CAMERA);
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
@@ -28313,9 +28254,11 @@ void MainWindow::getMainCameraParameters()
             }
         }
         if (it.key() == "Tile Build Mode") {
-            tileBuildMode = (it.value() == "merged_single_level")
-                ? QStringLiteral("merged_single_level")
-                : QStringLiteral("pyramid");
+            if (it.value() == "merged_single_level") {
+                Logger::Log("LoadParameter | Tile Build Mode 'merged_single_level' is deprecated, forcing pyramid",
+                            LogLevel::WARNING, DeviceType::MAIN);
+            }
+            tileBuildMode = QStringLiteral("pyramid");
             it.value() = tileBuildMode;
             hasTileBuildMode = true;
         }
@@ -28347,9 +28290,7 @@ void MainWindow::getMainCameraParameters()
         }
     }
     if (!hasTileBuildMode) {
-        tileBuildMode = (tileBuildMode == "merged_single_level")
-            ? QStringLiteral("merged_single_level")
-            : QStringLiteral("pyramid");
+        tileBuildMode = QStringLiteral("pyramid");
         order += ":Tile Build Mode:" + tileBuildMode;
     }
     if (!hasRoiCalcMode) {
