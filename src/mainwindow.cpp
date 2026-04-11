@@ -2204,7 +2204,7 @@ void MainWindow::onMessageReceived(const QString &message)
             startAutoFocus();
         }
         else if (mode == "Fine") {
-            // 新：仅从当前位置执行 HFR 精调（固定步长 100，采样 11 点）
+            // 仅从当前位置执行本地精调：先拍当前位置，再围绕当前位置双向展开
             // 增加模式标记：fine（仅精调模式）
             emit wsThread->sendMessageToClient("AutoFocusStarted:fine:自动对焦已开始");
             startAutoFocusFineHFROnly();
@@ -6650,6 +6650,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         std::lock_guard<std::mutex> lk(tileFrameMutex);
         tileFrame.epoch = epochAtStart;
         tileFrame.sessionId = sessionId;
+        tileFrame.frameId = epochAtStart;
         tileFrame.imageWidth = tileSourceImage.cols;
         tileFrame.imageHeight = tileSourceImage.rows;
         tileFrame.previewBinningFactor = binningFactor;
@@ -6871,6 +6872,74 @@ int MainWindow::getOpenCvBayerToBgrCode(const QString& cfa)
     if (normalizedCfa == "GRBG") return cv::COLOR_BayerGR2BGR;
     if (normalizedCfa == "GBRG") return cv::COLOR_BayerGB2BGR;
     return -1;
+}
+
+bool MainWindow::tryGetBayerPattern(const QString& cfa, BayerPattern& outPattern)
+{
+    const QString normalizedCfa = normalizeCfaPattern(cfa);
+    if (normalizedCfa == "RGGB") {
+        outPattern = BAYER_RGGB;
+        return true;
+    }
+    if (normalizedCfa == "BGGR") {
+        outPattern = BAYER_BGGR;
+        return true;
+    }
+    if (normalizedCfa == "GRBG") {
+        outPattern = BAYER_GRBG;
+        return true;
+    }
+    if (normalizedCfa == "GBRG") {
+        outPattern = BAYER_GBRG;
+        return true;
+    }
+    return false;
+}
+
+cv::Mat MainWindow::downsampleTileImageForLevel(const cv::Mat& image, const QString& cfa, int scaleFactor)
+{
+    if (image.empty()) return cv::Mat();
+    if (scaleFactor <= 1) return image;
+
+    // 非 2^N 或非单通道 RAW 的路径，退回普通面积缩小。
+    const bool isPowerOfTwo = (scaleFactor & (scaleFactor - 1)) == 0;
+    BayerPattern bayerPattern = BAYER_RGGB;
+    const bool useBayerSafe =
+        isPowerOfTwo &&
+        (image.type() == CV_16UC1 || image.type() == CV_8UC1 || image.type() == CV_32SC1) &&
+        tryGetBayerPattern(cfa, bayerPattern);
+
+    if (!useBayerSafe) {
+        cv::Mat resized;
+        cv::resize(image, resized,
+                   cv::Size(std::max(1, image.cols / scaleFactor), std::max(1, image.rows / scaleFactor)),
+                   0, 0, cv::INTER_AREA);
+        return resized;
+    }
+
+    cv::Mat current = image;
+    int factor = scaleFactor;
+    while (factor > 1) {
+        cv::Mat next = Tools::PixelsDataSoftBin_Bayer(current, 2, 2, bayerPattern);
+        if (next.empty()) {
+            Logger::Log("[TileDebug] event=downsampleTileImageForLevelFallback reason=BayerSafeBinFailed cfa=" +
+                            cfa.toStdString() + " scaleFactor=" + std::to_string(scaleFactor),
+                        LogLevel::WARNING, DeviceType::CAMERA);
+            cv::Mat fallback;
+            cv::resize(image, fallback,
+                       cv::Size(std::max(1, image.cols / scaleFactor), std::max(1, image.rows / scaleFactor)),
+                       0, 0, cv::INTER_AREA);
+            return fallback;
+        }
+        current = std::move(next);
+        factor >>= 1;
+    }
+    Logger::Log("[TileDebug] event=downsampleTileImageForLevel cfa=" + cfa.toStdString() +
+                    " scaleFactor=" + std::to_string(scaleFactor) +
+                    " input=" + std::to_string(image.cols) + "x" + std::to_string(image.rows) +
+                    " output=" + std::to_string(current.cols) + "x" + std::to_string(current.rows),
+                LogLevel::DEBUG, DeviceType::CAMERA);
+    return current;
 }
 
 QString MainWindow::deriveCfaPatternForOffset(const QString& baseCfa, int shiftX, int shiftY)
@@ -7606,6 +7675,18 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
     const int currentZ = std::min(calculateTileLevelFromScale(scale, maxZ), effectiveMaxZ);
     const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
+    const bool forceFullImageForCappedMode = (requestedMaxZCap >= 0);
+    Logger::Log("[TileDebug] event=generateViewportTiles_OnceBegin session=" + st.sessionId.toStdString() +
+                    " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                    " epoch=" + std::to_string(static_cast<unsigned long long>(epoch)) +
+                    " requestSeq=" + std::to_string(static_cast<unsigned long long>(requestSeq)) +
+                    " requestedMaxZCap=" + std::to_string(requestedMaxZCap) +
+                    " effectiveMaxZ=" + std::to_string(effectiveMaxZ) +
+                    " currentZ=" + std::to_string(currentZ) +
+                    " scale=" + std::to_string(scale) +
+                    " visibleCenter=" + std::to_string(visibleX) + "," + std::to_string(visibleY) +
+                    " forceFullImageForCappedMode=" + std::string(forceFullImageForCappedMode ? "true" : "false"),
+                LogLevel::INFO, DeviceType::CAMERA);
 
     QElapsedTimer timer;
     timer.start();
@@ -7669,7 +7750,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         // 与前端请求策略保持一致：
         // - z=0：整图单瓦片预览
         // - z>0：仅当前视口范围的高分辨率瓦片
-        const bool fullImageForThisZ = (z == 0);
+        const bool fullImageForThisZ = (z == 0) || forceFullImageForCappedMode;
         const double left = fullImageForThisZ ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
         const double top = fullImageForThisZ ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
         const double right = fullImageForThisZ ? static_cast<double>(W) : std::min(static_cast<double>(W), left + visibleWidth);
@@ -7688,6 +7769,14 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         const int startY = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelTop / T));
         const int endX = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelRight / T) - 1.0);
         const int endY = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelBottom / T) - 1.0);
+        Logger::Log("[TileDebug] event=generateViewportTiles_OnceLevel session=" + st.sessionId.toStdString() +
+                        " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                        " z=" + std::to_string(z) +
+                        " fullImage=" + std::string(fullImageForThisZ ? "true" : "false") +
+                        " tileRange=[" + std::to_string(startX) + "," + std::to_string(startY) +
+                        "]-[" + std::to_string(endX) + "," + std::to_string(endY) + "]" +
+                        " maxTiles=" + std::to_string(maxTilesX) + "x" + std::to_string(maxTilesY),
+                    LogLevel::DEBUG, DeviceType::CAMERA);
 
         std::vector<TileReq> tiles;
         tiles.reserve(static_cast<size_t>(std::max(0, (endX - startX + 1) * (endY - startY + 1))));
@@ -7720,6 +7809,18 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
             if (shouldStop()) {
                 completedAllRequestedTiles = false;
                 break;
+            }
+
+            // 预算续跑时从同一 requestSeq 重新进入本函数。
+            // 同一 epoch 下，瓦片内容只由 frame/z/x/y 决定，与“本轮从哪个视口触发”无关；
+            // 因此可以安全跳过已经生成完成的瓦片，避免每轮都从高优先级第一块重新开始，
+            // 导致 capped/full-image 模式下长期只补出局部一小块。
+            const uint64_t packedKey = makeKey(z, t.x, t.y);
+            {
+                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
+                    continue;
+                }
             }
 
             const QString xDirPath = zDirPath + "/" + QString::number(t.x);
@@ -7762,12 +7863,22 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
             }
             else
             {
-                cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
+                tileLevel = downsampleTileImageForLevel(padded, st.cfa, levelScaleInt);
+                if (tileLevel.cols != wantedLevel.width || tileLevel.rows != wantedLevel.height) {
+                    Logger::Log("[TileDebug] event=tileSizeMismatchAfterDownsample session=" + st.sessionId.toStdString() +
+                                    " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                                    " z=" + std::to_string(z) +
+                                    " x=" + std::to_string(t.x) +
+                                    " y=" + std::to_string(t.y) +
+                                    " expected=" + std::to_string(wantedLevel.width) + "x" + std::to_string(wantedLevel.height) +
+                                    " actual=" + std::to_string(tileLevel.cols) + "x" + std::to_string(tileLevel.rows),
+                                LogLevel::WARNING, DeviceType::CAMERA);
+                }
             }
 
             saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
             readyTileKeys.push_back(QString::number(z) + "/" + QString::number(t.x) + "/" + QString::number(t.y));
-            doneKeys.insert(makeKey(z, t.x, t.y));
+            doneKeys.insert(packedKey);
             totalWritten++;
         }
     }
@@ -7786,8 +7897,10 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
             levelSummary += std::to_string(levelsToGenerate[i]);
         }
     }
-    Logger::Log("generateViewportTiles_Once: wrote " + std::to_string(totalWritten) +
-               " tiles (z=" + levelSummary + ") for session " + st.sessionId.toStdString(),
+    Logger::Log("[TileDebug] event=generateViewportTiles_OnceEnd session=" + st.sessionId.toStdString() +
+               " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+               " wroteTiles=" + std::to_string(totalWritten) +
+               " levels=" + levelSummary,
                LogLevel::DEBUG, DeviceType::CAMERA);
     if (!doneKeys.empty()) {
         std::lock_guard<std::mutex> lk(tileGenDoneMutex);
@@ -7802,6 +7915,11 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         interruptedByBudget &&
         tilePyramidEpoch.load() == epoch &&
         tileViewportRequestSeq.load() == requestSeq) {
+        Logger::Log("[TileDebug] event=generateViewportTiles_OnceBudgetRerun session=" +
+                        st.sessionId.toStdString() + " frameId=" +
+                        std::to_string(static_cast<unsigned long long>(st.frameId)) + " epoch=" +
+                        std::to_string(static_cast<unsigned long long>(epoch)),
+                    LogLevel::INFO, DeviceType::CAMERA);
         tileViewportGenPending = true;
     }
     if (completedAllRequestedTiles && !mergedSingleLevelMode) {
@@ -7958,6 +8076,13 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         ? std::max(MIN_VIEW_SCALE, std::min(MAX_VIEW_SCALE, sc))
         : 1.0;
     const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
+    Logger::Log("[TileDebug] event=generateVisibleTilesSyncBegin session=" + st.sessionId.toStdString() +
+                    " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                    " epoch=" + std::to_string(static_cast<unsigned long long>(epoch)) +
+                    " scale=" + std::to_string(scale) +
+                    " visibleCenter=" + std::to_string(visibleX) + "," + std::to_string(visibleY) +
+                    " mergedSingleLevelMode=" + std::string(mergedSingleLevelMode ? "true" : "false"),
+                LogLevel::INFO, DeviceType::CAMERA);
     // 同步预生成阶段：
     // - merged_single_level：首帧只保证 z=0 整图粗预览就绪，尽快把 TileGPM 发给前端；
     //   z=maxZ 的细节层交给后台视口任务补齐，避免首帧被整图高精度瓦片阻塞。
@@ -8012,6 +8137,14 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         const int startY = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelTop / T));
         const int endX = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelRight / T) - 1.0);
         const int endY = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelBottom / T) - 1.0);
+        Logger::Log("[TileDebug] event=generateVisibleTilesSyncLevel session=" + st.sessionId.toStdString() +
+                        " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                        " z=" + std::to_string(z) +
+                        " fullImage=" + std::string(fullImage ? "true" : "false") +
+                        " tileRange=[" + std::to_string(startX) + "," + std::to_string(startY) +
+                        "]-[" + std::to_string(endX) + "," + std::to_string(endY) + "]" +
+                        " maxTiles=" + std::to_string(maxTilesX) + "x" + std::to_string(maxTilesY),
+                    LogLevel::DEBUG, DeviceType::CAMERA);
 
         const QString zDirPath = sessionTilePath + "/" + QString::number(z);
         if (!QDir().mkpath(zDirPath)) {
@@ -8069,7 +8202,17 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                 if (levelScaleInt == 1) {
                     tileLevel = padded;
                 } else {
-                    cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
+                    tileLevel = downsampleTileImageForLevel(padded, st.cfa, levelScaleInt);
+                    if (tileLevel.cols != wantedLevel.width || tileLevel.rows != wantedLevel.height) {
+                        Logger::Log("[TileDebug] event=tileSizeMismatchAfterDownsample session=" + st.sessionId.toStdString() +
+                                        " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                                        " z=" + std::to_string(z) +
+                                        " x=" + std::to_string(tx) +
+                                        " y=" + std::to_string(ty) +
+                                        " expected=" + std::to_string(wantedLevel.width) + "x" + std::to_string(wantedLevel.height) +
+                                        " actual=" + std::to_string(tileLevel.cols) + "x" + std::to_string(tileLevel.rows),
+                                    LogLevel::WARNING, DeviceType::CAMERA);
+                    }
                 }
                 saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
                 readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
@@ -8094,9 +8237,12 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
             levelSummary += std::to_string(levelsToSync[i]);
         }
     }
-    Logger::Log("generateVisibleTilesSync: wrote " + std::to_string(totalCount) + " tiles (z=" + levelSummary +
-               (mergedSingleLevelMode ? ", merged 2-level" : "") +
-               ") for session " + st.sessionId.toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
+    Logger::Log("[TileDebug] event=generateVisibleTilesSyncEnd session=" + st.sessionId.toStdString() +
+               " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+               " wroteTiles=" + std::to_string(totalCount) +
+               " levels=" + levelSummary +
+               (mergedSingleLevelMode ? " mergedSingleLevel=true" : ""),
+               LogLevel::DEBUG, DeviceType::CAMERA);
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
     }
@@ -8231,18 +8377,9 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
     for (int z = gpm.maxZoomLevel - 1; z >= 0; --z) {
         const cv::Mat& higherLevel = pyramidLevels[z + 1];
         cv::Mat lowerLevel;
-        
-        // 计算合并因子：level z对应的合并倍数为 2^(maxZoomLevel - z)
-        // level 0: 2^4 = 16x16合并
-        // level 1: 2^3 = 8x8合并
-        // level 2: 2^2 = 4x4合并
-        // level 3: 2^1 = 2x2合并
-        // level 4: 2^0 = 1x1（原图）
-        
-        // 从上一层缩小2倍
-        int newWidth = (higherLevel.cols + 1) / 2;
-        int newHeight = (higherLevel.rows + 1) / 2;
-        cv::resize(higherLevel, lowerLevel, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
+
+        // 彩色 RAW 必须保持 CFA 相位，不能直接在 Bayer 单通道上做普通面积缩小。
+        lowerLevel = downsampleTileImageForLevel(higherLevel, cfa, 2);
         pyramidLevels[z] = lowerLevel;
     }
     Logger::Log("Tile pyramid | build pyramid levels (resize chain) done", LogLevel::INFO, DeviceType::CAMERA);
@@ -8353,10 +8490,7 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
             levels[gpm.maxZoomLevel] = imageShare;
             for (int z = gpm.maxZoomLevel - 1; z >= 0; --z) {
                 const cv::Mat& higher = levels[z + 1];
-                cv::Mat lower;
-                int newW = (higher.cols + 1) / 2;
-                int newH = (higher.rows + 1) / 2;
-                cv::resize(higher, lower, cv::Size(newW, newH), 0, 0, cv::INTER_AREA);
+                cv::Mat lower = downsampleTileImageForLevel(higher, cfa, 2);
                 levels[z] = std::move(lower);
                 if (self->tilePyramidEpoch.load() != epochCopy) return;
             }
@@ -27752,8 +27886,8 @@ void MainWindow::startAutoFocusFineHFROnly()
         }
     }));
 
-    // 仅精调(Fine)：从当前位置直接进入 super-fine 精调流程
-    autoFocus->startSuperFineFromCurrentPosition();
+    // 仅精调(Fine)：从当前位置开始，先拍当前位置，再围绕当前位置双向展开
+    autoFocus->startLocalFineAdjustmentFromCurrentPosition();
     isAutoFocus = true;
     autoFocusStep = 0;
 }

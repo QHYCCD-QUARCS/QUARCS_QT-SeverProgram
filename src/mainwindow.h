@@ -745,6 +745,20 @@ public:
     static int getOpenCvBayerToBgrCode(const QString& cfa);
 
     /**
+     * @brief 将 CFA 字符串映射为 Tools::PixelsDataSoftBin_Bayer 使用的 BayerPattern
+     * @return true 表示映射成功；false 表示非彩色或未知 CFA
+     */
+    static bool tryGetBayerPattern(const QString& cfa, BayerPattern& outPattern);
+
+    /**
+     * @brief 对瓦片/层级图像做降采样：彩色 RAW 走 Bayer-safe 同色平均，单色走普通面积缩小
+     * @param image 输入图像（通常为 CV_16UC1/CV_8UC1）
+     * @param cfa 当前帧实际 CFA
+     * @param scaleFactor 相对目标层级的缩小倍数（2^N）
+     */
+    static cv::Mat downsampleTileImageForLevel(const cv::Mat& image, const QString& cfa, int scaleFactor);
+
+    /**
      * @brief 按像素偏移推导当前帧/ROI 的实际 CFA
      * @param baseCfa 基础 CFA（相机原始声明）
      * @param shiftX 相对 CFA 原点的 X 偏移
@@ -836,6 +850,7 @@ public:
     struct TileFrameState {
         quint64 epoch = 0;
         QString sessionId;
+        quint64 frameId = 0;
         int imageWidth = 0;
         int imageHeight = 0;
         int previewBinningFactor = 1;
@@ -1095,7 +1110,7 @@ public:
      * @brief 启动自动对焦流程
      */
     void startAutoFocus();
-    // 新：仅从当前位置执行 HFR 精调（固定步长 100、采样 11 点）
+    // 从当前位置执行本地精调：先拍当前位置，再围绕当前位置双向展开
     void startAutoFocusFineHFROnly();
     void startAutoFocusSuperFineOnly();
     
