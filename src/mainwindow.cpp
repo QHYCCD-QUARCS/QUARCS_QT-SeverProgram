@@ -12199,6 +12199,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                         MainCameraCFAOffsetX = 0;
                         MainCameraCFAOffsetY = 0;
                         const QString savedCameraCfa = normalizeCfaPattern(MainCameraCFA);
+                        bool usedSavedCameraCfaFallback = false;
                         SdkCommand cfaCmd;
                         cfaCmd.type = SdkCommandType::Custom;
                         cfaCmd.name = "GetCameraCfa";
@@ -12225,6 +12226,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                             (savedCameraCfa == "RGGB" || savedCameraCfa == "BGGR" ||
                              savedCameraCfa == "GRBG" || savedCameraCfa == "GBRG")) {
                             MainCameraCFA = savedCameraCfa;
+                            usedSavedCameraCfaFallback = true;
                             Logger::Log("AfterDeviceConnect | Fallback to saved SDK camera CFA: " + MainCameraCFA.toStdString(),
                                         LogLevel::WARNING, DeviceType::CAMERA);
                         }
@@ -12234,17 +12236,22 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                             Logger::Log("AfterDeviceConnect | SDK Camera is color camera, CFA: " + MainCameraCFA.toStdString(),
                                        LogLevel::INFO, DeviceType::CAMERA);
                             emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
+                            emit wsThread->sendMessageToClient("MainCameraCFASource:" +
+                                                               (usedSavedCameraCfaFallback ? QStringLiteral("SDKFallback")
+                                                                                           : QStringLiteral("SDK")));
                         } else {
                             Tools::saveParameter("MainCamera", "ImageCFA", QStringLiteral("null"));
                             Logger::Log("AfterDeviceConnect | SDK Camera is color camera, but CFA detection failed",
                                         LogLevel::WARNING, DeviceType::CAMERA);
                             emit wsThread->sendMessageToClient("MainCameraCFA:null");
+                            emit wsThread->sendMessageToClient("MainCameraCFASource:SDKFallback");
                         }
                     } else {
                         MainCameraCFA = "";
                         Tools::saveParameter("MainCamera", "ImageCFA", QStringLiteral("null"));
                         Logger::Log("AfterDeviceConnect | SDK Camera is mono camera", LogLevel::INFO, DeviceType::CAMERA);
                         emit wsThread->sendMessageToClient("MainCameraCFA:null");
+                        emit wsThread->sendMessageToClient("MainCameraCFASource:SDK");
                     }
                 } catch (const std::bad_any_cast&) {
                     Logger::Log("AfterDeviceConnect | Failed to get color camera info", LogLevel::WARNING, DeviceType::CAMERA);
@@ -12787,6 +12794,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         Tools::saveParameter("MainCamera", "ImageCFA", MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA);
         Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraCFA:" + (MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA));
+        emit wsThread->sendMessageToClient("MainCameraCFASource:INDI");
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
 
@@ -28323,6 +28331,7 @@ void MainWindow::getMainCameraParameters()
     emit wsThread->sendMessageToClient(order);
 
     emit wsThread->sendMessageToClient("MainCameraCFA:" + (MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA));
+    emit wsThread->sendMessageToClient("MainCameraCFASource:SAVED");
 }
 
 void MainWindow::getMountParameters()
