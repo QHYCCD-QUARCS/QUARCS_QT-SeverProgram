@@ -2524,51 +2524,8 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (parts.size() >= 1 && parts[0].trimmed() == "CalcWhiteBalance")
     {
-        Logger::Log("收到白平衡计算请求", LogLevel::INFO, DeviceType::MAIN);
-        
-        // 临时从FITS文件读取图像进行白平衡计算
-        const char* fitsPath = "/dev/shm/MatToFITS.fits";
-        cv::Mat tempImage;
-        int readStatus = Tools::readFits(fitsPath, tempImage);
-        
-        if (readStatus != 0 || tempImage.empty()) {
-            Logger::Log("无法从FITS文件读取图像，无法计算白平衡", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("WhiteBalanceGains:1.0:1.0");
-        }
-        else {
-            Logger::Log("已从FITS文件读取图像: " + std::to_string(tempImage.cols) + "x" + 
-                        std::to_string(tempImage.rows) + ", type=" + std::to_string(tempImage.type()), 
-                        LogLevel::DEBUG, DeviceType::MAIN);
-            
-            // 计算白平衡增益（使用当前相机的CFA类型）
-            const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
-            QPair<double, double> gains = calculateWhiteBalanceGains(tempImage, MainCameraCFA, offset);
-            
-            // 更新全局增益值
-            ImageGainR = gains.first;
-            ImageGainB = gains.second;
-            
-            // 保存参数
-            Tools::saveParameter("MainCamera", "ImageGainR", QString::number(ImageGainR));
-            Tools::saveParameter("MainCamera", "ImageGainB", QString::number(ImageGainB));
-            
-            // 发送增益值到前端
-            QString message = QString("WhiteBalanceGains:%1:%2")
-                                .arg(ImageGainR, 0, 'f', 4)
-                                .arg(ImageGainB, 0, 'f', 4);
-            emit wsThread->sendMessageToClient(message);
-            
-            Logger::Log("已发送白平衡增益到前端: R=" + std::to_string(ImageGainR) + 
-                        ", B=" + std::to_string(ImageGainB), LogLevel::INFO, DeviceType::MAIN);
-            
-            // 重要：白平衡增益变化只影响“前端渲染”，不应触发瓦片重新生成、更不应创建新 session。
-            // 这里仅把增益值发送给前端，由前端基于已缓存的 16-bit raw 瓦片做重处理/重渲染。
-            Logger::Log("白平衡增益已更新：不重新生成瓦片金字塔，仅通知前端进行重渲染", LogLevel::INFO, DeviceType::MAIN);
-            
-            // 释放临时图像内存
-            tempImage.release();
-            Logger::Log("已释放临时图像内存", LogLevel::DEBUG, DeviceType::MAIN);
-        }
+        Logger::Log("收到 CalcWhiteBalance 请求，但后端自动白平衡已停用；主图链路改由前端基于 Z=0 计算", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("WhiteBalanceGains:1.0:1.0");
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageOffset")
@@ -6579,7 +6536,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         return -1;
     }
 
-    // 彩色相机：每帧根据当前全分辨率 RAW 自动估计 R/B 增益（与 CalcWhiteBalance 相同算法），供 TileGPM 与前端渲染
+    // 自动图像优化已前端化：后端主链路不再按帧计算自动白平衡增益。
     Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | tileSourceImageSize = " +
                     std::to_string(tileSourceImage.cols) + "x" + std::to_string(tileSourceImage.rows),
                 LogLevel::INFO, DeviceType::CAMERA);
@@ -6589,28 +6546,6 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | effectiveCameraCFA = " +
                     effectiveCameraCFA.toStdString(),
                 LogLevel::INFO, DeviceType::CAMERA);
-
-    if (isColor && tileSourceImage.type() == CV_16UC1)
-    {
-        const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
-        QPair<double, double> gains = calculateWhiteBalanceGains(tileSourceImage, effectiveCameraCFA, offset);
-        ImageGainR = gains.first;
-        ImageGainB = gains.second;
-        Tools::saveParameter("MainCamera", "ImageGainR", QString::number(ImageGainR));
-        Tools::saveParameter("MainCamera", "ImageGainB", QString::number(ImageGainB));
-        // 不发送 WhiteBalanceGains：若先于 TileGPM 到达，前端会对「上一帧已缓存的 RAW 瓦片」执行
-        // applyStoredAutoWhiteBalance(reprocess)，导致新增益套在旧图上。每帧增益已由随后 sendGPMToClient(TileGPM) 下发，
-        // 前端 handleTileGPM 会更新增益并在新会话/新帧上拉瓦片。手动 CalcWhiteBalance 路径仍会单独发 WhiteBalanceGains。
-        Logger::Log("Per-frame auto WB gains: R=" + std::to_string(ImageGainR) +
-                        ", B=" + std::to_string(ImageGainB) + " (via TileGPM only; no duplicate WhiteBalanceGains)",
-                    LogLevel::INFO, DeviceType::CAMERA);
-        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | ImageGainR = " +
-                        std::to_string(ImageGainR),
-                    LogLevel::INFO, DeviceType::CAMERA);
-        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | ImageGainB = " +
-                        std::to_string(ImageGainB),
-                    LogLevel::INFO, DeviceType::CAMERA);
-    }
 
     // ========================= 瓦片（视口驱动生成） =========================
     // 每张图像使用独立会话目录：live_<epoch>，便于区分并清理旧图
@@ -6635,10 +6570,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         return -1;
     }
 
-    // 先计算“快速 GPM”用于首帧显示：
-    // - 不等待完整直方图
-    // - 大图会走子采样统计，尽快把可显示的 black/white 发给前端
-    // 完整直方图与更细统计放到后台补发，避免首帧额外等待 1s+
+    // GPM 仅保留图像与瓦片元数据；自动优化参数改由前端基于 Z=0 计算。
     int maxMergeFactor = 16;
     TileGPM gpm = calculateGPM(tileSourceImage, effectiveCameraCFA, maxMergeFactor, /*enableHistogram=*/false);
     gpm.sessionId = sessionId;
@@ -6695,66 +6627,6 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         if (!previewFitsImage || previewFitsImage->empty()) return;
         Tools::SaveMatToFITS(*previewFitsImage);
         Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
-    });
-
-    // 后台补充完整直方图与更精确的拉伸参数：
-    // - 这里对 preview/bin 后的小图做完整统计，速度远快于全分辨率原图
-    // - 使用相同 sessionId/frameId 再发一次 TileGPM，前端会在同一帧上更新 black/white，而不会切新会话
-    auto previewStatsImage = std::make_shared<cv::Mat>(image16.clone());
-    const QString asyncSessionId = sessionId;
-    const QString asyncBuildMode = gpm.buildMode;
-    const quint64 asyncFrameId = epochAtStart;
-    const int asyncImageWidth = gpm.imageWidth;
-    const int asyncImageHeight = gpm.imageHeight;
-    const int asyncTileSize = gpm.tileSize;
-    const int asyncMaxZoomLevel = gpm.maxZoomLevel;
-    const int asyncPreviewWidth = gpm.previewWidth;
-    const int asyncPreviewHeight = gpm.previewHeight;
-    const int asyncPreviewBin = gpm.previewBinningFactor;
-    const QString asyncCfa = gpm.cfa;
-    const double asyncGainR = gpm.gainR;
-    const double asyncGainB = gpm.gainB;
-    QPointer<MainWindow> self(this);
-    QtConcurrent::run([self,
-                       previewStatsImage,
-                       asyncSessionId,
-                       asyncBuildMode,
-                       asyncFrameId,
-                       asyncImageWidth,
-                       asyncImageHeight,
-                       asyncTileSize,
-                       asyncMaxZoomLevel,
-                       asyncPreviewWidth,
-                       asyncPreviewHeight,
-                       asyncPreviewBin,
-                       asyncCfa,
-                       asyncGainR,
-                       asyncGainB,
-                       maxMergeFactor]() {
-        if (!self || !previewStatsImage || previewStatsImage->empty()) return;
-        if (self->tilePyramidEpoch.load() != asyncFrameId) return;
-
-        TileGPM refined = self->calculateGPM(*previewStatsImage, asyncCfa, maxMergeFactor, /*enableHistogram=*/true);
-        refined.sessionId = asyncSessionId;
-        refined.frameId = asyncFrameId;
-        refined.buildMode = asyncBuildMode;
-        refined.imageWidth = asyncImageWidth;
-        refined.imageHeight = asyncImageHeight;
-        refined.tileSize = asyncTileSize;
-        refined.maxZoomLevel = asyncMaxZoomLevel;
-        refined.previewWidth = asyncPreviewWidth;
-        refined.previewHeight = asyncPreviewHeight;
-        refined.previewBinningFactor = asyncPreviewBin;
-        refined.cfa = asyncCfa;
-        refined.gainR = asyncGainR;
-        refined.gainB = asyncGainB;
-
-        QMetaObject::invokeMethod(self, [self, refined]() {
-            if (!self) return;
-            if (self->tilePyramidEpoch.load() != refined.frameId) return;
-            self->sendGPMToClient(refined);
-            self->sendHistogramToClient(refined);
-        }, Qt::QueuedConnection);
     });
 
     // 更新状态（回主线程，避免数据竞争；同时在这里触发 loop capture）
@@ -7227,6 +7099,20 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
     Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | enableHistogram = " +
                     std::string(enableHistogram ? "true" : "false"),
                 LogLevel::INFO, DeviceType::CAMERA);
+    gpm.gainR = 1.0;
+    gpm.gainB = 1.0;
+    gpm.globalMin = 0.0;
+    gpm.globalMax = 0.0;
+    gpm.globalMean = 0.0;
+    gpm.globalStdDev = 0.0;
+    gpm.blackLevel = 0;
+    gpm.whiteLevel = 65535;
+    gpm.histogramBins = 0;
+    gpm.histogramTotal = 0;
+    gpm.histogram.clear();
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | auto optimization metadata disabled on backend; returning neutral display params",
+                LogLevel::INFO, DeviceType::CAMERA);
+    return gpm;
 
     auto tryComputeColorLumaStats = [&](double& meanLumaOut, double& stdLumaOut, size_t& sampleCountOut) -> bool {
         if (image16.type() != CV_16UC1 || image16.rows < 2 || image16.cols < 2) {
