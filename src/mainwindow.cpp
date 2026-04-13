@@ -6670,6 +6670,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     // Z0/GPM 已经先行放出；当前视口的其它高清瓦片再异步补齐即可。
     const qint64 viewportScheduleStartMs = QDateTime::currentMSecsSinceEpoch();
     scheduleViewportTileGeneration();
+    scheduleFullResTileCompletion();
     emitCaptureTrace(QStringLiteral("backend_schedule_viewport_tiles_done"), viewportScheduleStartMs,
                      QString("sessionId=%1,frameId=%2")
                          .arg(sessionId)
@@ -7528,14 +7529,65 @@ void MainWindow::scheduleViewportTileGeneration()
             if (self->tileViewportGenPending.exchange(false))
             {
                 self->scheduleViewportTileGeneration();
+                return;
             }
+            self->scheduleFullResTileCompletion();
         }, Qt::QueuedConnection);
     });
 }
 
 void MainWindow::scheduleFullResTileCompletion()
 {
-    // 普通拍摄统一切换到标准金字塔视口策略后，不再后台补齐整张图最高层。
+    if (tileBuildMode.trimmed() != QStringLiteral("pyramid")) {
+        return;
+    }
+    if (tileViewportGenInFlight.load()) {
+        tileFullResGenPending = true;
+        return;
+    }
+    if (tileFullResGenInFlight.exchange(true))
+    {
+        tileFullResGenPending = true;
+        return;
+    }
+
+    tileFullResGenPending = false;
+
+    TileFrameState st;
+    std::shared_ptr<cv::Mat> img;
+    {
+        std::lock_guard<std::mutex> lk(tileFrameMutex);
+        st = tileFrame;
+        img = tileFrameImage16;
+    }
+    if (!img || img->empty() || st.sessionId.isEmpty() || st.imageWidth <= 0 || st.imageHeight <= 0)
+    {
+        tileFullResGenInFlight = false;
+        return;
+    }
+
+    const quint64 epoch = st.epoch;
+    const quint64 requestSeq = tileViewportRequestSeq.load();
+    const int budgetMs = std::max(1, tilePyramidFastBudgetMs);
+    QPointer<MainWindow> self(this);
+
+    QtConcurrent::run([self, epoch, requestSeq, budgetMs]() {
+        if (!self) return;
+        self->generateFullResTiles_Once(epoch, requestSeq, budgetMs);
+
+        QMetaObject::invokeMethod(self, [self]() {
+            if (!self) return;
+            self->tileFullResGenInFlight = false;
+            if (self->tileViewportGenInFlight.load()) {
+                self->tileFullResGenPending = true;
+                return;
+            }
+            if (self->tileFullResGenPending.exchange(false))
+            {
+                self->scheduleFullResTileCompletion();
+            }
+        }, Qt::QueuedConnection);
+    });
 }
 
 void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs)
@@ -7814,7 +7866,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
     }
-    if (completedVisibleTiles) {
+    if (completedVisibleTiles && tileBuildMode.trimmed() == QStringLiteral("merged_single_level")) {
         sendTileGenerationCompleteToClient(st.sessionId, epoch);
     }
     if (!completedAllWork &&
@@ -7830,7 +7882,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     }
 }
 
-void MainWindow::generateFullResTiles_Once(quint64 epoch)
+void MainWindow::generateFullResTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs)
 {
     TileFrameState st;
     std::shared_ptr<cv::Mat> img;
@@ -7842,18 +7894,125 @@ void MainWindow::generateFullResTiles_Once(quint64 epoch)
     if (!img || img->empty()) return;
     if (st.epoch != epoch) return;
     if (tilePyramidEpoch.load() != epoch) return;
-    if (tileBuildMode.trimmed() != QStringLiteral("merged_single_level")) return;
 
-    const int z = std::max(0, st.maxZoomLevel);
+    if (tileBuildMode.trimmed() == QStringLiteral("merged_single_level")) {
+        const int z = std::max(0, st.maxZoomLevel);
+        const int T = (st.tileSize > 0) ? st.tileSize : 512;
+        const int levelWidth = st.imageWidth;
+        const int levelHeight = st.imageHeight;
+        const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+        const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+        const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
+        const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+        constexpr int TILE_BORDER = 2;
+        constexpr int READY_BATCH_SIZE = 32;
+
+        auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
+            return (static_cast<uint64_t>(tz) << 40) |
+                   (static_cast<uint64_t>(tx) << 20) |
+                   static_cast<uint64_t>(ty);
+        };
+
+        if (!QDir().mkpath(zDirPath)) {
+            Logger::Log("generateFullResTiles_Once: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+            return;
+        }
+
+        int written = 0;
+        int skippedExisting = 0;
+        QStringList readyTileKeys;
+        readyTileKeys.reserve(READY_BATCH_SIZE);
+
+        for (int ty = 0; ty < maxTilesY; ++ty)
+        {
+            if (tilePyramidEpoch.load() != epoch) return;
+            for (int tx = 0; tx < maxTilesX; ++tx)
+            {
+                if (tilePyramidEpoch.load() != epoch) return;
+
+                const uint64_t packedKey = makeKey(z, tx, ty);
+                {
+                    std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                    if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
+                        skippedExisting++;
+                        continue;
+                    }
+                }
+
+                const QString xDirPath = zDirPath + "/" + QString::number(tx);
+                if (!QDir().mkpath(xDirPath)) {
+                    continue;
+                }
+                const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+
+                const int x0 = tx * T;
+                const int y0 = ty * T;
+                const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
+                                           T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+                const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+                const cv::Rect srcRect = wantedLevel & boundsOrig;
+
+                cv::Mat padded;
+                if (srcRect.width <= 0 || srcRect.height <= 0)
+                {
+                    padded = cv::Mat::zeros(wantedLevel.height, wantedLevel.width, img->type());
+                }
+                else
+                {
+                    cv::Mat src = (*img)(srcRect);
+                    const int topPad = srcRect.y - wantedLevel.y;
+                    const int leftPad = srcRect.x - wantedLevel.x;
+                    const int bottomPad = (wantedLevel.y + wantedLevel.height) - (srcRect.y + srcRect.height);
+                    const int rightPad = (wantedLevel.x + wantedLevel.width) - (srcRect.x + srcRect.width);
+                    cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+                }
+
+                saveTileFast_NoMkdir(padded, tileFilePath, TILE_BORDER);
+
+                {
+                    std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                    if (tileGenDoneEpoch == epoch) {
+                        tileGenDoneKeys.insert(packedKey);
+                    }
+                }
+
+                readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+                written++;
+
+                if (readyTileKeys.size() >= READY_BATCH_SIZE) {
+                    sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+                    readyTileKeys.clear();
+                }
+            }
+        }
+
+        if (!readyTileKeys.isEmpty()) {
+            sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+        }
+
+        sendTileGenerationCompleteToClient(st.sessionId, epoch);
+
+        Logger::Log("generateFullResTiles_Once: wrote " + std::to_string(written) +
+                   " full-res tiles at z=" + std::to_string(z) +
+                   " for session " + st.sessionId.toStdString() +
+                   " (skippedExisting=" + std::to_string(skippedExisting) + ")",
+                   LogLevel::DEBUG, DeviceType::CAMERA);
+        return;
+    }
+
+    if (tileBuildMode.trimmed() != QStringLiteral("pyramid")) return;
+
+    QElapsedTimer timer;
+    timer.start();
+
+    const int maxZ = std::max(0, st.maxZoomLevel);
     const int T = (st.tileSize > 0) ? st.tileSize : 512;
-    const int levelWidth = st.imageWidth;
-    const int levelHeight = st.imageHeight;
-    const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
-    const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
-    const QString zDirPath = sessionTilePath + "/" + QString::number(z);
     constexpr int TILE_BORDER = 2;
     constexpr int READY_BATCH_SIZE = 32;
+    bool completedAllTiles = true;
+    bool interruptedByViewport = false;
+    bool interruptedByBudget = false;
 
     auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
         return (static_cast<uint64_t>(tz) << 40) |
@@ -7861,89 +8020,150 @@ void MainWindow::generateFullResTiles_Once(quint64 epoch)
                static_cast<uint64_t>(ty);
     };
 
-    if (!QDir().mkpath(zDirPath)) {
-        Logger::Log("generateFullResTiles_Once: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
-        return;
-    }
+    auto shouldStop = [&]() -> bool {
+        if (tilePyramidEpoch.load() != epoch) return true;
+        if (tileViewportRequestSeq.load() != requestSeq) {
+            interruptedByViewport = true;
+            return true;
+        }
+        if (budgetMs > 0 && timer.elapsed() > budgetMs) {
+            interruptedByBudget = true;
+            return true;
+        }
+        return false;
+    };
 
     int written = 0;
     int skippedExisting = 0;
     QStringList readyTileKeys;
     readyTileKeys.reserve(READY_BATCH_SIZE);
+    std::set<uint64_t> doneKeys;
 
-    for (int ty = 0; ty < maxTilesY; ++ty)
+    for (int z = 0; z <= maxZ; ++z)
     {
-        if (tilePyramidEpoch.load() != epoch) return;
-        for (int tx = 0; tx < maxTilesX; ++tx)
-        {
-            if (tilePyramidEpoch.load() != epoch) return;
+        if (shouldStop()) {
+            completedAllTiles = false;
+            break;
+        }
+        const int levelScaleInt = 1 << std::max(0, (maxZ - z));
+        const int levelWidth = static_cast<int>(std::ceil(static_cast<double>(st.imageWidth) / levelScaleInt));
+        const int levelHeight = static_cast<int>(std::ceil(static_cast<double>(st.imageHeight) / levelScaleInt));
+        const int maxTilesX = (levelWidth + T - 1) / T;
+        const int maxTilesY = (levelHeight + T - 1) / T;
+        const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+        if (!QDir().mkpath(zDirPath)) {
+            Logger::Log("generateFullResTiles_Once: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+            completedAllTiles = false;
+            break;
+        }
 
-            const uint64_t packedKey = makeKey(z, tx, ty);
+        for (int ty = 0; ty < maxTilesY; ++ty)
+        {
+            if (shouldStop()) {
+                completedAllTiles = false;
+                break;
+            }
+            for (int tx = 0; tx < maxTilesX; ++tx)
             {
-                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
-                if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
-                    skippedExisting++;
+                if (shouldStop()) {
+                    completedAllTiles = false;
+                    break;
+                }
+
+                const uint64_t packedKey = makeKey(z, tx, ty);
+                {
+                    std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                    if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
+                        skippedExisting++;
+                        continue;
+                    }
+                }
+
+                const QString xDirPath = zDirPath + "/" + QString::number(tx);
+                if (!QDir().mkpath(xDirPath)) {
+                    completedAllTiles = false;
                     continue;
                 }
-            }
+                const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
 
-            const QString xDirPath = zDirPath + "/" + QString::number(tx);
-            if (!QDir().mkpath(xDirPath)) {
-                continue;
-            }
-            const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+                const int x0 = tx * T;
+                const int y0 = ty * T;
+                const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
+                                           T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+                const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
+                                          wantedLevel.y * levelScaleInt,
+                                          wantedLevel.width * levelScaleInt,
+                                          wantedLevel.height * levelScaleInt);
+                const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+                const cv::Rect srcRect = wantedOrig & boundsOrig;
 
-            const int x0 = tx * T;
-            const int y0 = ty * T;
-            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
-                                       T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
-            const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
-            const cv::Rect srcRect = wantedLevel & boundsOrig;
+                cv::Mat padded;
+                if (srcRect.width <= 0 || srcRect.height <= 0)
+                {
+                    padded = cv::Mat::zeros(wantedOrig.height, wantedOrig.width, img->type());
+                }
+                else
+                {
+                    cv::Mat src = (*img)(srcRect);
+                    const int topPad = srcRect.y - wantedOrig.y;
+                    const int leftPad = srcRect.x - wantedOrig.x;
+                    const int bottomPad = (wantedOrig.y + wantedOrig.height) - (srcRect.y + srcRect.height);
+                    const int rightPad = (wantedOrig.x + wantedOrig.width) - (srcRect.x + srcRect.width);
+                    cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+                }
 
-            cv::Mat padded;
-            if (srcRect.width <= 0 || srcRect.height <= 0)
-            {
-                padded = cv::Mat::zeros(wantedLevel.height, wantedLevel.width, img->type());
-            }
-            else
-            {
-                cv::Mat src = (*img)(srcRect);
-                const int topPad = srcRect.y - wantedLevel.y;
-                const int leftPad = srcRect.x - wantedLevel.x;
-                const int bottomPad = (wantedLevel.y + wantedLevel.height) - (srcRect.y + srcRect.height);
-                const int rightPad = (wantedLevel.x + wantedLevel.width) - (srcRect.x + srcRect.width);
-                cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
-            }
+                cv::Mat tileLevel;
+                if (levelScaleInt == 1)
+                {
+                    tileLevel = padded;
+                }
+                else
+                {
+                    tileLevel = downsampleTileImageForLevel(padded, st.cfa, levelScaleInt);
+                }
 
-            saveTileFast_NoMkdir(padded, tileFilePath, TILE_BORDER);
+                saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
+                doneKeys.insert(packedKey);
+                readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+                written++;
 
-            {
-                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
-                if (tileGenDoneEpoch == epoch) {
-                    tileGenDoneKeys.insert(packedKey);
+                if (readyTileKeys.size() >= READY_BATCH_SIZE) {
+                    {
+                        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                        if (tileGenDoneEpoch == epoch) {
+                            for (uint64_t key : doneKeys) tileGenDoneKeys.insert(key);
+                        }
+                    }
+                    doneKeys.clear();
+                    sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+                    readyTileKeys.clear();
                 }
             }
-
-            readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
-            written++;
-
-            if (readyTileKeys.size() >= READY_BATCH_SIZE) {
-                sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
-                readyTileKeys.clear();
-            }
+            if (!completedAllTiles) break;
         }
+        if (!completedAllTiles) break;
     }
 
+    if (!doneKeys.empty()) {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        if (tileGenDoneEpoch == epoch) {
+            for (uint64_t key : doneKeys) tileGenDoneKeys.insert(key);
+        }
+    }
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
     }
-
-    sendTileGenerationCompleteToClient(st.sessionId, epoch);
+    if (completedAllTiles) {
+        sendTileGenerationCompleteToClient(st.sessionId, epoch);
+    } else if (tilePyramidEpoch.load() == epoch) {
+        tileFullResGenPending = true;
+    }
 
     Logger::Log("generateFullResTiles_Once: wrote " + std::to_string(written) +
-               " full-res tiles at z=" + std::to_string(z) +
-               " for session " + st.sessionId.toStdString() +
-               " (skippedExisting=" + std::to_string(skippedExisting) + ")",
+               " pyramid tiles for session " + st.sessionId.toStdString() +
+               " (skippedExisting=" + std::to_string(skippedExisting) +
+               ", interruptedByViewport=" + std::string(interruptedByViewport ? "true" : "false") +
+               ", interruptedByBudget=" + std::string(interruptedByBudget ? "true" : "false") + ")",
                LogLevel::DEBUG, DeviceType::CAMERA);
 }
 

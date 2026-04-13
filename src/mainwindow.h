@@ -665,7 +665,7 @@ public:
     void generateVisibleTilesSync(quint64 epoch, bool includeViewportLevels = false);
     /** 兼容旧接口：普通拍摄已不再后台补齐整张图最高层 */
     void scheduleFullResTileCompletion();
-    void generateFullResTiles_Once(quint64 epoch);
+    void generateFullResTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs);
     static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
     static QString buildTileSessionId(quint64 frameId);
     int currentTilePreviewBinning() const;
