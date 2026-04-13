@@ -485,10 +485,10 @@ public:
 /**********************  图像采集/处理（FITS/JPG/PNG/伪彩）  **********************/
 public:
     /**
-     * @brief INDI 拍摄
-     * @param Exp_times 曝光时间（毫秒）
+     * @brief 主相机统一拍摄入口（SDK/INDI）
+     * @param exposureMs 曝光时间（毫秒）
      */
-    void INDI_Capture(int Exp_times);
+    void startMainCameraCapture(int exposureMs);
 
     /**
      * @brief SDK Burst 拍摄（仅 QHYCCD SDK 支持）
@@ -551,9 +551,9 @@ public:
     size_t sdkMainLiveShmFrameBytes{0};
 
     /**
-     * @brief 终止 INDI 拍摄
+     * @brief 终止主相机拍摄（SDK/INDI）
      */
-    void INDI_AbortCapture();
+    void abortMainCameraCapture();
 
     /**
      * @brief 聚焦回路（循环）
@@ -572,6 +572,8 @@ public:
     qint64 sdkExposureStartTime = 0;              // SDK 曝光开始时间戳（毫秒）
     int sdkExposureExpectedDuration = 0;          // SDK 预期曝光时长（毫秒）
     bool sdkExposureIsROI = false;                // SDK 当前曝光是否为 ROI 模式
+    QString currentCaptureTraceId;                // 当前主拍摄链路 traceId（由前端生成并透传）
+    qint64 currentCaptureTraceStartedAtMs = 0;    // 当前 trace 的后端起点（收到命令时刻）
     // QHY 某些机型在进入 ROI 后，GetEffectiveArea 的 startX/startY 会返回“当前 ROI 起点”而不是固定有效区偏移。
     // 聚焦循环需要一个稳定的有效区基准，否则会在每帧重心追踪时把偏移重复叠加，最终导致 ROI 越界。
     bool sdkMainEffectiveAreaCacheValid = false;
@@ -587,6 +589,7 @@ public:
 
     // 根据主相机采集模式初始化/释放（连接后或模式切换时调用）
     void applySdkMainCameraCaptureMode();
+    bool ensureSdkMainCameraSingleModeReady(QString *errorReason = nullptr);
 
     // SDK 主相机 Live 循环取帧回调
     void onSdkMainLiveTimerTimeout();
@@ -659,7 +662,7 @@ public:
     void scheduleViewportTileGeneration();
     void generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs);
     /** 同步生成当前视口要显示的瓦片，确保发送 GPM 前前端请求的瓦片已落盘，避免 404；无视口时退化为 z=0 全层 */
-    void generateVisibleTilesSync(quint64 epoch);
+    void generateVisibleTilesSync(quint64 epoch, bool includeViewportLevels = false);
     /** 兼容旧接口：普通拍摄已不再后台补齐整张图最高层 */
     void scheduleFullResTileCompletion();
     void generateFullResTiles_Once(quint64 epoch);
@@ -812,6 +815,7 @@ public:
      * @param gpm GPM（包含 sessionId 与 histogram 字段）
      */
     void sendHistogramToClient(const TileGPM& gpm);
+    void emitCaptureTrace(const QString& stage, qint64 startedAtMs = -1, const QString& detail = QString());
 
     /**
      * @brief 清理旧的直方图文件

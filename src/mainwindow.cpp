@@ -1705,26 +1705,30 @@ void MainWindow::onMessageReceived(const QString &message)
         int ListNum = parts[2].trimmed().toInt();
         printDevGroups2(drivers_list, ListNum, Group);
     }
-    else if (parts.size() == 2 && parts[0].trimmed() == "takeExposure")
+    else if (parts.size() >= 2 && parts[0].trimmed() == "takeExposure")
     {
         Logger::Log("takeExposure:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
         Logger::Log("Accept takeExposure order ,set ExpTime is " + parts[1].trimmed().toStdString() + " ms", LogLevel::DEBUG, DeviceType::CAMERA);
         int ExpTime = parts[1].trimmed().toInt();
+        currentCaptureTraceId = (parts.size() >= 3) ? parts[2].trimmed() : QString();
+        currentCaptureTraceStartedAtMs = QDateTime::currentMSecsSinceEpoch();
+        emitCaptureTrace(QStringLiteral("backend_command_received"), currentCaptureTraceStartedAtMs,
+                         QString("mode=single,exposureMs=%1").arg(ExpTime));
 
-        // 确保采集模式为 Single，避免 Loop 在上一轮 Burst 状态下误触发 Burst
-        mainCameraCaptureMode = MainCameraCaptureMode::Single;
-        applySdkMainCameraCaptureMode();
-
-        INDI_Capture(ExpTime);
+        startMainCameraCapture(ExpTime);
         glExpTime = ExpTime;
     }
-    else if (parts.size() == 3 && parts[0].trimmed() == "takeExposureBurst")
+    else if (parts.size() >= 3 && parts[0].trimmed() == "takeExposureBurst")
     {
         // Burst：仅 QHYCCD SDK 支持（前端也会做驱动限制，这里再做兜底校验）
         Logger::Log("takeExposureBurst:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString(),
                     LogLevel::DEBUG, DeviceType::CAMERA);
         const int ExpTime = parts[1].trimmed().toInt();   // ms
         const int frames  = parts[2].trimmed().toInt();   // frames
+        currentCaptureTraceId = (parts.size() >= 4) ? parts[3].trimmed() : QString();
+        currentCaptureTraceStartedAtMs = QDateTime::currentMSecsSinceEpoch();
+        emitCaptureTrace(QStringLiteral("backend_command_received"), currentCaptureTraceStartedAtMs,
+                         QString("mode=burst,exposureMs=%1,frames=%2").arg(ExpTime).arg(frames));
         // 记录本次 Burst 的帧数，供 LoopCapture 在 Burst 模式下复用
         LoopCaptureBurstFrames = (frames > 0) ? frames : 1;
 
@@ -2252,7 +2256,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "abortExposure")
     {
         Logger::Log("abortExposure", LogLevel::DEBUG, DeviceType::CAMERA);
-        INDI_AbortCapture();
+        abortMainCameraCapture();
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraCaptureMode")
     {
@@ -5081,6 +5085,8 @@ void MainWindow::initINDIClient()
                         
                         // 否则按正常拍摄处理
                         emit wsThread->sendMessageToClient("ExposureCompleted");
+                        emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                                         QStringLiteral("source=fits_callback"));
                         Logger::Log("ExposureCompleted", LogLevel::INFO, DeviceType::CAMERA);
                         if (polarAlignment != nullptr)
                         {
@@ -6290,7 +6296,7 @@ int MainWindow::saveFitsAsPNG_FromSdkFrame(const std::shared_ptr<SdkFrameData>& 
 
 int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
 {
-    // 旧实现会在 saveFitsAsPNG() 一开始就触发下一帧拍摄（并且直接调用 INDI_Capture），
+    // 旧实现会在 saveFitsAsPNG() 一开始就触发下一帧拍摄（并且直接调用 startMainCameraCapture），
     // 在当前 SDK/定时器/线程队列/状态机体系下会与“出图链路”竞争同一相机资源，导致不稳定。
     // 新语义：仅当本帧完整出图成功后，才异步触发下一帧（QueuedConnection），避免递归/重入。
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
@@ -6440,6 +6446,9 @@ int MainWindow::saveFitsAsPNG_FromSdkFrame_Worker(std::shared_ptr<SdkFrameData> 
 
 int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QString& cameraCFA, bool ProcessBin, const QString& sourceTag)
 {
+    emitCaptureTrace(QStringLiteral("backend_process_image_start"), currentCaptureTraceStartedAtMs,
+                     QString("sourceTag=%1").arg(sourceTag));
+    const qint64 processStageStartMs = QDateTime::currentMSecsSinceEpoch();
     const quint64 epochAtStart = tilePyramidEpoch.load();
     cv::Mat originalImage16 = inputImage16.clone();
     cv::Mat image16;
@@ -6515,6 +6524,13 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     {
         image16 = originalImage16.clone();
     }
+    emitCaptureTrace(QStringLiteral("backend_process_preview_ready"), processStageStartMs,
+                     QString("processBin=%1,preview=%2x%3,tileSource=%4x%5")
+                         .arg(ProcessBin ? QStringLiteral("true") : QStringLiteral("false"))
+                         .arg(image16.cols)
+                         .arg(image16.rows)
+                         .arg(originalImage16.cols)
+                         .arg(originalImage16.rows));
 
     // 软件 bin 后图仅用于另一路 FITS 保存；瓦片源统一使用原图，避免在瓦片构建前提前合并。
     const cv::Mat& tileSourceImage = originalImage16;
@@ -6572,7 +6588,14 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
 
     // GPM 仅保留图像与瓦片元数据；自动优化参数改由前端基于 Z=0 计算。
     int maxMergeFactor = 16;
+    const qint64 gpmCalcStartMs = QDateTime::currentMSecsSinceEpoch();
     TileGPM gpm = calculateGPM(tileSourceImage, effectiveCameraCFA, maxMergeFactor, /*enableHistogram=*/false);
+    emitCaptureTrace(QStringLiteral("backend_calculate_gpm_done"), gpmCalcStartMs,
+                     QString("sessionCandidate=live_%1,image=%2x%3,maxZoom=%4")
+                         .arg(QString::number(static_cast<qulonglong>(epochAtStart)))
+                         .arg(tileSourceImage.cols)
+                         .arg(tileSourceImage.rows)
+                         .arg(gpm.maxZoomLevel));
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
     gpm.previewHeight = image16.rows;
@@ -6606,11 +6629,15 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         tileFramePreviewImage16 = std::make_shared<cv::Mat>(image16);
     }
 
-    // 先同步生成当前视口要显示的瓦片并落盘，再发 GPM，避免前端收到 GPM 后请求瓦片时 404（帧丢失）；无视口时退化为 z=0 全层
-    generateVisibleTilesSync(epochAtStart);
-
-    // 初次：按当前视口优先生成其它层级/视口瓦片，其余在视口变化时再按需补齐
-    scheduleViewportTileGeneration();
+    // 首帧链路只同步准备 z=0 预览瓦片：
+    // - 保证前端收到 GPM 后，Z0 一定可立即拉取
+    // - currentZ-1/currentZ 的局部高清瓦片改走后续异步补齐，避免它们阻塞首图
+    const qint64 visibleTilesStartMs = QDateTime::currentMSecsSinceEpoch();
+    generateVisibleTilesSync(epochAtStart, /*includeViewportLevels=*/false);
+    emitCaptureTrace(QStringLiteral("backend_visible_tiles_ready"), visibleTilesStartMs,
+                     QString("sessionId=%1,frameId=%2")
+                         .arg(sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(epochAtStart))));
 
     // 发送GPM到前端
     if (tilePyramidEpoch.load() != epochAtStart) {
@@ -6618,6 +6645,19 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         return -1;
     }
     sendGPMToClient(gpm);
+    emitCaptureTrace(QStringLiteral("backend_tilegpm_sent"), currentCaptureTraceStartedAtMs,
+                     QString("sessionId=%1,frameId=%2,serverNowMs=%3")
+                         .arg(gpm.sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(gpm.frameId)))
+                         .arg(QString::number(QDateTime::currentMSecsSinceEpoch())));
+
+    // Z0/GPM 已经先行放出；当前视口的其它高清瓦片再异步补齐即可。
+    const qint64 viewportScheduleStartMs = QDateTime::currentMSecsSinceEpoch();
+    scheduleViewportTileGeneration();
+    emitCaptureTrace(QStringLiteral("backend_schedule_viewport_tiles_done"), viewportScheduleStartMs,
+                     QString("sessionId=%1,frameId=%2")
+                         .arg(sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(epochAtStart))));
     // 删除其它旧会话的瓦片目录，仅保留当前 sessionId
     cleanupOldTileSessionDirs(sessionId);
 
@@ -6650,7 +6690,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
             }
 
             // 按当前主相机采集模式分流：
-            // - Single：走 INDI_Capture（覆盖 INDI + SDK 单帧）
+            // - Single：走 startMainCameraCapture（覆盖 INDI + SDK 单帧）
             // - Burst：走 SDK_BurstCapture（输出仍走 saveFitsAsPNG 链路）
             if (mainCameraCaptureMode == MainCameraCaptureMode::Burst) {
                 Logger::Log("LoopCapture | trigger next BURST, exp_ms=" + std::to_string(nextExpMs) +
@@ -6662,7 +6702,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
                 Logger::Log("LoopCapture | trigger next SINGLE, exp_ms=" + std::to_string(nextExpMs) +
                                 ", remaining=" + std::to_string(LoopCaptureNum),
                             LogLevel::INFO, DeviceType::CAMERA);
-                INDI_Capture(nextExpMs);
+                startMainCameraCapture(nextExpMs);
             }
         }
     }, Qt::QueuedConnection);
@@ -7891,7 +7931,7 @@ void MainWindow::generateFullResTiles_Once(quint64 epoch)
                LogLevel::DEBUG, DeviceType::CAMERA);
 }
 
-void MainWindow::generateVisibleTilesSync(quint64 epoch)
+void MainWindow::generateVisibleTilesSync(quint64 epoch, bool includeViewportLevels)
 {
     TileFrameState st;
     std::shared_ptr<cv::Mat> img;
@@ -7942,9 +7982,13 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                     " requestedMaxZCap=" + std::to_string(requestedMaxZCap),
                 LogLevel::INFO, DeviceType::CAMERA);
     // 同步预生成阶段：
-    // - 始终准备 z=0 整图预览，保证首帧快速可见
-    // - 再准备 targetZ-1 / targetZ 当前视口层，减少收到 GPM 后的首批请求 miss
-    std::vector<int> levelsToSync = {0, std::max(0, currentZ - 1), currentZ};
+    // - 默认只准备 z=0 整图预览，优先保证 TileGPM + 首图尽快出现
+    // - 若显式要求，再额外同步准备 targetZ-1 / targetZ 当前视口层
+    std::vector<int> levelsToSync = {0};
+    if (includeViewportLevels) {
+        levelsToSync.push_back(std::max(0, currentZ - 1));
+        levelsToSync.push_back(currentZ);
+    }
     std::sort(levelsToSync.begin(), levelsToSync.end());
     levelsToSync.erase(std::unique(levelsToSync.begin(), levelsToSync.end()), levelsToSync.end());
 
@@ -8021,7 +8065,11 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                                        TILE_BORDER, TILE_BORDER, TILE_BORDER, TILE_BORDER,
                                        cv::BORDER_REPLICATE);
                     saveTileFast_NoMkdir(previewTile, tileFilePath, TILE_BORDER);
-                    readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+                    const QString readyKey =
+                        QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty);
+                    // 首屏体验优化：z=0 预览瓦片一旦原子写完，立即单独放行给前端。
+                    // 局部放大的清晰细节仍由后续 currentZ-1/currentZ 瓦片继续覆盖，不受影响。
+                    sendTileBatchReadyToClient(st.sessionId, epoch, QStringList{readyKey});
                     continue;
                 }
 
@@ -8139,6 +8187,18 @@ void MainWindow::saveTile(const cv::Mat& tile, int z, int x, int y, const QStrin
 
 void MainWindow::saveTileFast_NoMkdir(const cv::Mat& tile, const QString& tileFilePath, int border)
 {
+    const bool isZ0Tile =
+        tileFilePath.contains(QStringLiteral("/0/0/0.bin")) ||
+        tileFilePath.endsWith(QStringLiteral("\\0\\0\\0.bin"));
+    const qint64 z0WriteStartMs = isZ0Tile ? QDateTime::currentMSecsSinceEpoch() : 0;
+    if (isZ0Tile) {
+        emitCaptureTrace(QStringLiteral("backend_z0_tile_write_start"), currentCaptureTraceStartedAtMs,
+                         QString("path=%1,width=%2,height=%3")
+                             .arg(tileFilePath)
+                             .arg(tile.cols)
+                             .arg(tile.rows));
+    }
+
     // 原子写入：避免前端 fetch 在文件写入中途读到“半瓦片”，导致解析失败/花屏/长时间不刷新。
     // QSaveFile 会写入临时文件，commit 时原子替换目标文件（同一文件系统内）。
     QSaveFile file(tileFilePath);
@@ -8181,6 +8241,15 @@ void MainWindow::saveTileFast_NoMkdir(const cv::Mat& tile, const QString& tileFi
     if (!file.commit()) {
         Logger::Log("Failed to commit tile file (atomic replace): " + tileFilePath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
         return;
+    }
+
+    if (isZ0Tile) {
+        emitCaptureTrace(QStringLiteral("backend_z0_tile_write_done"), z0WriteStartMs,
+                         QString("path=%1,width=%2,height=%3,fileBytes=%4")
+                             .arg(tileFilePath)
+                             .arg(tile.cols)
+                             .arg(tile.rows)
+                             .arg(static_cast<qint64>(QFileInfo(tileFilePath).size())));
     }
 }
 
@@ -8440,6 +8509,36 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
     return gpm;
 }
 
+void MainWindow::emitCaptureTrace(const QString& stage, qint64 startedAtMs, const QString& detail)
+{
+    if (currentCaptureTraceId.trimmed().isEmpty() || wsThread == nullptr) {
+        return;
+    }
+    const qint64 baseMs = (startedAtMs >= 0) ? startedAtMs : currentCaptureTraceStartedAtMs;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 elapsedMs = (baseMs > 0) ? std::max<qint64>(0, nowMs - baseMs) : 0;
+    QString safeDetail = detail;
+    safeDetail.replace('\n', ' ');
+    safeDetail.replace('\r', ' ');
+    emit wsThread->sendMessageToClient(
+        QString("CaptureTrace:%1:%2:%3:%4")
+            .arg(currentCaptureTraceId)
+            .arg(stage)
+            .arg(elapsedMs)
+            .arg(safeDetail)
+    );
+    Logger::Log(
+        QString("CaptureTrace | traceId=%1 | stage=%2 | backendElapsedMs=%3 | detail=%4")
+            .arg(currentCaptureTraceId)
+            .arg(stage)
+            .arg(elapsedMs)
+            .arg(safeDetail)
+            .toStdString(),
+        LogLevel::INFO,
+        DeviceType::CAMERA
+    );
+}
+
 void MainWindow::sendGPMToClient(const TileGPM& gpm)
 {
     // 构建GPM消息发送给前端
@@ -8519,6 +8618,13 @@ void MainWindow::sendTileBatchReadyToClient(const QString& sessionId, quint64 fr
                     ", count=" + std::to_string(tileKeys.size()) +
                     ", sample=[" + sampleKeys.join(", ").toStdString() + "]",
                 LogLevel::DEBUG, DeviceType::CAMERA);
+    const bool containsZ0 = tileKeys.contains(QStringLiteral("0/0/0"));
+    emitCaptureTrace(QStringLiteral("backend_tilebatchready_sent"), currentCaptureTraceStartedAtMs,
+                     QString("sessionId=%1,frameId=%2,count=%3,containsZ0=%4")
+                         .arg(sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(frameId)))
+                         .arg(tileKeys.size())
+                         .arg(containsZ0 ? QStringLiteral("true") : QStringLiteral("false")));
 }
 
 void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId)
@@ -14310,6 +14416,8 @@ void MainWindow::onSdkMainLiveProcessTimerTimeout()
 
     // 复用前端协议：用 ExposureCompleted 作为“刷新一帧”的信号
     emit wsThread->sendMessageToClient("ExposureCompleted");
+    emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                     QStringLiteral("source=sdk_live_process"));
 
     // 标记处理忙：处理完成前新帧将继续覆盖邮箱，但不会触发新的处理任务排队
     sdkMainLiveProcessingBusy = true;
@@ -14789,9 +14897,9 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
          sdkMainCameraHandle != nullptr);
 
     if (!isMainCameraSDK) {
-        Logger::Log("SDK_BurstCapture | Main camera is not in SDK mode, fallback to INDI_Capture",
+        Logger::Log("SDK_BurstCapture | Main camera is not in SDK mode, fallback to startMainCameraCapture",
                     LogLevel::WARNING, DeviceType::CAMERA);
-        INDI_Capture(Exp_ms);
+        startMainCameraCapture(Exp_ms);
         return;
     }
 
@@ -14809,9 +14917,9 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
     };
     if (!isQhySdkDriverName(sdkDriverName)) {
         Logger::Log("SDK_BurstCapture | SDK driver is not QHYCCD/indi_qhy_ccd (" + sdkDriverName.toStdString() +
-                        "), fallback to INDI_Capture",
+                        "), fallback to startMainCameraCapture",
                     LogLevel::WARNING, DeviceType::CAMERA);
-        INDI_Capture(Exp_ms);
+        startMainCameraCapture(Exp_ms);
         return;
     }
 
@@ -15162,6 +15270,8 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
             glMainCameraStatu = "Displaying";
             ShootStatus = "Completed";
             emit wsThread->sendMessageToClient("ExposureCompleted");
+            emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                             QStringLiteral("source=sdk_burst"));
 
             if (polarAlignment != nullptr && polarAlignment->isRunning())
             {
@@ -15192,14 +15302,113 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
     });
 }
 
-void MainWindow::INDI_Capture(int Exp_times)
+bool MainWindow::ensureSdkMainCameraSingleModeReady(QString *errorReason)
 {
-    Logger::Log("INDI_Capture start ...", LogLevel::INFO, DeviceType::CAMERA);
+    const bool isMainCameraSDK =
+        (systemdevicelist.system_devices.size() > 20 &&
+         systemdevicelist.system_devices[20].isSDKConnect &&
+         sdkMainCameraHandle != nullptr);
+    if (!isMainCameraSDK)
+        return true;
+
+    auto isQhySdkDriverName = [](const QString& n) -> bool {
+        const QString s = n.trimmed().toLower();
+        return (s == "qhyccd" || s == "indi_qhy_ccd");
+    };
+
+    QString sdkDriverName =
+        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[20].SDKDriverName : "";
+    QString effectiveSdkDriverName = sdkDriverName.trimmed();
+    if (effectiveSdkDriverName.isEmpty())
+        effectiveSdkDriverName = getSDKDriverName("MainCamera").trimmed();
+    if (effectiveSdkDriverName.isEmpty() && systemdevicelist.system_devices.size() > 20)
+        effectiveSdkDriverName = systemdevicelist.system_devices[20].DriverIndiName.trimmed();
+
+    if (!isQhySdkDriverName(effectiveSdkDriverName))
+        return true;
+
+    const bool alreadySingleReady =
+        (mainCameraCaptureMode == MainCameraCaptureMode::Single) &&
+        !sdkMainLiveReady.load() &&
+        !sdkMainBurstModeReady.load();
+    if (alreadySingleReady)
+        return true;
+
+    if (!sdkCamExec || !sdkCamExec->isRunning()) {
+        if (errorReason)
+            *errorReason = QStringLiteral("SDK worker not running");
+        Logger::Log("ensureSdkMainCameraSingleModeReady | sdkCamExec not running",
+                    LogLevel::ERROR, DeviceType::CAMERA);
+        return false;
+    }
+
+    if (sdkBurstActive.load() || glMainCameraStatu == "Exposuring") {
+        if (errorReason)
+            *errorReason = QStringLiteral("camera busy while switching to single mode");
+        Logger::Log("ensureSdkMainCameraSingleModeReady | camera busy, reject switch to single mode",
+                    LogLevel::WARNING, DeviceType::CAMERA);
+        return false;
+    }
+
+    Logger::Log("ensureSdkMainCameraSingleModeReady | switching SDK main camera to Single mode before exposure",
+                LogLevel::INFO, DeviceType::CAMERA);
+    const qint64 switchStartMs = QDateTime::currentMSecsSinceEpoch();
+    const SdkDeviceHandle handleSnap = sdkMainCameraHandle;
+
+    const bool ok = sdkCamExec->postAndWait<bool>([handleSnap]() -> bool {
+        if (handleSnap == nullptr)
+            return false;
+
+        auto callByHandle = [handleSnap](const char *name, const std::any &payload) -> SdkResult {
+            SdkCommand cmd;
+            cmd.type = SdkCommandType::Custom;
+            cmd.name = name;
+            cmd.payload = payload;
+            return SdkManager::instance().callByHandle(handleSnap, cmd);
+        };
+
+        (void)callByHandle("ReleaseBurstIDLE", std::any());
+        (void)callByHandle("StopLive", std::any());
+        (void)callByHandle("EnableBurstMode", false);
+        SdkResult streamRes = callByHandle("SetStreamMode", 0);
+        if (!streamRes.success) {
+            Logger::Log("ensureSdkMainCameraSingleModeReady | SetStreamMode(0) failed: " + streamRes.message,
+                        LogLevel::ERROR, DeviceType::CAMERA);
+            return false;
+        }
+        return true;
+    });
+
+    if (!ok) {
+        if (errorReason)
+            *errorReason = QStringLiteral("failed to switch SDK camera to single mode");
+        Logger::Log("ensureSdkMainCameraSingleModeReady | failed to switch SDK main camera to Single mode",
+                    LogLevel::ERROR, DeviceType::CAMERA);
+        return false;
+    }
+
+    mainCameraCaptureMode = MainCameraCaptureMode::Single;
+    sdkMainLiveReady = false;
+    sdkMainBurstModeReady = false;
+    sdkMainAppliedMode = MainCameraCaptureMode::Single;
+    sdkMainAppliedModeValid = true;
+    emitCaptureTrace(QStringLiteral("backend_single_mode_ready"), switchStartMs,
+                     QStringLiteral("success=true"));
+    Logger::Log("ensureSdkMainCameraSingleModeReady | SDK main camera switched to Single mode",
+                LogLevel::INFO, DeviceType::CAMERA);
+    return true;
+}
+
+void MainWindow::startMainCameraCapture(int exposureMs)
+{
+    Logger::Log("startMainCameraCapture start ...", LogLevel::INFO, DeviceType::CAMERA);
+    emitCaptureTrace(QStringLiteral("backend_main_camera_capture_enter"), currentCaptureTraceStartedAtMs,
+                     QString("exposureMs=%1").arg(exposureMs));
 
     glIsFocusingLooping = false;
     isSavePngSuccess = false;
-    double expTime_sec = (double)Exp_times / 1000;
-    Logger::Log("INDI_Capture | convert Exp_times to seconds:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
+    double expTime_sec = (double)exposureMs / 1000;
+    Logger::Log("startMainCameraCapture | convert exposureMs to seconds:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
 
     // 判断主相机是 SDK 模式还是 INDI 模式
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
@@ -15209,10 +15418,6 @@ void MainWindow::INDI_Capture(int Exp_times)
     if (isMainCameraSDK)
     {
         // === SDK 模式：完整的全分辨率曝光流程 ===
-        glMainCameraStatu = "Exposuring";
-        Logger::Log("INDI_Capture | SDK Mode | Main Camera Status: " + glMainCameraStatu.toStdString(), 
-                   LogLevel::INFO, DeviceType::CAMERA);
-
         // 将 SDK 错误信息转换为“可读原因”（避免直接把 0xFFFFFFFF/4294967295 暴露给前端）
         auto makeUserFriendlySdkReason = [](const QString& step, const QString& sdkMsg) -> QString {
             const QString raw = sdkMsg.trimmed();
@@ -15238,10 +15443,25 @@ void MainWindow::INDI_Capture(int Exp_times)
             return reason;
         };
 
+        QString singleModeReason;
+        if (!ensureSdkMainCameraSingleModeReady(&singleModeReason)) {
+            emit wsThread->sendMessageToClient("ExposureFailed:SDK单帧模式未就绪（" + singleModeReason + "）");
+            emit wsThread->sendMessageToClient("CameraInExposuring:False");
+            ShootStatus = "IDLE";
+            glMainCameraStatu = "IDLE";
+            return;
+        }
+
+        glMainCameraStatu = "Exposuring";
+        Logger::Log("startMainCameraCapture | SDK Mode | Main Camera Status: " + glMainCameraStatu.toStdString(),
+                   LogLevel::INFO, DeviceType::CAMERA);
+        const qint64 sdkCaptureStageStartMs = QDateTime::currentMSecsSinceEpoch();
+
         // 0. 确保全分辨率 ROI/分辨率已设置（否则部分机型会出现 ret=0 但 roi=0x0，导致上层一直轮询）
         // 优先从 SDK 获取有效区域，避免依赖 UI 侧 glMainCCDSizeX/Y 的时序。
         SdkAreaInfo fullRoi;
         {
+            const qint64 effectiveAreaStartMs = QDateTime::currentMSecsSinceEpoch();
             SdkCommand effCmd;
             effCmd.type = SdkCommandType::Custom;
             effCmd.name = "GetEffectiveArea";
@@ -15257,8 +15477,16 @@ void MainWindow::INDI_Capture(int Exp_times)
                 fullRoi.sizeX  = (glMainCCDSizeX > 0) ? static_cast<unsigned int>(glMainCCDSizeX) : 0;
                 fullRoi.sizeY  = (glMainCCDSizeY > 0) ? static_cast<unsigned int>(glMainCCDSizeY) : 0;
             }
+            emitCaptureTrace(QStringLiteral("backend_get_effective_area_done"), effectiveAreaStartMs,
+                             QString("success=%1,startX=%2,startY=%3,sizeX=%4,sizeY=%5")
+                                 .arg(effRes.success ? QStringLiteral("true") : QStringLiteral("false"))
+                                 .arg(fullRoi.startX)
+                                 .arg(fullRoi.startY)
+                                 .arg(fullRoi.sizeX)
+                                 .arg(fullRoi.sizeY));
         }
         if (fullRoi.sizeX > 0 && fullRoi.sizeY > 0) {
+            const qint64 setResolutionStartMs = QDateTime::currentMSecsSinceEpoch();
             SdkCommand setResCmd;
             setResCmd.type = SdkCommandType::Custom;
             setResCmd.name = "SetResolution";
@@ -15266,7 +15494,7 @@ void MainWindow::INDI_Capture(int Exp_times)
             // 直接通过设备句柄调用，无需指定驱动名称
             SdkResult setResRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setResCmd);
             if (!setResRes.success) {
-                Logger::Log("INDI_Capture | SDK SetResolution(full) failed: " + setResRes.message,
+                Logger::Log("startMainCameraCapture | SDK SetResolution(full) failed: " + setResRes.message,
                             LogLevel::ERROR, DeviceType::CAMERA);
                 const QString reason =
                     makeUserFriendlySdkReason(QStringLiteral("设置分辨率失败"), QString::fromStdString(setResRes.message));
@@ -15276,18 +15504,29 @@ void MainWindow::INDI_Capture(int Exp_times)
                 glMainCameraStatu = "IDLE";
                 return;
             } else {
-                Logger::Log("INDI_Capture | SDK SetResolution(full) success: " +
+                emitCaptureTrace(QStringLiteral("backend_set_resolution_done"), setResolutionStartMs,
+                                 QString("success=true,startX=%1,startY=%2,sizeX=%3,sizeY=%4")
+                                     .arg(fullRoi.startX)
+                                     .arg(fullRoi.startY)
+                                     .arg(fullRoi.sizeX)
+                                     .arg(fullRoi.sizeY));
+                Logger::Log("startMainCameraCapture | SDK SetResolution(full) success: " +
                             std::to_string(fullRoi.startX) + "," + std::to_string(fullRoi.startY) + " " +
                             std::to_string(fullRoi.sizeX) + "x" + std::to_string(fullRoi.sizeY),
                             LogLevel::DEBUG, DeviceType::CAMERA);
             }
         } else {
-            Logger::Log("INDI_Capture | SDK SetResolution(full) skipped: invalid fullRoi size (" +
+            emitCaptureTrace(QStringLiteral("backend_set_resolution_skipped"), sdkCaptureStageStartMs,
+                             QString("reason=invalid_full_roi,sizeX=%1,sizeY=%2")
+                                 .arg(fullRoi.sizeX)
+                                 .arg(fullRoi.sizeY));
+            Logger::Log("startMainCameraCapture | SDK SetResolution(full) skipped: invalid fullRoi size (" +
                         std::to_string(fullRoi.sizeX) + "x" + std::to_string(fullRoi.sizeY) + ")",
                         LogLevel::WARNING, DeviceType::CAMERA);
         }
 
         // 1. 设置曝光时间（微秒）
+        const qint64 setExposureStartMs = QDateTime::currentMSecsSinceEpoch();
         SdkCommand setExpCmd;
         setExpCmd.type = SdkCommandType::Custom;
         setExpCmd.name = "SetExposure";
@@ -15295,7 +15534,7 @@ void MainWindow::INDI_Capture(int Exp_times)
         // 直接通过设备句柄调用，无需指定驱动名称
         SdkResult setExpRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setExpCmd);
         if (!setExpRes.success) {
-            Logger::Log("INDI_Capture | SDK SetExposure failed: " + setExpRes.message, 
+            Logger::Log("startMainCameraCapture | SDK SetExposure failed: " + setExpRes.message,
                        LogLevel::ERROR, DeviceType::CAMERA);
             const QString reason =
                 makeUserFriendlySdkReason(QStringLiteral("设置曝光时间失败"), QString::fromStdString(setExpRes.message));
@@ -15305,16 +15544,31 @@ void MainWindow::INDI_Capture(int Exp_times)
             glMainCameraStatu = "IDLE";
             return;
         }
+        emitCaptureTrace(QStringLiteral("backend_set_exposure_done"), setExposureStartMs,
+                         QString("success=true,exposureUs=%1")
+                             .arg(QString::number(expTime_sec * 1000000.0, 'f', 0)));
         
         // 2. 启动单帧曝光
+        const qint64 startExposureCmdStartMs = QDateTime::currentMSecsSinceEpoch();
         SdkCommand startExpCmd;
         startExpCmd.type = SdkCommandType::Custom;
         startExpCmd.name = "StartSingleExposure";
         startExpCmd.payload = std::any();
+        Logger::Log("CaptureTrace | stage=backend_start_single_exposure_callbyhandle_enter"
+                        " | handle=" + std::to_string(reinterpret_cast<uintptr_t>(sdkMainCameraHandle)) +
+                        " | thread=" + std::to_string(
+                            static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id()))),
+                    LogLevel::INFO, DeviceType::CAMERA);
         // 直接通过设备句柄调用，无需指定驱动名称
         SdkResult startExpRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, startExpCmd);
+        Logger::Log("CaptureTrace | stage=backend_start_single_exposure_callbyhandle_return"
+                        " | handle=" + std::to_string(reinterpret_cast<uintptr_t>(sdkMainCameraHandle)) +
+                        " | ok=" + std::string(startExpRes.success ? "true" : "false") +
+                        " | msg=" + startExpRes.message,
+                    startExpRes.success ? LogLevel::INFO : LogLevel::ERROR,
+                    DeviceType::CAMERA);
         if (!startExpRes.success) {
-            Logger::Log("INDI_Capture | SDK StartSingleExposure failed: " + startExpRes.message, 
+            Logger::Log("startMainCameraCapture | SDK StartSingleExposure failed: " + startExpRes.message,
                        LogLevel::ERROR, DeviceType::CAMERA);
             const QString reason =
                 makeUserFriendlySdkReason(QStringLiteral("启动曝光失败"), QString::fromStdString(startExpRes.message));
@@ -15324,7 +15578,11 @@ void MainWindow::INDI_Capture(int Exp_times)
             glMainCameraStatu = "IDLE";
             return;
         }
-        Logger::Log("INDI_Capture | SDK StartSingleExposure success, expTime_sec:" + std::to_string(expTime_sec), 
+        emitCaptureTrace(QStringLiteral("backend_start_single_exposure_done"), startExposureCmdStartMs,
+                         QString("success=true,transport=sdk"));
+        emitCaptureTrace(QStringLiteral("backend_exposure_start"), currentCaptureTraceStartedAtMs,
+                         QString("transport=sdk,exposureMs=%1").arg(static_cast<int>(expTime_sec * 1000)));
+        Logger::Log("startMainCameraCapture | SDK StartSingleExposure success, expTime_sec:" + std::to_string(expTime_sec),
                    LogLevel::INFO, DeviceType::CAMERA);
         
         // 3. 使用定时器轮询获取图像（避免阻塞）
@@ -15335,63 +15593,65 @@ void MainWindow::INDI_Capture(int Exp_times)
         
         // 第一次等待时间 = 曝光时间（对于短曝光如 1ms，等待 1ms；长曝光如 1s，等待 1s）
         sdkExposureTimer->start(expTime_ms);
-        Logger::Log("INDI_Capture | SDK exposure timer started, will check after " + std::to_string(expTime_ms) + "ms", 
+        Logger::Log("startMainCameraCapture | SDK exposure timer started, will check after " + std::to_string(expTime_ms) + "ms",
                    LogLevel::INFO, DeviceType::CAMERA);
     }
     else if (dpMainCamera)
     {
         // === INDI 模式 ===
         glMainCameraStatu = "Exposuring";
-        Logger::Log("INDI_Capture | INDI Mode | check Main Camera Status(glMainCameraStatu):" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | INDI Mode | check Main Camera Status(glMainCameraStatu):" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
         int value, min, max;
         uint32_t ret = indi_Client->getCCDGain(dpMainCamera, value, min, max);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi getCCDGain | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi getCCDGain | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi getCCDGain | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi getCCDGain | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
         int BINX, BINY, BINXMAX, BINYMAX;
         ret = indi_Client->getCCDBinning(dpMainCamera, BINX, BINY, BINXMAX, BINYMAX);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi getCCDBinning | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi getCCDBinning | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi getCCDBinning | BINX:" + std::to_string(BINX) + ", BINY:" + std::to_string(BINY) + ", BINXMAX:" + std::to_string(BINXMAX) + ", BINYMAX:" + std::to_string(BINYMAX), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi getCCDBinning | BINX:" + std::to_string(BINX) + ", BINY:" + std::to_string(BINY) + ", BINXMAX:" + std::to_string(BINXMAX) + ", BINYMAX:" + std::to_string(BINYMAX), LogLevel::INFO, DeviceType::CAMERA);
         ret = indi_Client->getCCDOffset(dpMainCamera, value, min, max);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi getCCDOffset | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi getCCDOffset | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi getCCDOffset | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi getCCDOffset | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
         ret = indi_Client->resetCCDFrameInfo(dpMainCamera);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi resetCCDFrameInfo", LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi resetCCDFrameInfo", LogLevel::INFO, DeviceType::CAMERA);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
-        Logger::Log("INDI_Capture | sendMessageToClient | MainCameraSize:" + QString::number(glMainCCDSizeX).toStdString() + ":" + QString::number(glMainCCDSizeY).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | sendMessageToClient | MainCameraSize:" + QString::number(glMainCCDSizeX).toStdString() + ":" + QString::number(glMainCCDSizeY).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
         ret = indi_Client->takeExposure(dpMainCamera, expTime_sec);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi takeExposure | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi takeExposure | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi start takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
+        emitCaptureTrace(QStringLiteral("backend_exposure_start"), currentCaptureTraceStartedAtMs,
+                         QString("transport=indi,exposureMs=%1").arg(static_cast<int>(expTime_sec * 1000)));
+        Logger::Log("startMainCameraCapture | indi start takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
     }
     else
     {
-        Logger::Log("INDI_Capture | Main Camera not available (both SDK and INDI are NULL)", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | Main Camera not available (both SDK and INDI are NULL)", LogLevel::WARNING, DeviceType::CAMERA);
         ShootStatus = "IDLE";
     }
-    Logger::Log("INDI_Capture finished.", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("startMainCameraCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
 }
 
-void MainWindow::INDI_AbortCapture()
+void MainWindow::abortMainCameraCapture()
 {
-    Logger::Log("INDI_AbortCapture start ...", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("abortMainCameraCapture start ...", LogLevel::INFO, DeviceType::CAMERA);
     glMainCameraStatu = "IDLE";
-    Logger::Log("INDI_AbortCapture | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("abortMainCameraCapture | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     // 判断主相机是 SDK 模式还是 INDI 模式
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
@@ -15405,7 +15665,7 @@ void MainWindow::INDI_AbortCapture()
         // 🔧 修复：立即停止曝光轮询定时器，防止重复调用GetSingleFrame
         if (sdkExposureTimer && sdkExposureTimer->isActive()) {
             sdkExposureTimer->stop();
-            Logger::Log("INDI_AbortCapture | Stopped sdkExposureTimer to prevent redundant GetSingleFrame calls", 
+            Logger::Log("abortMainCameraCapture | Stopped sdkExposureTimer to prevent redundant GetSingleFrame calls",
                        LogLevel::DEBUG, DeviceType::CAMERA);
         }
         
@@ -15418,7 +15678,7 @@ void MainWindow::INDI_AbortCapture()
         // Burst（Live）取消：设置取消标志，并尽力停止 Live（不阻塞主线程）
         if (sdkBurstActive.load()) {
             sdkBurstCancelRequested = true;
-            Logger::Log("INDI_AbortCapture | Burst active, request cancel",
+            Logger::Log("abortMainCameraCapture | Burst active, request cancel",
                         LogLevel::INFO, DeviceType::CAMERA);
 
             // Burst 作为连接模式子模式：Abort 不应退出 Burst/Live，只需回到 IDLE 等待下一次触发。
@@ -15444,10 +15704,10 @@ void MainWindow::INDI_AbortCapture()
         // 直接通过设备句柄调用，无需指定驱动名称
         SdkResult abortRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, abortCmd);
         if (!abortRes.success) {
-            Logger::Log("INDI_AbortCapture | SDK CancelExposure failed: " + abortRes.message, 
+            Logger::Log("abortMainCameraCapture | SDK CancelExposure failed: " + abortRes.message,
                        LogLevel::ERROR, DeviceType::CAMERA);
         } else {
-            Logger::Log("INDI_AbortCapture | SDK CancelExposure success", LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("abortMainCameraCapture | SDK CancelExposure success", LogLevel::INFO, DeviceType::CAMERA);
         }
         ShootStatus = "IDLE";
     }
@@ -15456,9 +15716,9 @@ void MainWindow::INDI_AbortCapture()
         // === INDI 模式 ===
         indi_Client->setCCDAbortExposure(dpMainCamera);
         ShootStatus = "IDLE";
-        Logger::Log("INDI_AbortCapture | INDI ShootStatus:" + ShootStatus.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("abortMainCameraCapture | INDI ShootStatus:" + ShootStatus.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     }
-    Logger::Log("INDI_AbortCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("abortMainCameraCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
 }
 
 // SDK 模式下保存 SdkFrameData 为 FITS 文件的辅助函数
@@ -15751,6 +16011,8 @@ void MainWindow::onSdkExposureTimerTimeout()
 
                         ShootStatus = "Completed";
                         emit wsThread->sendMessageToClient("ExposureCompleted");
+                        emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                                         QStringLiteral("source=sdk_timer"));
                         Logger::Log("onSdkExposureTimerTimeout | Full resolution mode, ExposureCompleted",
                                     LogLevel::INFO, DeviceType::CAMERA);
 
@@ -20045,7 +20307,7 @@ void MainWindow::startCapture(int ExpTime)
 
     ShootStatus = "InProgress";
     qDebug() << "ShootStatus: " << ShootStatus;
-    INDI_Capture(ExpTime);
+    startMainCameraCapture(ExpTime);
     schedule_currentShootNum++;
 
     captureTimer.setSingleShot(true);
@@ -20057,7 +20319,7 @@ void MainWindow::startCapture(int ExpTime)
         if (StopSchedule)
         {
             StopSchedule = false;
-            INDI_AbortCapture();
+            abortMainCameraCapture();
             qDebug("Schedule is stop!");
             return;
         }
@@ -20132,7 +20394,7 @@ void MainWindow::startCapture(int ExpTime)
             {
                 // 拍摄超时，中止拍摄并处理超时情况
                 captureTimer.stop();
-                INDI_AbortCapture();
+                abortMainCameraCapture();
                 Logger::Log(QString("计划任务表拍摄超时: 当前拍摄时间 %1ms, 超过最大超时时间 %2ms (曝光时间 %3ms + 1分钟)").arg(expTime_ms).arg(maxTimeout).arg(schedule_ExpTime).toStdString(), 
                            LogLevel::WARNING, DeviceType::MAIN);
                 Logger::Log("Capture timeout! expTime_ms:" + std::to_string(expTime_ms) + ", maxTimeout:" + std::to_string(maxTimeout) + ", schedule_ExpTime:" + std::to_string(schedule_ExpTime), LogLevel::WARNING, DeviceType::MAIN);
@@ -21402,7 +21664,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
     Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
     isSavePngSuccess = false;
-    INDI_Capture(1000); // 拍摄1秒曝光进行解析同步
+    startMainCameraCapture(1000); // 拍摄1秒曝光进行解析同步
 
     captureTimer.setSingleShot(true);
 
@@ -21412,7 +21674,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
         if (EndCaptureAndSolve)
         {
             EndCaptureAndSolve = false;
-            INDI_AbortCapture();
+            abortMainCameraCapture();
             Logger::Log("TelescopeControl_SolveSYNC | End Capture And Solve!!!", LogLevel::INFO, DeviceType::MAIN);
             isSolveSYNC = false;
             emit wsThread->sendMessageToClient("SolveImagefailed"); 
@@ -26449,7 +26711,7 @@ void MainWindow::disconnectDriver(QString Driver)
         // 断开前中止主相机曝光，避免断开过程中卡住
         if (devType == "MainCamera" && glMainCameraStatu == "Exposuring")
         {
-            INDI_AbortCapture();
+            abortMainCameraCapture();
         }
 
         // 统一走 DisconnectDevice：它同时覆盖 INDI 与 SDK 模式清理
@@ -26609,7 +26871,7 @@ void MainWindow::focusLoopShooting(bool isLoop)
 
             if (glMainCameraStatu == "Exposuring" && isMainCameraConnected())
             {
-                INDI_AbortCapture();
+                abortMainCameraCapture();
             }
         }
     }
@@ -27231,7 +27493,7 @@ void MainWindow::startAutoFocus()
 
     // 注意：SDK 是“单设备连接”——主相机/电调可分别走 SDK/INDI。
     // AutoFocus 内部已按 useSdkMainCamera/useSdkFocuser 分流：
-    // - 主相机 SDK：通过 requestCapture/requestAbortCapture 走 MainWindow::INDI_Capture/INDI_AbortCapture
+    // - 主相机 SDK：通过 requestCapture/requestAbortCapture 走 MainWindow::startMainCameraCapture/abortMainCameraCapture
     // - 电调 SDK：通过 SdkManager::callByHandle( sdkFocuserHandle ) 执行移动/读位置/Abort
     // 预处理：统一清理自动对焦相关定时器与信号连接，避免残留或重复
     cleanupAutoFocusConnections();
@@ -27256,10 +27518,10 @@ void MainWindow::startAutoFocus()
 
     // SDK/INDI 统一拍摄入口：由 AutoFocus 发起 requestCapture/requestAbortCapture，MainWindow 调用统一入口执行
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestCapture,
-                                           this, [this](int exposureMs) { this->INDI_Capture(exposureMs); },
+                                           this, [this](int exposureMs) { this->startMainCameraCapture(exposureMs); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
-                                           this, [this]() { this->INDI_AbortCapture(); },
+                                           this, [this]() { this->abortMainCameraCapture(); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
                                            this, [this](int totalDivisions, const QString &message)
@@ -27554,10 +27816,10 @@ void MainWindow::startAutoFocusFineHFROnly()
 
     // SDK/INDI 统一拍摄入口（同 startAutoFocus）
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestCapture,
-                                           this, [this](int exposureMs) { this->INDI_Capture(exposureMs); },
+                                           this, [this](int exposureMs) { this->startMainCameraCapture(exposureMs); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
-                                           this, [this]() { this->INDI_AbortCapture(); },
+                                           this, [this]() { this->abortMainCameraCapture(); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
                                            this, [this](int totalDivisions, const QString &message)
@@ -27776,10 +28038,10 @@ void MainWindow::startAutoFocusSuperFineOnly()
 
     // SDK/INDI 统一拍摄入口（同 startAutoFocus）
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestCapture,
-                                           this, [this](int exposureMs) { this->INDI_Capture(exposureMs); },
+                                           this, [this](int exposureMs) { this->startMainCameraCapture(exposureMs); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
-                                           this, [this]() { this->INDI_AbortCapture(); },
+                                           this, [this]() { this->abortMainCameraCapture(); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
                                            this, [this](int totalDivisions, const QString &message)
@@ -28469,11 +28731,11 @@ bool MainWindow::initPolarAlignment()
         return false;
     }
 
-    // SDK/INDI 统一拍摄入口：由 PolarAlignment 发起 requestCapture，MainWindow 调用 INDI_Capture 执行
+    // SDK/INDI 统一拍摄入口：由 PolarAlignment 发起 requestCapture，MainWindow 调用 startMainCameraCapture 执行
     QObject::connect(polarAlignment, &PolarAlignment::requestCapture,
                      this, [this](int exposureMs)
                      {
-                         this->INDI_Capture(exposureMs);
+                         this->startMainCameraCapture(exposureMs);
                      },
                      Qt::QueuedConnection);
 

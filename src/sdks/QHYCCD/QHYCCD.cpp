@@ -790,7 +790,21 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
                 r.message = "StartSingleExposure requires a valid device handle";
                 return r;
             }
+            Logger::Log("CaptureTrace | stage=qhy_start_single_exposure_sdk_call_enter"
+                            " | handle=" + std::to_string(reinterpret_cast<uintptr_t>(handle)) +
+                            " | thread=" + std::to_string(
+                                static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id()))),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            const auto sdkCallStart = std::chrono::steady_clock::now();
             unsigned int ret = ExpQHYCCDSingleFrame(handle);
+            const auto sdkCallMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - sdkCallStart).count();
+            Logger::Log("CaptureTrace | stage=qhy_start_single_exposure_sdk_call_return"
+                            " | handle=" + std::to_string(reinterpret_cast<uintptr_t>(handle)) +
+                            " | costMs=" + std::to_string(sdkCallMs) +
+                            " | ret=" + std::to_string(ret),
+                        (ret == QHYCCD_SUCCESS) ? LogLevel::INFO : LogLevel::ERROR,
+                        DeviceType::CAMERA);
             // 注意：不要在驱动层 sleep/阻塞等待曝光完成。
             // 上层（Qt 定时器）会根据曝光时间进行轮询/等待，这里只负责触发曝光。
             return makeResultFromRet("ExpQHYCCDSingleFrame", ret);
