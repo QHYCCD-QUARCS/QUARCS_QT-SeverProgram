@@ -806,7 +806,7 @@ public:
      */
     void sendGPMToClient(const TileGPM& gpm);
     void sendTileBatchReadyToClient(const QString& sessionId, quint64 frameId, const QStringList& tileKeys);
-    void sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId);
+    void sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId, const QStringList& requestedTileKeys = QStringList());
     void sendTileGenerationCompleteToClient(const QString& sessionId, quint64 frameId);
     void sendCurrentTileGenerationCompleteSnapshotToClient(const QString& sessionId, quint64 frameId);
 

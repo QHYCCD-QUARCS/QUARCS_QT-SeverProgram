@@ -4347,14 +4347,30 @@ void MainWindow::onMessageReceived(const QString &message)
         // 视口变化：调度“按需补瓦片”（不会阻塞主线程；会做合并/节流）
         scheduleViewportTileGeneration();
     }
-    else if (parts[0].trimmed() == "queryTileBatchReady" && parts.size() == 3)
+    else if (parts[0].trimmed() == "queryTileBatchReady" && (parts.size() == 3 || parts.size() == 4))
     {
         const QString sessionId = parts[1].trimmed();
         const quint64 frameId = parts[2].trimmed().toULongLong();
+        QStringList requestedTileKeys;
+        if (parts.size() == 4) {
+            requestedTileKeys = parts[3].split(',', Qt::SkipEmptyParts);
+            for (QString &key : requestedTileKeys) {
+                key = key.trimmed();
+            }
+            QStringList filteredRequestedTileKeys;
+            filteredRequestedTileKeys.reserve(requestedTileKeys.size());
+            for (const QString& key : requestedTileKeys) {
+                if (!key.isEmpty()) {
+                    filteredRequestedTileKeys.push_back(key);
+                }
+            }
+            requestedTileKeys = filteredRequestedTileKeys;
+        }
         Logger::Log("queryTileBatchReady: session=" + sessionId.toStdString() +
-                        ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)),
+                        ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)) +
+                        ", requestedCount=" + std::to_string(requestedTileKeys.size()),
                     LogLevel::DEBUG, DeviceType::MAIN);
-        sendCurrentTileBatchReadySnapshotToClient(sessionId, frameId);
+        sendCurrentTileBatchReadySnapshotToClient(sessionId, frameId, requestedTileKeys);
         sendCurrentTileGenerationCompleteSnapshotToClient(sessionId, frameId);
     }
     else if (parts[0].trimmed() == "sendSelectStars" && parts.size() == 3)
@@ -8627,7 +8643,7 @@ void MainWindow::sendTileBatchReadyToClient(const QString& sessionId, quint64 fr
                          .arg(containsZ0 ? QStringLiteral("true") : QStringLiteral("false")));
 }
 
-void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId)
+void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId, const QStringList& requestedTileKeys)
 {
     if (sessionId.isEmpty() || frameId == 0) {
         return;
@@ -8655,6 +8671,35 @@ void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessio
         readyKeys.assign(tileGenDoneKeys.begin(), tileGenDoneKeys.end());
     }
 
+    std::set<uint64_t> requestedPackedKeys;
+    if (!requestedTileKeys.isEmpty()) {
+        for (const QString& key : requestedTileKeys) {
+            const QStringList keyParts = key.split('/');
+            if (keyParts.size() != 3) continue;
+            bool okZ = false;
+            bool okX = false;
+            bool okY = false;
+            const int z = keyParts[0].toInt(&okZ);
+            const int x = keyParts[1].toInt(&okX);
+            const int y = keyParts[2].toInt(&okY);
+            if (!okZ || !okX || !okY || z < 0 || x < 0 || y < 0) continue;
+            const uint64_t packedKey =
+                (static_cast<uint64_t>(z) << 40) |
+                (static_cast<uint64_t>(x) << 20) |
+                static_cast<uint64_t>(y);
+            requestedPackedKeys.insert(packedKey);
+        }
+        readyKeys.erase(
+            std::remove_if(readyKeys.begin(), readyKeys.end(),
+                           [&requestedPackedKeys](uint64_t packedKey) {
+                               return requestedPackedKeys.find(packedKey) == requestedPackedKeys.end();
+                           }),
+            readyKeys.end());
+        if (readyKeys.empty()) {
+            return;
+        }
+    }
+
     std::sort(readyKeys.begin(), readyKeys.end());
     QStringList tileKeys;
     tileKeys.reserve(static_cast<int>(readyKeys.size()));
@@ -8667,7 +8712,8 @@ void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessio
 
     Logger::Log("queryTileBatchReady snapshot: session=" + sessionId.toStdString() +
                     ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)) +
-                    ", count=" + std::to_string(tileKeys.size()),
+                    ", count=" + std::to_string(tileKeys.size()) +
+                    ", requestedCount=" + std::to_string(requestedTileKeys.size()),
                 LogLevel::DEBUG, DeviceType::CAMERA);
     sendTileBatchReadyToClient(sessionId, frameId, tileKeys);
 }
