@@ -2086,34 +2086,78 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts.size() == 2 && parts[0].trimmed() == "MinLimit")
     {
         Logger::Log("MinLimit:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-        int MinLimit = parts[1].trimmed().toInt();
-        if (dpFocuser != NULL)
+        const int frontReportedMinLimit = parts[1].trimmed().toInt();
+        const bool focuserAvailable = (dpFocuser != NULL || isFocuserSDK());
+        if (!focuserAvailable)
         {
-            if (focuserMaxPosition != -1 && MinLimit >= focuserMaxPosition)
-            {
-                Logger::Log("MinLimit rejected: new MinLimit >= current MaxLimit", LogLevel::WARNING, DeviceType::FOCUSER);
-                emit wsThread->sendMessageToClient("focusMoveFailed:左边界必须小于右边界，请重新设置。");
-                return;
-            }
-            Tools::saveParameter("Focuser", "focuserMinPosition", parts[1].trimmed());
-            focuserMinPosition = MinLimit;
+            Logger::Log("MinLimit rejected: focuser not connected (INDI/SDK unavailable)", LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:电调未连接，无法设置左边界。");
+            return;
         }
+        
+        int stablePosition = 0;
+        if (!tryReadStableFocuserPosition(stablePosition))
+        {
+            Logger::Log("MinLimit rejected: failed to get stable focuser position", LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:当前位置未稳定，请停止移动后重试。");
+            return;
+        }
+        const int MinLimit = stablePosition;
+        if (std::abs(MinLimit - frontReportedMinLimit) > 10)
+        {
+            Logger::Log("MinLimit | Front position differs from stable backend position, use backend stable value. front="
+                            + std::to_string(frontReportedMinLimit) + ", stable=" + std::to_string(MinLimit),
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+        }
+
+        if (focuserMaxPosition != -1 && MinLimit >= focuserMaxPosition)
+        {
+            Logger::Log("MinLimit rejected: new MinLimit >= current MaxLimit", LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:左边界必须小于右边界，请重新设置。");
+            return;
+        }
+        Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(MinLimit));
+        focuserMinPosition = MinLimit;
+        Logger::Log("MinLimit accepted: " + std::to_string(MinLimit), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "MaxLimit")
     {
         Logger::Log("MaxLimit:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-        int MaxLimit = parts[1].trimmed().toInt();
-        if (dpFocuser != NULL)
+        const int frontReportedMaxLimit = parts[1].trimmed().toInt();
+        const bool focuserAvailable = (dpFocuser != NULL || isFocuserSDK());
+        if (!focuserAvailable)
         {
-            if (focuserMinPosition != -1 && MaxLimit <= focuserMinPosition)
-            {
-                Logger::Log("MaxLimit rejected: new MaxLimit <= current MinLimit", LogLevel::WARNING, DeviceType::FOCUSER);
-                emit wsThread->sendMessageToClient("focusMoveFailed:右边界必须大于左边界，请重新设置。");
-                return;
-            }
-            Tools::saveParameter("Focuser", "focuserMaxPosition", parts[1].trimmed());
-            focuserMaxPosition = MaxLimit;
+            Logger::Log("MaxLimit rejected: focuser not connected (INDI/SDK unavailable)", LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:电调未连接，无法设置右边界。");
+            return;
         }
+        
+        int stablePosition = 0;
+        if (!tryReadStableFocuserPosition(stablePosition))
+        {
+            Logger::Log("MaxLimit rejected: failed to get stable focuser position", LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:当前位置未稳定，请停止移动后重试。");
+            return;
+        }
+        const int MaxLimit = stablePosition;
+        if (std::abs(MaxLimit - frontReportedMaxLimit) > 10)
+        {
+            Logger::Log("MaxLimit | Front position differs from stable backend position, use backend stable value. front="
+                            + std::to_string(frontReportedMaxLimit) + ", stable=" + std::to_string(MaxLimit),
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+        }
+
+        if (focuserMinPosition != -1 && MaxLimit <= focuserMinPosition)
+        {
+            Logger::Log("MaxLimit rejected: new MaxLimit <= current MinLimit", LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:右边界必须大于左边界，请重新设置。");
+            return;
+        }
+        Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(MaxLimit));
+        focuserMaxPosition = MaxLimit;
+        Logger::Log("MaxLimit accepted: " + std::to_string(MaxLimit), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "Backlash")
     {
@@ -19116,6 +19160,96 @@ int MainWindow::FocuserControl_getPosition()
     }
 }
 
+bool MainWindow::tryReadStableFocuserPosition(int &stablePosition,
+                                              int timeoutMs,
+                                              int sampleIntervalMs,
+                                              int requiredStableSamples,
+                                              int toleranceSteps)
+{
+    const bool focuserSdkReady =
+        (systemdevicelist.system_devices.size() > 22 &&
+         systemdevicelist.system_devices[22].isSDKConnect &&
+         systemdevicelist.system_devices[22].isBind &&
+         sdkFocuserHandle != nullptr);
+    const bool focuserConnected = (dpFocuser != nullptr || focuserSdkReady);
+    if (!focuserConnected)
+    {
+        Logger::Log("tryReadStableFocuserPosition | focuser not connected", LogLevel::WARNING, DeviceType::FOCUSER);
+        return false;
+    }
+
+    timeoutMs = std::max(timeoutMs, 800);
+    sampleIntervalMs = std::max(sampleIntervalMs, 80);
+    requiredStableSamples = std::max(requiredStableSamples, 2);
+    toleranceSteps = std::max(toleranceSteps, 1);
+
+    QElapsedTimer timer;
+    timer.start();
+    QVector<int> recentSamples;
+
+    auto readPositionSample = [&]() -> bool {
+        if (dpFocuser == nullptr && focuserSdkReady)
+        {
+            requestSdkFocuserPositionUpdate(false);
+            int waited = 0;
+            while (sdkFocuserPosTaskInFlight.load() && waited < 600)
+            {
+                QThread::msleep(20);
+                QCoreApplication::processEvents();
+                waited += 20;
+            }
+
+            if (!sdkFocuserPosValid.load())
+            {
+                return false;
+            }
+        }
+
+        const int current = FocuserControl_getPosition();
+        recentSamples.push_back(current);
+        if (recentSamples.size() > requiredStableSamples)
+        {
+            recentSamples.remove(0);
+        }
+        return true;
+    };
+
+    while (timer.elapsed() < timeoutMs)
+    {
+        if (!readPositionSample())
+        {
+            recentSamples.clear();
+            QThread::msleep(sampleIntervalMs);
+            continue;
+        }
+
+        if (recentSamples.size() >= requiredStableSamples)
+        {
+            auto minMaxIt = std::minmax_element(recentSamples.begin(), recentSamples.end());
+            auto minIt = minMaxIt.first;
+            auto maxIt = minMaxIt.second;
+            if ((*maxIt - *minIt) <= toleranceSteps)
+            {
+                QVector<int> sorted = recentSamples;
+                std::sort(sorted.begin(), sorted.end());
+                stablePosition = sorted[sorted.size() / 2];
+                Logger::Log("tryReadStableFocuserPosition | stable position=" + std::to_string(stablePosition) +
+                                ", samples=" + std::to_string(sorted[0]) + "," +
+                                std::to_string(sorted[sorted.size() - 1]),
+                            LogLevel::INFO, DeviceType::FOCUSER);
+                return true;
+            }
+        }
+
+        QThread::msleep(sampleIntervalMs);
+    }
+
+    Logger::Log("tryReadStableFocuserPosition | timeout, latest samples count=" +
+                    std::to_string(recentSamples.size()),
+                LogLevel::WARNING, DeviceType::FOCUSER);
+    return false;
+}
+
 void MainWindow::TelescopeControl_Goto(double Ra, double Dec)
 {
     if (dpMount != NULL)
@@ -29010,6 +29144,26 @@ void MainWindow::getFocuserParameters()
     }
     Logger::Log("Focuser Max Position: " + std::to_string(focuserMaxPosition) + ", Min Position: " + std::to_string(focuserMinPosition), LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
+
+    // 启动/刷新时先同步一次当前位置与历史上下限，避免前端误触时看不到旧值
+    const bool focuserAvailable = (dpFocuser != nullptr || isFocuserSDK());
+    if (focuserAvailable)
+    {
+        int stablePosition = 0;
+        if (tryReadStableFocuserPosition(stablePosition, 1800, 160, 2, 6))
+        {
+            CurrentPosition = stablePosition;
+        }
+        else
+        {
+            CurrentPosition = FocuserControl_getPosition();
+            Logger::Log("getFocuserParameters | stable position read timeout, fallback position=" + std::to_string(CurrentPosition),
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+        }
+    }
+
+    emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+    emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
 
     // 空程
     int emptyStep = parameters.contains("Backlash") ? parameters["Backlash"].toInt() : 0;

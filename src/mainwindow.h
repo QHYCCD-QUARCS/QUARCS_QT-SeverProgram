@@ -85,7 +85,7 @@ namespace fs = std::filesystem;
 
 /**********************  宏与常量定义  **********************/
 // #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260410"  // 手动指定版本号
+#define QT_Client_Version "20260414"  // 手动指定版本号
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -1179,6 +1179,21 @@ public:
      * @return 位置值
      */
     int FocuserControl_getPosition();
+    
+    /**
+     * @brief 延迟采样并判断电调稳定位置（用于手动校准设边界）
+     * @param stablePosition 输出稳定后的位置
+     * @param timeoutMs 超时时间（毫秒）
+     * @param sampleIntervalMs 采样间隔（毫秒）
+     * @param requiredStableSamples 需要连续满足稳定条件的采样数
+     * @param toleranceSteps 稳定判定容差（步数）
+     * @return true 成功读取到稳定位置；false 超时或读取失败
+     */
+    bool tryReadStableFocuserPosition(int &stablePosition,
+                                      int timeoutMs = 2800,
+                                      int sampleIntervalMs = 180,
+                                      int requiredStableSamples = 3,
+                                      int toleranceSteps = 4);
 
 /**********************  望远镜控制/天文时角 & 解算  **********************/
 public:
