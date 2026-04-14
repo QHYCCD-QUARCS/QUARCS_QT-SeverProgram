@@ -2089,6 +2089,12 @@ void MainWindow::onMessageReceived(const QString &message)
         int MinLimit = parts[1].trimmed().toInt();
         if (dpFocuser != NULL)
         {
+            if (focuserMaxPosition != -1 && MinLimit >= focuserMaxPosition)
+            {
+                Logger::Log("MinLimit rejected: new MinLimit >= current MaxLimit", LogLevel::WARNING, DeviceType::FOCUSER);
+                emit wsThread->sendMessageToClient("focusMoveFailed:左边界必须小于右边界，请重新设置。");
+                return;
+            }
             Tools::saveParameter("Focuser", "focuserMinPosition", parts[1].trimmed());
             focuserMinPosition = MinLimit;
         }
@@ -2099,6 +2105,12 @@ void MainWindow::onMessageReceived(const QString &message)
         int MaxLimit = parts[1].trimmed().toInt();
         if (dpFocuser != NULL)
         {
+            if (focuserMinPosition != -1 && MaxLimit <= focuserMinPosition)
+            {
+                Logger::Log("MaxLimit rejected: new MaxLimit <= current MinLimit", LogLevel::WARNING, DeviceType::FOCUSER);
+                emit wsThread->sendMessageToClient("focusMoveFailed:右边界必须大于左边界，请重新设置。");
+                return;
+            }
             Tools::saveParameter("Focuser", "focuserMaxPosition", parts[1].trimmed());
             focuserMaxPosition = MaxLimit;
         }
@@ -4546,23 +4558,33 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("StopAutoPolarAlignment finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
+    // [停用 2026-04-14] 旧自动电调校准命令入口已停用，改为前端手动移动+手动设置 MinLimit/MaxLimit。
     else if (parts[0].trimmed() == "focusMoveToMin")
     {
-        Logger::Log("focusMoveToMin ...", LogLevel::DEBUG, DeviceType::FOCUSER);
-        focusMoveToMin();
-        Logger::Log("focusMoveToMin finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+        Logger::Log("focusMoveToMin | 已停用，拒绝执行旧自动校准命令", LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:旧版自动校准命令 focusMoveToMin 已停用，请使用手动设置左右边界。");
+        // [停用保留] 旧逻辑如下，保留以便回溯：
+        // Logger::Log("focusMoveToMin ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        // focusMoveToMin();
+        // Logger::Log("focusMoveToMin finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
     }
     else if (parts[0].trimmed() == "focusMoveToMax")
     {
-        Logger::Log("focusMoveToMax ...", LogLevel::DEBUG, DeviceType::FOCUSER);
-        focusMoveToMax();
-        Logger::Log("focusMoveToMax finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+        Logger::Log("focusMoveToMax | 已停用，拒绝执行旧自动校准命令", LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:旧版自动校准命令 focusMoveToMax 已停用，请使用手动设置左右边界。");
+        // [停用保留] 旧逻辑如下，保留以便回溯：
+        // Logger::Log("focusMoveToMax ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        // focusMoveToMax();
+        // Logger::Log("focusMoveToMax finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
     }
     else if (parts[0].trimmed() == "focusSetTravelRange")
     {
-        Logger::Log("focusSetTravelRange ...", LogLevel::DEBUG, DeviceType::FOCUSER);
-        focusSetTravelRange();
-        Logger::Log("focusSetTravelRange finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
+        Logger::Log("focusSetTravelRange | 已停用，拒绝执行旧自动校准命令", LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:旧版自动校准命令 focusSetTravelRange 已停用，请使用手动设置左右边界。");
+        // [停用保留] 旧逻辑如下，保留以便回溯：
+        // Logger::Log("focusSetTravelRange ...", LogLevel::DEBUG, DeviceType::FOCUSER);
+        // focusSetTravelRange();
+        // Logger::Log("focusSetTravelRange finish!", LogLevel::DEBUG, DeviceType::FOCUSER);
     }
     else if (parts[0].trimmed() == "getFocuserParameters")
     {
@@ -28386,6 +28408,7 @@ bool MainWindow::initPolarAlignment()
     return true;
 }
 
+// [停用 2026-04-14] 旧自动电调校准实现：保留函数体用于历史回溯，当前不再通过命令入口触发。
 void MainWindow::focusMoveToMin()
 {
     emit wsThread->sendMessageToClient("focusMoveToMinStarted");
@@ -28543,6 +28566,7 @@ void MainWindow::focusMoveToMin()
     Logger::Log("focusMoveToMin | Started moving to minimum position: " + std::to_string(min), LogLevel::INFO, DeviceType::FOCUSER);
 }
 
+// [停用 2026-04-14] 旧自动电调校准实现：保留函数体用于历史回溯，当前不再通过命令入口触发。
 void MainWindow::focusMoveToMax()
 {
     emit wsThread->sendMessageToClient("focusMoveToMaxStarted");
@@ -28744,6 +28768,7 @@ void MainWindow::focusMoveToMax()
     Logger::Log("focusMoveToMax | Started moving to maximum position: " + std::to_string(max), LogLevel::INFO, DeviceType::FOCUSER);
 }
 
+// [停用 2026-04-14] 旧自动电调校准实现：保留函数体用于历史回溯，当前不再通过命令入口触发。
 void MainWindow::focusSetTravelRange()
 {
     emit wsThread->sendMessageToClient("focusSetTravelRangeStarted");
