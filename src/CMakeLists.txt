@@ -81,6 +81,14 @@ set(QT_COMPONENTS
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(DEFINED ENV{QUARCS_QT_CLIENT_VERSION} AND NOT "$ENV{QUARCS_QT_CLIENT_VERSION}" STREQUAL "")
+  set(QUARCS_QT_CLIENT_VERSION_VALUE "$ENV{QUARCS_QT_CLIENT_VERSION}")
+else()
+  string(TIMESTAMP QUARCS_QT_CLIENT_VERSION_VALUE "%Y%m%d%H%M")
+endif()
+
+message(STATUS "QUARCS Qt client build version: ${QUARCS_QT_CLIENT_VERSION_VALUE}")
+
 if(CMAKE_SYSROOT)
   # Ubuntu 24.04 的 aarch64 交叉编译器会默认优先使用宿主机自带的 libstdc++ 头，
   # 这会把产物 ABI 抬高到树莓派 bookworm 运行时之上。
@@ -156,6 +164,8 @@ if(QUARCS_SIM_GUIDER)
 else()
   target_compile_definitions(client PRIVATE QUARCS_SIM_GUIDER=0)
 endif()
+
+target_compile_definitions(client PRIVATE QUARCS_QT_CLIENT_VERSION="${QUARCS_QT_CLIENT_VERSION_VALUE}")
 
 # 离线导星算法测试（不依赖相机/赤道仪）
 add_executable(guiding_offline_test

@@ -907,8 +907,8 @@ int LoopCaptureBurstFrames = 1;
 MainWindow *MainWindow::instance = nullptr;
 
 /**
- * @brief 获取构建日期字符串（从编译时宏 __DATE__ 解析）
- * @return 构建日期字符串（格式：YYYYMMDD）
+ * @brief 获取构建日期字符串（从编译时宏 __DATE__ / __TIME__ 解析）
+ * @return 构建日期字符串（格式：YYYYMMDDHHMM）
  */
 std::string MainWindow::getBuildDate()
 {
@@ -919,11 +919,16 @@ std::string MainWindow::getBuildDate()
     };
 
     std::string date = __DATE__;
+    std::string time = __TIME__;
     std::stringstream dateStream(date);
+    std::stringstream timeStream(time);
     std::string month, day, year;
+    std::string hour, minute;
     dateStream >> month >> day >> year;
+    std::getline(timeStream, hour, ':');
+    std::getline(timeStream, minute, ':');
 
-    return year + monthMap.at(month) + (day.size() == 1 ? "0" + day : day);
+    return year + monthMap.at(month) + (day.size() == 1 ? "0" + day : day) + hour + minute;
 }
 
 MainWindow::MainWindow(QObject *parent) : QObject(parent)
@@ -1700,26 +1705,30 @@ void MainWindow::onMessageReceived(const QString &message)
         int ListNum = parts[2].trimmed().toInt();
         printDevGroups2(drivers_list, ListNum, Group);
     }
-    else if (parts.size() == 2 && parts[0].trimmed() == "takeExposure")
+    else if (parts.size() >= 2 && parts[0].trimmed() == "takeExposure")
     {
         Logger::Log("takeExposure:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
         Logger::Log("Accept takeExposure order ,set ExpTime is " + parts[1].trimmed().toStdString() + " ms", LogLevel::DEBUG, DeviceType::CAMERA);
         int ExpTime = parts[1].trimmed().toInt();
+        currentCaptureTraceId = (parts.size() >= 3) ? parts[2].trimmed() : QString();
+        currentCaptureTraceStartedAtMs = QDateTime::currentMSecsSinceEpoch();
+        emitCaptureTrace(QStringLiteral("backend_command_received"), currentCaptureTraceStartedAtMs,
+                         QString("mode=single,exposureMs=%1").arg(ExpTime));
 
-        // 确保采集模式为 Single，避免 Loop 在上一轮 Burst 状态下误触发 Burst
-        mainCameraCaptureMode = MainCameraCaptureMode::Single;
-        applySdkMainCameraCaptureMode();
-
-        INDI_Capture(ExpTime);
+        startMainCameraCapture(ExpTime);
         glExpTime = ExpTime;
     }
-    else if (parts.size() == 3 && parts[0].trimmed() == "takeExposureBurst")
+    else if (parts.size() >= 3 && parts[0].trimmed() == "takeExposureBurst")
     {
         // Burst：仅 QHYCCD SDK 支持（前端也会做驱动限制，这里再做兜底校验）
         Logger::Log("takeExposureBurst:" + parts[1].trimmed().toStdString() + ":" + parts[2].trimmed().toStdString(),
                     LogLevel::DEBUG, DeviceType::CAMERA);
         const int ExpTime = parts[1].trimmed().toInt();   // ms
         const int frames  = parts[2].trimmed().toInt();   // frames
+        currentCaptureTraceId = (parts.size() >= 4) ? parts[3].trimmed() : QString();
+        currentCaptureTraceStartedAtMs = QDateTime::currentMSecsSinceEpoch();
+        emitCaptureTrace(QStringLiteral("backend_command_received"), currentCaptureTraceStartedAtMs,
+                         QString("mode=burst,exposureMs=%1,frames=%2").arg(ExpTime).arg(frames));
         // 记录本次 Burst 的帧数，供 LoopCapture 在 Burst 模式下复用
         LoopCaptureBurstFrames = (frames > 0) ? frames : 1;
 
@@ -2255,7 +2264,7 @@ void MainWindow::onMessageReceived(const QString &message)
             startAutoFocus();
         }
         else if (mode == "Fine") {
-            // 新：仅从当前位置执行 HFR 精调（固定步长 100，采样 11 点）
+            // 仅从当前位置执行本地精调：先拍当前位置，再围绕当前位置双向展开
             // 增加模式标记：fine（仅精调模式）
             emit wsThread->sendMessageToClient("AutoFocusStarted:fine:自动对焦已开始");
             startAutoFocusFineHFROnly();
@@ -2303,7 +2312,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "abortExposure")
     {
         Logger::Log("abortExposure", LogLevel::DEBUG, DeviceType::CAMERA);
-        INDI_AbortCapture();
+        abortMainCameraCapture();
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraCaptureMode")
     {
@@ -2575,51 +2584,8 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (parts.size() >= 1 && parts[0].trimmed() == "CalcWhiteBalance")
     {
-        Logger::Log("收到白平衡计算请求", LogLevel::INFO, DeviceType::MAIN);
-        
-        // 临时从FITS文件读取图像进行白平衡计算
-        const char* fitsPath = "/dev/shm/MatToFITS.fits";
-        cv::Mat tempImage;
-        int readStatus = Tools::readFits(fitsPath, tempImage);
-        
-        if (readStatus != 0 || tempImage.empty()) {
-            Logger::Log("无法从FITS文件读取图像，无法计算白平衡", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("WhiteBalanceGains:1.0:1.0");
-        }
-        else {
-            Logger::Log("已从FITS文件读取图像: " + std::to_string(tempImage.cols) + "x" + 
-                        std::to_string(tempImage.rows) + ", type=" + std::to_string(tempImage.type()), 
-                        LogLevel::DEBUG, DeviceType::MAIN);
-            
-            // 计算白平衡增益（使用当前相机的CFA类型）
-            const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
-            QPair<double, double> gains = calculateWhiteBalanceGains(tempImage, MainCameraCFA, offset);
-            
-            // 更新全局增益值
-            ImageGainR = gains.first;
-            ImageGainB = gains.second;
-            
-            // 保存参数
-            Tools::saveParameter("MainCamera", "ImageGainR", QString::number(ImageGainR));
-            Tools::saveParameter("MainCamera", "ImageGainB", QString::number(ImageGainB));
-            
-            // 发送增益值到前端
-            QString message = QString("WhiteBalanceGains:%1:%2")
-                                .arg(ImageGainR, 0, 'f', 4)
-                                .arg(ImageGainB, 0, 'f', 4);
-            emit wsThread->sendMessageToClient(message);
-            
-            Logger::Log("已发送白平衡增益到前端: R=" + std::to_string(ImageGainR) + 
-                        ", B=" + std::to_string(ImageGainB), LogLevel::INFO, DeviceType::MAIN);
-            
-            // 重要：白平衡增益变化只影响“前端渲染”，不应触发瓦片重新生成、更不应创建新 session。
-            // 这里仅把增益值发送给前端，由前端基于已缓存的 16-bit raw 瓦片做重处理/重渲染。
-            Logger::Log("白平衡增益已更新：不重新生成瓦片金字塔，仅通知前端进行重渲染", LogLevel::INFO, DeviceType::MAIN);
-            
-            // 释放临时图像内存
-            tempImage.release();
-            Logger::Log("已释放临时图像内存", LogLevel::DEBUG, DeviceType::MAIN);
-        }
+        Logger::Log("收到 CalcWhiteBalance 请求，但后端自动白平衡已停用；主图链路改由前端基于 Z=0 计算", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("WhiteBalanceGains:1.0:1.0");
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "ImageOffset")
@@ -3910,9 +3876,11 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraTileBuildMode")
     {
         const QString requestedMode = parts[1].trimmed();
-        tileBuildMode = (requestedMode == "merged_single_level")
-            ? QStringLiteral("merged_single_level")
-            : QStringLiteral("pyramid");
+        if (requestedMode == QStringLiteral("merged_single_level")) {
+            Logger::Log("SetMainCameraTileBuildMode: 'merged_single_level' is deprecated, forcing pyramid",
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+        tileBuildMode = QStringLiteral("pyramid");
         Logger::Log("Set MainCamera Tile Build Mode to " + tileBuildMode.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveParameter("MainCamera", "Tile Build Mode", tileBuildMode);
     }
@@ -4392,7 +4360,8 @@ void MainWindow::onMessageReceived(const QString &message)
                     LogLevel::DEBUG, DeviceType::MAIN);
         Logger::Log("sendRedBoxState finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-    else if (parts[0].trimmed() == "sendVisibleArea" && (parts.size() == 4 || parts.size() == 5))
+    else if (parts[0].trimmed() == "sendVisibleArea" &&
+             (parts.size() == 4 || parts.size() == 5 || parts.size() == 6 || parts.size() == 7))
     {
         Logger::Log("sendVisibleArea ...", LogLevel::DEBUG, DeviceType::MAIN);
         const double vx = parts[1].trimmed().toDouble();
@@ -4401,29 +4370,63 @@ void MainWindow::onMessageReceived(const QString &message)
         roiAndFocuserInfo["VisibleX"] = vx;
         roiAndFocuserInfo["VisibleY"] = vy;
         roiAndFocuserInfo["scale"] = sc;
-        // 可选 frameId（v2）：用于跨帧不去抖（前端把 frameId 追加到命令末尾）
+        // 可选 frameId（旧协议 v2）：用于跨帧不去抖（前端把 frameId 追加到命令末尾）
         // 这里当前仅用于兼容解析；瓦片生成始终以最新 tileFrame.epoch 为准。
-        if (parts.size() == 5) {
+        if (parts.size() >= 5) {
             (void)parts[4].trimmed().toULongLong();
+        }
+        int targetZ = -1;
+        int maxZCap = -1;
+        if (parts.size() == 6) {
+            targetZ = parts[5].trimmed().toInt();
+        } else if (parts.size() == 7) {
+            targetZ = parts[5].trimmed().toInt();
+            maxZCap = parts[6].trimmed().toInt();
         }
 
         // 同步到瓦片视口参数（供后端按需生成视口瓦片）
         tileViewportX = vx;
         tileViewportY = vy;
         tileViewportScale = sc;
+        tileViewportTargetZ = targetZ;
+        tileViewportMaxZCap = maxZCap;
         ++tileViewportRequestSeq;
+
+        Logger::Log("sendVisibleArea parsed: frameId=" +
+                        std::to_string(parts.size() >= 5
+                                           ? static_cast<unsigned long long>(parts[4].trimmed().toULongLong())
+                                           : 0ULL) +
+                        ", targetZ=" + std::to_string(targetZ) +
+                        ", maxZCap=" + std::to_string(maxZCap),
+                    LogLevel::DEBUG, DeviceType::MAIN);
 
         // 视口变化：调度“按需补瓦片”（不会阻塞主线程；会做合并/节流）
         scheduleViewportTileGeneration();
     }
-    else if (parts[0].trimmed() == "queryTileBatchReady" && parts.size() == 3)
+    else if (parts[0].trimmed() == "queryTileBatchReady" && (parts.size() == 3 || parts.size() == 4))
     {
         const QString sessionId = parts[1].trimmed();
         const quint64 frameId = parts[2].trimmed().toULongLong();
+        QStringList requestedTileKeys;
+        if (parts.size() == 4) {
+            requestedTileKeys = parts[3].split(',', Qt::SkipEmptyParts);
+            for (QString &key : requestedTileKeys) {
+                key = key.trimmed();
+            }
+            QStringList filteredRequestedTileKeys;
+            filteredRequestedTileKeys.reserve(requestedTileKeys.size());
+            for (const QString& key : requestedTileKeys) {
+                if (!key.isEmpty()) {
+                    filteredRequestedTileKeys.push_back(key);
+                }
+            }
+            requestedTileKeys = filteredRequestedTileKeys;
+        }
         Logger::Log("queryTileBatchReady: session=" + sessionId.toStdString() +
-                        ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)),
+                        ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)) +
+                        ", requestedCount=" + std::to_string(requestedTileKeys.size()),
                     LogLevel::DEBUG, DeviceType::MAIN);
-        sendCurrentTileBatchReadySnapshotToClient(sessionId, frameId);
+        sendCurrentTileBatchReadySnapshotToClient(sessionId, frameId, requestedTileKeys);
         sendCurrentTileGenerationCompleteSnapshotToClient(sessionId, frameId);
     }
     else if (parts[0].trimmed() == "sendSelectStars" && parts.size() == 3)
@@ -5164,6 +5167,8 @@ void MainWindow::initINDIClient()
                         
                         // 否则按正常拍摄处理
                         emit wsThread->sendMessageToClient("ExposureCompleted");
+                        emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                                         QStringLiteral("source=fits_callback"));
                         Logger::Log("ExposureCompleted", LogLevel::INFO, DeviceType::CAMERA);
                         if (polarAlignment != nullptr)
                         {
@@ -6373,7 +6378,7 @@ int MainWindow::saveFitsAsPNG_FromSdkFrame(const std::shared_ptr<SdkFrameData>& 
 
 int MainWindow::saveFitsAsPNG_Worker(QString fitsFileName, bool ProcessBin)
 {
-    // 旧实现会在 saveFitsAsPNG() 一开始就触发下一帧拍摄（并且直接调用 INDI_Capture），
+    // 旧实现会在 saveFitsAsPNG() 一开始就触发下一帧拍摄（并且直接调用 startMainCameraCapture），
     // 在当前 SDK/定时器/线程队列/状态机体系下会与“出图链路”竞争同一相机资源，导致不稳定。
     // 新语义：仅当本帧完整出图成功后，才异步触发下一帧（QueuedConnection），避免递归/重入。
     Logger::Log("Starting to save FITS as PNG...", LogLevel::INFO, DeviceType::CAMERA);
@@ -6523,6 +6528,9 @@ int MainWindow::saveFitsAsPNG_FromSdkFrame_Worker(std::shared_ptr<SdkFrameData> 
 
 int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QString& cameraCFA, bool ProcessBin, const QString& sourceTag)
 {
+    emitCaptureTrace(QStringLiteral("backend_process_image_start"), currentCaptureTraceStartedAtMs,
+                     QString("sourceTag=%1").arg(sourceTag));
+    const qint64 processStageStartMs = QDateTime::currentMSecsSinceEpoch();
     const quint64 epochAtStart = tilePyramidEpoch.load();
     cv::Mat originalImage16 = inputImage16.clone();
     cv::Mat image16;
@@ -6598,6 +6606,13 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
     {
         image16 = originalImage16.clone();
     }
+    emitCaptureTrace(QStringLiteral("backend_process_preview_ready"), processStageStartMs,
+                     QString("processBin=%1,preview=%2x%3,tileSource=%4x%5")
+                         .arg(ProcessBin ? QStringLiteral("true") : QStringLiteral("false"))
+                         .arg(image16.cols)
+                         .arg(image16.rows)
+                         .arg(originalImage16.cols)
+                         .arg(originalImage16.rows));
 
     // 软件 bin 后图仅用于另一路 FITS 保存；瓦片源统一使用原图，避免在瓦片构建前提前合并。
     const cv::Mat& tileSourceImage = originalImage16;
@@ -6619,22 +6634,16 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         return -1;
     }
 
-    // 彩色相机：每帧根据当前全分辨率 RAW 自动估计 R/B 增益（与 CalcWhiteBalance 相同算法），供 TileGPM 与前端渲染
-    if (isColor && tileSourceImage.type() == CV_16UC1)
-    {
-        const uint16_t offset = static_cast<uint16_t>(std::clamp(std::lround(ImageOffset), 0l, 65535l));
-        QPair<double, double> gains = calculateWhiteBalanceGains(tileSourceImage, effectiveCameraCFA, offset);
-        ImageGainR = gains.first;
-        ImageGainB = gains.second;
-        Tools::saveParameter("MainCamera", "ImageGainR", QString::number(ImageGainR));
-        Tools::saveParameter("MainCamera", "ImageGainB", QString::number(ImageGainB));
-        // 不发送 WhiteBalanceGains：若先于 TileGPM 到达，前端会对「上一帧已缓存的 RAW 瓦片」执行
-        // applyStoredAutoWhiteBalance(reprocess)，导致新增益套在旧图上。每帧增益已由随后 sendGPMToClient(TileGPM) 下发，
-        // 前端 handleTileGPM 会更新增益并在新会话/新帧上拉瓦片。手动 CalcWhiteBalance 路径仍会单独发 WhiteBalanceGains。
-        Logger::Log("Per-frame auto WB gains: R=" + std::to_string(ImageGainR) +
-                        ", B=" + std::to_string(ImageGainB) + " (via TileGPM only; no duplicate WhiteBalanceGains)",
-                    LogLevel::INFO, DeviceType::CAMERA);
-    }
+    // 自动图像优化已前端化：后端主链路不再按帧计算自动白平衡增益。
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | tileSourceImageSize = " +
+                    std::to_string(tileSourceImage.cols) + "x" + std::to_string(tileSourceImage.rows),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | tileSourceImageType = " +
+                    std::to_string(tileSourceImage.type()),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | effectiveCameraCFA = " +
+                    effectiveCameraCFA.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
 
     // ========================= 瓦片（视口驱动生成） =========================
     // 每张图像使用独立会话目录：live_<epoch>，便于区分并清理旧图
@@ -6659,27 +6668,39 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         return -1;
     }
 
-    // 先计算“快速 GPM”用于首帧显示：
-    // - 不等待完整直方图
-    // - 大图会走子采样统计，尽快把可显示的 black/white 发给前端
-    // 完整直方图与更细统计放到后台补发，避免首帧额外等待 1s+
+    // GPM 仅保留图像与瓦片元数据；自动优化参数改由前端基于 Z=0 计算。
     int maxMergeFactor = 16;
+    const qint64 gpmCalcStartMs = QDateTime::currentMSecsSinceEpoch();
     TileGPM gpm = calculateGPM(tileSourceImage, effectiveCameraCFA, maxMergeFactor, /*enableHistogram=*/false);
+    emitCaptureTrace(QStringLiteral("backend_calculate_gpm_done"), gpmCalcStartMs,
+                     QString("sessionCandidate=live_%1,image=%2x%3,maxZoom=%4")
+                         .arg(QString::number(static_cast<qulonglong>(epochAtStart)))
+                         .arg(tileSourceImage.cols)
+                         .arg(tileSourceImage.rows)
+                         .arg(gpm.maxZoomLevel));
     gpm.sessionId = sessionId;
     gpm.previewWidth = image16.cols;
     gpm.previewHeight = image16.rows;
     gpm.previewBinningFactor = binningFactor;
     // 帧ID：与本次 saveFitsAsPNG() 的 epoch 对齐，用于前端/瓦片请求做“错帧丢弃”
     gpm.frameId = epochAtStart;
-    gpm.buildMode = (tileBuildMode.trimmed() == "merged_single_level")
-        ? QStringLiteral("merged_single_level")
-        : QStringLiteral("pyramid");
+    gpm.buildMode = QStringLiteral("pyramid");
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | sessionId = " +
+                    sessionId.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | frameId = " +
+                    std::to_string(static_cast<unsigned long long>(gpm.frameId)),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | saveFitsAsPNG | gpmBlackWhite = " +
+                    std::to_string(gpm.blackLevel) + "," + std::to_string(gpm.whiteLevel),
+                LogLevel::INFO, DeviceType::CAMERA);
 
     // 保存“最新帧”供视口拖动/缩放时按需补瓦片（避免反复 readFits）
     {
         std::lock_guard<std::mutex> lk(tileFrameMutex);
         tileFrame.epoch = epochAtStart;
         tileFrame.sessionId = sessionId;
+        tileFrame.frameId = epochAtStart;
         tileFrame.imageWidth = tileSourceImage.cols;
         tileFrame.imageHeight = tileSourceImage.rows;
         tileFrame.previewBinningFactor = binningFactor;
@@ -6690,14 +6711,15 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         tileFramePreviewImage16 = std::make_shared<cv::Mat>(image16);
     }
 
-    // 先同步生成当前视口要显示的瓦片并落盘，再发 GPM，避免前端收到 GPM 后请求瓦片时 404（帧丢失）；无视口时退化为 z=0 全层
-    generateVisibleTilesSync(epochAtStart);
-
-    // 初次：按当前视口优先生成其它层级/视口瓦片，其余在视口变化时再按需补齐
-    scheduleViewportTileGeneration();
-    if (gpm.buildMode == QStringLiteral("merged_single_level")) {
-        scheduleFullResTileCompletion();
-    }
+    // 首帧链路只同步准备 z=0 预览瓦片：
+    // - 保证前端收到 GPM 后，Z0 一定可立即拉取
+    // - currentZ-1/currentZ 的局部高清瓦片改走后续异步补齐，避免它们阻塞首图
+    const qint64 visibleTilesStartMs = QDateTime::currentMSecsSinceEpoch();
+    generateVisibleTilesSync(epochAtStart, /*includeViewportLevels=*/false);
+    emitCaptureTrace(QStringLiteral("backend_visible_tiles_ready"), visibleTilesStartMs,
+                     QString("sessionId=%1,frameId=%2")
+                         .arg(sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(epochAtStart))));
 
     // 发送GPM到前端
     if (tilePyramidEpoch.load() != epochAtStart) {
@@ -6705,6 +6727,20 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         return -1;
     }
     sendGPMToClient(gpm);
+    emitCaptureTrace(QStringLiteral("backend_tilegpm_sent"), currentCaptureTraceStartedAtMs,
+                     QString("sessionId=%1,frameId=%2,serverNowMs=%3")
+                         .arg(gpm.sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(gpm.frameId)))
+                         .arg(QString::number(QDateTime::currentMSecsSinceEpoch())));
+
+    // Z0/GPM 已经先行放出；当前视口的其它高清瓦片再异步补齐即可。
+    const qint64 viewportScheduleStartMs = QDateTime::currentMSecsSinceEpoch();
+    scheduleViewportTileGeneration();
+    scheduleFullResTileCompletion();
+    emitCaptureTrace(QStringLiteral("backend_schedule_viewport_tiles_done"), viewportScheduleStartMs,
+                     QString("sessionId=%1,frameId=%2")
+                         .arg(sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(epochAtStart))));
     // 删除其它旧会话的瓦片目录，仅保留当前 sessionId
     cleanupOldTileSessionDirs(sessionId);
 
@@ -6714,66 +6750,6 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
         if (!previewFitsImage || previewFitsImage->empty()) return;
         Tools::SaveMatToFITS(*previewFitsImage);
         Logger::Log("Image saved as FITS.", LogLevel::INFO, DeviceType::CAMERA);
-    });
-
-    // 后台补充完整直方图与更精确的拉伸参数：
-    // - 这里对 preview/bin 后的小图做完整统计，速度远快于全分辨率原图
-    // - 使用相同 sessionId/frameId 再发一次 TileGPM，前端会在同一帧上更新 black/white，而不会切新会话
-    auto previewStatsImage = std::make_shared<cv::Mat>(image16.clone());
-    const QString asyncSessionId = sessionId;
-    const QString asyncBuildMode = gpm.buildMode;
-    const quint64 asyncFrameId = epochAtStart;
-    const int asyncImageWidth = gpm.imageWidth;
-    const int asyncImageHeight = gpm.imageHeight;
-    const int asyncTileSize = gpm.tileSize;
-    const int asyncMaxZoomLevel = gpm.maxZoomLevel;
-    const int asyncPreviewWidth = gpm.previewWidth;
-    const int asyncPreviewHeight = gpm.previewHeight;
-    const int asyncPreviewBin = gpm.previewBinningFactor;
-    const QString asyncCfa = gpm.cfa;
-    const double asyncGainR = gpm.gainR;
-    const double asyncGainB = gpm.gainB;
-    QPointer<MainWindow> self(this);
-    QtConcurrent::run([self,
-                       previewStatsImage,
-                       asyncSessionId,
-                       asyncBuildMode,
-                       asyncFrameId,
-                       asyncImageWidth,
-                       asyncImageHeight,
-                       asyncTileSize,
-                       asyncMaxZoomLevel,
-                       asyncPreviewWidth,
-                       asyncPreviewHeight,
-                       asyncPreviewBin,
-                       asyncCfa,
-                       asyncGainR,
-                       asyncGainB,
-                       maxMergeFactor]() {
-        if (!self || !previewStatsImage || previewStatsImage->empty()) return;
-        if (self->tilePyramidEpoch.load() != asyncFrameId) return;
-
-        TileGPM refined = self->calculateGPM(*previewStatsImage, asyncCfa, maxMergeFactor, /*enableHistogram=*/true);
-        refined.sessionId = asyncSessionId;
-        refined.frameId = asyncFrameId;
-        refined.buildMode = asyncBuildMode;
-        refined.imageWidth = asyncImageWidth;
-        refined.imageHeight = asyncImageHeight;
-        refined.tileSize = asyncTileSize;
-        refined.maxZoomLevel = asyncMaxZoomLevel;
-        refined.previewWidth = asyncPreviewWidth;
-        refined.previewHeight = asyncPreviewHeight;
-        refined.previewBinningFactor = asyncPreviewBin;
-        refined.cfa = asyncCfa;
-        refined.gainR = asyncGainR;
-        refined.gainB = asyncGainB;
-
-        QMetaObject::invokeMethod(self, [self, refined]() {
-            if (!self) return;
-            if (self->tilePyramidEpoch.load() != refined.frameId) return;
-            self->sendGPMToClient(refined);
-            self->sendHistogramToClient(refined);
-        }, Qt::QueuedConnection);
     });
 
     // 更新状态（回主线程，避免数据竞争；同时在这里触发 loop capture）
@@ -6797,7 +6773,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
             }
 
             // 按当前主相机采集模式分流：
-            // - Single：走 INDI_Capture（覆盖 INDI + SDK 单帧）
+            // - Single：走 startMainCameraCapture（覆盖 INDI + SDK 单帧）
             // - Burst：走 SDK_BurstCapture（输出仍走 saveFitsAsPNG 链路）
             if (mainCameraCaptureMode == MainCameraCaptureMode::Burst) {
                 Logger::Log("LoopCapture | trigger next BURST, exp_ms=" + std::to_string(nextExpMs) +
@@ -6809,7 +6785,7 @@ int MainWindow::processImageForFrontend(const cv::Mat& inputImage16, const QStri
                 Logger::Log("LoopCapture | trigger next SINGLE, exp_ms=" + std::to_string(nextExpMs) +
                                 ", remaining=" + std::to_string(LoopCaptureNum),
                             LogLevel::INFO, DeviceType::CAMERA);
-                INDI_Capture(nextExpMs);
+                startMainCameraCapture(nextExpMs);
             }
         }
     }, Qt::QueuedConnection);
@@ -6903,6 +6879,74 @@ int MainWindow::getOpenCvBayerToBgrCode(const QString& cfa)
     return -1;
 }
 
+bool MainWindow::tryGetBayerPattern(const QString& cfa, BayerPattern& outPattern)
+{
+    const QString normalizedCfa = normalizeCfaPattern(cfa);
+    if (normalizedCfa == "RGGB") {
+        outPattern = BAYER_RGGB;
+        return true;
+    }
+    if (normalizedCfa == "BGGR") {
+        outPattern = BAYER_BGGR;
+        return true;
+    }
+    if (normalizedCfa == "GRBG") {
+        outPattern = BAYER_GRBG;
+        return true;
+    }
+    if (normalizedCfa == "GBRG") {
+        outPattern = BAYER_GBRG;
+        return true;
+    }
+    return false;
+}
+
+cv::Mat MainWindow::downsampleTileImageForLevel(const cv::Mat& image, const QString& cfa, int scaleFactor)
+{
+    if (image.empty()) return cv::Mat();
+    if (scaleFactor <= 1) return image;
+
+    // 非 2^N 或非单通道 RAW 的路径，退回普通面积缩小。
+    const bool isPowerOfTwo = (scaleFactor & (scaleFactor - 1)) == 0;
+    BayerPattern bayerPattern = BAYER_RGGB;
+    const bool useBayerSafe =
+        isPowerOfTwo &&
+        (image.type() == CV_16UC1 || image.type() == CV_8UC1 || image.type() == CV_32SC1) &&
+        tryGetBayerPattern(cfa, bayerPattern);
+
+    if (!useBayerSafe) {
+        cv::Mat resized;
+        cv::resize(image, resized,
+                   cv::Size(std::max(1, image.cols / scaleFactor), std::max(1, image.rows / scaleFactor)),
+                   0, 0, cv::INTER_AREA);
+        return resized;
+    }
+
+    cv::Mat current = image;
+    int factor = scaleFactor;
+    while (factor > 1) {
+        cv::Mat next = Tools::PixelsDataSoftBin_Bayer(current, 2, 2, bayerPattern);
+        if (next.empty()) {
+            Logger::Log("[TileDebug] event=downsampleTileImageForLevelFallback reason=BayerSafeBinFailed cfa=" +
+                            cfa.toStdString() + " scaleFactor=" + std::to_string(scaleFactor),
+                        LogLevel::WARNING, DeviceType::CAMERA);
+            cv::Mat fallback;
+            cv::resize(image, fallback,
+                       cv::Size(std::max(1, image.cols / scaleFactor), std::max(1, image.rows / scaleFactor)),
+                       0, 0, cv::INTER_AREA);
+            return fallback;
+        }
+        current = std::move(next);
+        factor >>= 1;
+    }
+    Logger::Log("[TileDebug] event=downsampleTileImageForLevel cfa=" + cfa.toStdString() +
+                    " scaleFactor=" + std::to_string(scaleFactor) +
+                    " input=" + std::to_string(image.cols) + "x" + std::to_string(image.rows) +
+                    " output=" + std::to_string(current.cols) + "x" + std::to_string(current.rows),
+                LogLevel::DEBUG, DeviceType::CAMERA);
+    return current;
+}
+
 QString MainWindow::deriveCfaPatternForOffset(const QString& baseCfa, int shiftX, int shiftY)
 {
     const QString normalizedCfa = normalizeCfaPattern(baseCfa);
@@ -6954,6 +6998,15 @@ QString MainWindow::resolveFrameCfa(int frameStartX, int frameStartY) const
 
 QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& image16, const QString& cfa, uint16_t offset)
 {
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | imageSize = " +
+                    std::to_string(image16.cols) + "x" + std::to_string(image16.rows),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | cfa = " +
+                    cfa.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | offset = " +
+                    std::to_string(offset),
+                LogLevel::INFO, DeviceType::MAIN);
     if (image16.empty() || cfa == "null" || cfa.isEmpty()) {
         Logger::Log("无法计算白平衡：图像为空或非彩色图像", LogLevel::WARNING, DeviceType::MAIN);
         return QPair<double, double>(1.0, 1.0);
@@ -7116,6 +7169,18 @@ QPair<double, double> MainWindow::calculateWhiteBalanceGains(const cv::Mat& imag
                 ", g1Mean=" + std::to_string(g1Mean) +
                 ", g2Mean=" + std::to_string(g2Mean),
                 LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | sampleCount = " +
+                    std::to_string(samples.size()),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | lumaRange = " +
+                    std::to_string(lumaMin) + "," + std::to_string(lumaMax),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | gainR = " +
+                    std::to_string(gainR),
+                LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateWhiteBalanceGains | gainB = " +
+                    std::to_string(gainB),
+                LogLevel::INFO, DeviceType::MAIN);
 
     return QPair<double, double>(gainR, gainB);
 }
@@ -7129,9 +7194,7 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
     gpm.cfa = cfa;
     gpm.gainR = ImageGainR;
     gpm.gainB = ImageGainB;
-    gpm.buildMode = (tileBuildMode.trimmed() == "merged_single_level")
-        ? QStringLiteral("merged_single_level")
-        : QStringLiteral("pyramid");
+    gpm.buildMode = QStringLiteral("pyramid");
 
     // 计算最大缩放层级（基于最低精度层的合并倍数 maxMergeFactor=2^N）
     // 例：maxMergeFactor=16 => level 0=16x16 ... level 4=1x1（共5层）
@@ -7153,6 +7216,105 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
     Logger::Log("Calculating GPM for image " + std::to_string(image16.cols) + "x" + std::to_string(image16.rows) + 
                 ", maxZoomLevel=" + std::to_string(gpm.maxZoomLevel) + " (" + std::to_string(maxMergeFactor) + "x" + std::to_string(maxMergeFactor) + " -> 1x1)" +
                 (enableHistogram ? ", histogram=on" : ", histogram=off"), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | cfa = " +
+                    cfa.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | enableHistogram = " +
+                    std::string(enableHistogram ? "true" : "false"),
+                LogLevel::INFO, DeviceType::CAMERA);
+    gpm.gainR = 1.0;
+    gpm.gainB = 1.0;
+    gpm.globalMin = 0.0;
+    gpm.globalMax = 0.0;
+    gpm.globalMean = 0.0;
+    gpm.globalStdDev = 0.0;
+    gpm.blackLevel = 0;
+    gpm.whiteLevel = 65535;
+    gpm.histogramBins = 0;
+    gpm.histogramTotal = 0;
+    gpm.histogram.clear();
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | auto optimization metadata disabled on backend; returning neutral display params",
+                LogLevel::INFO, DeviceType::CAMERA);
+    return gpm;
+
+    auto tryComputeColorLumaStats = [&](double& meanLumaOut, double& stdLumaOut, size_t& sampleCountOut) -> bool {
+        if (image16.type() != CV_16UC1 || image16.rows < 2 || image16.cols < 2) {
+            return false;
+        }
+
+        const QString normalizedCfa = normalizeCfaPattern(cfa);
+        std::vector<cv::Point> rOffsets;
+        std::vector<cv::Point> gOffsets;
+        std::vector<cv::Point> bOffsets;
+        if (normalizedCfa == "RGGB") {
+            rOffsets = { cv::Point(0, 0) };
+            gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
+            bOffsets = { cv::Point(1, 1) };
+        } else if (normalizedCfa == "GRBG") {
+            gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
+            rOffsets = { cv::Point(1, 0) };
+            bOffsets = { cv::Point(0, 1) };
+        } else if (normalizedCfa == "GBRG") {
+            gOffsets = { cv::Point(0, 0), cv::Point(1, 1) };
+            bOffsets = { cv::Point(1, 0) };
+            rOffsets = { cv::Point(0, 1) };
+        } else if (normalizedCfa == "BGGR") {
+            bOffsets = { cv::Point(0, 0) };
+            gOffsets = { cv::Point(1, 0), cv::Point(0, 1) };
+            rOffsets = { cv::Point(1, 1) };
+        } else {
+            return false;
+        }
+
+        const int rows = image16.rows;
+        const int cols = image16.cols;
+        const int sampleStep = std::max(2, static_cast<int>(std::floor(std::min(rows, cols) / 200.0)) * 2);
+
+        long double sumLuma = 0.0L;
+        long double sumSqLuma = 0.0L;
+        size_t sampleCount = 0;
+
+        auto rawPixelAt = [&](int y, int x) -> double {
+            if (y < 0 || y >= rows || x < 0 || x >= cols) return 0.0;
+            return static_cast<double>(image16.at<uint16_t>(y, x));
+        };
+
+        for (int y = 0; y < rows; y += sampleStep) {
+            for (int x = 0; x < cols; x += sampleStep) {
+                if ((y % (sampleStep * 2)) != 0 || (x % (sampleStep * 2)) != 0) continue;
+
+                double r = 0.0;
+                double g1 = 0.0;
+                double g2 = 0.0;
+                double b = 0.0;
+
+                for (const auto& pos : rOffsets) r += rawPixelAt(y + pos.y, x + pos.x);
+                for (const auto& pos : bOffsets) b += rawPixelAt(y + pos.y, x + pos.x);
+                if (gOffsets.size() >= 1) g1 = rawPixelAt(y + gOffsets[0].y, x + gOffsets[0].x);
+                if (gOffsets.size() >= 2) g2 = rawPixelAt(y + gOffsets[1].y, x + gOffsets[1].x);
+                const double g = (g1 + g2) * 0.5;
+                const double luma = (r + 2.0 * g + b) * 0.25;
+
+                sumLuma += static_cast<long double>(luma);
+                sumSqLuma += static_cast<long double>(luma) * static_cast<long double>(luma);
+                ++sampleCount;
+            }
+        }
+
+        if (sampleCount == 0) {
+            return false;
+        }
+
+        const long double dn = static_cast<long double>(sampleCount);
+        const long double meanLuma = sumLuma / dn;
+        long double varLuma = (sumSqLuma / dn) - meanLuma * meanLuma;
+        if (varLuma < 0.0L) varLuma = 0.0L;
+
+        meanLumaOut = static_cast<double>(meanLuma);
+        stdLumaOut = static_cast<double>(std::sqrt(varLuma));
+        sampleCountOut = sampleCount;
+        return true;
+    };
 
     // 目标：尽量把全局统计/拉伸/直方图合并到“一次全图扫描”里（对 CV_16UC1 生效）
     // 性能：若不需要直方图且图像很大，则采用“子采样统计”（把耗时压到 ~10ms 级别）
@@ -7231,13 +7393,50 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
         const long double stdDev = std::sqrt(var);
         gpm.globalMean = static_cast<double>(mean);
         gpm.globalStdDev = static_cast<double>(stdDev);
+        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | rawMean = " +
+                        std::to_string(gpm.globalMean),
+                    LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | rawStdDev = " +
+                        std::to_string(gpm.globalStdDev),
+                    LogLevel::INFO, DeviceType::CAMERA);
+
+        const bool isColorRaw =
+            !normalizeCfaPattern(cfa).isEmpty() &&
+            normalizeCfaPattern(cfa) != "null";
+        if (isColorRaw) {
+            double meanLuma = 0.0;
+            double stdLuma = 0.0;
+            size_t lumaSamples = 0;
+            if (tryComputeColorLumaStats(meanLuma, stdLuma, lumaSamples)) {
+                gpm.globalMean = meanLuma;
+                gpm.globalStdDev = stdLuma;
+                Logger::Log("GPM | color RAW luma stats override: meanLuma=" + std::to_string(meanLuma) +
+                                ", stdLuma=" + std::to_string(stdLuma) +
+                                ", sampledBlocks=" + std::to_string(lumaSamples),
+                            LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | meanLuma = " +
+                                std::to_string(meanLuma),
+                            LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | stdLuma = " +
+                                std::to_string(stdLuma),
+                            LogLevel::INFO, DeviceType::CAMERA);
+                Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | lumaSampleCount = " +
+                                std::to_string(lumaSamples),
+                            LogLevel::INFO, DeviceType::CAMERA);
+            } else {
+                Logger::Log("GPM | color RAW luma stats unavailable, fallback to direct RAW stats",
+                            LogLevel::WARNING, DeviceType::CAMERA);
+            }
+        }
 
         // black/white（等价于 Tools::GetAutoStretch(mode=0)，但不再额外扫描图像）
         {
             constexpr int a = 3;
             constexpr int b = 5;
-            long double bx = mean - stdDev * a;
-            long double wx = mean + stdDev * b;
+            const long double stretchMean = static_cast<long double>(gpm.globalMean);
+            const long double stretchStdDev = static_cast<long double>(gpm.globalStdDev);
+            long double bx = stretchMean - stretchStdDev * a;
+            long double wx = stretchMean + stretchStdDev * b;
             if (bx == wx) wx = bx + 10;
 
             const uint16_t maxValue = 65535;
@@ -7272,7 +7471,7 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
 
             // 过曝保护：当画面整体接近饱和时，保留一个明显更亮的窗口，
             // 避免前端把“高亮满屏”拉成近黑。
-            if (mean >= static_cast<long double>(maxValue) * 0.85L ||
+            if (stretchMean >= static_cast<long double>(maxValue) * 0.85L ||
                 minV >= static_cast<uint16_t>(maxValue * 0.75)) {
                 wi = maxValue;
                 bi = std::min<long long>(bi, maxValue / 2);
@@ -7286,6 +7485,12 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
             }
             gpm.blackLevel = B;
             gpm.whiteLevel = W;
+            Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | blackLevel = " +
+                            std::to_string(gpm.blackLevel),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | whiteLevel = " +
+                            std::to_string(gpm.whiteLevel),
+                        LogLevel::INFO, DeviceType::CAMERA);
         }
     } else {
         // 兼容路径：非 16UC1 时，保留原策略（可按需扩展 8bit/3通道）
@@ -7311,6 +7516,12 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
                 ", stdDev=" + std::to_string(gpm.globalStdDev) +
                 ", blackLevel=" + std::to_string(gpm.blackLevel) +
                 ", whiteLevel=" + std::to_string(gpm.whiteLevel),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | globalMinMax = " +
+                    std::to_string(gpm.globalMin) + "," + std::to_string(gpm.globalMax),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | calculateGPM | globalMeanStdDev = " +
+                    std::to_string(gpm.globalMean) + "," + std::to_string(gpm.globalStdDev),
                 LogLevel::INFO, DeviceType::CAMERA);
 
     return gpm;
@@ -7384,17 +7595,22 @@ void MainWindow::scheduleViewportTileGeneration()
             if (self->tileViewportGenPending.exchange(false))
             {
                 self->scheduleViewportTileGeneration();
+                return;
             }
+            self->scheduleFullResTileCompletion();
         }, Qt::QueuedConnection);
     });
 }
 
 void MainWindow::scheduleFullResTileCompletion()
 {
-    if (tileBuildMode.trimmed() != QStringLiteral("merged_single_level")) {
+    if (tileBuildMode.trimmed() != QStringLiteral("pyramid")) {
         return;
     }
-
+    if (tileViewportGenInFlight.load()) {
+        tileFullResGenPending = true;
+        return;
+    }
     if (tileFullResGenInFlight.exchange(true))
     {
         tileFullResGenPending = true;
@@ -7417,14 +7633,21 @@ void MainWindow::scheduleFullResTileCompletion()
     }
 
     const quint64 epoch = st.epoch;
+    const quint64 requestSeq = tileViewportRequestSeq.load();
+    const int budgetMs = std::max(1, tilePyramidFastBudgetMs);
     QPointer<MainWindow> self(this);
-    QtConcurrent::run([self, epoch]() {
+
+    QtConcurrent::run([self, epoch, requestSeq, budgetMs]() {
         if (!self) return;
-        self->generateFullResTiles_Once(epoch);
+        self->generateFullResTiles_Once(epoch, requestSeq, budgetMs);
 
         QMetaObject::invokeMethod(self, [self]() {
             if (!self) return;
             self->tileFullResGenInFlight = false;
+            if (self->tileViewportGenInFlight.load()) {
+                self->tileFullResGenPending = true;
+                return;
+            }
             if (self->tileFullResGenPending.exchange(false))
             {
                 self->scheduleFullResTileCompletion();
@@ -7455,6 +7678,11 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     const int H = st.imageHeight;
     const int T = (st.tileSize > 0) ? st.tileSize : 512;
     const int maxZ = std::max(0, st.maxZoomLevel);
+    const int requestedTargetZ = tileViewportTargetZ.load();
+    const int requestedMaxZCap = tileViewportMaxZCap.load();
+    const int effectiveMaxZ = (requestedMaxZCap >= 0)
+        ? std::max(0, std::min(maxZ, requestedMaxZCap))
+        : maxZ;
 
     // 视口矩形（尽量与前端一致；aspect 使用默认 16:9）
     const double aspect = (tileViewportAspect > 0.1) ? tileViewportAspect : (16.0 / 9.0);
@@ -7468,8 +7696,23 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
 
     const double visibleWidth = W * scale;
     const double visibleHeight = (aspect != 0.0) ? (visibleWidth / aspect) : (H * scale);
-    const int currentZ = calculateTileLevelFromScale(scale, maxZ);
-    const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
+    const int fallbackZ = std::min(calculateTileLevelFromScale(scale, maxZ), effectiveMaxZ);
+    const int currentZ = (requestedTargetZ >= 0)
+        ? std::max(0, std::min(effectiveMaxZ, requestedTargetZ))
+        : fallbackZ;
+    const bool forceFullImageForCappedMode = (requestedMaxZCap >= 0);
+    Logger::Log("[TileDebug] event=generateViewportTiles_OnceBegin session=" + st.sessionId.toStdString() +
+                    " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                    " epoch=" + std::to_string(static_cast<unsigned long long>(epoch)) +
+                    " requestSeq=" + std::to_string(static_cast<unsigned long long>(requestSeq)) +
+                    " requestedTargetZ=" + std::to_string(requestedTargetZ) +
+                    " requestedMaxZCap=" + std::to_string(requestedMaxZCap) +
+                    " effectiveMaxZ=" + std::to_string(effectiveMaxZ) +
+                    " currentZ=" + std::to_string(currentZ) +
+                    " scale=" + std::to_string(scale) +
+                    " visibleCenter=" + std::to_string(visibleX) + "," + std::to_string(visibleY) +
+                    " forceFullImageForCappedMode=" + std::string(forceFullImageForCappedMode ? "true" : "false"),
+                LogLevel::INFO, DeviceType::CAMERA);
 
     QElapsedTimer timer;
     timer.start();
@@ -7477,7 +7720,7 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
     constexpr int TILE_BORDER = 2;
 
-    struct TileReq { int x; int y; double prio; };
+    struct TileReq { int x; int y; double prio; bool prefetch; };
     bool interruptedByBudget = false;
     auto shouldStop = [&]() -> bool {
         if (tilePyramidEpoch.load() != epoch) return true;
@@ -7489,31 +7732,20 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         return false;
     };
 
-    // 与前端当前请求策略保持一致：
-    // - 始终优先 z=0 整图预览，保证首帧能尽快显示
-    // - 再补 currentZ-1 / currentZ，作为当前视口的渐进细化层
-    // 这样避免 pyramid 模式一次性生成 0..maxZ 全层，减少首帧等待和无效工作。
-    std::vector<int> levelsToGenerate;
-    if (mergedSingleLevelMode) {
-        // merged_single_level 下，z=0 预览已经由 generateVisibleTilesSync()
-        // 在发出 TileGPM 前同步生成完成。这里的后台视口任务只负责
-        // 当前视口的高分辨率原图瓦片，避免把 100ms 预算浪费在重复生成 z=0 上。
-        if (maxZ > 0) {
-            levelsToGenerate.push_back(maxZ);
-        } else {
-            levelsToGenerate.push_back(0);
-        }
-    } else {
-        const int coarseZ = std::max(0, currentZ - 1);
-        levelsToGenerate = {0, coarseZ, currentZ};
-        std::sort(levelsToGenerate.begin(), levelsToGenerate.end());
-        levelsToGenerate.erase(std::unique(levelsToGenerate.begin(), levelsToGenerate.end()), levelsToGenerate.end());
-    }
+    // 普通拍摄统一只围绕前端显式 targetZ 生成当前视口需要的层级；
+    // z=0 整图预览已由 generateVisibleTilesSync() 提前准备。
+    const int coarseZ = std::max(0, currentZ - 1);
+    std::vector<int> levelsToGenerate = {coarseZ, currentZ};
+    std::sort(levelsToGenerate.begin(), levelsToGenerate.end());
+    levelsToGenerate.erase(std::unique(levelsToGenerate.begin(), levelsToGenerate.end()), levelsToGenerate.end());
+    const bool allowIdlePrefetch = !forceFullImageForCappedMode && currentZ > 0;
+    constexpr int PREFETCH_RING = 1;
 
     int totalWritten = 0;
     QStringList readyTileKeys;
     std::set<uint64_t> doneKeys;
-    bool completedAllRequestedTiles = true;
+    bool completedVisibleTiles = true;
+    bool completedAllWork = true;
     auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
         return (static_cast<uint64_t>(tz) << 40) |
                (static_cast<uint64_t>(tx) << 20) |
@@ -7522,18 +7754,19 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     for (int z : levelsToGenerate)
     {
         if (shouldStop()) {
-            completedAllRequestedTiles = false;
+            completedVisibleTiles = false;
+            completedAllWork = false;
             break;
         }
 
         const int levelScaleInt = 1 << std::max(0, (maxZ - z)); // 2^(maxZ-z)
         const double levelScale = static_cast<double>(levelScaleInt);
-        const bool singlePreviewTile = mergedSingleLevelMode && (z == 0);
+        const bool singlePreviewTile = (z == 0);
 
         // 与前端请求策略保持一致：
         // - z=0：整图单瓦片预览
         // - z>0：仅当前视口范围的高分辨率瓦片
-        const bool fullImageForThisZ = (z == 0);
+        const bool fullImageForThisZ = (z == 0) || forceFullImageForCappedMode;
         const double left = fullImageForThisZ ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
         const double top = fullImageForThisZ ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
         const double right = fullImageForThisZ ? static_cast<double>(W) : std::min(static_cast<double>(W), left + visibleWidth);
@@ -7552,23 +7785,40 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         const int startY = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelTop / T));
         const int endX = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelRight / T) - 1.0);
         const int endY = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelBottom / T) - 1.0);
+        const bool prefetchThisLevel = allowIdlePrefetch && (z == currentZ) && !singlePreviewTile;
+        Logger::Log("[TileDebug] event=generateViewportTiles_OnceLevel session=" + st.sessionId.toStdString() +
+                        " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                        " z=" + std::to_string(z) +
+                        " fullImage=" + std::string(fullImageForThisZ ? "true" : "false") +
+                        " tileRange=[" + std::to_string(startX) + "," + std::to_string(startY) +
+                        "]-[" + std::to_string(endX) + "," + std::to_string(endY) + "]" +
+                        " maxTiles=" + std::to_string(maxTilesX) + "x" + std::to_string(maxTilesY) +
+                        " prefetch=" + std::string(prefetchThisLevel ? "ring1" : "none"),
+                    LogLevel::DEBUG, DeviceType::CAMERA);
 
         std::vector<TileReq> tiles;
-        tiles.reserve(static_cast<size_t>(std::max(0, (endX - startX + 1) * (endY - startY + 1))));
+        const int prefetchStartX = prefetchThisLevel ? std::max(0, startX - PREFETCH_RING) : startX;
+        const int prefetchStartY = prefetchThisLevel ? std::max(0, startY - PREFETCH_RING) : startY;
+        const int prefetchEndX = prefetchThisLevel ? std::min(maxTilesX - 1, endX + PREFETCH_RING) : endX;
+        const int prefetchEndY = prefetchThisLevel ? std::min(maxTilesY - 1, endY + PREFETCH_RING) : endY;
+        tiles.reserve(static_cast<size_t>(std::max(0, (prefetchEndX - prefetchStartX + 1) * (prefetchEndY - prefetchStartY + 1))));
 
         const int cxTile = singlePreviewTile ? 0 : static_cast<int>(std::floor((visibleX / levelScale) / T));
         const int cyTile = singlePreviewTile ? 0 : static_cast<int>(std::floor((visibleY / levelScale) / T));
 
-        for (int ty = startY; ty <= endY; ++ty)
+        for (int ty = prefetchStartY; ty <= prefetchEndY; ++ty)
         {
             if (ty < 0 || ty >= maxTilesY) continue;
-            for (int tx = startX; tx <= endX; ++tx)
+            for (int tx = prefetchStartX; tx <= prefetchEndX; ++tx)
             {
                 if (tx < 0 || tx >= maxTilesX) continue;
+                const bool isPrimaryTile = (tx >= startX && tx <= endX && ty >= startY && ty <= endY);
+                if (!isPrimaryTile && !prefetchThisLevel) continue;
                 const double dx = static_cast<double>(tx - cxTile);
                 const double dy = static_cast<double>(ty - cyTile);
                 const double dist = (z == 0) ? 0.0 : std::sqrt(dx * dx + dy * dy);
-                tiles.push_back({tx, ty, dist});
+                const double penalty = isPrimaryTile ? 0.0 : 10000.0;
+                tiles.push_back({tx, ty, penalty + dist, !isPrimaryTile});
             }
         }
 
@@ -7582,8 +7832,23 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
         for (const auto& t : tiles)
         {
             if (shouldStop()) {
-                completedAllRequestedTiles = false;
+                if (!t.prefetch) {
+                    completedVisibleTiles = false;
+                }
+                completedAllWork = false;
                 break;
+            }
+
+            // 预算续跑时从同一 requestSeq 重新进入本函数。
+            // 同一 epoch 下，瓦片内容只由 frame/z/x/y 决定，与“本轮从哪个视口触发”无关；
+            // 因此可以安全跳过已经生成完成的瓦片，避免每轮都从高优先级第一块重新开始，
+            // 导致 capped/full-image 模式下长期只补出局部一小块。
+            const uint64_t packedKey = makeKey(z, t.x, t.y);
+            {
+                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
+                    continue;
+                }
             }
 
             const QString xDirPath = zDirPath + "/" + QString::number(t.x);
@@ -7626,32 +7891,37 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
             }
             else
             {
-                cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
+                tileLevel = downsampleTileImageForLevel(padded, st.cfa, levelScaleInt);
+                if (tileLevel.cols != wantedLevel.width || tileLevel.rows != wantedLevel.height) {
+                    Logger::Log("[TileDebug] event=tileSizeMismatchAfterDownsample session=" + st.sessionId.toStdString() +
+                                    " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                                    " z=" + std::to_string(z) +
+                                    " x=" + std::to_string(t.x) +
+                                    " y=" + std::to_string(t.y) +
+                                    " expected=" + std::to_string(wantedLevel.width) + "x" + std::to_string(wantedLevel.height) +
+                                    " actual=" + std::to_string(tileLevel.cols) + "x" + std::to_string(tileLevel.rows),
+                                LogLevel::WARNING, DeviceType::CAMERA);
+                }
             }
 
             saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
             readyTileKeys.push_back(QString::number(z) + "/" + QString::number(t.x) + "/" + QString::number(t.y));
-            doneKeys.insert(makeKey(z, t.x, t.y));
+            doneKeys.insert(packedKey);
             totalWritten++;
         }
     }
 
     std::string levelSummary;
-    if (mergedSingleLevelMode)
+    levelSummary.clear();
+    for (size_t i = 0; i < levelsToGenerate.size(); ++i)
     {
-        levelSummary = levelsToGenerate.empty() ? std::string("none") : ("0," + std::to_string(maxZ));
+        if (i > 0) levelSummary += ",";
+        levelSummary += std::to_string(levelsToGenerate[i]);
     }
-    else
-    {
-        levelSummary.clear();
-        for (size_t i = 0; i < levelsToGenerate.size(); ++i)
-        {
-            if (i > 0) levelSummary += ",";
-            levelSummary += std::to_string(levelsToGenerate[i]);
-        }
-    }
-    Logger::Log("generateViewportTiles_Once: wrote " + std::to_string(totalWritten) +
-               " tiles (z=" + levelSummary + ") for session " + st.sessionId.toStdString(),
+    Logger::Log("[TileDebug] event=generateViewportTiles_OnceEnd session=" + st.sessionId.toStdString() +
+               " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+               " wroteTiles=" + std::to_string(totalWritten) +
+               " levels=" + levelSummary,
                LogLevel::DEBUG, DeviceType::CAMERA);
     if (!doneKeys.empty()) {
         std::lock_guard<std::mutex> lk(tileGenDoneMutex);
@@ -7662,18 +7932,23 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
     }
-    if (!completedAllRequestedTiles &&
+    if (completedVisibleTiles && tileBuildMode.trimmed() == QStringLiteral("merged_single_level")) {
+        sendTileGenerationCompleteToClient(st.sessionId, epoch);
+    }
+    if (!completedAllWork &&
         interruptedByBudget &&
         tilePyramidEpoch.load() == epoch &&
         tileViewportRequestSeq.load() == requestSeq) {
+        Logger::Log("[TileDebug] event=generateViewportTiles_OnceBudgetRerun session=" +
+                        st.sessionId.toStdString() + " frameId=" +
+                        std::to_string(static_cast<unsigned long long>(st.frameId)) + " epoch=" +
+                        std::to_string(static_cast<unsigned long long>(epoch)),
+                    LogLevel::INFO, DeviceType::CAMERA);
         tileViewportGenPending = true;
-    }
-    if (completedAllRequestedTiles && !mergedSingleLevelMode) {
-        sendTileGenerationCompleteToClient(st.sessionId, epoch);
     }
 }
 
-void MainWindow::generateFullResTiles_Once(quint64 epoch)
+void MainWindow::generateFullResTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs)
 {
     TileFrameState st;
     std::shared_ptr<cv::Mat> img;
@@ -7685,18 +7960,125 @@ void MainWindow::generateFullResTiles_Once(quint64 epoch)
     if (!img || img->empty()) return;
     if (st.epoch != epoch) return;
     if (tilePyramidEpoch.load() != epoch) return;
-    if (tileBuildMode.trimmed() != QStringLiteral("merged_single_level")) return;
 
-    const int z = std::max(0, st.maxZoomLevel);
+    if (tileBuildMode.trimmed() == QStringLiteral("merged_single_level")) {
+        const int z = std::max(0, st.maxZoomLevel);
+        const int T = (st.tileSize > 0) ? st.tileSize : 512;
+        const int levelWidth = st.imageWidth;
+        const int levelHeight = st.imageHeight;
+        const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
+        const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
+        const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
+        const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+        constexpr int TILE_BORDER = 2;
+        constexpr int READY_BATCH_SIZE = 32;
+
+        auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
+            return (static_cast<uint64_t>(tz) << 40) |
+                   (static_cast<uint64_t>(tx) << 20) |
+                   static_cast<uint64_t>(ty);
+        };
+
+        if (!QDir().mkpath(zDirPath)) {
+            Logger::Log("generateFullResTiles_Once: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+            return;
+        }
+
+        int written = 0;
+        int skippedExisting = 0;
+        QStringList readyTileKeys;
+        readyTileKeys.reserve(READY_BATCH_SIZE);
+
+        for (int ty = 0; ty < maxTilesY; ++ty)
+        {
+            if (tilePyramidEpoch.load() != epoch) return;
+            for (int tx = 0; tx < maxTilesX; ++tx)
+            {
+                if (tilePyramidEpoch.load() != epoch) return;
+
+                const uint64_t packedKey = makeKey(z, tx, ty);
+                {
+                    std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                    if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
+                        skippedExisting++;
+                        continue;
+                    }
+                }
+
+                const QString xDirPath = zDirPath + "/" + QString::number(tx);
+                if (!QDir().mkpath(xDirPath)) {
+                    continue;
+                }
+                const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+
+                const int x0 = tx * T;
+                const int y0 = ty * T;
+                const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
+                                           T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+                const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+                const cv::Rect srcRect = wantedLevel & boundsOrig;
+
+                cv::Mat padded;
+                if (srcRect.width <= 0 || srcRect.height <= 0)
+                {
+                    padded = cv::Mat::zeros(wantedLevel.height, wantedLevel.width, img->type());
+                }
+                else
+                {
+                    cv::Mat src = (*img)(srcRect);
+                    const int topPad = srcRect.y - wantedLevel.y;
+                    const int leftPad = srcRect.x - wantedLevel.x;
+                    const int bottomPad = (wantedLevel.y + wantedLevel.height) - (srcRect.y + srcRect.height);
+                    const int rightPad = (wantedLevel.x + wantedLevel.width) - (srcRect.x + srcRect.width);
+                    cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+                }
+
+                saveTileFast_NoMkdir(padded, tileFilePath, TILE_BORDER);
+
+                {
+                    std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                    if (tileGenDoneEpoch == epoch) {
+                        tileGenDoneKeys.insert(packedKey);
+                    }
+                }
+
+                readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+                written++;
+
+                if (readyTileKeys.size() >= READY_BATCH_SIZE) {
+                    sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+                    readyTileKeys.clear();
+                }
+            }
+        }
+
+        if (!readyTileKeys.isEmpty()) {
+            sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+        }
+
+        sendTileGenerationCompleteToClient(st.sessionId, epoch);
+
+        Logger::Log("generateFullResTiles_Once: wrote " + std::to_string(written) +
+                   " full-res tiles at z=" + std::to_string(z) +
+                   " for session " + st.sessionId.toStdString() +
+                   " (skippedExisting=" + std::to_string(skippedExisting) + ")",
+                   LogLevel::DEBUG, DeviceType::CAMERA);
+        return;
+    }
+
+    if (tileBuildMode.trimmed() != QStringLiteral("pyramid")) return;
+
+    QElapsedTimer timer;
+    timer.start();
+
+    const int maxZ = std::max(0, st.maxZoomLevel);
     const int T = (st.tileSize > 0) ? st.tileSize : 512;
-    const int levelWidth = st.imageWidth;
-    const int levelHeight = st.imageHeight;
-    const int maxTilesX = static_cast<int>(std::ceil(static_cast<double>(levelWidth) / T));
-    const int maxTilesY = static_cast<int>(std::ceil(static_cast<double>(levelHeight) / T));
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
-    const QString zDirPath = sessionTilePath + "/" + QString::number(z);
     constexpr int TILE_BORDER = 2;
     constexpr int READY_BATCH_SIZE = 32;
+    bool completedAllTiles = true;
+    bool interruptedByViewport = false;
+    bool interruptedByBudget = false;
 
     auto makeKey = [](int tz, int tx, int ty) -> uint64_t {
         return (static_cast<uint64_t>(tz) << 40) |
@@ -7704,93 +8086,154 @@ void MainWindow::generateFullResTiles_Once(quint64 epoch)
                static_cast<uint64_t>(ty);
     };
 
-    if (!QDir().mkpath(zDirPath)) {
-        Logger::Log("generateFullResTiles_Once: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
-        return;
-    }
+    auto shouldStop = [&]() -> bool {
+        if (tilePyramidEpoch.load() != epoch) return true;
+        if (tileViewportRequestSeq.load() != requestSeq) {
+            interruptedByViewport = true;
+            return true;
+        }
+        if (budgetMs > 0 && timer.elapsed() > budgetMs) {
+            interruptedByBudget = true;
+            return true;
+        }
+        return false;
+    };
 
     int written = 0;
     int skippedExisting = 0;
     QStringList readyTileKeys;
     readyTileKeys.reserve(READY_BATCH_SIZE);
+    std::set<uint64_t> doneKeys;
 
-    for (int ty = 0; ty < maxTilesY; ++ty)
+    for (int z = 0; z <= maxZ; ++z)
     {
-        if (tilePyramidEpoch.load() != epoch) return;
-        for (int tx = 0; tx < maxTilesX; ++tx)
-        {
-            if (tilePyramidEpoch.load() != epoch) return;
+        if (shouldStop()) {
+            completedAllTiles = false;
+            break;
+        }
+        const int levelScaleInt = 1 << std::max(0, (maxZ - z));
+        const int levelWidth = static_cast<int>(std::ceil(static_cast<double>(st.imageWidth) / levelScaleInt));
+        const int levelHeight = static_cast<int>(std::ceil(static_cast<double>(st.imageHeight) / levelScaleInt));
+        const int maxTilesX = (levelWidth + T - 1) / T;
+        const int maxTilesY = (levelHeight + T - 1) / T;
+        const QString zDirPath = sessionTilePath + "/" + QString::number(z);
+        if (!QDir().mkpath(zDirPath)) {
+            Logger::Log("generateFullResTiles_Once: failed to mkpath " + zDirPath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
+            completedAllTiles = false;
+            break;
+        }
 
-            const uint64_t packedKey = makeKey(z, tx, ty);
+        for (int ty = 0; ty < maxTilesY; ++ty)
+        {
+            if (shouldStop()) {
+                completedAllTiles = false;
+                break;
+            }
+            for (int tx = 0; tx < maxTilesX; ++tx)
             {
-                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
-                if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
-                    skippedExisting++;
+                if (shouldStop()) {
+                    completedAllTiles = false;
+                    break;
+                }
+
+                const uint64_t packedKey = makeKey(z, tx, ty);
+                {
+                    std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                    if (tileGenDoneEpoch == epoch && tileGenDoneKeys.find(packedKey) != tileGenDoneKeys.end()) {
+                        skippedExisting++;
+                        continue;
+                    }
+                }
+
+                const QString xDirPath = zDirPath + "/" + QString::number(tx);
+                if (!QDir().mkpath(xDirPath)) {
+                    completedAllTiles = false;
                     continue;
                 }
-            }
+                const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
 
-            const QString xDirPath = zDirPath + "/" + QString::number(tx);
-            if (!QDir().mkpath(xDirPath)) {
-                continue;
-            }
-            const QString tileFilePath = xDirPath + "/" + QString::number(ty) + ".bin";
+                const int x0 = tx * T;
+                const int y0 = ty * T;
+                const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
+                                           T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
+                const cv::Rect wantedOrig(wantedLevel.x * levelScaleInt,
+                                          wantedLevel.y * levelScaleInt,
+                                          wantedLevel.width * levelScaleInt,
+                                          wantedLevel.height * levelScaleInt);
+                const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
+                const cv::Rect srcRect = wantedOrig & boundsOrig;
 
-            const int x0 = tx * T;
-            const int y0 = ty * T;
-            const cv::Rect wantedLevel(x0 - TILE_BORDER, y0 - TILE_BORDER,
-                                       T + 2 * TILE_BORDER, T + 2 * TILE_BORDER);
-            const cv::Rect boundsOrig(0, 0, img->cols, img->rows);
-            const cv::Rect srcRect = wantedLevel & boundsOrig;
+                cv::Mat padded;
+                if (srcRect.width <= 0 || srcRect.height <= 0)
+                {
+                    padded = cv::Mat::zeros(wantedOrig.height, wantedOrig.width, img->type());
+                }
+                else
+                {
+                    cv::Mat src = (*img)(srcRect);
+                    const int topPad = srcRect.y - wantedOrig.y;
+                    const int leftPad = srcRect.x - wantedOrig.x;
+                    const int bottomPad = (wantedOrig.y + wantedOrig.height) - (srcRect.y + srcRect.height);
+                    const int rightPad = (wantedOrig.x + wantedOrig.width) - (srcRect.x + srcRect.width);
+                    cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
+                }
 
-            cv::Mat padded;
-            if (srcRect.width <= 0 || srcRect.height <= 0)
-            {
-                padded = cv::Mat::zeros(wantedLevel.height, wantedLevel.width, img->type());
-            }
-            else
-            {
-                cv::Mat src = (*img)(srcRect);
-                const int topPad = srcRect.y - wantedLevel.y;
-                const int leftPad = srcRect.x - wantedLevel.x;
-                const int bottomPad = (wantedLevel.y + wantedLevel.height) - (srcRect.y + srcRect.height);
-                const int rightPad = (wantedLevel.x + wantedLevel.width) - (srcRect.x + srcRect.width);
-                cv::copyMakeBorder(src, padded, topPad, bottomPad, leftPad, rightPad, cv::BORDER_REPLICATE);
-            }
+                cv::Mat tileLevel;
+                if (levelScaleInt == 1)
+                {
+                    tileLevel = padded;
+                }
+                else
+                {
+                    tileLevel = downsampleTileImageForLevel(padded, st.cfa, levelScaleInt);
+                }
 
-            saveTileFast_NoMkdir(padded, tileFilePath, TILE_BORDER);
+                saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
+                doneKeys.insert(packedKey);
+                readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+                written++;
 
-            {
-                std::lock_guard<std::mutex> lk(tileGenDoneMutex);
-                if (tileGenDoneEpoch == epoch) {
-                    tileGenDoneKeys.insert(packedKey);
+                if (readyTileKeys.size() >= READY_BATCH_SIZE) {
+                    {
+                        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+                        if (tileGenDoneEpoch == epoch) {
+                            for (uint64_t key : doneKeys) tileGenDoneKeys.insert(key);
+                        }
+                    }
+                    doneKeys.clear();
+                    sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
+                    readyTileKeys.clear();
                 }
             }
-
-            readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
-            written++;
-
-            if (readyTileKeys.size() >= READY_BATCH_SIZE) {
-                sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
-                readyTileKeys.clear();
-            }
+            if (!completedAllTiles) break;
         }
+        if (!completedAllTiles) break;
     }
 
+    if (!doneKeys.empty()) {
+        std::lock_guard<std::mutex> lk(tileGenDoneMutex);
+        if (tileGenDoneEpoch == epoch) {
+            for (uint64_t key : doneKeys) tileGenDoneKeys.insert(key);
+        }
+    }
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
     }
-
-    sendTileGenerationCompleteToClient(st.sessionId, epoch);
+    if (completedAllTiles) {
+        sendTileGenerationCompleteToClient(st.sessionId, epoch);
+    } else if (tilePyramidEpoch.load() == epoch) {
+        tileFullResGenPending = true;
+    }
 
     Logger::Log("generateFullResTiles_Once: wrote " + std::to_string(written) +
-               " full-res tiles at z=" + std::to_string(z) +
-               " for session " + st.sessionId.toStdString() +
-               " (skippedExisting=" + std::to_string(skippedExisting) + ")",
+               " pyramid tiles for session " + st.sessionId.toStdString() +
+               " (skippedExisting=" + std::to_string(skippedExisting) +
+               ", interruptedByViewport=" + std::string(interruptedByViewport ? "true" : "false") +
+               ", interruptedByBudget=" + std::string(interruptedByBudget ? "true" : "false") + ")",
                LogLevel::DEBUG, DeviceType::CAMERA);
 }
 
-void MainWindow::generateVisibleTilesSync(quint64 epoch)
+void MainWindow::generateVisibleTilesSync(quint64 epoch, bool includeViewportLevels)
 {
     TileFrameState st;
     std::shared_ptr<cv::Mat> img;
@@ -7813,6 +8256,11 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
     const double vx = tileViewportX.load();
     const double vy = tileViewportY.load();
     const double sc = tileViewportScale.load();
+    const int requestedTargetZ = tileViewportTargetZ.load();
+    const int requestedMaxZCap = tileViewportMaxZCap.load();
+    const int effectiveMaxZ = (requestedMaxZCap >= 0)
+        ? std::max(0, std::min(maxZ, requestedMaxZCap))
+        : maxZ;
     const double aspect = (tileViewportAspect > 0.1) ? tileViewportAspect : (16.0 / 9.0);
     const double visibleX = std::isfinite(vx) ? vx : (W / 2.0);
     const double visibleY = std::isfinite(vy) ? vy : (H / 2.0);
@@ -7821,20 +8269,30 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
     const double scale = std::isfinite(sc) && sc > 0
         ? std::max(MIN_VIEW_SCALE, std::min(MAX_VIEW_SCALE, sc))
         : 1.0;
-    const bool mergedSingleLevelMode = (tileBuildMode.trimmed() == "merged_single_level");
+    const int fallbackZ = std::min(calculateTileLevelFromScale(scale, maxZ), effectiveMaxZ);
+    const int currentZ = (requestedTargetZ >= 0)
+        ? std::max(0, std::min(effectiveMaxZ, requestedTargetZ))
+        : fallbackZ;
+    const bool forceFullImageForCappedMode = (requestedMaxZCap >= 0);
+    Logger::Log("[TileDebug] event=generateVisibleTilesSyncBegin session=" + st.sessionId.toStdString() +
+                    " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                    " epoch=" + std::to_string(static_cast<unsigned long long>(epoch)) +
+                    " requestedTargetZ=" + std::to_string(requestedTargetZ) +
+                    " scale=" + std::to_string(scale) +
+                    " visibleCenter=" + std::to_string(visibleX) + "," + std::to_string(visibleY) +
+                    " currentZ=" + std::to_string(currentZ) +
+                    " requestedMaxZCap=" + std::to_string(requestedMaxZCap),
+                LogLevel::INFO, DeviceType::CAMERA);
     // 同步预生成阶段：
-    // - merged_single_level：首帧只保证 z=0 整图粗预览就绪，尽快把 TileGPM 发给前端；
-    //   z=maxZ 的细节层交给后台视口任务补齐，避免首帧被整图高精度瓦片阻塞。
-    // - pyramid：至少准备 z=0 整图预览 + currentZ 当前视口层，
-    //   这样前端在收到 TileGPM 后，请求预览图和当前层时都能尽量命中，避免首帧黑屏/404。
-    std::vector<int> levelsToSync;
-    if (mergedSingleLevelMode) {
-        levelsToSync.push_back(0);
-    } else {
-        levelsToSync = {0, calculateTileLevelFromScale(scale, maxZ)};
-        std::sort(levelsToSync.begin(), levelsToSync.end());
-        levelsToSync.erase(std::unique(levelsToSync.begin(), levelsToSync.end()), levelsToSync.end());
+    // - 默认只准备 z=0 整图预览，优先保证 TileGPM + 首图尽快出现
+    // - 若显式要求，再额外同步准备 targetZ-1 / targetZ 当前视口层
+    std::vector<int> levelsToSync = {0};
+    if (includeViewportLevels) {
+        levelsToSync.push_back(std::max(0, currentZ - 1));
+        levelsToSync.push_back(currentZ);
     }
+    std::sort(levelsToSync.begin(), levelsToSync.end());
+    levelsToSync.erase(std::unique(levelsToSync.begin(), levelsToSync.end()), levelsToSync.end());
 
     const QString sessionTilePath = QString::fromStdString(tilePyramidPath) + st.sessionId;
     constexpr int TILE_BORDER = 2;
@@ -7858,8 +8316,8 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         if (tilePyramidEpoch.load() != epoch) return;
         const int levelScaleInt = 1 << std::max(0, (maxZ - z));
         const double levelScale = static_cast<double>(levelScaleInt);
-        const bool singlePreviewTile = mergedSingleLevelMode && (z == 0);
-        const bool fullImage = (mergedSingleLevelMode || z == 0);
+        const bool singlePreviewTile = (z == 0);
+        const bool fullImage = singlePreviewTile || forceFullImageForCappedMode;
         const double left = fullImage ? 0.0 : std::max(0.0, visibleX - visibleWidth / 2.0);
         const double top = fullImage ? 0.0 : std::max(0.0, visibleY - visibleHeight / 2.0);
         const double right = fullImage ? static_cast<double>(W) : std::min(static_cast<double>(W), left + visibleWidth);
@@ -7876,6 +8334,14 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         const int startY = singlePreviewTile ? 0 : static_cast<int>(std::floor(levelTop / T));
         const int endX = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelRight / T) - 1.0);
         const int endY = singlePreviewTile ? 0 : static_cast<int>(std::ceil(levelBottom / T) - 1.0);
+        Logger::Log("[TileDebug] event=generateVisibleTilesSyncLevel session=" + st.sessionId.toStdString() +
+                        " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                        " z=" + std::to_string(z) +
+                        " fullImage=" + std::string(fullImage ? "true" : "false") +
+                        " tileRange=[" + std::to_string(startX) + "," + std::to_string(startY) +
+                        "]-[" + std::to_string(endX) + "," + std::to_string(endY) + "]" +
+                        " maxTiles=" + std::to_string(maxTilesX) + "x" + std::to_string(maxTilesY),
+                    LogLevel::DEBUG, DeviceType::CAMERA);
 
         const QString zDirPath = sessionTilePath + "/" + QString::number(z);
         if (!QDir().mkpath(zDirPath)) {
@@ -7901,7 +8367,11 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                                        TILE_BORDER, TILE_BORDER, TILE_BORDER, TILE_BORDER,
                                        cv::BORDER_REPLICATE);
                     saveTileFast_NoMkdir(previewTile, tileFilePath, TILE_BORDER);
-                    readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
+                    const QString readyKey =
+                        QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty);
+                    // 首屏体验优化：z=0 预览瓦片一旦原子写完，立即单独放行给前端。
+                    // 局部放大的清晰细节仍由后续 currentZ-1/currentZ 瓦片继续覆盖，不受影响。
+                    sendTileBatchReadyToClient(st.sessionId, epoch, QStringList{readyKey});
                     continue;
                 }
 
@@ -7933,7 +8403,17 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
                 if (levelScaleInt == 1) {
                     tileLevel = padded;
                 } else {
-                    cv::resize(padded, tileLevel, cv::Size(wantedLevel.width, wantedLevel.height), 0, 0, cv::INTER_AREA);
+                    tileLevel = downsampleTileImageForLevel(padded, st.cfa, levelScaleInt);
+                    if (tileLevel.cols != wantedLevel.width || tileLevel.rows != wantedLevel.height) {
+                        Logger::Log("[TileDebug] event=tileSizeMismatchAfterDownsample session=" + st.sessionId.toStdString() +
+                                        " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+                                        " z=" + std::to_string(z) +
+                                        " x=" + std::to_string(tx) +
+                                        " y=" + std::to_string(ty) +
+                                        " expected=" + std::to_string(wantedLevel.width) + "x" + std::to_string(wantedLevel.height) +
+                                        " actual=" + std::to_string(tileLevel.cols) + "x" + std::to_string(tileLevel.rows),
+                                    LogLevel::WARNING, DeviceType::CAMERA);
+                    }
                 }
                 saveTileFast_NoMkdir(tileLevel, tileFilePath, TILE_BORDER);
                 readyTileKeys.push_back(QString::number(z) + "/" + QString::number(tx) + "/" + QString::number(ty));
@@ -7945,22 +8425,17 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch)
         }
     }
     std::string levelSummary;
-    if (mergedSingleLevelMode)
+    levelSummary.clear();
+    for (size_t i = 0; i < levelsToSync.size(); ++i)
     {
-        levelSummary = "0";
+        if (i > 0) levelSummary += ",";
+        levelSummary += std::to_string(levelsToSync[i]);
     }
-    else
-    {
-        levelSummary.clear();
-        for (size_t i = 0; i < levelsToSync.size(); ++i)
-        {
-            if (i > 0) levelSummary += ",";
-            levelSummary += std::to_string(levelsToSync[i]);
-        }
-    }
-    Logger::Log("generateVisibleTilesSync: wrote " + std::to_string(totalCount) + " tiles (z=" + levelSummary +
-               (mergedSingleLevelMode ? ", merged 2-level" : "") +
-               ") for session " + st.sessionId.toStdString(), LogLevel::DEBUG, DeviceType::CAMERA);
+    Logger::Log("[TileDebug] event=generateVisibleTilesSyncEnd session=" + st.sessionId.toStdString() +
+               " frameId=" + std::to_string(static_cast<unsigned long long>(st.frameId)) +
+               " wroteTiles=" + std::to_string(totalCount) +
+               " levels=" + levelSummary,
+               LogLevel::DEBUG, DeviceType::CAMERA);
     if (!readyTileKeys.isEmpty()) {
         sendTileBatchReadyToClient(st.sessionId, epoch, readyTileKeys);
     }
@@ -8014,6 +8489,18 @@ void MainWindow::saveTile(const cv::Mat& tile, int z, int x, int y, const QStrin
 
 void MainWindow::saveTileFast_NoMkdir(const cv::Mat& tile, const QString& tileFilePath, int border)
 {
+    const bool isZ0Tile =
+        tileFilePath.contains(QStringLiteral("/0/0/0.bin")) ||
+        tileFilePath.endsWith(QStringLiteral("\\0\\0\\0.bin"));
+    const qint64 z0WriteStartMs = isZ0Tile ? QDateTime::currentMSecsSinceEpoch() : 0;
+    if (isZ0Tile) {
+        emitCaptureTrace(QStringLiteral("backend_z0_tile_write_start"), currentCaptureTraceStartedAtMs,
+                         QString("path=%1,width=%2,height=%3")
+                             .arg(tileFilePath)
+                             .arg(tile.cols)
+                             .arg(tile.rows));
+    }
+
     // 原子写入：避免前端 fetch 在文件写入中途读到“半瓦片”，导致解析失败/花屏/长时间不刷新。
     // QSaveFile 会写入临时文件，commit 时原子替换目标文件（同一文件系统内）。
     QSaveFile file(tileFilePath);
@@ -8057,6 +8544,15 @@ void MainWindow::saveTileFast_NoMkdir(const cv::Mat& tile, const QString& tileFi
         Logger::Log("Failed to commit tile file (atomic replace): " + tileFilePath.toStdString(), LogLevel::ERROR, DeviceType::CAMERA);
         return;
     }
+
+    if (isZ0Tile) {
+        emitCaptureTrace(QStringLiteral("backend_z0_tile_write_done"), z0WriteStartMs,
+                         QString("path=%1,width=%2,height=%3,fileBytes=%4")
+                             .arg(tileFilePath)
+                             .arg(tile.cols)
+                             .arg(tile.rows)
+                             .arg(static_cast<qint64>(QFileInfo(tileFilePath).size())));
+    }
 }
 
 MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, const QString& sessionId, const QString& cfa, int maxMergeFactor, bool enableHistogram)
@@ -8095,18 +8591,9 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
     for (int z = gpm.maxZoomLevel - 1; z >= 0; --z) {
         const cv::Mat& higherLevel = pyramidLevels[z + 1];
         cv::Mat lowerLevel;
-        
-        // 计算合并因子：level z对应的合并倍数为 2^(maxZoomLevel - z)
-        // level 0: 2^4 = 16x16合并
-        // level 1: 2^3 = 8x8合并
-        // level 2: 2^2 = 4x4合并
-        // level 3: 2^1 = 2x2合并
-        // level 4: 2^0 = 1x1（原图）
-        
-        // 从上一层缩小2倍
-        int newWidth = (higherLevel.cols + 1) / 2;
-        int newHeight = (higherLevel.rows + 1) / 2;
-        cv::resize(higherLevel, lowerLevel, cv::Size(newWidth, newHeight), 0, 0, cv::INTER_AREA);
+
+        // 彩色 RAW 必须保持 CFA 相位，不能直接在 Bayer 单通道上做普通面积缩小。
+        lowerLevel = downsampleTileImageForLevel(higherLevel, cfa, 2);
         pyramidLevels[z] = lowerLevel;
     }
     Logger::Log("Tile pyramid | build pyramid levels (resize chain) done", LogLevel::INFO, DeviceType::CAMERA);
@@ -8217,10 +8704,7 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
             levels[gpm.maxZoomLevel] = imageShare;
             for (int z = gpm.maxZoomLevel - 1; z >= 0; --z) {
                 const cv::Mat& higher = levels[z + 1];
-                cv::Mat lower;
-                int newW = (higher.cols + 1) / 2;
-                int newH = (higher.rows + 1) / 2;
-                cv::resize(higher, lower, cv::Size(newW, newH), 0, 0, cv::INTER_AREA);
+                cv::Mat lower = downsampleTileImageForLevel(higher, cfa, 2);
                 levels[z] = std::move(lower);
                 if (self->tilePyramidEpoch.load() != epochCopy) return;
             }
@@ -8327,6 +8811,36 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
     return gpm;
 }
 
+void MainWindow::emitCaptureTrace(const QString& stage, qint64 startedAtMs, const QString& detail)
+{
+    if (currentCaptureTraceId.trimmed().isEmpty() || wsThread == nullptr) {
+        return;
+    }
+    const qint64 baseMs = (startedAtMs >= 0) ? startedAtMs : currentCaptureTraceStartedAtMs;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 elapsedMs = (baseMs > 0) ? std::max<qint64>(0, nowMs - baseMs) : 0;
+    QString safeDetail = detail;
+    safeDetail.replace('\n', ' ');
+    safeDetail.replace('\r', ' ');
+    emit wsThread->sendMessageToClient(
+        QString("CaptureTrace:%1:%2:%3:%4")
+            .arg(currentCaptureTraceId)
+            .arg(stage)
+            .arg(elapsedMs)
+            .arg(safeDetail)
+    );
+    Logger::Log(
+        QString("CaptureTrace | traceId=%1 | stage=%2 | backendElapsedMs=%3 | detail=%4")
+            .arg(currentCaptureTraceId)
+            .arg(stage)
+            .arg(elapsedMs)
+            .arg(safeDetail)
+            .toStdString(),
+        LogLevel::INFO,
+        DeviceType::CAMERA
+    );
+}
+
 void MainWindow::sendGPMToClient(const TileGPM& gpm)
 {
     // 构建GPM消息发送给前端
@@ -8355,6 +8869,18 @@ void MainWindow::sendGPMToClient(const TileGPM& gpm)
 
     emit wsThread->sendMessageToClient(gpmMessage);
     Logger::Log("GPM sent to client: " + gpmMessage.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | sessionId = " +
+                    gpm.sessionId.toStdString(),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | frameId = " +
+                    std::to_string(static_cast<unsigned long long>(gpm.frameId)),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | blackWhite = " +
+                    std::to_string(gpm.blackLevel) + "," + std::to_string(gpm.whiteLevel),
+                LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("MainCameraImagePipeLine | mainwindow.cpp | sendGPMToClient | gainRB = " +
+                    std::to_string(gpm.gainR) + "," + std::to_string(gpm.gainB),
+                LogLevel::INFO, DeviceType::CAMERA);
 }
 
 void MainWindow::sendTileBatchReadyToClient(const QString& sessionId, quint64 frameId, const QStringList& tileKeys)
@@ -8394,9 +8920,16 @@ void MainWindow::sendTileBatchReadyToClient(const QString& sessionId, quint64 fr
                     ", count=" + std::to_string(tileKeys.size()) +
                     ", sample=[" + sampleKeys.join(", ").toStdString() + "]",
                 LogLevel::DEBUG, DeviceType::CAMERA);
+    const bool containsZ0 = tileKeys.contains(QStringLiteral("0/0/0"));
+    emitCaptureTrace(QStringLiteral("backend_tilebatchready_sent"), currentCaptureTraceStartedAtMs,
+                     QString("sessionId=%1,frameId=%2,count=%3,containsZ0=%4")
+                         .arg(sessionId)
+                         .arg(QString::number(static_cast<qulonglong>(frameId)))
+                         .arg(tileKeys.size())
+                         .arg(containsZ0 ? QStringLiteral("true") : QStringLiteral("false")));
 }
 
-void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId)
+void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId, const QStringList& requestedTileKeys)
 {
     if (sessionId.isEmpty() || frameId == 0) {
         return;
@@ -8424,6 +8957,35 @@ void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessio
         readyKeys.assign(tileGenDoneKeys.begin(), tileGenDoneKeys.end());
     }
 
+    std::set<uint64_t> requestedPackedKeys;
+    if (!requestedTileKeys.isEmpty()) {
+        for (const QString& key : requestedTileKeys) {
+            const QStringList keyParts = key.split('/');
+            if (keyParts.size() != 3) continue;
+            bool okZ = false;
+            bool okX = false;
+            bool okY = false;
+            const int z = keyParts[0].toInt(&okZ);
+            const int x = keyParts[1].toInt(&okX);
+            const int y = keyParts[2].toInt(&okY);
+            if (!okZ || !okX || !okY || z < 0 || x < 0 || y < 0) continue;
+            const uint64_t packedKey =
+                (static_cast<uint64_t>(z) << 40) |
+                (static_cast<uint64_t>(x) << 20) |
+                static_cast<uint64_t>(y);
+            requestedPackedKeys.insert(packedKey);
+        }
+        readyKeys.erase(
+            std::remove_if(readyKeys.begin(), readyKeys.end(),
+                           [&requestedPackedKeys](uint64_t packedKey) {
+                               return requestedPackedKeys.find(packedKey) == requestedPackedKeys.end();
+                           }),
+            readyKeys.end());
+        if (readyKeys.empty()) {
+            return;
+        }
+    }
+
     std::sort(readyKeys.begin(), readyKeys.end());
     QStringList tileKeys;
     tileKeys.reserve(static_cast<int>(readyKeys.size()));
@@ -8436,7 +8998,8 @@ void MainWindow::sendCurrentTileBatchReadySnapshotToClient(const QString& sessio
 
     Logger::Log("queryTileBatchReady snapshot: session=" + sessionId.toStdString() +
                     ", frameId=" + std::to_string(static_cast<unsigned long long>(frameId)) +
-                    ", count=" + std::to_string(tileKeys.size()),
+                    ", count=" + std::to_string(tileKeys.size()) +
+                    ", requestedCount=" + std::to_string(requestedTileKeys.size()),
                 LogLevel::DEBUG, DeviceType::CAMERA);
     sendTileBatchReadyToClient(sessionId, frameId, tileKeys);
 }
@@ -11960,6 +12523,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                         MainCameraCFAOffsetX = 0;
                         MainCameraCFAOffsetY = 0;
                         const QString savedCameraCfa = normalizeCfaPattern(MainCameraCFA);
+                        bool usedSavedCameraCfaFallback = false;
                         SdkCommand cfaCmd;
                         cfaCmd.type = SdkCommandType::Custom;
                         cfaCmd.name = "GetCameraCfa";
@@ -11986,6 +12550,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                             (savedCameraCfa == "RGGB" || savedCameraCfa == "BGGR" ||
                              savedCameraCfa == "GRBG" || savedCameraCfa == "GBRG")) {
                             MainCameraCFA = savedCameraCfa;
+                            usedSavedCameraCfaFallback = true;
                             Logger::Log("AfterDeviceConnect | Fallback to saved SDK camera CFA: " + MainCameraCFA.toStdString(),
                                         LogLevel::WARNING, DeviceType::CAMERA);
                         }
@@ -11995,17 +12560,22 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                             Logger::Log("AfterDeviceConnect | SDK Camera is color camera, CFA: " + MainCameraCFA.toStdString(),
                                        LogLevel::INFO, DeviceType::CAMERA);
                             emit wsThread->sendMessageToClient("MainCameraCFA:" + MainCameraCFA);
+                            emit wsThread->sendMessageToClient("MainCameraCFASource:" +
+                                                               (usedSavedCameraCfaFallback ? QStringLiteral("SDKFallback")
+                                                                                           : QStringLiteral("SDK")));
                         } else {
                             Tools::saveParameter("MainCamera", "ImageCFA", QStringLiteral("null"));
                             Logger::Log("AfterDeviceConnect | SDK Camera is color camera, but CFA detection failed",
                                         LogLevel::WARNING, DeviceType::CAMERA);
                             emit wsThread->sendMessageToClient("MainCameraCFA:null");
+                            emit wsThread->sendMessageToClient("MainCameraCFASource:SDKFallback");
                         }
                     } else {
                         MainCameraCFA = "";
                         Tools::saveParameter("MainCamera", "ImageCFA", QStringLiteral("null"));
                         Logger::Log("AfterDeviceConnect | SDK Camera is mono camera", LogLevel::INFO, DeviceType::CAMERA);
                         emit wsThread->sendMessageToClient("MainCameraCFA:null");
+                        emit wsThread->sendMessageToClient("MainCameraCFASource:SDK");
                     }
                 } catch (const std::bad_any_cast&) {
                     Logger::Log("AfterDeviceConnect | Failed to get color camera info", LogLevel::WARNING, DeviceType::CAMERA);
@@ -12548,6 +13118,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         Tools::saveParameter("MainCamera", "ImageCFA", MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA);
         Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraCFA:" + (MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA));
+        emit wsThread->sendMessageToClient("MainCameraCFASource:INDI");
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
 
@@ -14177,6 +14748,8 @@ void MainWindow::onSdkMainLiveProcessTimerTimeout()
 
     // 复用前端协议：用 ExposureCompleted 作为“刷新一帧”的信号
     emit wsThread->sendMessageToClient("ExposureCompleted");
+    emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                     QStringLiteral("source=sdk_live_process"));
 
     // 标记处理忙：处理完成前新帧将继续覆盖邮箱，但不会触发新的处理任务排队
     sdkMainLiveProcessingBusy = true;
@@ -14656,9 +15229,9 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
          sdkMainCameraHandle != nullptr);
 
     if (!isMainCameraSDK) {
-        Logger::Log("SDK_BurstCapture | Main camera is not in SDK mode, fallback to INDI_Capture",
+        Logger::Log("SDK_BurstCapture | Main camera is not in SDK mode, fallback to startMainCameraCapture",
                     LogLevel::WARNING, DeviceType::CAMERA);
-        INDI_Capture(Exp_ms);
+        startMainCameraCapture(Exp_ms);
         return;
     }
 
@@ -14676,9 +15249,9 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
     };
     if (!isQhySdkDriverName(sdkDriverName)) {
         Logger::Log("SDK_BurstCapture | SDK driver is not QHYCCD/indi_qhy_ccd (" + sdkDriverName.toStdString() +
-                        "), fallback to INDI_Capture",
+                        "), fallback to startMainCameraCapture",
                     LogLevel::WARNING, DeviceType::CAMERA);
-        INDI_Capture(Exp_ms);
+        startMainCameraCapture(Exp_ms);
         return;
     }
 
@@ -15029,6 +15602,8 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
             glMainCameraStatu = "Displaying";
             ShootStatus = "Completed";
             emit wsThread->sendMessageToClient("ExposureCompleted");
+            emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                             QStringLiteral("source=sdk_burst"));
 
             if (polarAlignment != nullptr && polarAlignment->isRunning())
             {
@@ -15059,14 +15634,113 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
     });
 }
 
-void MainWindow::INDI_Capture(int Exp_times)
+bool MainWindow::ensureSdkMainCameraSingleModeReady(QString *errorReason)
 {
-    Logger::Log("INDI_Capture start ...", LogLevel::INFO, DeviceType::CAMERA);
+    const bool isMainCameraSDK =
+        (systemdevicelist.system_devices.size() > 20 &&
+         systemdevicelist.system_devices[20].isSDKConnect &&
+         sdkMainCameraHandle != nullptr);
+    if (!isMainCameraSDK)
+        return true;
+
+    auto isQhySdkDriverName = [](const QString& n) -> bool {
+        const QString s = n.trimmed().toLower();
+        return (s == "qhyccd" || s == "indi_qhy_ccd");
+    };
+
+    QString sdkDriverName =
+        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[20].SDKDriverName : "";
+    QString effectiveSdkDriverName = sdkDriverName.trimmed();
+    if (effectiveSdkDriverName.isEmpty())
+        effectiveSdkDriverName = getSDKDriverName("MainCamera").trimmed();
+    if (effectiveSdkDriverName.isEmpty() && systemdevicelist.system_devices.size() > 20)
+        effectiveSdkDriverName = systemdevicelist.system_devices[20].DriverIndiName.trimmed();
+
+    if (!isQhySdkDriverName(effectiveSdkDriverName))
+        return true;
+
+    const bool alreadySingleReady =
+        (mainCameraCaptureMode == MainCameraCaptureMode::Single) &&
+        !sdkMainLiveReady.load() &&
+        !sdkMainBurstModeReady.load();
+    if (alreadySingleReady)
+        return true;
+
+    if (!sdkCamExec || !sdkCamExec->isRunning()) {
+        if (errorReason)
+            *errorReason = QStringLiteral("SDK worker not running");
+        Logger::Log("ensureSdkMainCameraSingleModeReady | sdkCamExec not running",
+                    LogLevel::ERROR, DeviceType::CAMERA);
+        return false;
+    }
+
+    if (sdkBurstActive.load() || glMainCameraStatu == "Exposuring") {
+        if (errorReason)
+            *errorReason = QStringLiteral("camera busy while switching to single mode");
+        Logger::Log("ensureSdkMainCameraSingleModeReady | camera busy, reject switch to single mode",
+                    LogLevel::WARNING, DeviceType::CAMERA);
+        return false;
+    }
+
+    Logger::Log("ensureSdkMainCameraSingleModeReady | switching SDK main camera to Single mode before exposure",
+                LogLevel::INFO, DeviceType::CAMERA);
+    const qint64 switchStartMs = QDateTime::currentMSecsSinceEpoch();
+    const SdkDeviceHandle handleSnap = sdkMainCameraHandle;
+
+    const bool ok = sdkCamExec->postAndWait<bool>([handleSnap]() -> bool {
+        if (handleSnap == nullptr)
+            return false;
+
+        auto callByHandle = [handleSnap](const char *name, const std::any &payload) -> SdkResult {
+            SdkCommand cmd;
+            cmd.type = SdkCommandType::Custom;
+            cmd.name = name;
+            cmd.payload = payload;
+            return SdkManager::instance().callByHandle(handleSnap, cmd);
+        };
+
+        (void)callByHandle("ReleaseBurstIDLE", std::any());
+        (void)callByHandle("StopLive", std::any());
+        (void)callByHandle("EnableBurstMode", false);
+        SdkResult streamRes = callByHandle("SetStreamMode", 0);
+        if (!streamRes.success) {
+            Logger::Log("ensureSdkMainCameraSingleModeReady | SetStreamMode(0) failed: " + streamRes.message,
+                        LogLevel::ERROR, DeviceType::CAMERA);
+            return false;
+        }
+        return true;
+    });
+
+    if (!ok) {
+        if (errorReason)
+            *errorReason = QStringLiteral("failed to switch SDK camera to single mode");
+        Logger::Log("ensureSdkMainCameraSingleModeReady | failed to switch SDK main camera to Single mode",
+                    LogLevel::ERROR, DeviceType::CAMERA);
+        return false;
+    }
+
+    mainCameraCaptureMode = MainCameraCaptureMode::Single;
+    sdkMainLiveReady = false;
+    sdkMainBurstModeReady = false;
+    sdkMainAppliedMode = MainCameraCaptureMode::Single;
+    sdkMainAppliedModeValid = true;
+    emitCaptureTrace(QStringLiteral("backend_single_mode_ready"), switchStartMs,
+                     QStringLiteral("success=true"));
+    Logger::Log("ensureSdkMainCameraSingleModeReady | SDK main camera switched to Single mode",
+                LogLevel::INFO, DeviceType::CAMERA);
+    return true;
+}
+
+void MainWindow::startMainCameraCapture(int exposureMs)
+{
+    Logger::Log("startMainCameraCapture start ...", LogLevel::INFO, DeviceType::CAMERA);
+    emitCaptureTrace(QStringLiteral("backend_main_camera_capture_enter"), currentCaptureTraceStartedAtMs,
+                     QString("exposureMs=%1").arg(exposureMs));
 
     glIsFocusingLooping = false;
     isSavePngSuccess = false;
-    double expTime_sec = (double)Exp_times / 1000;
-    Logger::Log("INDI_Capture | convert Exp_times to seconds:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
+    double expTime_sec = (double)exposureMs / 1000;
+    Logger::Log("startMainCameraCapture | convert exposureMs to seconds:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
 
     // 判断主相机是 SDK 模式还是 INDI 模式
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
@@ -15076,10 +15750,6 @@ void MainWindow::INDI_Capture(int Exp_times)
     if (isMainCameraSDK)
     {
         // === SDK 模式：完整的全分辨率曝光流程 ===
-        glMainCameraStatu = "Exposuring";
-        Logger::Log("INDI_Capture | SDK Mode | Main Camera Status: " + glMainCameraStatu.toStdString(), 
-                   LogLevel::INFO, DeviceType::CAMERA);
-
         // 将 SDK 错误信息转换为“可读原因”（避免直接把 0xFFFFFFFF/4294967295 暴露给前端）
         auto makeUserFriendlySdkReason = [](const QString& step, const QString& sdkMsg) -> QString {
             const QString raw = sdkMsg.trimmed();
@@ -15105,10 +15775,25 @@ void MainWindow::INDI_Capture(int Exp_times)
             return reason;
         };
 
+        QString singleModeReason;
+        if (!ensureSdkMainCameraSingleModeReady(&singleModeReason)) {
+            emit wsThread->sendMessageToClient("ExposureFailed:SDK单帧模式未就绪（" + singleModeReason + "）");
+            emit wsThread->sendMessageToClient("CameraInExposuring:False");
+            ShootStatus = "IDLE";
+            glMainCameraStatu = "IDLE";
+            return;
+        }
+
+        glMainCameraStatu = "Exposuring";
+        Logger::Log("startMainCameraCapture | SDK Mode | Main Camera Status: " + glMainCameraStatu.toStdString(),
+                   LogLevel::INFO, DeviceType::CAMERA);
+        const qint64 sdkCaptureStageStartMs = QDateTime::currentMSecsSinceEpoch();
+
         // 0. 确保全分辨率 ROI/分辨率已设置（否则部分机型会出现 ret=0 但 roi=0x0，导致上层一直轮询）
         // 优先从 SDK 获取有效区域，避免依赖 UI 侧 glMainCCDSizeX/Y 的时序。
         SdkAreaInfo fullRoi;
         {
+            const qint64 effectiveAreaStartMs = QDateTime::currentMSecsSinceEpoch();
             SdkCommand effCmd;
             effCmd.type = SdkCommandType::Custom;
             effCmd.name = "GetEffectiveArea";
@@ -15124,8 +15809,16 @@ void MainWindow::INDI_Capture(int Exp_times)
                 fullRoi.sizeX  = (glMainCCDSizeX > 0) ? static_cast<unsigned int>(glMainCCDSizeX) : 0;
                 fullRoi.sizeY  = (glMainCCDSizeY > 0) ? static_cast<unsigned int>(glMainCCDSizeY) : 0;
             }
+            emitCaptureTrace(QStringLiteral("backend_get_effective_area_done"), effectiveAreaStartMs,
+                             QString("success=%1,startX=%2,startY=%3,sizeX=%4,sizeY=%5")
+                                 .arg(effRes.success ? QStringLiteral("true") : QStringLiteral("false"))
+                                 .arg(fullRoi.startX)
+                                 .arg(fullRoi.startY)
+                                 .arg(fullRoi.sizeX)
+                                 .arg(fullRoi.sizeY));
         }
         if (fullRoi.sizeX > 0 && fullRoi.sizeY > 0) {
+            const qint64 setResolutionStartMs = QDateTime::currentMSecsSinceEpoch();
             SdkCommand setResCmd;
             setResCmd.type = SdkCommandType::Custom;
             setResCmd.name = "SetResolution";
@@ -15133,7 +15826,7 @@ void MainWindow::INDI_Capture(int Exp_times)
             // 直接通过设备句柄调用，无需指定驱动名称
             SdkResult setResRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setResCmd);
             if (!setResRes.success) {
-                Logger::Log("INDI_Capture | SDK SetResolution(full) failed: " + setResRes.message,
+                Logger::Log("startMainCameraCapture | SDK SetResolution(full) failed: " + setResRes.message,
                             LogLevel::ERROR, DeviceType::CAMERA);
                 const QString reason =
                     makeUserFriendlySdkReason(QStringLiteral("设置分辨率失败"), QString::fromStdString(setResRes.message));
@@ -15143,18 +15836,29 @@ void MainWindow::INDI_Capture(int Exp_times)
                 glMainCameraStatu = "IDLE";
                 return;
             } else {
-                Logger::Log("INDI_Capture | SDK SetResolution(full) success: " +
+                emitCaptureTrace(QStringLiteral("backend_set_resolution_done"), setResolutionStartMs,
+                                 QString("success=true,startX=%1,startY=%2,sizeX=%3,sizeY=%4")
+                                     .arg(fullRoi.startX)
+                                     .arg(fullRoi.startY)
+                                     .arg(fullRoi.sizeX)
+                                     .arg(fullRoi.sizeY));
+                Logger::Log("startMainCameraCapture | SDK SetResolution(full) success: " +
                             std::to_string(fullRoi.startX) + "," + std::to_string(fullRoi.startY) + " " +
                             std::to_string(fullRoi.sizeX) + "x" + std::to_string(fullRoi.sizeY),
                             LogLevel::DEBUG, DeviceType::CAMERA);
             }
         } else {
-            Logger::Log("INDI_Capture | SDK SetResolution(full) skipped: invalid fullRoi size (" +
+            emitCaptureTrace(QStringLiteral("backend_set_resolution_skipped"), sdkCaptureStageStartMs,
+                             QString("reason=invalid_full_roi,sizeX=%1,sizeY=%2")
+                                 .arg(fullRoi.sizeX)
+                                 .arg(fullRoi.sizeY));
+            Logger::Log("startMainCameraCapture | SDK SetResolution(full) skipped: invalid fullRoi size (" +
                         std::to_string(fullRoi.sizeX) + "x" + std::to_string(fullRoi.sizeY) + ")",
                         LogLevel::WARNING, DeviceType::CAMERA);
         }
 
         // 1. 设置曝光时间（微秒）
+        const qint64 setExposureStartMs = QDateTime::currentMSecsSinceEpoch();
         SdkCommand setExpCmd;
         setExpCmd.type = SdkCommandType::Custom;
         setExpCmd.name = "SetExposure";
@@ -15162,7 +15866,7 @@ void MainWindow::INDI_Capture(int Exp_times)
         // 直接通过设备句柄调用，无需指定驱动名称
         SdkResult setExpRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, setExpCmd);
         if (!setExpRes.success) {
-            Logger::Log("INDI_Capture | SDK SetExposure failed: " + setExpRes.message, 
+            Logger::Log("startMainCameraCapture | SDK SetExposure failed: " + setExpRes.message,
                        LogLevel::ERROR, DeviceType::CAMERA);
             const QString reason =
                 makeUserFriendlySdkReason(QStringLiteral("设置曝光时间失败"), QString::fromStdString(setExpRes.message));
@@ -15172,16 +15876,31 @@ void MainWindow::INDI_Capture(int Exp_times)
             glMainCameraStatu = "IDLE";
             return;
         }
+        emitCaptureTrace(QStringLiteral("backend_set_exposure_done"), setExposureStartMs,
+                         QString("success=true,exposureUs=%1")
+                             .arg(QString::number(expTime_sec * 1000000.0, 'f', 0)));
         
         // 2. 启动单帧曝光
+        const qint64 startExposureCmdStartMs = QDateTime::currentMSecsSinceEpoch();
         SdkCommand startExpCmd;
         startExpCmd.type = SdkCommandType::Custom;
         startExpCmd.name = "StartSingleExposure";
         startExpCmd.payload = std::any();
+        Logger::Log("CaptureTrace | stage=backend_start_single_exposure_callbyhandle_enter"
+                        " | handle=" + std::to_string(reinterpret_cast<uintptr_t>(sdkMainCameraHandle)) +
+                        " | thread=" + std::to_string(
+                            static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id()))),
+                    LogLevel::INFO, DeviceType::CAMERA);
         // 直接通过设备句柄调用，无需指定驱动名称
         SdkResult startExpRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, startExpCmd);
+        Logger::Log("CaptureTrace | stage=backend_start_single_exposure_callbyhandle_return"
+                        " | handle=" + std::to_string(reinterpret_cast<uintptr_t>(sdkMainCameraHandle)) +
+                        " | ok=" + std::string(startExpRes.success ? "true" : "false") +
+                        " | msg=" + startExpRes.message,
+                    startExpRes.success ? LogLevel::INFO : LogLevel::ERROR,
+                    DeviceType::CAMERA);
         if (!startExpRes.success) {
-            Logger::Log("INDI_Capture | SDK StartSingleExposure failed: " + startExpRes.message, 
+            Logger::Log("startMainCameraCapture | SDK StartSingleExposure failed: " + startExpRes.message,
                        LogLevel::ERROR, DeviceType::CAMERA);
             const QString reason =
                 makeUserFriendlySdkReason(QStringLiteral("启动曝光失败"), QString::fromStdString(startExpRes.message));
@@ -15191,7 +15910,11 @@ void MainWindow::INDI_Capture(int Exp_times)
             glMainCameraStatu = "IDLE";
             return;
         }
-        Logger::Log("INDI_Capture | SDK StartSingleExposure success, expTime_sec:" + std::to_string(expTime_sec), 
+        emitCaptureTrace(QStringLiteral("backend_start_single_exposure_done"), startExposureCmdStartMs,
+                         QString("success=true,transport=sdk"));
+        emitCaptureTrace(QStringLiteral("backend_exposure_start"), currentCaptureTraceStartedAtMs,
+                         QString("transport=sdk,exposureMs=%1").arg(static_cast<int>(expTime_sec * 1000)));
+        Logger::Log("startMainCameraCapture | SDK StartSingleExposure success, expTime_sec:" + std::to_string(expTime_sec),
                    LogLevel::INFO, DeviceType::CAMERA);
         
         // 3. 使用定时器轮询获取图像（避免阻塞）
@@ -15202,63 +15925,65 @@ void MainWindow::INDI_Capture(int Exp_times)
         
         // 第一次等待时间 = 曝光时间（对于短曝光如 1ms，等待 1ms；长曝光如 1s，等待 1s）
         sdkExposureTimer->start(expTime_ms);
-        Logger::Log("INDI_Capture | SDK exposure timer started, will check after " + std::to_string(expTime_ms) + "ms", 
+        Logger::Log("startMainCameraCapture | SDK exposure timer started, will check after " + std::to_string(expTime_ms) + "ms",
                    LogLevel::INFO, DeviceType::CAMERA);
     }
     else if (dpMainCamera)
     {
         // === INDI 模式 ===
         glMainCameraStatu = "Exposuring";
-        Logger::Log("INDI_Capture | INDI Mode | check Main Camera Status(glMainCameraStatu):" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | INDI Mode | check Main Camera Status(glMainCameraStatu):" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
         int value, min, max;
         uint32_t ret = indi_Client->getCCDGain(dpMainCamera, value, min, max);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi getCCDGain | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi getCCDGain | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi getCCDGain | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi getCCDGain | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
         int BINX, BINY, BINXMAX, BINYMAX;
         ret = indi_Client->getCCDBinning(dpMainCamera, BINX, BINY, BINXMAX, BINYMAX);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi getCCDBinning | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi getCCDBinning | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi getCCDBinning | BINX:" + std::to_string(BINX) + ", BINY:" + std::to_string(BINY) + ", BINXMAX:" + std::to_string(BINXMAX) + ", BINYMAX:" + std::to_string(BINYMAX), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi getCCDBinning | BINX:" + std::to_string(BINX) + ", BINY:" + std::to_string(BINY) + ", BINXMAX:" + std::to_string(BINXMAX) + ", BINYMAX:" + std::to_string(BINYMAX), LogLevel::INFO, DeviceType::CAMERA);
         ret = indi_Client->getCCDOffset(dpMainCamera, value, min, max);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi getCCDOffset | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi getCCDOffset | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi getCCDOffset | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi getCCDOffset | value:" + std::to_string(value) + ", min:" + std::to_string(min) + ", max:" + std::to_string(max), LogLevel::INFO, DeviceType::CAMERA);
         ret = indi_Client->resetCCDFrameInfo(dpMainCamera);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi resetCCDFrameInfo", LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | indi resetCCDFrameInfo", LogLevel::INFO, DeviceType::CAMERA);
         emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
-        Logger::Log("INDI_Capture | sendMessageToClient | MainCameraSize:" + QString::number(glMainCCDSizeX).toStdString() + ":" + QString::number(glMainCCDSizeY).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | sendMessageToClient | MainCameraSize:" + QString::number(glMainCCDSizeX).toStdString() + ":" + QString::number(glMainCCDSizeY).toStdString(), LogLevel::INFO, DeviceType::CAMERA);
         ret = indi_Client->takeExposure(dpMainCamera, expTime_sec);
         if (ret != QHYCCD_SUCCESS)
         {
-            Logger::Log("INDI_Capture | indi takeExposure | failed", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("startMainCameraCapture | indi takeExposure | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
-        Logger::Log("INDI_Capture | indi start takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
+        emitCaptureTrace(QStringLiteral("backend_exposure_start"), currentCaptureTraceStartedAtMs,
+                         QString("transport=indi,exposureMs=%1").arg(static_cast<int>(expTime_sec * 1000)));
+        Logger::Log("startMainCameraCapture | indi start takeExposure, expTime_sec:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
     }
     else
     {
-        Logger::Log("INDI_Capture | Main Camera not available (both SDK and INDI are NULL)", LogLevel::WARNING, DeviceType::CAMERA);
+        Logger::Log("startMainCameraCapture | Main Camera not available (both SDK and INDI are NULL)", LogLevel::WARNING, DeviceType::CAMERA);
         ShootStatus = "IDLE";
     }
-    Logger::Log("INDI_Capture finished.", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("startMainCameraCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
 }
 
-void MainWindow::INDI_AbortCapture()
+void MainWindow::abortMainCameraCapture()
 {
-    Logger::Log("INDI_AbortCapture start ...", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("abortMainCameraCapture start ...", LogLevel::INFO, DeviceType::CAMERA);
     glMainCameraStatu = "IDLE";
-    Logger::Log("INDI_AbortCapture | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("abortMainCameraCapture | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     // 判断主相机是 SDK 模式还是 INDI 模式
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
@@ -15272,7 +15997,7 @@ void MainWindow::INDI_AbortCapture()
         // 🔧 修复：立即停止曝光轮询定时器，防止重复调用GetSingleFrame
         if (sdkExposureTimer && sdkExposureTimer->isActive()) {
             sdkExposureTimer->stop();
-            Logger::Log("INDI_AbortCapture | Stopped sdkExposureTimer to prevent redundant GetSingleFrame calls", 
+            Logger::Log("abortMainCameraCapture | Stopped sdkExposureTimer to prevent redundant GetSingleFrame calls",
                        LogLevel::DEBUG, DeviceType::CAMERA);
         }
         
@@ -15285,7 +16010,7 @@ void MainWindow::INDI_AbortCapture()
         // Burst（Live）取消：设置取消标志，并尽力停止 Live（不阻塞主线程）
         if (sdkBurstActive.load()) {
             sdkBurstCancelRequested = true;
-            Logger::Log("INDI_AbortCapture | Burst active, request cancel",
+            Logger::Log("abortMainCameraCapture | Burst active, request cancel",
                         LogLevel::INFO, DeviceType::CAMERA);
 
             // Burst 作为连接模式子模式：Abort 不应退出 Burst/Live，只需回到 IDLE 等待下一次触发。
@@ -15311,10 +16036,10 @@ void MainWindow::INDI_AbortCapture()
         // 直接通过设备句柄调用，无需指定驱动名称
         SdkResult abortRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, abortCmd);
         if (!abortRes.success) {
-            Logger::Log("INDI_AbortCapture | SDK CancelExposure failed: " + abortRes.message, 
+            Logger::Log("abortMainCameraCapture | SDK CancelExposure failed: " + abortRes.message,
                        LogLevel::ERROR, DeviceType::CAMERA);
         } else {
-            Logger::Log("INDI_AbortCapture | SDK CancelExposure success", LogLevel::INFO, DeviceType::CAMERA);
+            Logger::Log("abortMainCameraCapture | SDK CancelExposure success", LogLevel::INFO, DeviceType::CAMERA);
         }
         ShootStatus = "IDLE";
     }
@@ -15323,9 +16048,9 @@ void MainWindow::INDI_AbortCapture()
         // === INDI 模式 ===
         indi_Client->setCCDAbortExposure(dpMainCamera);
         ShootStatus = "IDLE";
-        Logger::Log("INDI_AbortCapture | INDI ShootStatus:" + ShootStatus.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
+        Logger::Log("abortMainCameraCapture | INDI ShootStatus:" + ShootStatus.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     }
-    Logger::Log("INDI_AbortCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
+    Logger::Log("abortMainCameraCapture finished.", LogLevel::INFO, DeviceType::CAMERA);
 }
 
 // SDK 模式下保存 SdkFrameData 为 FITS 文件的辅助函数
@@ -15618,6 +16343,8 @@ void MainWindow::onSdkExposureTimerTimeout()
 
                         ShootStatus = "Completed";
                         emit wsThread->sendMessageToClient("ExposureCompleted");
+                        emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
+                                         QStringLiteral("source=sdk_timer"));
                         Logger::Log("onSdkExposureTimerTimeout | Full resolution mode, ExposureCompleted",
                                     LogLevel::INFO, DeviceType::CAMERA);
 
@@ -20002,7 +20729,7 @@ void MainWindow::startCapture(int ExpTime)
 
     ShootStatus = "InProgress";
     qDebug() << "ShootStatus: " << ShootStatus;
-    INDI_Capture(ExpTime);
+    startMainCameraCapture(ExpTime);
     schedule_currentShootNum++;
 
     captureTimer.setSingleShot(true);
@@ -20014,7 +20741,7 @@ void MainWindow::startCapture(int ExpTime)
         if (StopSchedule)
         {
             StopSchedule = false;
-            INDI_AbortCapture();
+            abortMainCameraCapture();
             qDebug("Schedule is stop!");
             return;
         }
@@ -20089,7 +20816,7 @@ void MainWindow::startCapture(int ExpTime)
             {
                 // 拍摄超时，中止拍摄并处理超时情况
                 captureTimer.stop();
-                INDI_AbortCapture();
+                abortMainCameraCapture();
                 Logger::Log(QString("计划任务表拍摄超时: 当前拍摄时间 %1ms, 超过最大超时时间 %2ms (曝光时间 %3ms + 1分钟)").arg(expTime_ms).arg(maxTimeout).arg(schedule_ExpTime).toStdString(), 
                            LogLevel::WARNING, DeviceType::MAIN);
                 Logger::Log("Capture timeout! expTime_ms:" + std::to_string(expTime_ms) + ", maxTimeout:" + std::to_string(maxTimeout) + ", schedule_ExpTime:" + std::to_string(schedule_ExpTime), LogLevel::WARNING, DeviceType::MAIN);
@@ -21359,7 +22086,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
     Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
     isSavePngSuccess = false;
-    INDI_Capture(1000); // 拍摄1秒曝光进行解析同步
+    startMainCameraCapture(1000); // 拍摄1秒曝光进行解析同步
 
     captureTimer.setSingleShot(true);
 
@@ -21369,7 +22096,7 @@ void MainWindow::TelescopeControl_SolveSYNC()
         if (EndCaptureAndSolve)
         {
             EndCaptureAndSolve = false;
-            INDI_AbortCapture();
+            abortMainCameraCapture();
             Logger::Log("TelescopeControl_SolveSYNC | End Capture And Solve!!!", LogLevel::INFO, DeviceType::MAIN);
             isSolveSYNC = false;
             emit wsThread->sendMessageToClient("SolveImagefailed"); 
@@ -26406,7 +27133,7 @@ void MainWindow::disconnectDriver(QString Driver)
         // 断开前中止主相机曝光，避免断开过程中卡住
         if (devType == "MainCamera" && glMainCameraStatu == "Exposuring")
         {
-            INDI_AbortCapture();
+            abortMainCameraCapture();
         }
 
         // 统一走 DisconnectDevice：它同时覆盖 INDI 与 SDK 模式清理
@@ -26566,7 +27293,7 @@ void MainWindow::focusLoopShooting(bool isLoop)
 
             if (glMainCameraStatu == "Exposuring" && isMainCameraConnected())
             {
-                INDI_AbortCapture();
+                abortMainCameraCapture();
             }
         }
     }
@@ -27188,7 +27915,7 @@ void MainWindow::startAutoFocus()
 
     // 注意：SDK 是“单设备连接”——主相机/电调可分别走 SDK/INDI。
     // AutoFocus 内部已按 useSdkMainCamera/useSdkFocuser 分流：
-    // - 主相机 SDK：通过 requestCapture/requestAbortCapture 走 MainWindow::INDI_Capture/INDI_AbortCapture
+    // - 主相机 SDK：通过 requestCapture/requestAbortCapture 走 MainWindow::startMainCameraCapture/abortMainCameraCapture
     // - 电调 SDK：通过 SdkManager::callByHandle( sdkFocuserHandle ) 执行移动/读位置/Abort
     // 预处理：统一清理自动对焦相关定时器与信号连接，避免残留或重复
     cleanupAutoFocusConnections();
@@ -27213,10 +27940,10 @@ void MainWindow::startAutoFocus()
 
     // SDK/INDI 统一拍摄入口：由 AutoFocus 发起 requestCapture/requestAbortCapture，MainWindow 调用统一入口执行
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestCapture,
-                                           this, [this](int exposureMs) { this->INDI_Capture(exposureMs); },
+                                           this, [this](int exposureMs) { this->startMainCameraCapture(exposureMs); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
-                                           this, [this]() { this->INDI_AbortCapture(); },
+                                           this, [this]() { this->abortMainCameraCapture(); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
                                            this, [this](int totalDivisions, const QString &message)
@@ -27511,10 +28238,10 @@ void MainWindow::startAutoFocusFineHFROnly()
 
     // SDK/INDI 统一拍摄入口（同 startAutoFocus）
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestCapture,
-                                           this, [this](int exposureMs) { this->INDI_Capture(exposureMs); },
+                                           this, [this](int exposureMs) { this->startMainCameraCapture(exposureMs); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
-                                           this, [this]() { this->INDI_AbortCapture(); },
+                                           this, [this]() { this->abortMainCameraCapture(); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
                                            this, [this](int totalDivisions, const QString &message)
@@ -27694,8 +28421,8 @@ void MainWindow::startAutoFocusFineHFROnly()
         }
     }));
 
-    // 仅精调(Fine)：从当前位置直接进入 super-fine 精调流程
-    autoFocus->startSuperFineFromCurrentPosition();
+    // 仅精调(Fine)：从当前位置开始，先拍当前位置，再围绕当前位置双向展开
+    autoFocus->startLocalFineAdjustmentFromCurrentPosition();
     isAutoFocus = true;
     autoFocusStep = 0;
 }
@@ -27733,10 +28460,10 @@ void MainWindow::startAutoFocusSuperFineOnly()
 
     // SDK/INDI 统一拍摄入口（同 startAutoFocus）
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestCapture,
-                                           this, [this](int exposureMs) { this->INDI_Capture(exposureMs); },
+                                           this, [this](int exposureMs) { this->startMainCameraCapture(exposureMs); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::requestAbortCapture,
-                                           this, [this]() { this->INDI_AbortCapture(); },
+                                           this, [this]() { this->abortMainCameraCapture(); },
                                            Qt::QueuedConnection));
     autoFocusConnections.push_back(connect(autoFocus, &AutoFocus::coarseRetryPromptRequested,
                                            this, [this](int totalDivisions, const QString &message)
@@ -28121,9 +28848,11 @@ void MainWindow::getMainCameraParameters()
             }
         }
         if (it.key() == "Tile Build Mode") {
-            tileBuildMode = (it.value() == "merged_single_level")
-                ? QStringLiteral("merged_single_level")
-                : QStringLiteral("pyramid");
+            if (it.value() == "merged_single_level") {
+                Logger::Log("LoadParameter | Tile Build Mode 'merged_single_level' is deprecated, forcing pyramid",
+                            LogLevel::WARNING, DeviceType::MAIN);
+            }
+            tileBuildMode = QStringLiteral("pyramid");
             it.value() = tileBuildMode;
             hasTileBuildMode = true;
         }
@@ -28155,9 +28884,7 @@ void MainWindow::getMainCameraParameters()
         }
     }
     if (!hasTileBuildMode) {
-        tileBuildMode = (tileBuildMode == "merged_single_level")
-            ? QStringLiteral("merged_single_level")
-            : QStringLiteral("pyramid");
+        tileBuildMode = QStringLiteral("pyramid");
         order += ":Tile Build Mode:" + tileBuildMode;
     }
     if (!hasRoiCalcMode) {
@@ -28174,6 +28901,7 @@ void MainWindow::getMainCameraParameters()
     emit wsThread->sendMessageToClient(order);
 
     emit wsThread->sendMessageToClient("MainCameraCFA:" + (MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA));
+    emit wsThread->sendMessageToClient("MainCameraCFASource:SAVED");
 }
 
 void MainWindow::getMountParameters()
@@ -28425,11 +29153,11 @@ bool MainWindow::initPolarAlignment()
         return false;
     }
 
-    // SDK/INDI 统一拍摄入口：由 PolarAlignment 发起 requestCapture，MainWindow 调用 INDI_Capture 执行
+    // SDK/INDI 统一拍摄入口：由 PolarAlignment 发起 requestCapture，MainWindow 调用 startMainCameraCapture 执行
     QObject::connect(polarAlignment, &PolarAlignment::requestCapture,
                      this, [this](int exposureMs)
                      {
-                         this->INDI_Capture(exposureMs);
+                         this->startMainCameraCapture(exposureMs);
                      },
                      Qt::QueuedConnection);
 

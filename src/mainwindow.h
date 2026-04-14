@@ -84,8 +84,10 @@ namespace fs = std::filesystem;
 #include "sdks/SdkCommon.h"  // SDK 通用类型（SdkFrameData, SdkChipInfo, SdkAreaInfo 等）
 
 /**********************  宏与常量定义  **********************/
-// #define QT_Client_Version getBuildDate()
-#define QT_Client_Version "20260414"  // 手动指定版本号
+#ifndef QUARCS_QT_CLIENT_VERSION
+#define QUARCS_QT_CLIENT_VERSION "000000000000"
+#endif
+#define QT_Client_Version QUARCS_QT_CLIENT_VERSION
 
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
@@ -483,10 +485,10 @@ public:
 /**********************  图像采集/处理（FITS/JPG/PNG/伪彩）  **********************/
 public:
     /**
-     * @brief INDI 拍摄
-     * @param Exp_times 曝光时间（毫秒）
+     * @brief 主相机统一拍摄入口（SDK/INDI）
+     * @param exposureMs 曝光时间（毫秒）
      */
-    void INDI_Capture(int Exp_times);
+    void startMainCameraCapture(int exposureMs);
 
     /**
      * @brief SDK Burst 拍摄（仅 QHYCCD SDK 支持）
@@ -549,9 +551,9 @@ public:
     size_t sdkMainLiveShmFrameBytes{0};
 
     /**
-     * @brief 终止 INDI 拍摄
+     * @brief 终止主相机拍摄（SDK/INDI）
      */
-    void INDI_AbortCapture();
+    void abortMainCameraCapture();
 
     /**
      * @brief 聚焦回路（循环）
@@ -570,6 +572,8 @@ public:
     qint64 sdkExposureStartTime = 0;              // SDK 曝光开始时间戳（毫秒）
     int sdkExposureExpectedDuration = 0;          // SDK 预期曝光时长（毫秒）
     bool sdkExposureIsROI = false;                // SDK 当前曝光是否为 ROI 模式
+    QString currentCaptureTraceId;                // 当前主拍摄链路 traceId（由前端生成并透传）
+    qint64 currentCaptureTraceStartedAtMs = 0;    // 当前 trace 的后端起点（收到命令时刻）
     // QHY 某些机型在进入 ROI 后，GetEffectiveArea 的 startX/startY 会返回“当前 ROI 起点”而不是固定有效区偏移。
     // 聚焦循环需要一个稳定的有效区基准，否则会在每帧重心追踪时把偏移重复叠加，最终导致 ROI 越界。
     bool sdkMainEffectiveAreaCacheValid = false;
@@ -585,6 +589,7 @@ public:
 
     // 根据主相机采集模式初始化/释放（连接后或模式切换时调用）
     void applySdkMainCameraCaptureMode();
+    bool ensureSdkMainCameraSingleModeReady(QString *errorReason = nullptr);
 
     // SDK 主相机 Live 循环取帧回调
     void onSdkMainLiveTimerTimeout();
@@ -657,10 +662,10 @@ public:
     void scheduleViewportTileGeneration();
     void generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs);
     /** 同步生成当前视口要显示的瓦片，确保发送 GPM 前前端请求的瓦片已落盘，避免 404；无视口时退化为 z=0 全层 */
-    void generateVisibleTilesSync(quint64 epoch);
-    /** merged_single_level: 后台补齐 z=maxZ 整层原图瓦片，避免轮询时 ready 数长期停在当前视口附近 */
+    void generateVisibleTilesSync(quint64 epoch, bool includeViewportLevels = false);
+    /** 兼容旧接口：普通拍摄已不再后台补齐整张图最高层 */
     void scheduleFullResTileCompletion();
-    void generateFullResTiles_Once(quint64 epoch);
+    void generateFullResTiles_Once(quint64 epoch, quint64 requestSeq, int budgetMs);
     static int calculateTileLevelFromScale(double scale, int maxZoomLevel);
     static QString buildTileSessionId(quint64 frameId);
     int currentTilePreviewBinning() const;
@@ -692,7 +697,7 @@ public:
         double gainB;             // B通道增益
         QString sessionId;        // 会话ID (用于瓦片缓存)
         quint64 frameId = 0;      // 帧ID（与 tilePyramidEpoch/epoch 对齐，用于前后端丢弃旧帧/防错帧）
-        QString buildMode = "merged_single_level"; // 瓦片构建模式：pyramid / merged_single_level
+        QString buildMode = "pyramid"; // 瓦片构建模式：普通拍摄统一使用 pyramid
 
         // 直方图（用于前端拉伸/显示）
         int histogramBins = 0;                 // bin 数（建议 256）
@@ -743,6 +748,20 @@ public:
     static int getOpenCvBayerToBgrCode(const QString& cfa);
 
     /**
+     * @brief 将 CFA 字符串映射为 Tools::PixelsDataSoftBin_Bayer 使用的 BayerPattern
+     * @return true 表示映射成功；false 表示非彩色或未知 CFA
+     */
+    static bool tryGetBayerPattern(const QString& cfa, BayerPattern& outPattern);
+
+    /**
+     * @brief 对瓦片/层级图像做降采样：彩色 RAW 走 Bayer-safe 同色平均，单色走普通面积缩小
+     * @param image 输入图像（通常为 CV_16UC1/CV_8UC1）
+     * @param cfa 当前帧实际 CFA
+     * @param scaleFactor 相对目标层级的缩小倍数（2^N）
+     */
+    static cv::Mat downsampleTileImageForLevel(const cv::Mat& image, const QString& cfa, int scaleFactor);
+
+    /**
      * @brief 按像素偏移推导当前帧/ROI 的实际 CFA
      * @param baseCfa 基础 CFA（相机原始声明）
      * @param shiftX 相对 CFA 原点的 X 偏移
@@ -787,7 +806,7 @@ public:
      */
     void sendGPMToClient(const TileGPM& gpm);
     void sendTileBatchReadyToClient(const QString& sessionId, quint64 frameId, const QStringList& tileKeys);
-    void sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId);
+    void sendCurrentTileBatchReadySnapshotToClient(const QString& sessionId, quint64 frameId, const QStringList& requestedTileKeys = QStringList());
     void sendTileGenerationCompleteToClient(const QString& sessionId, quint64 frameId);
     void sendCurrentTileGenerationCompleteSnapshotToClient(const QString& sessionId, quint64 frameId);
 
@@ -796,6 +815,7 @@ public:
      * @param gpm GPM（包含 sessionId 与 histogram 字段）
      */
     void sendHistogramToClient(const TileGPM& gpm);
+    void emitCaptureTrace(const QString& stage, qint64 startedAtMs = -1, const QString& detail = QString());
 
     /**
      * @brief 清理旧的直方图文件
@@ -820,12 +840,14 @@ public:
     int tilePyramidFastBudgetMs = 100;                // 同步阶段预算（毫秒）
     int tilePyramidFastSyncMaxZ = 1;                  // 同步生成的最大层级（z=0 为最低精度）；其余后台生成
     bool tilePyramidFastEnableMedianBlur = false;     // 同步阶段是否做 medianBlur（大图可能超时）
-    QString tileBuildMode = QStringLiteral("merged_single_level"); // 瓦片构建模式：金字塔 / 合并图+单层细化
+    QString tileBuildMode = QStringLiteral("pyramid"); // 瓦片构建模式：普通拍摄统一使用金字塔
 
-    // 前端视口参数（来自 Vue_Command: sendVisibleArea:x:y:scale）
+    // 前端视口参数（来自 Vue_Command: sendVisibleArea:x:y:scale:frameId:targetZ[:zCap]）
     std::atomic<double> tileViewportX{0.0};           // 视口中心 X（原图像素）
     std::atomic<double> tileViewportY{0.0};           // 视口中心 Y（原图像素）
     std::atomic<double> tileViewportScale{1.0};       // 缩放比例（0.1~1.0；越小越放大）
+    std::atomic<int> tileViewportTargetZ{-1};         // 前端显式请求的目标层级；-1 表示沿用旧 scale 推导
+    std::atomic<int> tileViewportMaxZCap{-1};         // 视口请求的最大瓦片层级；-1 表示不限制
     std::atomic_uint64_t tileViewportRequestSeq{0};   // 每次 sendVisibleArea ++，用于打断旧视口瓦片生成
     double tileViewportAspect = 16.0 / 9.0;           // 视口宽高比（与前端 CanvasWidth/CanvasHeight 一致；默认 16:9）
 
@@ -833,6 +855,7 @@ public:
     struct TileFrameState {
         quint64 epoch = 0;
         QString sessionId;
+        quint64 frameId = 0;
         int imageWidth = 0;
         int imageHeight = 0;
         int previewBinningFactor = 1;
@@ -1092,7 +1115,7 @@ public:
      * @brief 启动自动对焦流程
      */
     void startAutoFocus();
-    // 新：仅从当前位置执行 HFR 精调（固定步长 100、采样 11 点）
+    // 从当前位置执行本地精调：先拍当前位置，再围绕当前位置双向展开
     void startAutoFocusFineHFROnly();
     void startAutoFocusSuperFineOnly();
     

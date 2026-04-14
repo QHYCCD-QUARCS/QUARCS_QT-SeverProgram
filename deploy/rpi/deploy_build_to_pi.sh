@@ -17,6 +17,7 @@ PI_USER="${PI_USER:-quarcs}"
 PI_PASSWORD="${PI_PASSWORD:-quarcs}"
 LOCAL_BUILD_DIR="${LOCAL_BUILD_DIR:-${REPO_ROOT}/build-rpi}"
 REMOTE_BUILD_DIR="${REMOTE_BUILD_DIR:-/home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/BUILD}"
+QUARCS_TOTAL_VERSION="${QUARCS_TOTAL_VERSION:-$(date +%Y%m%d%H%M)}"
 
 ARTIFACTS=(
   client
@@ -68,3 +69,5 @@ done
 
 echo "Remote files:"
 "${SSH_CMD[@]}" "${PI_USER}@${PI_HOST}" "ls -lh '${REMOTE_BUILD_DIR}'/client '${REMOTE_BUILD_DIR}'/guiding_offline_test '${REMOTE_BUILD_DIR}'/qhyccd.ini"
+
+echo "Configured QUARCS_TOTAL_VERSION=${QUARCS_TOTAL_VERSION}"

@@ -9,6 +9,9 @@ DEPLOY_SCRIPT="${DEPLOY_SCRIPT:-${REPO_ROOT}/deploy/rpi/deploy_build_to_pi.sh}"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
 JOBS="${JOBS:-$(nproc)}"
 CLEAN_BUILD="${CLEAN_BUILD:-0}"
+BUILD_VERSION="${BUILD_VERSION:-${QUARCS_TOTAL_VERSION:-$(date +%Y%m%d%H%M)}}"
+QUARCS_TOTAL_VERSION="${QUARCS_TOTAL_VERSION:-${BUILD_VERSION}}"
+QUARCS_QT_CLIENT_VERSION="${QUARCS_QT_CLIENT_VERSION:-${BUILD_VERSION}}"
 
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
@@ -61,8 +64,11 @@ if [[ "${CLEAN_BUILD}" == "1" || "${cache_invalid}" == "1" ]]; then
 fi
 
 log "Configuring cross build"
+env QUARCS_QT_CLIENT_VERSION="${QUARCS_QT_CLIENT_VERSION}" \
 cmake -S "${REPO_ROOT}/src" -B "${BUILD_DIR}" \
   -DCMAKE_TOOLCHAIN_FILE="${TOOLCHAIN_FILE}"
+
+log "Using build version: ${BUILD_VERSION}"
 
 log "Building with ${JOBS} parallel jobs"
 cmake --build "${BUILD_DIR}" -j"${JOBS}"
@@ -71,6 +77,6 @@ log "Verifying target architecture"
 file "${BUILD_DIR}/client" "${BUILD_DIR}/guiding_offline_test"
 
 log "Deploying artifacts to Raspberry Pi"
-LOCAL_BUILD_DIR="${BUILD_DIR}" "${DEPLOY_SCRIPT}"
+LOCAL_BUILD_DIR="${BUILD_DIR}" QUARCS_TOTAL_VERSION="${QUARCS_TOTAL_VERSION}" "${DEPLOY_SCRIPT}"
 
 log "Build and deploy completed"

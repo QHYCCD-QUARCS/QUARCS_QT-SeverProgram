@@ -140,6 +140,19 @@ SdkResult SdkManager::call(const std::string& driverName,
     // 执行命令（此时已释放锁，不会阻塞其他操作）
     const auto t0 = std::chrono::steady_clock::now();
     SdkResult execResult;
+    if (command.name == "StartSingleExposure") {
+        const std::string traceLog =
+            "CaptureTrace | stage=sdkmanager_start_single_exposure_driver_execute_enter" +
+            std::string(" | driver=") + driverName +
+            " | handle=" + handleToString(device) +
+            " | thread=" + std::to_string(
+                static_cast<unsigned long long>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
+        if (logger) {
+            logger->log(SdkLogLevel::Info, traceLog);
+        } else {
+            Logger::Log(traceLog, LogLevel::INFO, DeviceType::MAIN);
+        }
+    }
     try {
         execResult = driver->execute(device, command);
     } catch (const std::exception& e) {
@@ -153,6 +166,22 @@ SdkResult SdkManager::call(const std::string& driverName,
     }
     const auto dtMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - t0).count();
+    if (command.name == "StartSingleExposure") {
+        const std::string traceLog =
+            "CaptureTrace | stage=sdkmanager_start_single_exposure_driver_execute_return" +
+            std::string(" | driver=") + driverName +
+            " | handle=" + handleToString(device) +
+            " | costMs=" + std::to_string(dtMs) +
+            " | ok=" + std::string(execResult.success ? "true" : "false") +
+            " | msg=" + execResult.message;
+        if (logger) {
+            logger->log(execResult.success ? SdkLogLevel::Info : SdkLogLevel::Error, traceLog);
+        } else {
+            Logger::Log(traceLog,
+                        execResult.success ? LogLevel::INFO : LogLevel::ERROR,
+                        DeviceType::MAIN);
+        }
+    }
 
     // 对关键初始化命令和失败命令补充结束日志，便于定位崩溃前最后一步
     if (!skipNoisyLog && (keyInitCmd || !execResult.success)) {

@@ -28,6 +28,7 @@ enum class AutoFocusState {
     COARSE_ADJUSTMENT,        // 粗调
     FINE_ADJUSTMENT,          // 精调（基于 SNR，用于完整自动对焦流程）
     SUPER_FINE_ADJUSTMENT,    // 更细致精调（基于 HFR 拟合，用于完整自动对焦流程）
+    LOCAL_FINE_ADJUSTMENT,    // 本地精调（从当前位置开始，先拍当前位置，再双向展开）
     FINE_HFR_ADJUSTMENT_NEW,  // 新增：独立 HFR 精调模式（精调按钮触发）
     COLLECTING_DATA,          // 收集数据
     FITTING_DATA,             // 拟合数据
@@ -164,6 +165,9 @@ public:
 
     // 仅从当前位置启动 HFR 精调（新模式，固定步长 100，采样 11 个 HFR 点）
     void startFineHFRFromCurrentPosition();
+
+    // 仅从当前位置启动本地精调：先拍当前位置，再围绕当前位置双向展开做 HFR 拟合
+    void startLocalFineAdjustmentFromCurrentPosition();
 
     void getAutoFocusStep(); // 获取自动对焦步骤信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
     void getAutoFocusData(); // 获取自动对焦数据信号 - [AUTO_FOCUS_UI_ENHANCEMENT]
@@ -432,6 +436,7 @@ private:
     // 更细致精调流程
     void startSuperFineAdjustment();
     void processSuperFineAdjustment();
+    void processLocalFineAdjustment();
 
     // 新 HFR 精调流程（从当前位置启动，仅 HFR 二次拟合）
     void processFineHFRNewAdjustment();
