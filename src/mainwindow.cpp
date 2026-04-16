@@ -1827,12 +1827,27 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         if (parts[1].trimmed() == "false")
         {
-            FocuserControlStop(false);
+            // 手动校准模式下使用静默停止，避免 stop 的异步位置回推干扰“设置边界”流程
+            if (focuserManualCalibrationMode)
+                FocuserControlStop(false, true);
+            else
+                FocuserControlStop(false);
         }
         else if (parts[1].trimmed() == "true")
         {
             FocuserControlStop(true);
         }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "ManualFocuserCalibrationMode")
+    {
+        const QString mode = parts[1].trimmed().toLower();
+        focuserManualCalibrationMode = (mode == "1" || mode == "true" || mode == "on");
+        if (!focuserManualCalibrationMode)
+        {
+            focuserCalibrationExpandedDir = 0;
+        }
+        Logger::Log("ManualFocuserCalibrationMode:" + std::string(focuserManualCalibrationMode ? "true" : "false"),
+                    LogLevel::INFO, DeviceType::FOCUSER);
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "SyncFocuserStep")
     {
@@ -2103,20 +2118,53 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("focusMoveFailed:电调未连接，无法设置左边界。");
             return;
         }
-        
-        int stablePosition = 0;
-        if (!tryReadStableFocuserPosition(stablePosition))
+
+        // 清理先前 stop 流程可能残留的异步位置刷新，避免在设置边界窗口期插入二次位置变更
+        if (updatePositionTimer != nullptr)
         {
-            Logger::Log("MinLimit rejected: failed to get stable focuser position", LogLevel::WARNING, DeviceType::FOCUSER);
+            updatePositionTimer->stop();
+            updatePositionTimer->deleteLater();
+            updatePositionTimer = nullptr;
+        }
+        
+        // 参考自动移动收尾逻辑：先停止移动，再延迟读取稳定位置，避免惯性/回包延迟导致边界取值漂移。
+        if (isFocusMoveDone)
+        {
+            FocuserControlStop(false, true);
+        }
+        QThread::msleep(220);
+
+        // 先读取一次当前位置（用于同步/诊断），边界值仍以后续“最新稳定位置”为准
+        const int currentOnce = FocuserControl_getPosition();
+        Logger::Log("MinLimit | current position before stable read: " + std::to_string(currentOnce),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+
+        int stablePosition = 0;
+        if (tryReadStableFocuserPosition(stablePosition, 1800, 160, 2, 6))
+        {
+            CurrentPosition = stablePosition;
+            Logger::Log("MinLimit | use stable position as boundary: stable=" + std::to_string(stablePosition) +
+                            ", frontClicked=" + std::to_string(frontReportedMinLimit),
+                        LogLevel::INFO, DeviceType::FOCUSER);
+        }
+        else
+        {
+            Logger::Log("MinLimit rejected: stable position unavailable after delay, frontClicked=" + std::to_string(frontReportedMinLimit),
+                        LogLevel::WARNING, DeviceType::FOCUSER);
             emit wsThread->sendMessageToClient("focusMoveFailed:当前位置未稳定，请停止移动后重试。");
             return;
         }
         const int MinLimit = stablePosition;
-        if (std::abs(MinLimit - frontReportedMinLimit) > 10)
+
+        int absoluteMin = -100000, absoluteMax = 100000;
+        getFocuserAbsoluteRange(absoluteMin, absoluteMax);
+        if (MinLimit < absoluteMin || MinLimit > absoluteMax)
         {
-            Logger::Log("MinLimit | Front position differs from stable backend position, use backend stable value. front="
-                            + std::to_string(frontReportedMinLimit) + ", stable=" + std::to_string(MinLimit),
+            Logger::Log("MinLimit rejected: out of physical range. value=" + std::to_string(MinLimit) +
+                            ", range=[" + std::to_string(absoluteMin) + ", " + std::to_string(absoluteMax) + "]",
                         LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:左边界超出电调物理范围，请重新设置。");
+            return;
         }
 
         if (focuserMaxPosition != -1 && MinLimit >= focuserMaxPosition)
@@ -2128,6 +2176,7 @@ void MainWindow::onMessageReceived(const QString &message)
         Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(MinLimit));
         focuserMinPosition = MinLimit;
         Logger::Log("MinLimit accepted: " + std::to_string(MinLimit), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "MaxLimit")
@@ -2141,20 +2190,53 @@ void MainWindow::onMessageReceived(const QString &message)
             emit wsThread->sendMessageToClient("focusMoveFailed:电调未连接，无法设置右边界。");
             return;
         }
-        
-        int stablePosition = 0;
-        if (!tryReadStableFocuserPosition(stablePosition))
+
+        // 清理先前 stop 流程可能残留的异步位置刷新，避免在设置边界窗口期插入二次位置变更
+        if (updatePositionTimer != nullptr)
         {
-            Logger::Log("MaxLimit rejected: failed to get stable focuser position", LogLevel::WARNING, DeviceType::FOCUSER);
+            updatePositionTimer->stop();
+            updatePositionTimer->deleteLater();
+            updatePositionTimer = nullptr;
+        }
+        
+        // 参考自动移动收尾逻辑：先停止移动，再延迟读取稳定位置，避免惯性/回包延迟导致边界取值漂移。
+        if (isFocusMoveDone)
+        {
+            FocuserControlStop(false, true);
+        }
+        QThread::msleep(220);
+
+        // 先读取一次当前位置（用于同步/诊断），边界值仍以后续“最新稳定位置”为准
+        const int currentOnce = FocuserControl_getPosition();
+        Logger::Log("MaxLimit | current position before stable read: " + std::to_string(currentOnce),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+
+        int stablePosition = 0;
+        if (tryReadStableFocuserPosition(stablePosition, 1800, 160, 2, 6))
+        {
+            CurrentPosition = stablePosition;
+            Logger::Log("MaxLimit | use stable position as boundary: stable=" + std::to_string(stablePosition) +
+                            ", frontClicked=" + std::to_string(frontReportedMaxLimit),
+                        LogLevel::INFO, DeviceType::FOCUSER);
+        }
+        else
+        {
+            Logger::Log("MaxLimit rejected: stable position unavailable after delay, frontClicked=" + std::to_string(frontReportedMaxLimit),
+                        LogLevel::WARNING, DeviceType::FOCUSER);
             emit wsThread->sendMessageToClient("focusMoveFailed:当前位置未稳定，请停止移动后重试。");
             return;
         }
         const int MaxLimit = stablePosition;
-        if (std::abs(MaxLimit - frontReportedMaxLimit) > 10)
+
+        int absoluteMin = -100000, absoluteMax = 100000;
+        getFocuserAbsoluteRange(absoluteMin, absoluteMax);
+        if (MaxLimit < absoluteMin || MaxLimit > absoluteMax)
         {
-            Logger::Log("MaxLimit | Front position differs from stable backend position, use backend stable value. front="
-                            + std::to_string(frontReportedMaxLimit) + ", stable=" + std::to_string(MaxLimit),
+            Logger::Log("MaxLimit rejected: out of physical range. value=" + std::to_string(MaxLimit) +
+                            ", range=[" + std::to_string(absoluteMin) + ", " + std::to_string(absoluteMax) + "]",
                         LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:右边界超出电调物理范围，请重新设置。");
+            return;
         }
 
         if (focuserMinPosition != -1 && MaxLimit <= focuserMinPosition)
@@ -2166,6 +2248,7 @@ void MainWindow::onMessageReceived(const QString &message)
         Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(MaxLimit));
         focuserMaxPosition = MaxLimit;
         Logger::Log("MaxLimit accepted: " + std::to_string(MaxLimit), LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "Backlash")
@@ -12729,7 +12812,9 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             // SDK 模式：位置读取走异步线程，避免主线程阻塞/跨线程串口
             requestSdkFocuserPositionUpdate(true);
             // 同时立即推送一次缓存值（若无缓存则为 0），避免前端空白
-            CurrentPosition = sdkFocuserPosValid.load() ? sdkFocuserPosCache.load() : 0;
+            // 注意：位置读取是异步的，首次连接时缓存可能尚未有效，不能据此做范围重置判定。
+            const bool hasValidSdkPosition = sdkFocuserPosValid.load();
+            CurrentPosition = hasValidSdkPosition ? sdkFocuserPosCache.load() : 0;
             Logger::Log("AfterDeviceConnect | SDK Focuser current position: " + std::to_string(CurrentPosition),
                         LogLevel::INFO, DeviceType::FOCUSER);
             emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) +
@@ -12745,8 +12830,14 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                            LogLevel::INFO, DeviceType::FOCUSER);
             }
             
-            // 6. 校验当前位置是否在范围内，如果不在则说明本地保存的范围数据不合理，需要重新初始化
-            if (CurrentPosition < focuserMinPosition || CurrentPosition > focuserMaxPosition)
+            // 6. 校验当前位置是否在范围内（仅在位置缓存有效时执行）
+            // SDK 首次连接时位置读取是异步的，若此时用默认 0 参与校验会导致误判并错误重置范围。
+            if (!hasValidSdkPosition)
+            {
+                Logger::Log("AfterDeviceConnect | SDK Focuser position cache not ready yet, skip range validation this round",
+                           LogLevel::INFO, DeviceType::FOCUSER);
+            }
+            else if (CurrentPosition < focuserMinPosition || CurrentPosition > focuserMaxPosition)
             {
                 Logger::Log("AfterDeviceConnect | Warning: Current position (" + std::to_string(CurrentPosition) + 
                            ") is out of saved range [" + std::to_string(focuserMinPosition) + ", " + 
@@ -18821,6 +18912,56 @@ void MainWindow::resumeGuidingAfterMountMove()
                 LogLevel::DEBUG, DeviceType::GUIDER);
 }
 
+void MainWindow::getFocuserAbsoluteRange(int &absoluteMin, int &absoluteMax) const
+{
+    absoluteMin = -100000;
+    absoluteMax = 100000;
+    if (dpFocuser != nullptr)
+    {
+        int min = -1, max = -1, step = 0, value = 0;
+        indi_Client->getFocuserRange(dpFocuser, min, max, step, value);
+        if (min != -1 && max != -1 && min < max)
+        {
+            absoluteMin = min;
+            absoluteMax = max;
+        }
+    }
+}
+
+bool MainWindow::maybeExpandFocuserLimitForCalibration(bool isInward, int currentPosition)
+{
+    if (!focuserManualCalibrationMode)
+    {
+        return false;
+    }
+
+    int absoluteMin = -100000;
+    int absoluteMax = 100000;
+    getFocuserAbsoluteRange(absoluteMin, absoluteMax);
+
+    const bool reachedPhysicalLimit = isInward ? (currentPosition <= absoluteMin) : (currentPosition >= absoluteMax);
+    if (!reachedPhysicalLimit)
+    {
+        emit wsThread->sendMessageToClient("FocusMoveToLimit:Not at focuser physical limit yet. Calibration move stopped.");
+        return false;
+    }
+
+    const int desiredDir = isInward ? 1 : -1;
+    if (focuserCalibrationExpandedDir != 0 && focuserCalibrationExpandedDir != desiredDir)
+    {
+        emit wsThread->sendMessageToClient(
+            "FocusMoveToLimit:Reached physical limit again immediately after reverse direction during calibration. Movement stopped, please check mechanics.");
+        return false;
+    }
+
+    focuserCalibrationExpandedDir = desiredDir;
+    emit wsThread->sendMessageToClient(
+        QString("FocusMoveToLimit:Reached focuser physical %1 limit (%2). Movement stopped.")
+            .arg(isInward ? "inner" : "outer")
+            .arg(isInward ? absoluteMin : absoluteMax));
+    return false;
+}
+
 void MainWindow::HandleFocuserMovementDataPeriodically()
 {
     Logger::Log("HandleFocuserMovementDataPeriodically | Entry, isFocusMoveDone: " + std::to_string(isFocusMoveDone), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -18864,8 +19005,12 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
         const SdkDeviceHandle handleSnap = sdkFocuserHandle;
         const bool isInwardSnap = this->currentDirection;
         const int targetSnap = this->TargetPosition;
-        const int minSnap = this->focuserMinPosition;
-        const int maxSnap = this->focuserMaxPosition;
+        int minSnap = this->focuserMinPosition;
+        int maxSnap = this->focuserMaxPosition;
+        if (focuserManualCalibrationMode)
+        {
+            getFocuserAbsoluteRange(minSnap, maxSnap);
+        }
         const int startPosSnap = this->startPosition;
         const uint64_t epochSnap = sdkFocuserOpEpoch.load(std::memory_order_relaxed);
 
@@ -18946,8 +19091,9 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
                     }
                     if (steps <= 0)
                     {
+                        maybeExpandFocuserLimitForCalibration(true, curPos);
                         limitReached = true;
-                        limitMsg = "FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.";
+                        limitMsg.clear();
                     }
                 }
                 else
@@ -18964,8 +19110,9 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
                     }
                     if (steps <= 0)
                     {
+                        maybeExpandFocuserLimitForCalibration(false, curPos);
                         limitReached = true;
-                        limitMsg = "FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.";
+                        limitMsg.clear();
                     }
                 }
 
@@ -19032,7 +19179,7 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
 
                     if (limitReached)
                     {
-                        if (wsThread != nullptr)
+                        if (wsThread != nullptr && !limitMsg.empty())
                         {
                             emit wsThread->sendMessageToClient(QString::fromStdString(limitMsg));
                         }
@@ -19104,11 +19251,18 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
                 ", isInward: " + std::to_string(isInward), 
                 LogLevel::DEBUG, DeviceType::FOCUSER);
     
+    int moveMin = focuserMinPosition;
+    int moveMax = focuserMaxPosition;
+    if (focuserManualCalibrationMode)
+    {
+        getFocuserAbsoluteRange(moveMin, moveMax);
+    }
+
     if (isInward)
     {
         if (CurrentPosition == TargetPosition)
         {
-            int steps = CurrentPosition - focuserMinPosition;
+            int steps = CurrentPosition - moveMin;
             if (steps > kIndiFocuserRelMoveChunkMax)
             {
                 steps = kIndiFocuserRelMoveChunkMax;
@@ -19116,11 +19270,11 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
             }
             else
             {
-                TargetPosition = focuserMinPosition;
+                TargetPosition = moveMin;
             }
             if (steps <= 0)
             {
-                emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+                maybeExpandFocuserLimitForCalibration(true, CurrentPosition);
                 return;
             }
             Logger::Log("HandleFocuserMovementDataPeriodically | INDI move inward, steps: " + std::to_string(steps), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -19136,7 +19290,7 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
     {
         if (TargetPosition == CurrentPosition)
         {
-            int steps = focuserMaxPosition - CurrentPosition;
+            int steps = moveMax - CurrentPosition;
             if (steps > kIndiFocuserRelMoveChunkMax)
             {
                 steps = kIndiFocuserRelMoveChunkMax;
@@ -19144,11 +19298,11 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
             }
             else
             {
-                TargetPosition = focuserMaxPosition;
+                TargetPosition = moveMax;
             }
             if (steps <= 0)
             {
-                emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+                maybeExpandFocuserLimitForCalibration(false, CurrentPosition);
                 return;
             }
             Logger::Log("HandleFocuserMovementDataPeriodically | INDI move outward, steps: " + std::to_string(steps), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -19237,17 +19391,17 @@ void MainWindow::FocuserControlMove(bool isInward)
                 ", TargetPosition: " + std::to_string(TargetPosition) + 
                 ", isInward: " + std::to_string(isInward), 
                 LogLevel::DEBUG, DeviceType::FOCUSER);
-    if (CurrentPosition >= focuserMaxPosition && !isInward)
-    {
-        focuserIndiNeedResyncTarget = false;
-        emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
-        focusMoveTimer->stop();
-        return;
-    }
-    else if (CurrentPosition <= focuserMinPosition && isInward)
+    if (!focuserManualCalibrationMode && CurrentPosition >= focuserMaxPosition && !isInward)
     {
         focuserIndiNeedResyncTarget = false;
         emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+        focusMoveTimer->stop();
+        return;
+    }
+    else if (!focuserManualCalibrationMode && CurrentPosition <= focuserMinPosition && isInward)
+    {
+        focuserIndiNeedResyncTarget = false;
+        emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
         focusMoveTimer->stop();
         return;
     }
@@ -19255,7 +19409,7 @@ void MainWindow::FocuserControlMove(bool isInward)
     focusMoveTimer->start(1000);
 }
 
-void MainWindow::FocuserControlStop(bool isClickMove)
+void MainWindow::FocuserControlStop(bool isClickMove, bool silent)
 {
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
@@ -19348,20 +19502,22 @@ void MainWindow::FocuserControlStop(bool isClickMove)
     // 优化：避免重复调用 getPosition，直接使用上面已经获取的 CurrentPosition
     // 如果需要更新位置，由定时器异步完成，不会阻塞新的移动命令
     isFocusMoveDone = false;
-    emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
-    if (updatePositionTimer != nullptr)
+    if (!silent)
     {
-        // 添加计时器以定期更新位置
-        updatePositionTimer->stop();
-        updatePositionTimer->deleteLater();
-        updatePositionTimer = nullptr;
-    }
-    updatePositionTimer = new QTimer(this);
-    updatePositionTimer->setInterval(1000); // 设置计时器间隔为1000毫秒
-    updateCount = 0;                        // 初始化计数器
+        emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
+        if (updatePositionTimer != nullptr)
+        {
+            // 添加计时器以定期更新位置
+            updatePositionTimer->stop();
+            updatePositionTimer->deleteLater();
+            updatePositionTimer = nullptr;
+        }
+        updatePositionTimer = new QTimer(this);
+        updatePositionTimer->setInterval(1000); // 设置计时器间隔为1000毫秒
+        updateCount = 0;                        // 初始化计数器
 
-    connect(updatePositionTimer, &QTimer::timeout, [this]()
-            {
+        connect(updatePositionTimer, &QTimer::timeout, [this, sdkSkipCount = 0]() mutable
+                {
         // 如果正在移动，立即停止定时器，避免位置读取阻塞移动命令
         if (isFocusMoveDone || updateCount >= 3) {
             updatePositionTimer->stop();
@@ -19383,8 +19539,15 @@ void MainWindow::FocuserControlStop(bool isClickMove)
         
         // 检查是否有正在执行的位置读取任务，如果有则跳过本次读取，避免任务堆积
         if (sdkFocuserPosTaskInFlight.load()) {
-            // 有位置读取任务正在执行，跳过本次读取
-            updateCount++;
+            // SDK 模式下，位置任务正在执行时不计入“有效刷新次数”，避免 3 次机会被空耗。
+            // 但为避免极端情况下定时器长期不释放，连续跳过达到上限后仍会退出。
+            sdkSkipCount++;
+            if (sdkSkipCount >= 10) {
+                updatePositionTimer->stop();
+                updatePositionTimer->deleteLater();
+                updatePositionTimer = nullptr;
+                Logger::Log("focusMoveStop | Timer released after too many SDK in-flight skips", LogLevel::WARNING, DeviceType::FOCUSER);
+            }
             return;
         }
         
@@ -19404,6 +19567,7 @@ void MainWindow::FocuserControlStop(bool isClickMove)
                 CurrentPosition = sdkFocuserPosCache.load();
                 emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
                 Logger::Log("focusMoveStop | Current Focuser Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
+                sdkSkipCount = 0;
                 updateCount++;
                 return;
             }
@@ -19411,33 +19575,38 @@ void MainWindow::FocuserControlStop(bool isClickMove)
             if (!sdkFocuserPosTaskInFlight.load())
             {
                 requestSdkFocuserPositionUpdate(false);
-                // 尝试使用缓存值（可能刚刚更新）
-                if (sdkFocuserPosValid.load())
-                {
-                    CurrentPosition = sdkFocuserPosCache.load();
+                // SDK 下本轮仅触发异步更新，不把“无效缓存”计作一次有效刷新
+                sdkSkipCount++;
+                if (sdkSkipCount >= 10) {
+                    updatePositionTimer->stop();
+                    updatePositionTimer->deleteLater();
+                    updatePositionTimer = nullptr;
+                    Logger::Log("focusMoveStop | Timer released after SDK cache remained invalid", LogLevel::WARNING, DeviceType::FOCUSER);
                 }
-                else
-                {
-                    CurrentPosition = 0;
-                }
-            }
-            else
-            {
-                // 任务正在执行，使用缓存值或 0
-                CurrentPosition = sdkFocuserPosValid.load() ? sdkFocuserPosCache.load() : 0;
+                return;
             }
         }
         else
         {
             // INDI 模式：直接调用 getPosition
             CurrentPosition = FocuserControl_getPosition();
+            sdkSkipCount = 0;
         }
         
         emit wsThread->sendMessageToClient("FocusPosition:" + QString::number(CurrentPosition) + ":" + QString::number(CurrentPosition));
         Logger::Log("focusMoveStop | Current Focuser Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
         updateCount++; });
-
-    updatePositionTimer->start(); // 启动计时器
+        updatePositionTimer->start(); // 启动计时器
+    }
+    else
+    {
+        if (updatePositionTimer != nullptr)
+        {
+            updatePositionTimer->stop();
+            updatePositionTimer->deleteLater();
+            updatePositionTimer = nullptr;
+        }
+    }
 
     Logger::Log("focusMoveStop | Current Focuser Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::FOCUSER);
 }
@@ -19513,23 +19682,27 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
         Logger::Log("FocuserControlMoveStep | Target Position: " + std::to_string(TargetPosition), LogLevel::INFO, DeviceType::FOCUSER);
 
         // 设置焦点器的移动方向并执行移动
-        if (TargetPosition > focuserMaxPosition)
+        if (!focuserManualCalibrationMode && TargetPosition > focuserMaxPosition)
         {
             TargetPosition = focuserMaxPosition;
         }
-        else if (TargetPosition < focuserMinPosition)
+        else if (!focuserManualCalibrationMode && TargetPosition < focuserMinPosition)
         {
             TargetPosition = focuserMinPosition;
         }
         steps = std::abs(TargetPosition - CurrentPosition);
         if (steps <= 0 && !isInward)
         {
-            emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the inner limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+            maybeExpandFocuserLimitForCalibration(false, CurrentPosition);
             return;
         }
         else if (steps <= 0 && isInward)
         {
-            emit wsThread->sendMessageToClient("FocusMoveToLimit:The current position has moved to the outer limit and cannot move further. If you need to continue moving, please recalibrate the position of the servo.");
+            maybeExpandFocuserLimitForCalibration(true, CurrentPosition);
+            return;
+        }
+        if (steps <= 0)
+        {
             return;
         }
         // 标记占用，防止后续点击累加
@@ -19602,7 +19775,8 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
                 requestSdkFocuserPositionUpdate(true);
             }
             
-            if (CurrentPosition <= focuserMinPosition || CurrentPosition >= focuserMaxPosition || stepMoveOutTime <= 0 || CurrentPosition == TargetPosition) {
+            const bool hitSavedLimit = (CurrentPosition <= focuserMinPosition || CurrentPosition >= focuserMaxPosition);
+            if ((!focuserManualCalibrationMode && hitSavedLimit) || stepMoveOutTime <= 0 || CurrentPosition == TargetPosition) {
                 focusTimer.stop();
                 disconnect(&focusTimer, &QTimer::timeout, this, nullptr); // 断开连接，避免重复触发
                 isStepMoving = false;

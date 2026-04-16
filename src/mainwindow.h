@@ -997,6 +997,8 @@ public:
     bool isFocusMoveDone = false;  // 是否移动完成
     int focuserMaxPosition = -1;   // 行程上限
     int focuserMinPosition = -1;   // 行程下限
+    bool focuserManualCalibrationMode = false; // 手动校准模式（校准中允许动态扩展边界）
+    int focuserCalibrationExpandedDir = 0;     // 上次扩边方向：1=向内边界，-1=向外边界，0=无
     bool focuserIndiNeedResyncTarget = false;
     int focuserIndiStallCount = 0;
     int focuserIndiLastPollPos = 0;
@@ -1032,7 +1034,7 @@ public:
      * @brief 停止电调移动
      * @param isClickMove 是否点击触发的短动
      */
-    void FocuserControlStop(bool isClickMove = false);
+    void FocuserControlStop(bool isClickMove = false, bool silent = false);
 
     QTimer *updatePositionTimer = nullptr; // 停止时用于刷新位置的定时器
     int updateCount = 0;                   // 更新计数器
@@ -1041,6 +1043,8 @@ public:
      * @brief 检查电调移动命令是否正常
      */
     void CheckFocuserMoveOrder();
+    bool maybeExpandFocuserLimitForCalibration(bool isInward, int currentPosition);
+    void getFocuserAbsoluteRange(int &absoluteMin, int &absoluteMax) const;
 
 
 
