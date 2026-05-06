@@ -15,8 +15,11 @@
 #include <QEventLoop>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QByteArray>
+#include <vector>
 
 #include <opencv2/core/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "Logger.h"
 #include "tools.h"
@@ -63,6 +66,55 @@ enum class GuidanceAdjustmentStep {
     SENDING_GUIDANCE,       // 正在发送调整指导
     WAITING_USER,           // 等待用户调整
     COMPLETED               // 步骤完成
+};
+
+// 图像内引导状态机（GUIDING_ADJUSTMENT阶段）
+enum class PolarImageGuidanceMode {
+    LOCKING_SINGLE_STAR = 0,
+    TRACKING_SINGLE = 1,
+    FALLBACK_MULTI_STAR = 2,
+    REANCHOR_PLATESOLVE = 3,
+    RELOCK = 4,
+    DONE = 5,
+    FAILED = 6
+};
+
+enum class PolarGuidanceTransformModel {
+    NONE = 0,
+    SIMILARITY = 1,
+    AFFINE = 2,
+    TRANSLATION = 3
+};
+
+struct PolarImageGuidePoint {
+    double x = -1.0;
+    double y = -1.0;
+    double score = 0.0;
+};
+
+struct PolarGuidanceRuntimeV2 {
+    bool hasLock = false;
+    PolarImageGuidePoint lockedStar;
+    cv::Point2d estimatedTargetPx{-1.0, -1.0};
+    bool estimatedTargetValid = false;
+    cv::Point2d finalTargetPx{-1.0, -1.0};
+    cv::Point2d displayTargetPx{-1.0, -1.0};
+    cv::Point2d currentStarPx{-1.0, -1.0};
+    bool inFrame = false;
+    int stableFrames = 0;
+    int lostFrames = 0;
+    int recoverFrames = 0;
+    int targetInvalidConsecutive = 0;
+    int qualityDropConsecutive = 0;
+    bool fullSolveUsedThisFrame = false;
+    int solveModeUsedThisFrame = 1;
+    double lockConfidence = 0.0;
+    double reprojErrPx = 0.0;
+    double inlierRatio = 0.0;
+    int inliers = 0;
+    PolarGuidanceTransformModel transformModel = PolarGuidanceTransformModel::NONE;
+    qint64 reanchorStartedMs = 0;
+    qint64 lastReanchorMs = 0;
 };
 
 // 极轴校准结果结构 - 存储校准的最终结果
@@ -170,7 +222,7 @@ public:
      * @brief 构造函数
      * @param indiServer INDI服务器客户端
      * @param dpMount 望远镜设备指针
-     * @param dpMainCamera 主相机设备指针
+     * @param dpCaptureCamera 拍摄设备指针（主相机或导星）
      * @param mainWindow 主窗口指针，用于访问拍摄状态
      * @param parent 父对象指针
      */
@@ -178,13 +230,15 @@ public:
      * @brief 构造函数（兼容“单设备SDK连接”）
      * @param indiServer INDI服务器客户端
      * @param dpMount    赤道仪（INDI）
-     * @param dpMainCamera 主相机（INDI，若主相机走 SDK 可为空）
-     * @param useSdkMainCamera 主相机是否走 SDK（单设备维度）
+     * @param dpCaptureCamera 拍摄设备（INDI，若走 SDK 可为空）
+     * @param useSdkCaptureSource 拍摄设备是否走 SDK（单设备维度）
+     * @param captureCameraRole 设备角色（MainCamera/Guider）
      */
     explicit PolarAlignment(MyClient* indiServer,
                             INDI::BaseDevice* dpMount,
-                            INDI::BaseDevice* dpMainCamera,
-                            bool useSdkMainCamera,
+                            INDI::BaseDevice* dpCaptureCamera,
+                            bool useSdkCaptureSource,
+                            const QString &captureCameraRole = "MainCamera",
                             QObject *parent = nullptr);
     
     /**
@@ -235,6 +289,7 @@ public:
      * @param isEnd 是否结束
      */
     void setCaptureEnd(bool isEnd);
+    void setCapturedImagePath(const QString &fitsPath);
     
     // ==================== 状态查询函数 ====================
     
@@ -406,14 +461,34 @@ signals:
     void guidanceAdjustmentStepProgress(GuidanceAdjustmentStep step, QString message, int starCount = -1);
 
     /**
+     * @brief 图像内引导数据（用于前端在图像上叠加十字/目标圈/箭头）
+     */
+    void polarImageGuidanceData(qint64 frameId,
+                                QString mode,
+                                double lockConfidence,
+                                double currentStarX, double currentStarY,
+                                double targetX, double targetY,
+                                double arrowDx, double arrowDy,
+                                bool inFrame,
+                                double reprojErrPx,
+                                int stableFrames,
+                                double arcsecPerPixel,
+                                QString statusText);
+    void polarImageGuidanceDataV2(QString payloadJson);
+    void polarImageGuidanceFrame(qint64 frameId,
+                                 int imageW,
+                                 int imageH,
+                                 QString jpegBase64);
+
+    /**
      * @brief 请求主线程触发一次拍摄（兼容 SDK / INDI）
      * @param exposureTimeMs 曝光时间（毫秒）
      *
      * 说明：
      * - INDI 模式下 PolarAlignment 也可以直接调用 indiServer->takeExposure；
-     * - SDK 模式下 dpMainCamera 可能为空，此时通过该信号让 MainWindow 调用统一入口 INDI_Capture()。
+     * - SDK 模式下拍摄设备 INDI 指针可能为空，此时通过该信号让 MainWindow 调用统一入口拍摄。
      */
-    void requestCapture(int exposureTimeMs);
+    void requestCaptureForRole(QString cameraRole, int exposureTimeMs);
 
 private slots:
     /**
@@ -539,6 +614,8 @@ private:
      * @return 是否成功执行本次指导步骤
      */
     bool performGuidanceAdjustmentStep();
+    bool processPolarImageGuidance(const cv::Mat& image, const SloveResults& solveResult);
+    bool extractStarsWithImage2xy(const QString& fitsPath) const;
     
     /**
      * @brief 生成调整指导信息
@@ -565,6 +642,62 @@ private:
      * @return 是否处理成功
      */
     bool handlePostMovementFailure();
+
+    // ==================== 图像内引导辅助函数 ====================
+    void resetPolarImageGuidanceState();
+    bool loadGuideStarsFromAxy(const QString& fitsPath,
+                               std::vector<PolarImageGuidePoint>& stars,
+                               int imageW,
+                               int imageH) const;
+    std::vector<PolarImageGuidePoint> detectGuideStars(const cv::Mat& imageGray8) const;
+    bool selectSingleGuideStar(const std::vector<PolarImageGuidePoint>& stars,
+                               int imageW, int imageH,
+                               PolarImageGuidePoint& selected) const;
+    bool trackSingleGuideStar(const std::vector<PolarImageGuidePoint>& stars,
+                              const PolarImageGuidePoint& prev,
+                              PolarImageGuidePoint& tracked,
+                              double maxDistPx,
+                              const cv::Mat& currentGray8);
+    bool updateMultiStarFallback(const std::vector<PolarImageGuidePoint>& currentStars,
+                                 const std::vector<PolarImageGuidePoint>& previousStars,
+                                 cv::Mat& transform,
+                                 int& inlierCount) const;
+    bool computeTargetPixelFromSolve(const SloveResults& s,
+                                     int imageW, int imageH,
+                                     double targetRaDeg, double targetDecDeg,
+                                     cv::Point2d& outTargetPx,
+                                     double& outReprojErrPx);
+    bool buildGuidanceJpegFrame(const cv::Mat& rawImage, QByteArray& outJpegBase64, int& outW, int& outH) const;
+    QString polarImageGuidanceModeToToken(PolarImageGuidanceMode mode) const;
+    QString polarGuidanceTransformModelToToken(PolarGuidanceTransformModel model) const;
+    bool isPointNearOrOutsideEdge(const cv::Point2d& p, int w, int h, double marginRatio) const;
+    bool buildStarCorrespondenceCandidates(const std::vector<PolarImageGuidePoint>& previousStars,
+                                           const std::vector<PolarImageGuidePoint>& currentStars,
+                                           double maxDistPx,
+                                           std::vector<cv::Point2f>& src,
+                                           std::vector<cv::Point2f>& dst) const;
+    bool estimateGlobalTransformRobust(const std::vector<PolarImageGuidePoint>& previousStars,
+                                       const std::vector<PolarImageGuidePoint>& currentStars,
+                                       cv::Mat& transform,
+                                       PolarGuidanceTransformModel& model,
+                                       int& inlierCount,
+                                       double& inlierRatio,
+                                       double& reprojErrPx) const;
+    bool propagateTargetsByTransform(const cv::Mat& transform, cv::Point2d& point) const;
+    bool refineLockByLocalTrack(const std::vector<PolarImageGuidePoint>& stars,
+                                const cv::Mat& currentGray8,
+                                double maxDistPx,
+                                PolarImageGuidePoint& tracked);
+    void loadGuidanceTrackingConfigFromEnv();
+    QString buildPolarGuidanceDataV2Payload(qint64 frameId,
+                                            const QString& mode,
+                                            double arcsecPerPixel,
+                                            const QString& statusText,
+                                            const cv::Point2d& arrow,
+                                            double remainArcsec,
+                                            double segmentRemainArcsec) const;
+
+    void loadGuidanceSolveConfigFromEnv();
     
     // ==================== 设备操作函数 ====================
     
@@ -989,8 +1122,9 @@ private:
     // 设备指针
     MyClient* indiServer;           // INDI服务器客户端
     INDI::BaseDevice* dpMount;      // 望远镜设备指针
-    INDI::BaseDevice* dpMainCamera; // 主相机设备指针
-    bool useSdkMainCamera{false};   // 单设备：主相机是否使用 SDK 通路
+    INDI::BaseDevice* dpCaptureCamera; // 拍摄设备指针（主相机/导星）
+    bool useSdkCaptureSource{false};   // 单设备：当前拍摄源是否使用 SDK 通路
+    QString captureCameraRole{"MainCamera"};
     
     PolarAlignmentState currentState;    // 当前校准状态
     PolarAlignmentState obstacleFromState; // 避开遮挡前的状态
@@ -1040,6 +1174,7 @@ private:
     bool isCaptureEnd;           // 拍摄是否结束
     bool isSolveEnd;             // 解析是否结束
     QString lastCapturedImage;   // 最后拍摄的图像文件
+    QString latestCapturePathFromHost; // 主线程回传的本次真实 FITS 路径
     
     // 失败计数
     int captureFailureCount;     // 拍摄失败计数
@@ -1077,6 +1212,59 @@ private:
 
     // 测试图片
     int testimage;
+
+    // 图像引导状态（实时闭环）
+    PolarImageGuidanceMode imageGuideMode = PolarImageGuidanceMode::LOCKING_SINGLE_STAR;
+    qint64 imageGuideFrameId = 0;
+    bool imageGuideHasLock = false;
+    PolarImageGuidePoint lockedGuideStar;
+    cv::Point2d lastTargetPixel{-1.0, -1.0};
+    cv::Point2d imageGuideEstimatedTargetPx{-1.0, -1.0};
+    bool imageGuideEstimatedTargetValid = false;
+    cv::Point2d lockStarFixedTargetPx{-1.0, -1.0};
+    bool lockStarTargetReady = false;
+    std::vector<PolarImageGuidePoint> previousGuideStars;
+    cv::Mat previousGuideGray8;
+    int imageGuideLostFrames = 0;
+    int imageGuideStableFrames = 0;
+    int imageGuideLastInliers = 0;
+    double imageGuideLockConfidence = 0.0;
+    double imageGuideLastReprojErrPx = 0.0;
+    qint64 imageGuideReanchorStartedMs = 0;
+    qint64 imageGuideLastReanchorMs = 0;
+    bool forceGlobalSolveOnce = false;
+    int lastSolveModeUsed = 1;
+    bool imageGuideFreshSolveThisFrame = false;
+    bool imageGuideReanchorNeedFreshSolve = false;
+    bool imageGuidePerfReduced = false;
+    double imageGuideLastFrameProcessMs = 0.0;
+    int imageGuideFastLoopBudgetMs = 80;
+    QString guidanceSolveModeProfile = "guide_fast";
+    int guidanceFullSolveIntervalFrames = 5;
+    PolarGuidanceRuntimeV2 guidanceV2;
+    bool guidanceEmitV1Compat = true;
+    bool guidanceAlgoV2Enabled = true;
+
+    // 图像引导固定参数（树莓派实时优先）
+    int imageGuideLostFramesThreshold = 5;
+    int imageGuideMinMultiInliers = 6;
+    double imageGuideRansacThresholdPx = 2.5;
+    double imageGuideEdgeMarginRatio = 0.08;
+    double imageGuideDoneThresholdPx = 3.0;
+    int imageGuideStableFramesNeeded = 8;
+    int imageGuideReanchorCooldownMs = 4000;
+    int imageGuideReanchorTimeoutMs = 20000;
+    const int imageGuideJpegMaxLongEdge = 960;
+    const int imageGuideJpegQuality = 68;
+    int imageGuideMatchMaxStars = 200;
+    int imageGuideMatchMinInliersV2 = 8;
+    double imageGuideMatchMinInlierRatioV2 = 0.35;
+    double imageGuideTrackBaseRadiusPxV2 = 18.0;
+    double imageGuideTrackMaxRadiusPxV2 = 80.0;
+    double imageGuideTrackRadiusVelGainV2 = 1.2;
+    int imageGuideRecoverMaxFramesV2 = 12;
+    int imageGuideFullSolveMaxIntervalV2 = 8;
+    qint64 imageGuideLastFullSolveFrameId = 0;
 };
 
 #endif // POLARALIGNMENT_H

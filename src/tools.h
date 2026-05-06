@@ -165,6 +165,7 @@ struct SloveResults
 {
   double RA_Degree;
   double DEC_Degree;
+  double pixelScaleArcsecPerPixel = 0.0;
 
 
   double RA_0;
@@ -192,9 +193,9 @@ struct StelObjectSelect
 
 struct LocationResult
 {
-  double latitude_degree;
-  double longitude_degree;
-  double elevation;
+  double latitude_degree = 0.0;
+  double longitude_degree = 0.0;
+  double elevation = 0.0;
 };
 
 struct ScheduleData
@@ -297,7 +298,7 @@ class Tools : public QObject {
   static void printDevGroups2(const DriversList driver_list);
   // INDI FIFO 写入保护：当 /tmp/myFIFO 无读端时，避免阻塞/反复尝试
   static void resetIndiFifoState();
-  static void startIndiDriver(QString driver_name);
+  static bool startIndiDriver(QString driver_name, QString *errorMessage = nullptr);
   static void stopIndiDriver(QString driver_name);
   static void printSystemDeviceList(const SystemDeviceList& s);
   static QStringList getCameraNumFromSystemDeviceList(const SystemDeviceList& s);

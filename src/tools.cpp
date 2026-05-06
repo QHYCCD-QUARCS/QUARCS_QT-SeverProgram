@@ -1857,10 +1857,15 @@ void Tools::resetIndiFifoState()
     g_indiFifoDisableLogged.store(false);
 }
 
-void Tools::startIndiDriver(QString driver_name)
+bool Tools::startIndiDriver(QString driver_name, QString *errorMessage)
 {
     if (g_indiFifoDisabled.load())
-        return;
+    {
+        Logger::Log("startIndiDriver | FIFO was disabled by a previous write failure; retrying start and re-enabling FIFO writes. driver=" +
+                        driver_name.toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
+        resetIndiFifoState();
+    }
 
     // 重要：不要用 `echo ... > /tmp/myFIFO` 这种 shell 重定向写 FIFO。
     // 当 indiserver 没有打开 FIFO 读端时，写端 open() 会永久阻塞，导致断开/重启流程卡死。
@@ -1899,22 +1904,24 @@ void Tools::startIndiDriver(QString driver_name)
 
     if (!ok)
     {
+        const QString detail = "startIndiDriver failed: driver=" + driver_name +
+                               ", fifo=" + fifoPath + ", " + lastErr;
+        if (errorMessage)
+            *errorMessage = detail;
+
         // 若明确是“无读端/不存在”，直接熔断，避免后续 stopIndiDriverAll 反复尝试
         if (lastErrno == ENXIO || lastErrno == ENOENT)
         {
             disableIndiFifoOnce("startIndiDriver open failed (" + fifoPath + "): " + lastErr);
         }
-        else
-        {
-            Logger::Log("startIndiDriver | Write to FIFO failed (" + fifoPath.toStdString() + "): " + lastErr.toStdString() +
-                            ", driver=" + driver_name.toStdString(),
-                        LogLevel::WARNING, DeviceType::MAIN);
-        }
+        Logger::Log("startIndiDriver | " + detail.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        return false;
     }
-    else
-    {
-        Logger::Log("startIndiDriver | Start INDI Driver: " + driver_name.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    }
+
+    if (errorMessage)
+        errorMessage->clear();
+    Logger::Log("startIndiDriver | Start INDI Driver command sent: " + driver_name.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    return true;
 }
 
 void Tools::stopIndiDriver(QString driver_name)
@@ -1930,9 +1937,11 @@ void Tools::stopIndiDriver(QString driver_name)
     if (fd < 0)
     {
         const QString lastErr = "open failed: " + QString::fromUtf8(std::strerror(errno));
-        // 无读端/不存在：熔断，后续 stopIndiDriverAll 直接跳过
         if (errno == ENXIO || errno == ENOENT)
         {
+            Logger::Log("stopIndiDriver | FIFO is not writable; skip stop command. fifo=" + fifoPath.toStdString() +
+                            ", driver=" + driver_name.toStdString() + ", " + lastErr.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
             disableIndiFifoOnce("stopIndiDriver open failed (" + fifoPath + "): " + lastErr);
             return;
         }
@@ -5077,8 +5086,9 @@ void Tools::SaveMatToFITS(const cv::Mat& image) {
         bitpix = BYTE_IMG;   // 8 位无符号整型
         datatype = TBYTE;
     } else if (gray.depth() == CV_16U) {
-        bitpix = SHORT_IMG;  // 16 位无符号整型
-        datatype = TSHORT;
+        // 使用 USHORT/TUSHORT，保证输出 FITS 为无符号 16 位
+        bitpix = USHORT_IMG;
+        datatype = TUSHORT;
     } else {
         Logger::Log("不支持的图像位深度！", LogLevel::ERROR, DeviceType::MAIN);
         return;
@@ -5107,7 +5117,9 @@ void Tools::SaveMatToFITS(const cv::Mat& image) {
     if (status) {
         fits_report_error(stderr, status);  // 输出错误信息
     } else {
-        Logger::Log("成功保存图像到 " + filename, LogLevel::INFO, DeviceType::MAIN);
+        Logger::Log("成功保存图像到 " + filename +
+                    " | bitpix=" + std::to_string(bitpix),
+                    LogLevel::INFO, DeviceType::MAIN);
     }
 }
 
@@ -5885,7 +5897,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
         // 新参数策略参考 Python 中的 run_solve_field_multi_axy / run_solve_field_r1：
         //  - 使用 --downsample 1 加速解析
         //  - 使用 --objs 0 让求解器使用切片内全部目标（提高鲁棒性）
-        //  - 使用 --parity neg 固定奇偶性，减少搜索空间
+        //  - 不强制 parity，让求解器自动判断，避免与实际图像奇偶性不一致导致误拒绝
         //  - 模式1/2 叠加视场限制（--scale-units degwidth --scale-low/high）
         //  - 模式2 叠加 RA/DEC 与搜索半径限制
         switch (actualMode) {
@@ -5901,7 +5913,6 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --cpulimit 20"
                     " --downsample 1"
                     " --objs 0"
-                    " --parity neg"
                     " --scale-units degwidth"
                     " --scale-low " + MinFOV +
                     " --scale-high " + MaxFOV;
@@ -5921,7 +5932,6 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --cpulimit 20"
                     " --downsample 1"
                     " --objs 0"
-                    " --parity neg"
                     " --scale-units degwidth"
                     " --scale-low " + MinFOV +
                     " --scale-high " + MaxFOV +
@@ -5942,8 +5952,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --pixel-error 1.5"
                     " --cpulimit 20"
                     " --downsample 1"
-                    " --objs 0"
-                    " --parity neg";
+                    " --objs 0";
                 Logger::Log("使用模式0解析（默认模式）", LogLevel::INFO, DeviceType::MAIN);
                 break;
         }
@@ -6038,6 +6047,13 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
 
   // 提取视场信息（包含 fieldw/fieldh、ramin/ramax 等）
   FieldOfView fov = extractFieldOfViewFromWcsInfo(str);
+  if (fov.imageWidth > 0 && std::isfinite(fov.calculatedWidth) && fov.calculatedWidth > 0.0) {
+    result.pixelScaleArcsecPerPixel = (fov.calculatedWidth * 3600.0) / fov.imageWidth;
+  } else if (fov.imageHeight > 0 && std::isfinite(fov.calculatedHeight) && fov.calculatedHeight > 0.0) {
+    result.pixelScaleArcsecPerPixel = (fov.calculatedHeight * 3600.0) / fov.imageHeight;
+  } else {
+    result.pixelScaleArcsecPerPixel = 0.0;
+  }
 
 
   bool ok0 = false, ok1 = false, ok2 = false, ok3 = false;

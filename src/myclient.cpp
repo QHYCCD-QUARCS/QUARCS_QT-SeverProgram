@@ -91,6 +91,12 @@ void MyClient::updateProperty(INDI::Property property)
     }
     else if (property.getType() == INDI_TEXT)
     {
+        const std::string propertyName = property.getName() ? std::string(property.getName()) : std::string();
+        if (propertyName != "CCD_FILE_PATH")
+        {
+            return;
+        }
+
         auto tvp = property.getText();
         auto filepath = tvp->findWidgetByName("FILE_PATH");
         if (filepath)
@@ -116,7 +122,7 @@ void MyClient::updateProperty(INDI::Property property)
 
             receiveImage(filePathStr, devname);
             Logger::Log("indi_client | updateProperty | receiveImage | property=" +
-                            std::string(property.getName() ? property.getName() : "") +
+                            propertyName +
                             " file=" + filePathStr + " dev=" + devname,
                         LogLevel::DEBUG, DeviceType::CAMERA);
         }

@@ -4,10 +4,22 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QTimeZone>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QTextStream>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <cmath>
 #include <algorithm>
 #include <string>
 #include <ctime>
+#include <fitsio.h>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/video/tracking.hpp>
 
 #include <cmath>
 #include <algorithm>
@@ -254,14 +266,16 @@ dist_arcm, bearing
 
 PolarAlignment::PolarAlignment(MyClient* indiServer,
                                INDI::BaseDevice* dpMount,
-                               INDI::BaseDevice* dpMainCamera,
-                               bool useSdkMainCamera,
+                               INDI::BaseDevice* dpCaptureCamera,
+                               bool useSdkCaptureSource,
+                               const QString &captureCameraRole,
                                QObject *parent)
     : QObject(parent)
     , indiServer(indiServer)
     , dpMount(dpMount)
-    , dpMainCamera(dpMainCamera)
-    , useSdkMainCamera(useSdkMainCamera)
+    , dpCaptureCamera(dpCaptureCamera)
+    , useSdkCaptureSource(useSdkCaptureSource)
+    , captureCameraRole(captureCameraRole)
     , currentState(PolarAlignmentState::IDLE)
     , obstacleFromState(PolarAlignmentState::IDLE)
     , initialRA(0.0)
@@ -281,6 +295,7 @@ PolarAlignment::PolarAlignment(MyClient* indiServer,
     , isCaptureEnd(false)
     , isSolveEnd(false)
     , lastCapturedImage("")
+    , latestCapturePathFromHost("")
     , captureFailureCount(0)
     , solveFailureCount(0)
     , lastSolveMode(1)
@@ -312,6 +327,8 @@ PolarAlignment::PolarAlignment(MyClient* indiServer,
     
     Logger::Log("PolarAlignment: 极轴校准系统初始化完成", LogLevel::INFO, DeviceType::MAIN);
     testimage = 0;
+    loadGuidanceSolveConfigFromEnv();
+    loadGuidanceTrackingConfigFromEnv();
 }
 
 PolarAlignment::~PolarAlignment()
@@ -334,11 +351,14 @@ bool PolarAlignment::startPolarAlignment()
         result.errorMessage = "设备不可用，无法启动校准";
         return false;
     }
-    // 单设备：主相机可能走 SDK，此时不应依赖 dpMainCamera
-    if (useSdkMainCamera || !dpMainCamera) {
-        Logger::Log("PolarAlignment: 主相机使用 SDK 通路（或 dpMainCamera 为空），将通过 requestCapture 触发拍摄",
+    // 当前拍摄源可能走 SDK，此时不应依赖 INDI 拍摄设备指针
+    if (useSdkCaptureSource || !dpCaptureCamera) {
+        Logger::Log("PolarAlignment: 当前相机角色(" + captureCameraRole.toStdString() +
+                        ")使用 SDK 通路（或 INDI 设备为空），将通过 requestCaptureForRole 触发拍摄",
                     LogLevel::INFO, DeviceType::MAIN);
     }
+    loadGuidanceSolveConfigFromEnv();
+    loadGuidanceTrackingConfigFromEnv();
     
     // 验证地理位置配置
     if (std::abs(config.latitude) > 90.0 || std::abs(config.longitude) > 180.0) {
@@ -378,6 +398,9 @@ bool PolarAlignment::startPolarAlignment()
     secondCaptureAvoided = false;
     thirdCaptureAvoided = false;
     captureAttemptCount = 0;
+    resetPolarImageGuidanceState();
+    forceGlobalSolveOnce = false;
+    lastSolveModeUsed = 1;
     
     // 重置目标位置缓存，每次校准都重新计算
     isTargetPositionCached = false;
@@ -1286,7 +1309,7 @@ bool PolarAlignment::moveDecAxisForObstacleAvoidance()
 bool PolarAlignment::captureAndAnalyze(int attempt)
 {
     Logger::Log("PolarAlignment: 拍摄和分析，尝试次数 " + std::to_string(attempt), LogLevel::INFO, DeviceType::MAIN);
-    // dpMainCamera 在 SDK 模式下可能为空：拍摄会通过 requestCapture -> MainWindow::INDI_Capture() 完成
+    // 当前拍摄源在 SDK 模式下可能无 INDI 设备指针：拍摄会通过 requestCaptureForRole -> MainWindow 统一入口完成
     
     // 根据尝试次数确定曝光时间
     int exposureTime;
@@ -1659,6 +1682,69 @@ bool PolarAlignment::performFinalVerification()
     return false;
 }
 
+bool PolarAlignment::extractStarsWithImage2xy(const QString& fitsPath) const
+{
+    if (fitsPath.isEmpty()) {
+        Logger::Log("PolarAlignment: image2xy失败，fitsPath为空", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    const QFileInfo fitsInfo(fitsPath);
+    const QString axyPath = fitsInfo.dir().filePath(fitsInfo.completeBaseName() + ".axy");
+    if (QFile::exists(axyPath) && !QFile::remove(axyPath)) {
+        Logger::Log("PolarAlignment: image2xy无法删除旧axy: " + axyPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+    }
+
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    QStringList args;
+    args << "-O"
+         << "-o" << axyPath
+         << fitsPath;
+
+    Logger::Log("PolarAlignment: 执行image2xy提星: image2xy " + args.join(" ").toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
+    proc.start("image2xy", args);
+    if (!proc.waitForStarted(3000)) {
+        Logger::Log("PolarAlignment: image2xy启动失败", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+    if (!proc.waitForFinished(15000)) {
+        proc.kill();
+        proc.waitForFinished(1000);
+        Logger::Log("PolarAlignment: image2xy超时(15s): " + fitsPath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    const int exitCode = proc.exitCode();
+    const QString out = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
+    const QString err = QString::fromLocal8Bit(proc.readAllStandardError()).trimmed();
+    if (!out.isEmpty()) {
+        Logger::Log("PolarAlignment: image2xy stdout: " + out.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    }
+    if (!err.isEmpty()) {
+        Logger::Log("PolarAlignment: image2xy stderr: " + err.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+    }
+
+    if (exitCode != 0) {
+        Logger::Log("PolarAlignment: image2xy返回非0，exitCode=" + std::to_string(exitCode),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    const QFileInfo axyInfo(axyPath);
+    if (!axyInfo.exists() || axyInfo.size() <= 0) {
+        Logger::Log("PolarAlignment: image2xy未生成有效axy: " + axyPath.toStdString(),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    Logger::Log("PolarAlignment: image2xy提星完成 axy=" + axyPath.toStdString() +
+                " size=" + std::to_string(static_cast<long long>(axyInfo.size())),
+                LogLevel::INFO, DeviceType::MAIN);
+    return true;
+}
+
 bool PolarAlignment::performGuidanceAdjustmentStep()
 {
     static int adjustmentAttempts = 0;
@@ -1696,44 +1782,190 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
   
     
     // 3. 星点数量足够，继续解析图像
-    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "正在解析图像...");
-    
-    if (!solveImage(lastCapturedImage)) {
-        Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
-        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析失败", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
-        return false;
+    // guide_fast: 仅首次 full-solve，后续依赖锁星跟踪；异常/重锚时再触发 full-solve
+    // trajectory_full: 每帧 full-solve（interval=1）
+    const bool periodicFullSolveEnabled = guidanceFullSolveIntervalFrames > 0;
+    const bool periodicFullSolveHit =
+        periodicFullSolveEnabled &&
+        ((adjustmentAttempts - 1) % guidanceFullSolveIntervalFrames == 0);
+    const bool shouldFullSolve =
+        forceGlobalSolveOnce ||
+        !isAnalysisSuccessful(currentSolveResult) ||
+        (imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) ||
+        periodicFullSolveHit;
+
+    SloveResults analysisResult = currentSolveResult;
+    imageGuideFreshSolveThisFrame = false;
+    if (shouldFullSolve) {
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "正在解析图像...");
+        Logger::Log(
+            "PolarAlignment: 指导阶段执行完整解析 solve-field, attempt=" + std::to_string(adjustmentAttempts) +
+            ", profile=" + guidanceSolveModeProfile.toStdString() +
+            ", interval=" + std::to_string(guidanceFullSolveIntervalFrames) +
+            ", forceGlobal=" + std::to_string(forceGlobalSolveOnce ? 1 : 0),
+            LogLevel::INFO, DeviceType::MAIN);
+
+        if (!solveImage(lastCapturedImage)) {
+            Logger::Log("PolarAlignment: 图像解析开始命令执行失败", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析失败", -1);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            return false;
+        }
+
+        if (!waitForSolveComplete()) {
+            Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析超时", -1);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            updateSolveModeStatistics(false);
+            return false;
+        }
+
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "正在计算偏差...");
+        analysisResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
+        if (!isAnalysisSuccessful(analysisResult)) {
+            Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "解析结果无效", -1);
+            updateSolveModeStatistics(false);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            return false;
+        }
+
+        currentSolveResult = analysisResult;
+        currentRAPosition = analysisResult.RA_Degree;
+        currentDECPosition = analysisResult.DEC_Degree;
+        updateSolveModeStatistics(true);
+        imageGuideFreshSolveThisFrame = true;
+    } else {
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "正在快速提星...");
+        Logger::Log(
+            "PolarAlignment: 指导阶段跳过solve-field，执行image2xy快速提星 attempt=" +
+            std::to_string(adjustmentAttempts) +
+            ", profile=" + guidanceSolveModeProfile.toStdString(),
+            LogLevel::INFO, DeviceType::MAIN);
+
+        const bool xOk = extractStarsWithImage2xy(lastCapturedImage);
+        if (!xOk) {
+            Logger::Log("PolarAlignment: image2xy快速提星未命中，切换完整解析", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "快速提星未命中，切换完整解析...");
+
+            if (!solveImage(lastCapturedImage)) {
+                Logger::Log("PolarAlignment: 回退完整解析启动失败", LogLevel::WARNING, DeviceType::MAIN);
+                emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "回退解析失败", -1);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+                return false;
+            }
+            if (!waitForSolveComplete()) {
+                Logger::Log("PolarAlignment: 回退完整解析超时", LogLevel::WARNING, DeviceType::MAIN);
+                emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "回退解析超时", -1);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+                updateSolveModeStatistics(false);
+                return false;
+            }
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "正在计算偏差...");
+            analysisResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
+            if (!isAnalysisSuccessful(analysisResult)) {
+                Logger::Log("PolarAlignment: 回退完整解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
+                emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "回退解析结果无效", -1);
+                updateSolveModeStatistics(false);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+                if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+                return false;
+            }
+            currentSolveResult = analysisResult;
+            currentRAPosition = analysisResult.RA_Degree;
+            currentDECPosition = analysisResult.DEC_Degree;
+            updateSolveModeStatistics(true);
+            imageGuideFreshSolveThisFrame = true;
+        } else {
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "正在计算偏差...");
+            analysisResult = currentSolveResult;
+            Logger::Log(
+                "PolarAlignment: 使用最近一次solve结果作为几何锚定 RA=" +
+                std::to_string(analysisResult.RA_Degree) + " DEC=" +
+                std::to_string(analysisResult.DEC_Degree),
+                LogLevel::INFO, DeviceType::MAIN);
+        }
     }
-    
-    // 等待解析完成
-    if (!waitForSolveComplete()) {
-        Logger::Log("PolarAlignment: 解析超时", LogLevel::WARNING, DeviceType::MAIN);
-        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "解析超时", -1);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
-        updateSolveModeStatistics(false);
-        return false;
+
+    // 图像内引导闭环（不影响原有偏差计算主链路）
+    try {
+        cv::Mat guideImage;
+        if (Tools::readFits(lastCapturedImage.toLocal8Bit().constData(), guideImage) == 0 && !guideImage.empty()) {
+            processPolarImageGuidance(guideImage, analysisResult);
+            guideImage.release();
+        } else {
+            Logger::Log("PolarAlignment: 图像引导读取当前帧失败，跳过本轮图像内引导", LogLevel::WARNING, DeviceType::MAIN);
+        }
+    } catch (const std::exception &e) {
+        Logger::Log(std::string("PolarAlignment: 图像内引导异常: ") + e.what(), LogLevel::WARNING, DeviceType::MAIN);
     }
-    
-    // 4. 获取解析结果
-    emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "正在计算偏差...");
-    
-    SloveResults analysisResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
-    if (!isAnalysisSuccessful(analysisResult)) {
-        Logger::Log("PolarAlignment: 解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
-        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "解析结果无效", -1);
-        updateSolveModeStatistics(false);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
-        if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
-        return false;
+
+    // 同帧容错：快速提星模式下若本帧已判定丢星/重锚/失败，立即在当前帧执行完整解析，
+    // 避免等待下一帧导致“看起来卡住一拍”。
+    const bool needImmediateRescueSolve =
+        !imageGuideFreshSolveThisFrame &&
+        (forceGlobalSolveOnce ||
+         imageGuideMode == PolarImageGuidanceMode::FALLBACK_MULTI_STAR ||
+         imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE ||
+         imageGuideMode == PolarImageGuidanceMode::FAILED);
+
+    if (needImmediateRescueSolve) {
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "星点容错：当前帧触发全图解析...", -1);
+        Logger::Log(
+            "PolarAlignment: 同帧容错触发完整解析，attempt=" + std::to_string(adjustmentAttempts) +
+                ", mode=" + polarImageGuidanceModeToToken(imageGuideMode).toStdString(),
+            LogLevel::WARNING, DeviceType::MAIN);
+
+        if (!solveImage(lastCapturedImage)) {
+            Logger::Log("PolarAlignment: 同帧容错解析启动失败", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "同帧容错解析失败", -1);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            return false;
+        }
+        if (!waitForSolveComplete()) {
+            Logger::Log("PolarAlignment: 同帧容错解析超时", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "同帧容错解析超时", -1);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            updateSolveModeStatistics(false);
+            return false;
+        }
+
+        emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "同帧容错解析完成，重新计算中...", -1);
+        SloveResults rescueResult = Tools::ReadSolveResult(lastCapturedImage, config.cameraWidth, config.cameraHeight);
+        if (!isAnalysisSuccessful(rescueResult)) {
+            Logger::Log("PolarAlignment: 同帧容错解析结果无效", LogLevel::WARNING, DeviceType::MAIN);
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "同帧容错解析结果无效", -1);
+            updateSolveModeStatistics(false);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            if (isRunningFlag && !isPausedFlag) stateTimer.start(100);
+            return false;
+        }
+
+        analysisResult = rescueResult;
+        currentSolveResult = rescueResult;
+        currentRAPosition = rescueResult.RA_Degree;
+        currentDECPosition = rescueResult.DEC_Degree;
+        updateSolveModeStatistics(true);
+        imageGuideFreshSolveThisFrame = true;
+
+        try {
+            cv::Mat guideImage;
+            if (Tools::readFits(lastCapturedImage.toLocal8Bit().constData(), guideImage) == 0 && !guideImage.empty()) {
+                processPolarImageGuidance(guideImage, analysisResult);
+                guideImage.release();
+            }
+        } catch (const std::exception &e) {
+            Logger::Log(std::string("PolarAlignment: 同帧容错后重算图像引导异常: ") + e.what(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
     }
-    
-    // 保存当前解析结果
-    currentSolveResult = analysisResult;
-    currentRAPosition = analysisResult.RA_Degree;
-    currentDECPosition = analysisResult.DEC_Degree;
-    updateSolveModeStatistics(true);
 
     if (!isTargetPositionCached) {
         Logger::Log("PolarAlignment: 目标未锁定，请先完成三点校准", LogLevel::ERROR, DeviceType::MAIN);
@@ -1852,6 +2084,97 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     return true;
 }
 
+void PolarAlignment::loadGuidanceSolveConfigFromEnv()
+{
+    auto envOrDefault = [](const char* key, const QString& fallback) -> QString {
+        const QByteArray raw = qgetenv(key);
+        if (raw.isEmpty()) return fallback;
+        const QString text = QString::fromLocal8Bit(raw).trimmed();
+        return text.isEmpty() ? fallback : text;
+    };
+    auto envInt = [&](const char* key, int fallback) -> int {
+        bool ok = false;
+        const int v = envOrDefault(key, QString::number(fallback)).toInt(&ok);
+        return ok ? v : fallback;
+    };
+
+    const QString rawMode = envOrDefault("QUARCS_POLAR_GUIDANCE_SOLVE_MODE", "guide_fast").toLower();
+
+    const bool trajectoryFull =
+        (rawMode == "trajectory_full" ||
+         rawMode == "trajectory" ||
+         rawMode == "full" ||
+         rawMode == "full_solve" ||
+         rawMode == "per_frame" ||
+         rawMode == "1");
+
+    guidanceSolveModeProfile = trajectoryFull ? "trajectory_full" : "guide_fast";
+    // trajectory_full: 每帧解析；guide_fast: 默认每5帧重解析一次。
+    // 可通过 QUARCS_POLAR_GUIDANCE_FAST_INTERVAL 调整（0=只在异常时重解析）。
+    const int fastInterval = std::max(0, envInt("QUARCS_POLAR_GUIDANCE_FAST_INTERVAL", 5));
+    guidanceFullSolveIntervalFrames = trajectoryFull ? 1 : fastInterval;
+
+    Logger::Log(
+        "PolarAlignment: guidance solve profile=" + guidanceSolveModeProfile.toStdString() +
+        ", fullSolveIntervalFrames=" + std::to_string(guidanceFullSolveIntervalFrames),
+        LogLevel::INFO, DeviceType::MAIN
+    );
+}
+
+void PolarAlignment::loadGuidanceTrackingConfigFromEnv()
+{
+    auto envOrDefault = [](const char* key, const QString& fallback) -> QString {
+        const QByteArray raw = qgetenv(key);
+        if (raw.isEmpty()) return fallback;
+        const QString text = QString::fromLocal8Bit(raw).trimmed();
+        return text.isEmpty() ? fallback : text;
+    };
+    auto envInt = [&](const char* key, int fallback) -> int {
+        bool ok = false;
+        const int v = envOrDefault(key, QString::number(fallback)).toInt(&ok);
+        return ok ? v : fallback;
+    };
+    auto envDouble = [&](const char* key, double fallback) -> double {
+        bool ok = false;
+        const double v = envOrDefault(key, QString::number(fallback)).toDouble(&ok);
+        return ok ? v : fallback;
+    };
+    auto envBool = [&](const char* key, bool fallback) -> bool {
+        const QString v = envOrDefault(key, fallback ? "1" : "0").toLower();
+        return (v == "1" || v == "true" || v == "yes" || v == "on");
+    };
+
+    guidanceAlgoV2Enabled = envOrDefault("QUARCS_POLAR_GUIDANCE_ALGO", "v2").toLower() != "v1";
+    guidanceEmitV1Compat = envBool("QUARCS_POLAR_GUIDANCE_EMIT_V1_COMPAT", true);
+    imageGuideMatchMaxStars = std::max(40, envInt("QUARCS_POLAR_MATCH_MAX_STARS", 200));
+    imageGuideMatchMinInliersV2 = std::max(3, envInt("QUARCS_POLAR_MATCH_MIN_INLIERS", 8));
+    imageGuideMatchMinInlierRatioV2 = std::clamp(envDouble("QUARCS_POLAR_MATCH_MIN_INLIER_RATIO", 0.35), 0.05, 0.95);
+    imageGuideRansacThresholdPx = std::max(0.6, envDouble("QUARCS_POLAR_MATCH_RANSAC_THRESH_PX", 3.0));
+    imageGuideTrackBaseRadiusPxV2 = std::max(3.0, envDouble("QUARCS_POLAR_TRACK_BASE_RADIUS_PX", 18.0));
+    imageGuideTrackMaxRadiusPxV2 = std::max(imageGuideTrackBaseRadiusPxV2, envDouble("QUARCS_POLAR_TRACK_MAX_RADIUS_PX", 80.0));
+    imageGuideTrackRadiusVelGainV2 = std::max(0.0, envDouble("QUARCS_POLAR_TRACK_RADIUS_VEL_GAIN", 1.2));
+    imageGuideRecoverMaxFramesV2 = std::max(1, envInt("QUARCS_POLAR_RECOVER_MAX_FRAMES", 12));
+    imageGuideReanchorTimeoutMs = std::max(5000, envInt("QUARCS_POLAR_REANCHOR_TIMEOUT_MS", 25000));
+    imageGuideFullSolveMaxIntervalV2 = std::max(1, envInt("QUARCS_POLAR_FULL_SOLVE_MAX_INTERVAL", 8));
+    imageGuideEdgeMarginRatio = std::clamp(envDouble("QUARCS_POLAR_EDGE_MARGIN_RATIO", 0.08), 0.01, 0.25);
+    imageGuideDoneThresholdPx = std::max(0.5, envDouble("QUARCS_POLAR_DONE_THRESHOLD_PX", 3.0));
+    imageGuideStableFramesNeeded = std::max(1, envInt("QUARCS_POLAR_DONE_STABLE_FRAMES", 8));
+    imageGuideLostFramesThreshold = std::max(1, envInt("QUARCS_POLAR_LOST_FRAMES_THRESHOLD", 5));
+    imageGuideReanchorCooldownMs = std::max(0, envInt("QUARCS_POLAR_REANCHOR_COOLDOWN_MS", 4000));
+
+    Logger::Log(
+        "PolarAlignment: guidance tracking config algoV2=" + std::to_string(guidanceAlgoV2Enabled ? 1 : 0) +
+        " emitV1Compat=" + std::to_string(guidanceEmitV1Compat ? 1 : 0) +
+        " maxStars=" + std::to_string(imageGuideMatchMaxStars) +
+        " minInliers=" + std::to_string(imageGuideMatchMinInliersV2) +
+        " minInlierRatio=" + std::to_string(imageGuideMatchMinInlierRatioV2) +
+        " ransacThresh=" + std::to_string(imageGuideRansacThresholdPx) +
+        " trackRadius=[" + std::to_string(imageGuideTrackBaseRadiusPxV2) + "," + std::to_string(imageGuideTrackMaxRadiusPxV2) + "]" +
+        " recoverMaxFrames=" + std::to_string(imageGuideRecoverMaxFramesV2) +
+        " fullSolveMaxInterval=" + std::to_string(imageGuideFullSolveMaxIntervalV2),
+        LogLevel::INFO, DeviceType::MAIN);
+}
+
 bool PolarAlignment::captureImage(int exposureTime)
 {
     Logger::Log("PolarAlignment: 拍摄图像，曝光时间 " + std::to_string(exposureTime) + "ms", LogLevel::INFO, DeviceType::MAIN);
@@ -1863,18 +2186,19 @@ bool PolarAlignment::captureImage(int exposureTime)
     
     // 每次触发拍摄前，复位完成标志（由 MainWindow 在 ExposureCompleted 时置为 true）
     isCaptureEnd = false;
-    lastCapturedImage = "/dev/shm/ccd_simulator.fits";
+    lastCapturedImage.clear();
+    latestCapturePathFromHost.clear();
 
     // INDI 模式：直接通过 INDI 下发曝光
-    if (!useSdkMainCamera && dpMainCamera) {
-        uint32_t ret = indiServer->resetCCDFrameInfo(dpMainCamera);
+    if (!useSdkCaptureSource && dpCaptureCamera) {
+        uint32_t ret = indiServer->resetCCDFrameInfo(dpCaptureCamera);
         if (ret != QHYCCD_SUCCESS)
         {
             Logger::Log("PolarAlignment::captureImage | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
         }
         
         Logger::Log("PolarAlignment: 开始调用 INDI takeExposure", LogLevel::INFO, DeviceType::MAIN);
-        ret = indiServer->takeExposure(dpMainCamera, exposureTime / 1000.0);
+        ret = indiServer->takeExposure(dpCaptureCamera, exposureTime / 1000.0);
         if (ret == QHYCCD_SUCCESS) {
             Logger::Log("PolarAlignment: INDI 拍摄命令发送成功，等待回调", LogLevel::INFO, DeviceType::MAIN);
             return true;
@@ -1885,8 +2209,10 @@ bool PolarAlignment::captureImage(int exposureTime)
     }
 
     // SDK 模式：由 MainWindow 统一入口 INDI_Capture() 执行（内部已兼容 SDK/INDI）
-    Logger::Log("PolarAlignment: 触发 requestCapture(统一拍摄入口) 进行拍摄", LogLevel::INFO, DeviceType::MAIN);
-    emit requestCapture(exposureTime);
+    Logger::Log("PolarAlignment: 触发 requestCaptureForRole(统一拍摄入口) 进行拍摄，角色=" +
+                    captureCameraRole.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
+    emit requestCaptureForRole(captureCameraRole, exposureTime);
     return true;
 }
 
@@ -1901,6 +2227,13 @@ int PolarAlignment::selectOptimalSolveMode()
     //  - 当已有有效的三点校准结果，且 RA / DEC 偏差都在 2° 以内时，指导调整阶段尝试使用模式2
     //  - 如果在当前 RA / DEC 条件下，模式2 连续两次解析失败，则强制退回模式1，
     //    直到下一次解析成功后再重新根据偏差判断是否可以再次启用模式2
+
+    if (forceGlobalSolveOnce) {
+        Logger::Log("PolarAlignment: 图像引导请求重锚，强制本轮使用模式0（全局）", LogLevel::INFO, DeviceType::MAIN);
+        forceGlobalSolveOnce = false;
+        lastSolveMode = 0;
+        return 0;
+    }
 
     int mode = 1; // 默认：视场模式
 
@@ -2018,6 +2351,7 @@ bool PolarAlignment::solveImage(const QString& imageFile)
     }
     
     Logger::Log("PolarAlignment: 图像开始解析", LogLevel::INFO, DeviceType::MAIN);
+    lastSolveModeUsed = solveMode;
     return true;
 }
 
@@ -2132,6 +2466,11 @@ void PolarAlignment::setCaptureEnd(bool isEnd)
     isCaptureEnd = isEnd;
 }
 
+void PolarAlignment::setCapturedImagePath(const QString &fitsPath)
+{
+    latestCapturePathFromHost = fitsPath.trimmed();
+}
+
 
 bool PolarAlignment::waitForCaptureComplete()
 {
@@ -2173,7 +2512,11 @@ bool PolarAlignment::waitForCaptureComplete()
                 // }
             }
             else {
-                lastCapturedImage = QString("/dev/shm/ccd_simulator.fits");
+                if (!latestCapturePathFromHost.isEmpty()) {
+                    lastCapturedImage = latestCapturePathFromHost;
+                } else {
+                    lastCapturedImage = QString("/dev/shm/ccd_simulator.fits");
+                }
             }
             cv::Mat image;
             cv::Mat originalImage16;
@@ -2700,32 +3043,33 @@ QString PolarAlignment::generateAdjustmentGuide(QString &adjustmentRa, QString &
         altitudeAdjustment = 0.0;
     }
     
+    // 发送给前端的调整量必须是可 parseFloat 的带符号数字：
+    // 前端约定方位角正数=向东，负数=向西；后端内部 azimuthAdjustment 正数=向西。
+    adjustmentRa = QString::number(-azimuthAdjustment, 'f', 6);
+    adjustmentDec = QString::number(altitudeAdjustment, 'f', 6);
+
     // 方位角指导
     if (std::abs(azimuthAdjustment) > 0.1) {
         if (azimuthAdjustment > 0) {
             guide += QString("方位角: 向西调整 %1 度; ").arg(std::abs(azimuthAdjustment), 0, 'f', 2);
-            adjustmentRa = QString("向西调整 %1 度; ").arg(std::abs(azimuthAdjustment), 0, 'f', 2);
         } else {
             guide += QString("方位角: 向东调整 %1 度; ").arg(std::abs(azimuthAdjustment), 0, 'f', 2);
-            adjustmentRa = QString("向东调整 %1 度; ").arg(std::abs(azimuthAdjustment), 0, 'f', 2);
         }
     } else {
         guide += "方位角: 已对齐; ";
-        adjustmentRa = "已对齐; ";
+        adjustmentRa = "0";
     }
     
     // 高度角指导
     if (std::abs(altitudeAdjustment) > 0.1) {
         if (altitudeAdjustment > 0) {
             guide += QString("高度角: 向上调整 %1 度; ").arg(std::abs(altitudeAdjustment), 0, 'f', 2);
-            adjustmentDec = QString("向上调整 %1 度; ").arg(std::abs(altitudeAdjustment), 0, 'f', 2);
         } else {
             guide += QString("高度角: 向下调整 %1 度; ").arg(std::abs(altitudeAdjustment), 0, 'f', 2);
-            adjustmentDec = QString("向下调整 %1 度; ").arg(std::abs(altitudeAdjustment), 0, 'f', 2);
         }
     } else {
         guide += "高度角: 已对齐; ";
-        adjustmentDec = "已对齐; ";
+        adjustmentDec = "0";
     }
     
     double totalDeviation = sqrt(azimuthAdjustment * azimuthAdjustment + altitudeAdjustment * altitudeAdjustment);
@@ -3517,18 +3861,42 @@ bool PolarAlignment::getCurrentHorizontalCoordinates(double& azimuth, double& al
 
 bool PolarAlignment::getObserverLocation(double& latitude, double& longitude, double& elevation)
 {
-    // 从配置中获取观测者位置
+    auto isValidLocation = [](double lat, double lon) {
+        return std::isfinite(lat) &&
+               std::isfinite(lon) &&
+               std::abs(lat) <= 90.0 &&
+               std::abs(lon) <= 180.0 &&
+               !(lat == 0.0 && lon == 0.0) &&
+               lat != -1.0 &&
+               lon != -1.0;
+    };
+
+    // 优先使用 MainWindow 在初始化 PolarAlignment 时写入的观测者位置。
     latitude = config.latitude;
     longitude = config.longitude;
     elevation = 0.0;  // 通常没有海拔数据，设为0
+
+    if (!isValidLocation(latitude, longitude) && indiServer != nullptr)
+    {
+        const double stateLat = indiServer->mountState.Latitude_Degree;
+        const double stateLon = indiServer->mountState.Longitude_Degree;
+        if (isValidLocation(stateLat, stateLon))
+        {
+            latitude = stateLat;
+            longitude = stateLon;
+            Logger::Log("PolarAlignment: 配置观测者位置无效，使用 MainWindow/MountState 缓存位置 - 纬度: " +
+                            std::to_string(latitude) + "°, 经度: " + std::to_string(longitude) + "°",
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+    }
     
     // 检查位置数据是否有效
-    if (latitude == 0.0 && longitude == 0.0) {
-        Logger::Log("PolarAlignment: 观测者位置未设置，请先设置观测地点", LogLevel::ERROR, DeviceType::MAIN);
+    if (!isValidLocation(latitude, longitude)) {
+        Logger::Log("PolarAlignment: 观测者位置未设置或无效，请先设置观测地点", LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
     
-    Logger::Log("PolarAlignment: 使用配置的观测者位置 - 纬度: " + std::to_string(latitude) + 
+    Logger::Log("PolarAlignment: 使用 MainWindow 记录的观测者位置 - 纬度: " + std::to_string(latitude) +
                 "°, 经度: " + std::to_string(longitude) + "°", 
                 LogLevel::INFO, DeviceType::MAIN);
     
@@ -3539,47 +3907,62 @@ bool PolarAlignment::convertRADECToHorizontal(double ra_hours, double dec_degree
                                             double observer_lat, double observer_lon, 
                                             double& azimuth, double& altitude)
 {
-    // 将输入转换为弧度
-    double ra_rad = ra_hours * M_PI / 12.0;  // 赤经：小时转弧度
-    double dec_rad = dec_degrees * M_PI / 180.0;  // 赤纬：度转弧度
-    double lat_rad = observer_lat * M_PI / 180.0;  // 纬度：度转弧度
-    double lon_rad = observer_lon * M_PI / 180.0;  // 经度：度转弧度
-    
-    // 计算当前时间（简化处理，使用系统时间）
-    time_t now = time(0);
-    struct tm* timeinfo = localtime(&now);
-    double hour = timeinfo->tm_hour + timeinfo->tm_min / 60.0 + timeinfo->tm_sec / 3600.0;
-    
-    // 计算本地恒星时（简化计算）
-    double lst_hours = hour + lon_rad * 12.0 / M_PI;  // 简化计算
-    double lst_rad = lst_hours * M_PI / 12.0;
-    
-    // 计算时角
-    double ha_rad = lst_rad - ra_rad;
-    
-    // 计算地平坐标
-    double sin_alt = sin(dec_rad) * sin(lat_rad) + cos(dec_rad) * cos(lat_rad) * cos(ha_rad);
-    double cos_alt = sqrt(1.0 - sin_alt * sin_alt);
-    
-    if (cos_alt == 0) {
-        // 在天顶或天底
-        altitude = (sin_alt > 0) ? 90.0 : -90.0;
-        azimuth = 0.0;  // 未定义
+    // 使用 UTC + 儒略日 + GMST/LST 计算，避免本地民用时间近似带来的系统误差。
+    const QDateTime utcTime = QDateTime::currentDateTimeUtc();
+    const QDate utcDate = utcTime.date();
+    const QTime utcClock = utcTime.time();
+
+    const double jd = calculateJulianDay(utcDate.year(),
+                                         utcDate.month(),
+                                         utcDate.day(),
+                                         utcClock.hour(),
+                                         utcClock.minute(),
+                                         utcClock.second());
+    const double gst_deg = calculateGreenwichSiderealTime(jd);
+    const double lst_deg = normalizeAngle360(gst_deg + observer_lon);
+
+    const double ra_deg = ra_hours * 15.0;
+    double ha_deg = lst_deg - ra_deg;
+    while (ha_deg > 180.0) ha_deg -= 360.0;
+    while (ha_deg < -180.0) ha_deg += 360.0;
+
+    const double ra_rad = ra_deg * M_PI / 180.0;
+    const double dec_rad = dec_degrees * M_PI / 180.0;
+    const double lat_rad = observer_lat * M_PI / 180.0;
+    const double ha_rad = ha_deg * M_PI / 180.0;
+
+    Q_UNUSED(ra_rad);
+
+    const double sin_alt = std::clamp(std::sin(dec_rad) * std::sin(lat_rad) +
+                                      std::cos(dec_rad) * std::cos(lat_rad) * std::cos(ha_rad),
+                                      -1.0, 1.0);
+    const double alt_rad = std::asin(sin_alt);
+    altitude = alt_rad * 180.0 / M_PI;
+
+    const double cos_alt = std::cos(alt_rad);
+    if (std::abs(cos_alt) < 1e-12) {
+        // 天顶/天底附近方位角不稳定，保持定义值 0 便于上层处理。
+        azimuth = 0.0;
     } else {
-        altitude = asin(sin_alt) * 180.0 / M_PI;
-        
-        double cos_az = (sin(dec_rad) - sin(lat_rad) * sin_alt) / (cos(lat_rad) * cos_alt);
-        double sin_az = -cos(dec_rad) * sin(ha_rad) / cos_alt;
-        
-        azimuth = atan2(sin_az, cos_az) * 180.0 / M_PI;
-        if (azimuth < 0) azimuth += 360.0;
+        const double sin_az = std::clamp(-std::cos(dec_rad) * std::sin(ha_rad) / cos_alt, -1.0, 1.0);
+        const double cos_az = std::clamp((std::sin(dec_rad) - std::sin(lat_rad) * sin_alt) /
+                                         (std::cos(lat_rad) * cos_alt),
+                                         -1.0, 1.0);
+        azimuth = std::atan2(sin_az, cos_az) * 180.0 / M_PI;
+        azimuth = normalizeAngle360(azimuth);
     }
-    
-    Logger::Log("PolarAlignment: 坐标转换 - RA: " + std::to_string(ra_hours) + 
-                "h, DEC: " + std::to_string(dec_degrees) + "° -> AZ: " + 
-                std::to_string(azimuth) + "°, ALT: " + std::to_string(altitude) + "°", 
+
+    Logger::Log("PolarAlignment: 坐标转换(UTC/JD/GMST) - UTC: " +
+                utcTime.toString("yyyy-MM-dd hh:mm:ss").toStdString() +
+                ", JD: " + std::to_string(jd) +
+                ", GST: " + std::to_string(gst_deg) +
+                "°, LST: " + std::to_string(lst_deg) +
+                "°, RA: " + std::to_string(ra_hours) +
+                "h, DEC: " + std::to_string(dec_degrees) +
+                "° -> AZ: " + std::to_string(azimuth) +
+                "°, ALT: " + std::to_string(altitude) + "°",
                 LogLevel::DEBUG, DeviceType::MAIN);
-    
+
     return true;
 }
 
@@ -3940,4 +4323,1113 @@ bool PolarAlignment::moveToAvoidObstacleRA2()
     // 第三次避障标志
     thirdCaptureAvoided = true;
     return success;
+}
+
+void PolarAlignment::resetPolarImageGuidanceState()
+{
+    imageGuideMode = PolarImageGuidanceMode::LOCKING_SINGLE_STAR;
+    imageGuideFrameId = 0;
+    imageGuideHasLock = false;
+    lockedGuideStar = PolarImageGuidePoint();
+    lastTargetPixel = cv::Point2d(-1.0, -1.0);
+    imageGuideEstimatedTargetPx = cv::Point2d(-1.0, -1.0);
+    imageGuideEstimatedTargetValid = false;
+    lockStarFixedTargetPx = cv::Point2d(-1.0, -1.0);
+    lockStarTargetReady = false;
+    previousGuideStars.clear();
+    imageGuideLostFrames = 0;
+    imageGuideStableFrames = 0;
+    imageGuideLastInliers = 0;
+    imageGuideLockConfidence = 0.0;
+    imageGuideLastReprojErrPx = 0.0;
+    imageGuideReanchorStartedMs = 0;
+    imageGuideLastReanchorMs = 0;
+    imageGuideFreshSolveThisFrame = false;
+    imageGuideReanchorNeedFreshSolve = false;
+    previousGuideGray8.release();
+    imageGuidePerfReduced = false;
+    imageGuideLastFrameProcessMs = 0.0;
+    guidanceV2 = PolarGuidanceRuntimeV2();
+    imageGuideLastFullSolveFrameId = 0;
+}
+
+bool PolarAlignment::loadGuideStarsFromAxy(const QString& fitsPath,
+                                           std::vector<PolarImageGuidePoint>& stars,
+                                           int imageW,
+                                           int imageH) const
+{
+    stars.clear();
+    if (fitsPath.isEmpty()) {
+        Logger::Log("PolarAlignment: AXY读取失败，fitsPath为空", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    const QFileInfo fitsInfo(fitsPath);
+    const QString axyPath = fitsInfo.dir().filePath(fitsInfo.completeBaseName() + ".axy");
+    if (!QFileInfo::exists(axyPath)) {
+        Logger::Log("PolarAlignment: AXY文件不存在: " + axyPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+        return false;
+    }
+
+    Logger::Log(
+        "PolarAlignment: 读取AXY星表 fits=" + fitsPath.toStdString() +
+        " axy=" + axyPath.toStdString() +
+        " image=" + std::to_string(imageW) + "x" + std::to_string(imageH),
+        LogLevel::INFO, DeviceType::MAIN);
+
+    fitsfile* fptr = nullptr;
+    int status = 0;
+    const QByteArray axyUtf8 = QFile::encodeName(axyPath);
+    if (fits_open_file(&fptr, axyUtf8.constData(), READONLY, &status)) {
+        char errText[FLEN_STATUS] = {0};
+        fits_get_errstatus(status, errText);
+        Logger::Log(
+            "PolarAlignment: AXY打开失败 status=" + std::to_string(status) +
+            " err=" + std::string(errText) +
+            " file=" + axyPath.toStdString(),
+            LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    int numHdus = 0;
+    if (fits_get_num_hdus(fptr, &numHdus, &status)) {
+        char errText[FLEN_STATUS] = {0};
+        fits_get_errstatus(status, errText);
+        Logger::Log(
+            "PolarAlignment: AXY读取HDU数量失败 status=" + std::to_string(status) +
+            " err=" + std::string(errText),
+            LogLevel::ERROR, DeviceType::MAIN);
+        fits_close_file(fptr, &status);
+        return false;
+    }
+
+    int selectedHdu = -1;
+    int xCol = -1;
+    int yCol = -1;
+    int fluxCol = -1;
+    long long rowCount = 0;
+
+    auto tryFindColumn = [&](int& colOut, const char* name) -> bool {
+        int localStatus = 0;
+        colOut = -1;
+        if (fits_get_colnum(fptr, CASEINSEN, const_cast<char*>(name), &colOut, &localStatus) == 0) {
+            return true;
+        }
+        colOut = -1;
+        return false;
+    };
+
+    for (int hdu = 1; hdu <= numHdus; ++hdu) {
+        int localStatus = 0;
+        if (fits_movabs_hdu(fptr, hdu, nullptr, &localStatus)) {
+            continue;
+        }
+        int hduType = 0;
+        if (fits_get_hdu_type(fptr, &hduType, &localStatus)) {
+            continue;
+        }
+        if (hduType != BINARY_TBL && hduType != ASCII_TBL) {
+            continue;
+        }
+
+        int tmpX = -1;
+        int tmpY = -1;
+        int tmpFlux = -1;
+
+        const bool hasX = tryFindColumn(tmpX, "X") || tryFindColumn(tmpX, "XIMAGE") || tryFindColumn(tmpX, "X_IMAGE");
+        const bool hasY = tryFindColumn(tmpY, "Y") || tryFindColumn(tmpY, "YIMAGE") || tryFindColumn(tmpY, "Y_IMAGE");
+        if (!hasX || !hasY) {
+            continue;
+        }
+
+        tryFindColumn(tmpFlux, "FLUX");
+        if (tmpFlux < 0) tryFindColumn(tmpFlux, "FLUX_AUTO");
+        if (tmpFlux < 0) tryFindColumn(tmpFlux, "FLUX_ISO");
+
+        long long nrows = 0;
+        localStatus = 0;
+        if (fits_get_num_rowsll(fptr, &nrows, &localStatus)) {
+            continue;
+        }
+
+        selectedHdu = hdu;
+        xCol = tmpX;
+        yCol = tmpY;
+        fluxCol = tmpFlux;
+        rowCount = nrows;
+        break;
+    }
+
+    if (selectedHdu < 0 || rowCount <= 0) {
+        Logger::Log(
+            "PolarAlignment: AXY未找到可用X/Y星表 hduCount=" + std::to_string(numHdus),
+            LogLevel::WARNING, DeviceType::MAIN);
+        int closeStatus = 0;
+        fits_close_file(fptr, &closeStatus);
+        return false;
+    }
+
+    status = 0;
+    if (fits_movabs_hdu(fptr, selectedHdu, nullptr, &status)) {
+        char errText[FLEN_STATUS] = {0};
+        fits_get_errstatus(status, errText);
+        Logger::Log(
+            "PolarAlignment: AXY切换到目标HDU失败 hdu=" + std::to_string(selectedHdu) +
+            " status=" + std::to_string(status) +
+            " err=" + std::string(errText),
+            LogLevel::ERROR, DeviceType::MAIN);
+        int closeStatus = 0;
+        fits_close_file(fptr, &closeStatus);
+        return false;
+    }
+
+    std::vector<double> xs(static_cast<size_t>(rowCount), 0.0);
+    std::vector<double> ys(static_cast<size_t>(rowCount), 0.0);
+    std::vector<double> fluxes(static_cast<size_t>(rowCount), 1.0);
+
+    status = 0;
+    const LONGLONG firstrow = 1;
+    const LONGLONG firstelem = 1;
+    const LONGLONG nelem = static_cast<LONGLONG>(rowCount);
+    if (fits_read_col(fptr, TDOUBLE, xCol, firstrow, firstelem, nelem, nullptr, xs.data(), nullptr, &status)) {
+        char errText[FLEN_STATUS] = {0};
+        fits_get_errstatus(status, errText);
+        Logger::Log(
+            "PolarAlignment: AXY读取X列失败 col=" + std::to_string(xCol) +
+            " status=" + std::to_string(status) +
+            " err=" + std::string(errText),
+            LogLevel::ERROR, DeviceType::MAIN);
+        int closeStatus = 0;
+        fits_close_file(fptr, &closeStatus);
+        return false;
+    }
+    status = 0;
+    if (fits_read_col(fptr, TDOUBLE, yCol, firstrow, firstelem, nelem, nullptr, ys.data(), nullptr, &status)) {
+        char errText[FLEN_STATUS] = {0};
+        fits_get_errstatus(status, errText);
+        Logger::Log(
+            "PolarAlignment: AXY读取Y列失败 col=" + std::to_string(yCol) +
+            " status=" + std::to_string(status) +
+            " err=" + std::string(errText),
+            LogLevel::ERROR, DeviceType::MAIN);
+        int closeStatus = 0;
+        fits_close_file(fptr, &closeStatus);
+        return false;
+    }
+    if (fluxCol > 0) {
+        status = 0;
+        if (fits_read_col(fptr, TDOUBLE, fluxCol, firstrow, firstelem, nelem, nullptr, fluxes.data(), nullptr, &status)) {
+            Logger::Log(
+                "PolarAlignment: AXY读取FLUX失败，回退score=1 col=" + std::to_string(fluxCol) +
+                " status=" + std::to_string(status),
+                LogLevel::WARNING, DeviceType::MAIN);
+            std::fill(fluxes.begin(), fluxes.end(), 1.0);
+            status = 0;
+        }
+    }
+
+    int closeStatus = 0;
+    fits_close_file(fptr, &closeStatus);
+
+    stars.reserve(static_cast<size_t>(rowCount));
+    size_t rejected = 0;
+    for (size_t i = 0; i < static_cast<size_t>(rowCount); ++i) {
+        const double x = xs[i];
+        const double y = ys[i];
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+            ++rejected;
+            continue;
+        }
+        if (x < 0.0 || y < 0.0 || x >= static_cast<double>(imageW) || y >= static_cast<double>(imageH)) {
+            ++rejected;
+            continue;
+        }
+        double score = fluxes[i];
+        if (!std::isfinite(score) || score <= 0.0) score = 1.0;
+        stars.push_back({x, y, score});
+    }
+
+    std::sort(stars.begin(), stars.end(), [](const PolarImageGuidePoint& a, const PolarImageGuidePoint& b) {
+        return a.score > b.score;
+    });
+    if (stars.size() > 200) stars.resize(200);
+
+    if (!stars.empty()) {
+        const size_t previewCount = std::min<size_t>(3, stars.size());
+        std::string preview;
+        for (size_t i = 0; i < previewCount; ++i) {
+            if (!preview.empty()) preview += " | ";
+            preview += "#" + std::to_string(i + 1) + "(" +
+                       std::to_string(stars[i].x) + "," +
+                       std::to_string(stars[i].y) + ",s=" +
+                       std::to_string(stars[i].score) + ")";
+        }
+        Logger::Log(
+            "PolarAlignment: AXY星点读取成功 hdu=" + std::to_string(selectedHdu) +
+            " rows=" + std::to_string(rowCount) +
+            " kept=" + std::to_string(stars.size()) +
+            " rejected=" + std::to_string(rejected) +
+            " fluxCol=" + std::to_string(fluxCol) +
+            " preview=" + preview,
+            LogLevel::INFO, DeviceType::MAIN);
+    } else {
+        Logger::Log(
+            "PolarAlignment: AXY星点读取完成但无有效星点 hdu=" + std::to_string(selectedHdu) +
+            " rows=" + std::to_string(rowCount) +
+            " rejected=" + std::to_string(rejected),
+            LogLevel::WARNING, DeviceType::MAIN);
+    }
+
+    return !stars.empty();
+}
+
+std::vector<PolarImageGuidePoint> PolarAlignment::detectGuideStars(const cv::Mat& imageGray8) const
+{
+    std::vector<PolarImageGuidePoint> stars;
+    if (imageGray8.empty()) return stars;
+
+    cv::Mat blur, bin;
+    cv::GaussianBlur(imageGray8, blur, cv::Size(0, 0), 1.2);
+
+    cv::Scalar meanVal, stdVal;
+    cv::meanStdDev(blur, meanVal, stdVal);
+    const double thresh = std::max(20.0, meanVal[0] + 2.5 * stdVal[0]);
+    cv::threshold(blur, bin, thresh, 255, cv::THRESH_BINARY);
+    cv::morphologyEx(bin, bin, cv::MORPH_OPEN, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3)));
+
+    cv::Mat labels, stats, centroids;
+    const int n = cv::connectedComponentsWithStats(bin, labels, stats, centroids, 8, CV_32S);
+    stars.reserve(std::max(0, n - 1));
+    for (int i = 1; i < n; ++i) {
+        const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+        if (area < 2 || area > 180) continue;
+        const int left = stats.at<int>(i, cv::CC_STAT_LEFT);
+        const int top = stats.at<int>(i, cv::CC_STAT_TOP);
+        const int width = stats.at<int>(i, cv::CC_STAT_WIDTH);
+        const int height = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+        if (width <= 0 || height <= 0) continue;
+        const double ratio = static_cast<double>(std::min(width, height)) / static_cast<double>(std::max(width, height));
+        if (ratio < 0.4) continue;
+
+        const double cx = centroids.at<double>(i, 0);
+        const double cy = centroids.at<double>(i, 1);
+        cv::Rect roi(left, top, width, height);
+        roi &= cv::Rect(0, 0, imageGray8.cols, imageGray8.rows);
+        if (roi.empty()) continue;
+        const double sumBrightness = cv::sum(imageGray8(roi))[0];
+        stars.push_back({cx, cy, sumBrightness / std::max(1, area)});
+    }
+
+    std::sort(stars.begin(), stars.end(), [](const PolarImageGuidePoint& a, const PolarImageGuidePoint& b) {
+        return a.score > b.score;
+    });
+    if (stars.size() > 120) stars.resize(120);
+    return stars;
+}
+
+bool PolarAlignment::selectSingleGuideStar(const std::vector<PolarImageGuidePoint>& stars,
+                                           int imageW, int imageH,
+                                           PolarImageGuidePoint& selected) const
+{
+    if (stars.empty()) return false;
+    const double marginX = imageW * imageGuideEdgeMarginRatio;
+    const double marginY = imageH * imageGuideEdgeMarginRatio;
+    const double cx = imageW * 0.5;
+    const double cy = imageH * 0.5;
+    const double maxR = std::max(1.0, std::hypot(cx - marginX, cy - marginY));
+
+    bool found = false;
+    double bestScore = std::numeric_limits<double>::infinity();
+    PolarImageGuidePoint best{};
+    for (const auto &s : stars) {
+        if (s.x < marginX || s.x > imageW - marginX) continue;
+        if (s.y < marginY || s.y > imageH - marginY) continue;
+
+        // 优先居中：以中心距离为主，亮度仅作为次级权重避免选到噪声。
+        const double rNorm = std::hypot(s.x - cx, s.y - cy) / maxR; // 0..~1
+        const double brightnessPenalty = 1.0 / std::max(1.0, s.score); // 越亮惩罚越小
+        const double score = rNorm + 1200.0 * brightnessPenalty;
+        if (!found || score < bestScore) {
+            found = true;
+            bestScore = score;
+            best = s;
+        }
+    }
+    if (!found) return false;
+    selected = best;
+    return true;
+}
+
+bool PolarAlignment::trackSingleGuideStar(const std::vector<PolarImageGuidePoint>& stars,
+                                          const PolarImageGuidePoint& prev,
+                                          PolarImageGuidePoint& tracked,
+                                          double maxDistPx,
+                                          const cv::Mat& currentGray8)
+{
+    if (stars.empty() || currentGray8.empty() || previousGuideGray8.empty()) return false;
+
+    std::vector<cv::Point2f> prevPts(1), nextPts;
+    std::vector<uchar> status;
+    std::vector<float> err;
+    prevPts[0] = cv::Point2f(static_cast<float>(prev.x), static_cast<float>(prev.y));
+    cv::calcOpticalFlowPyrLK(previousGuideGray8, currentGray8, prevPts, nextPts, status, err);
+    if (status.empty() || status[0] == 0) return false;
+
+    const cv::Point2f lkPt = nextPts[0];
+    if (!std::isfinite(lkPt.x) || !std::isfinite(lkPt.y)) return false;
+
+    double bestDist2 = maxDistPx * maxDistPx;
+    bool found = false;
+    PolarImageGuidePoint best;
+    for (const auto &s : stars) {
+        const double dx = s.x - lkPt.x;
+        const double dy = s.y - lkPt.y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 <= bestDist2) {
+            bestDist2 = d2;
+            best = s;
+            found = true;
+        }
+    }
+
+    if (!found) {
+        // 未命中检测星点时，先退化使用 LK 预测点，下一帧再由检测结果校正
+        if (lkPt.x < 0.0 || lkPt.y < 0.0 || lkPt.x >= currentGray8.cols || lkPt.y >= currentGray8.rows) return false;
+        tracked.x = lkPt.x;
+        tracked.y = lkPt.y;
+        tracked.score = prev.score;
+        return true;
+    }
+
+    tracked = best;
+    return true;
+}
+
+bool PolarAlignment::updateMultiStarFallback(const std::vector<PolarImageGuidePoint>& currentStars,
+                                             const std::vector<PolarImageGuidePoint>& previousStars,
+                                             cv::Mat& transform,
+                                             int& inlierCount) const
+{
+    transform.release();
+    inlierCount = 0;
+    if (currentStars.empty() || previousStars.empty()) return false;
+
+    std::vector<cv::Point2f> src;
+    std::vector<cv::Point2f> dst;
+    src.reserve(previousStars.size());
+    dst.reserve(previousStars.size());
+
+    for (const auto &p : previousStars) {
+        double bestD2 = 20.0 * 20.0;
+        bool found = false;
+        cv::Point2f best{};
+        for (const auto &c : currentStars) {
+            const double dx = c.x - p.x;
+            const double dy = c.y - p.y;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                best = cv::Point2f(static_cast<float>(c.x), static_cast<float>(c.y));
+                found = true;
+            }
+        }
+        if (found) {
+            src.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y));
+            dst.emplace_back(best);
+        }
+    }
+
+    if (src.size() < static_cast<size_t>(imageGuideMinMultiInliers)) return false;
+    cv::Mat inliers;
+    transform = cv::estimateAffinePartial2D(src, dst, inliers, cv::RANSAC, imageGuideRansacThresholdPx);
+    if (transform.empty()) return false;
+    inlierCount = inliers.empty() ? 0 : cv::countNonZero(inliers);
+    return inlierCount >= imageGuideMinMultiInliers;
+}
+
+bool PolarAlignment::computeTargetPixelFromSolve(const SloveResults& s,
+                                                 int imageW, int imageH,
+                                                 double targetRaDeg, double targetDecDeg,
+                                                 cv::Point2d& outTargetPx,
+                                                 double& outReprojErrPx)
+{
+    outTargetPx = cv::Point2d(-1.0, -1.0);
+    outReprojErrPx = 0.0;
+    if (imageW <= 0 || imageH <= 0) return false;
+    if (s.RA_Degree < -0.5 || s.DEC_Degree < -90.5) return false;
+
+    const double centerRa = s.RA_Degree;
+    auto unwrapRa = [this, centerRa](double raDeg) {
+        return centerRa + normalizeAngle180(raDeg - centerRa);
+    };
+
+    std::vector<cv::Point2d> world = {
+        {unwrapRa(s.RA_0), s.DEC_0},
+        {unwrapRa(s.RA_1), s.DEC_1},
+        {unwrapRa(s.RA_2), s.DEC_2},
+        {unwrapRa(s.RA_3), s.DEC_3},
+        {unwrapRa(s.RA_Degree), s.DEC_Degree}
+    };
+    std::vector<cv::Point2d> img = {
+        {0.0, 0.0},
+        {static_cast<double>(imageW), 0.0},
+        {static_cast<double>(imageW), static_cast<double>(imageH)},
+        {0.0, static_cast<double>(imageH)},
+        {imageW * 0.5, imageH * 0.5}
+    };
+
+    cv::Mat A(static_cast<int>(world.size()), 3, CV_64F);
+    cv::Mat bx(static_cast<int>(world.size()), 1, CV_64F);
+    cv::Mat by(static_cast<int>(world.size()), 1, CV_64F);
+    for (size_t i = 0; i < world.size(); ++i) {
+        A.at<double>(static_cast<int>(i), 0) = world[i].x;
+        A.at<double>(static_cast<int>(i), 1) = world[i].y;
+        A.at<double>(static_cast<int>(i), 2) = 1.0;
+        bx.at<double>(static_cast<int>(i), 0) = img[i].x;
+        by.at<double>(static_cast<int>(i), 0) = img[i].y;
+    }
+
+    cv::Mat sx, sy;
+    if (!cv::solve(A, bx, sx, cv::DECOMP_SVD)) return false;
+    if (!cv::solve(A, by, sy, cv::DECOMP_SVD)) return false;
+
+    const double tr = unwrapRa(targetRaDeg);
+    outTargetPx.x = sx.at<double>(0) * tr + sx.at<double>(1) * targetDecDeg + sx.at<double>(2);
+    outTargetPx.y = sy.at<double>(0) * tr + sy.at<double>(1) * targetDecDeg + sy.at<double>(2);
+
+    // 估计重投影误差（5个拟合点）
+    double err = 0.0;
+    for (size_t i = 0; i < world.size(); ++i) {
+        const double px = sx.at<double>(0) * world[i].x + sx.at<double>(1) * world[i].y + sx.at<double>(2);
+        const double py = sy.at<double>(0) * world[i].x + sy.at<double>(1) * world[i].y + sy.at<double>(2);
+        const double dx = px - img[i].x;
+        const double dy = py - img[i].y;
+        err += std::sqrt(dx * dx + dy * dy);
+    }
+    outReprojErrPx = err / static_cast<double>(world.size());
+    return std::isfinite(outTargetPx.x) && std::isfinite(outTargetPx.y);
+}
+
+bool PolarAlignment::buildGuidanceJpegFrame(const cv::Mat& rawImage, QByteArray& outJpegBase64, int& outW, int& outH) const
+{
+    outJpegBase64.clear();
+    outW = 0;
+    outH = 0;
+    if (rawImage.empty()) return false;
+
+    cv::Mat gray8;
+    if (rawImage.channels() == 1) {
+        cv::Mat tmp;
+        if (rawImage.type() == CV_8UC1) tmp = rawImage;
+        else if (rawImage.type() == CV_16UC1) rawImage.convertTo(tmp, CV_8UC1, 1.0 / 256.0);
+        else cv::normalize(rawImage, tmp, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+
+        // 百分位拉伸，便于弱星可见
+        cv::Mat flat = tmp.reshape(1, 1).clone();
+        cv::sort(flat, flat, cv::SORT_ASCENDING);
+        const int n = flat.cols;
+        const int loIdx = std::max(0, static_cast<int>(n * 0.01));
+        const int hiIdx = std::min(n - 1, static_cast<int>(n * 0.995));
+        const double lo = flat.at<uchar>(0, loIdx);
+        const double hi = std::max(lo + 1.0, static_cast<double>(flat.at<uchar>(0, hiIdx)));
+        tmp.convertTo(gray8, CV_8UC1, 255.0 / (hi - lo), -lo * 255.0 / (hi - lo));
+    } else {
+        cv::cvtColor(rawImage, gray8, cv::COLOR_BGR2GRAY);
+    }
+
+    cv::Mat bgr;
+    cv::cvtColor(gray8, bgr, cv::COLOR_GRAY2BGR);
+    cv::Scalar chMean = cv::mean(bgr);
+    const double allMean = (chMean[0] + chMean[1] + chMean[2]) / 3.0;
+    std::vector<cv::Mat> ch;
+    cv::split(bgr, ch);
+    for (int i = 0; i < 3; ++i) {
+        const double gain = std::clamp(allMean / std::max(1.0, chMean[i]), 0.7, 1.8);
+        ch[i].convertTo(ch[i], CV_8UC1, gain, 0.0);
+    }
+    cv::merge(ch, bgr);
+
+    if (std::max(bgr.cols, bgr.rows) > imageGuideJpegMaxLongEdge) {
+        const double scale = static_cast<double>(imageGuideJpegMaxLongEdge) / static_cast<double>(std::max(bgr.cols, bgr.rows));
+        cv::resize(bgr, bgr, cv::Size(), scale, scale, cv::INTER_AREA);
+    }
+
+    std::vector<uchar> encodedBuf;
+    bool encoded = false;
+
+    // 首选 JPEG，带宽更低；若编解码链路异常则回退 PNG，避免前端完全无图。
+    std::vector<int> jpegParams = {cv::IMWRITE_JPEG_QUALITY, imageGuideJpegQuality};
+    if (cv::imencode(".jpg", bgr, encodedBuf, jpegParams)) {
+        encoded = true;
+    } else {
+        Logger::Log("PolarAlignment: guidance frame JPEG encode failed, fallback to PNG",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        encodedBuf.clear();
+        std::vector<int> pngParams = {cv::IMWRITE_PNG_COMPRESSION, 3};
+        if (cv::imencode(".png", bgr, encodedBuf, pngParams)) {
+            encoded = true;
+        }
+    }
+
+    if (!encoded || encodedBuf.empty()) {
+        Logger::Log("PolarAlignment: guidance frame encode failed (jpeg+png)",
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return false;
+    }
+
+    outW = bgr.cols;
+    outH = bgr.rows;
+    outJpegBase64 = QByteArray(reinterpret_cast<const char*>(encodedBuf.data()), static_cast<int>(encodedBuf.size())).toBase64();
+    return true;
+}
+
+QString PolarAlignment::polarImageGuidanceModeToToken(PolarImageGuidanceMode mode) const
+{
+    switch (mode) {
+        case PolarImageGuidanceMode::LOCKING_SINGLE_STAR: return "locking";
+        case PolarImageGuidanceMode::TRACKING_SINGLE: return "single";
+        case PolarImageGuidanceMode::FALLBACK_MULTI_STAR: return "multi";
+        case PolarImageGuidanceMode::REANCHOR_PLATESOLVE: return "reanchor";
+        case PolarImageGuidanceMode::RELOCK: return "relock";
+        case PolarImageGuidanceMode::DONE: return "done";
+        case PolarImageGuidanceMode::FAILED: return "failed";
+    }
+    return "unknown";
+}
+
+QString PolarAlignment::polarGuidanceTransformModelToToken(PolarGuidanceTransformModel model) const
+{
+    switch (model) {
+        case PolarGuidanceTransformModel::SIMILARITY: return "similarity";
+        case PolarGuidanceTransformModel::AFFINE: return "affine";
+        case PolarGuidanceTransformModel::TRANSLATION: return "translation";
+        case PolarGuidanceTransformModel::NONE:
+        default: return "none";
+    }
+}
+
+bool PolarAlignment::isPointNearOrOutsideEdge(const cv::Point2d& p, int w, int h, double marginRatio) const
+{
+    const double marginX = std::max(1.0, w * marginRatio);
+    const double marginY = std::max(1.0, h * marginRatio);
+    if (p.x < 0.0 || p.y < 0.0 || p.x >= w || p.y >= h) return true;
+    return p.x < marginX || p.x > (w - marginX) || p.y < marginY || p.y > (h - marginY);
+}
+
+bool PolarAlignment::buildStarCorrespondenceCandidates(const std::vector<PolarImageGuidePoint>& previousStars,
+                                                       const std::vector<PolarImageGuidePoint>& currentStars,
+                                                       double maxDistPx,
+                                                       std::vector<cv::Point2f>& src,
+                                                       std::vector<cv::Point2f>& dst) const
+{
+    src.clear();
+    dst.clear();
+    if (previousStars.empty() || currentStars.empty() || maxDistPx <= 0.0) return false;
+
+    std::vector<bool> used(currentStars.size(), false);
+    const double maxD2 = maxDistPx * maxDistPx;
+    for (const auto &p : previousStars) {
+        int bestIdx = -1;
+        double bestD2 = maxD2;
+        for (size_t i = 0; i < currentStars.size(); ++i) {
+            if (used[i]) continue;
+            const auto &c = currentStars[i];
+            const double dx = c.x - p.x;
+            const double dy = c.y - p.y;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                bestIdx = static_cast<int>(i);
+            }
+        }
+        if (bestIdx >= 0) {
+            used[static_cast<size_t>(bestIdx)] = true;
+            src.emplace_back(static_cast<float>(p.x), static_cast<float>(p.y));
+            dst.emplace_back(static_cast<float>(currentStars[static_cast<size_t>(bestIdx)].x),
+                             static_cast<float>(currentStars[static_cast<size_t>(bestIdx)].y));
+        }
+    }
+    return src.size() >= 3 && src.size() == dst.size();
+}
+
+bool PolarAlignment::estimateGlobalTransformRobust(const std::vector<PolarImageGuidePoint>& previousStars,
+                                                   const std::vector<PolarImageGuidePoint>& currentStars,
+                                                   cv::Mat& transform,
+                                                   PolarGuidanceTransformModel& model,
+                                                   int& inlierCount,
+                                                   double& inlierRatio,
+                                                   double& reprojErrPx) const
+{
+    transform.release();
+    model = PolarGuidanceTransformModel::NONE;
+    inlierCount = 0;
+    inlierRatio = 0.0;
+    reprojErrPx = 0.0;
+
+    std::vector<cv::Point2f> src;
+    std::vector<cv::Point2f> dst;
+    if (!buildStarCorrespondenceCandidates(previousStars, currentStars, imageGuideTrackMaxRadiusPxV2, src, dst)) return false;
+    if (src.size() < 2 || src.size() != dst.size()) return false;
+
+    auto countAndErr = [&](const cv::Mat& t, const cv::Mat& inliersMask, int allCount) {
+        if (t.empty()) return false;
+        const int inliers = inliersMask.empty() ? 0 : cv::countNonZero(inliersMask);
+        if (inliers <= 0 || allCount <= 0) return false;
+        inlierCount = inliers;
+        inlierRatio = static_cast<double>(inliers) / static_cast<double>(allCount);
+        double errSum = 0.0;
+        int errN = 0;
+        for (int i = 0; i < static_cast<int>(src.size()); ++i) {
+            if (!inliersMask.empty() && inliersMask.at<uchar>(i) == 0) continue;
+            const double x = src[static_cast<size_t>(i)].x;
+            const double y = src[static_cast<size_t>(i)].y;
+            const double tx = t.at<double>(0, 0) * x + t.at<double>(0, 1) * y + t.at<double>(0, 2);
+            const double ty = t.at<double>(1, 0) * x + t.at<double>(1, 1) * y + t.at<double>(1, 2);
+            const double dx = tx - dst[static_cast<size_t>(i)].x;
+            const double dy = ty - dst[static_cast<size_t>(i)].y;
+            errSum += std::sqrt(dx * dx + dy * dy);
+            ++errN;
+        }
+        reprojErrPx = (errN > 0) ? (errSum / static_cast<double>(errN)) : 0.0;
+        return true;
+    };
+
+    cv::Mat inliers;
+    if (src.size() >= 3) {
+        transform = cv::estimateAffinePartial2D(src, dst, inliers, cv::RANSAC, imageGuideRansacThresholdPx);
+        if (!transform.empty() && countAndErr(transform, inliers, static_cast<int>(src.size()))) {
+            model = PolarGuidanceTransformModel::SIMILARITY;
+        }
+    }
+    if (model == PolarGuidanceTransformModel::NONE && src.size() >= 3) {
+        inliers.release();
+        transform = cv::estimateAffine2D(src, dst, inliers, cv::RANSAC, imageGuideRansacThresholdPx);
+        if (!transform.empty() && countAndErr(transform, inliers, static_cast<int>(src.size()))) {
+            model = PolarGuidanceTransformModel::AFFINE;
+        }
+    }
+    if (model == PolarGuidanceTransformModel::NONE) {
+        double dx = 0.0, dy = 0.0;
+        for (size_t i = 0; i < src.size(); ++i) {
+            dx += (dst[i].x - src[i].x);
+            dy += (dst[i].y - src[i].y);
+        }
+        dx /= static_cast<double>(src.size());
+        dy /= static_cast<double>(src.size());
+        transform = (cv::Mat_<double>(2, 3) << 1.0, 0.0, dx, 0.0, 1.0, dy);
+        model = PolarGuidanceTransformModel::TRANSLATION;
+        inlierCount = static_cast<int>(src.size());
+        inlierRatio = 1.0;
+        reprojErrPx = std::sqrt(dx * dx + dy * dy);
+    }
+    return !transform.empty();
+}
+
+bool PolarAlignment::propagateTargetsByTransform(const cv::Mat& transform, cv::Point2d& point) const
+{
+    if (transform.empty() || transform.rows != 2 || transform.cols != 3) return false;
+    const double x = point.x;
+    const double y = point.y;
+    const double nx = transform.at<double>(0, 0) * x + transform.at<double>(0, 1) * y + transform.at<double>(0, 2);
+    const double ny = transform.at<double>(1, 0) * x + transform.at<double>(1, 1) * y + transform.at<double>(1, 2);
+    if (!std::isfinite(nx) || !std::isfinite(ny)) return false;
+    point.x = nx;
+    point.y = ny;
+    return true;
+}
+
+bool PolarAlignment::refineLockByLocalTrack(const std::vector<PolarImageGuidePoint>& stars,
+                                            const cv::Mat& currentGray8,
+                                            double maxDistPx,
+                                            PolarImageGuidePoint& tracked)
+{
+    return trackSingleGuideStar(stars, tracked, tracked, maxDistPx, currentGray8);
+}
+
+QString PolarAlignment::buildPolarGuidanceDataV2Payload(qint64 frameId,
+                                                        const QString& mode,
+                                                        double arcsecPerPixel,
+                                                        const QString& statusText,
+                                                        const cv::Point2d& arrow,
+                                                        double remainArcsec,
+                                                        double segmentRemainArcsec) const
+{
+    QJsonObject root;
+    root["frameId"] = static_cast<qint64>(frameId);
+    root["mode"] = mode;
+    root["stateVersion"] = 2;
+
+    QJsonObject lockObj;
+    lockObj["hasLock"] = guidanceV2.hasLock;
+    lockObj["confidence"] = guidanceV2.lockConfidence;
+    lockObj["stableFrames"] = guidanceV2.stableFrames;
+    lockObj["lostFrames"] = guidanceV2.lostFrames;
+    root["lock"] = lockObj;
+
+    QJsonObject targetObj;
+    targetObj["currentX"] = guidanceV2.currentStarPx.x;
+    targetObj["currentY"] = guidanceV2.currentStarPx.y;
+    targetObj["displayTargetX"] = guidanceV2.displayTargetPx.x;
+    targetObj["displayTargetY"] = guidanceV2.displayTargetPx.y;
+    targetObj["finalTargetX"] = guidanceV2.finalTargetPx.x;
+    targetObj["finalTargetY"] = guidanceV2.finalTargetPx.y;
+    targetObj["inFrame"] = guidanceV2.inFrame;
+    root["target"] = targetObj;
+
+    QJsonObject matchObj;
+    matchObj["model"] = polarGuidanceTransformModelToToken(guidanceV2.transformModel);
+    matchObj["inliers"] = guidanceV2.inliers;
+    matchObj["inlierRatio"] = guidanceV2.inlierRatio;
+    matchObj["reprojErrPx"] = guidanceV2.reprojErrPx;
+    root["match"] = matchObj;
+
+    QJsonObject solveObj;
+    solveObj["usedThisFrame"] = imageGuideFreshSolveThisFrame;
+    solveObj["solveModeUsed"] = lastSolveModeUsed;
+    solveObj["arcsecPerPixel"] = arcsecPerPixel;
+    root["solve"] = solveObj;
+
+    QJsonObject guideObj;
+    guideObj["arrowDx"] = arrow.x;
+    guideObj["arrowDy"] = arrow.y;
+    guideObj["remainArcsec"] = remainArcsec;
+    guideObj["segmentRemainArcsec"] = segmentRemainArcsec;
+    root["guidance"] = guideObj;
+
+    root["statusText"] = statusText;
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const SloveResults& solveResult)
+{
+    if (image.empty()) return false;
+    QElapsedTimer processTimer;
+    processTimer.start();
+    ++imageGuideFrameId;
+
+    const int imageW = image.cols;
+    const int imageH = image.rows;
+    auto emitFrameSnapshot = [&](const char* reason) {
+        QByteArray jpegBase64;
+        int jpegW = 0;
+        int jpegH = 0;
+        if (buildGuidanceJpegFrame(image, jpegBase64, jpegW, jpegH)) {
+            Logger::Log(
+                std::string("PolarAlignment: 图像引导仅发送帧快照 reason=") + reason +
+                ", frameId=" + std::to_string(imageGuideFrameId) +
+                ", size=" + std::to_string(jpegW) + "x" + std::to_string(jpegH),
+                LogLevel::WARNING,
+                DeviceType::MAIN);
+            emit polarImageGuidanceFrame(imageGuideFrameId, jpegW, jpegH, QString::fromLatin1(jpegBase64));
+            return true;
+        }
+        Logger::Log(
+            std::string("PolarAlignment: 图像引导帧快照编码失败 reason=") + reason +
+            ", sourceSize=" + std::to_string(imageW) + "x" + std::to_string(imageH),
+            LogLevel::WARNING,
+            DeviceType::MAIN);
+        return false;
+    };
+
+    if (!isTargetPositionCached) {
+        emitFrameSnapshot("target-not-cached");
+        return false;
+    }
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const cv::Point2d imageCenterPx(imageW * 0.5, imageH * 0.5);
+    auto isPointValid = [imageW, imageH](const cv::Point2d& p) {
+        return std::isfinite(p.x) && std::isfinite(p.y) && p.x >= 0.0 && p.y >= 0.0 &&
+               p.x < static_cast<double>(imageW) && p.y < static_cast<double>(imageH);
+    };
+    auto isFinitePoint = [](const cv::Point2d& p) {
+        return std::isfinite(p.x) && std::isfinite(p.y);
+    };
+
+    cv::Mat gray, gray8;
+    if (image.channels() == 1) gray = image.clone(); else cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
+    if (gray.type() == CV_8UC1) gray8 = gray;
+    else if (gray.type() == CV_16UC1) gray.convertTo(gray8, CV_8UC1, 1.0 / 256.0);
+    else cv::normalize(gray, gray8, 0, 255, cv::NORM_MINMAX, CV_8UC1);
+
+    std::vector<PolarImageGuidePoint> stars;
+    loadGuideStarsFromAxy(lastCapturedImage, stars, imageW, imageH);
+    if (static_cast<int>(stars.size()) > imageGuideMatchMaxStars) stars.resize(static_cast<size_t>(imageGuideMatchMaxStars));
+
+    cv::Point2d solveTargetPx(-1.0, -1.0);
+    double solveReprojErrPx = imageGuideLastReprojErrPx;
+    const bool solveTargetValid = computeTargetPixelFromSolve(
+        solveResult, imageW, imageH, targetRA, targetDEC, solveTargetPx, solveReprojErrPx);
+    if (solveTargetValid) imageGuideLastReprojErrPx = solveReprojErrPx;
+
+    cv::Mat transform;
+    PolarGuidanceTransformModel transformModel = PolarGuidanceTransformModel::NONE;
+    int inliers = 0;
+    double inlierRatio = 0.0;
+    double reprojErrPx = 0.0;
+    const bool hasTransform = estimateGlobalTransformRobust(
+        previousGuideStars, stars, transform, transformModel, inliers, inlierRatio, reprojErrPx);
+
+    const bool transformGood = hasTransform &&
+                               inliers >= imageGuideMatchMinInliersV2 &&
+                               inlierRatio >= imageGuideMatchMinInlierRatioV2;
+    imageGuideLastInliers = inliers;
+
+    if (solveTargetValid && (imageGuideFreshSolveThisFrame || !imageGuideEstimatedTargetValid)) {
+        imageGuideEstimatedTargetPx = solveTargetPx;
+        imageGuideEstimatedTargetValid = isFinitePoint(imageGuideEstimatedTargetPx);
+    } else if (imageGuideEstimatedTargetValid && transformGood) {
+        cv::Point2d p = imageGuideEstimatedTargetPx;
+        if (propagateTargetsByTransform(transform, p) && isFinitePoint(p)) imageGuideEstimatedTargetPx = p;
+        else imageGuideEstimatedTargetValid = false;
+    }
+    if (!imageGuideEstimatedTargetValid && solveTargetValid && isFinitePoint(solveTargetPx)) {
+        imageGuideEstimatedTargetPx = solveTargetPx;
+        imageGuideEstimatedTargetValid = true;
+    }
+    if (!imageGuideEstimatedTargetValid) {
+        Logger::Log(
+            "PolarAlignment: 图像引导目标像素无效，跳过覆盖层但保留相机帧 frameId=" +
+            std::to_string(imageGuideFrameId) +
+            ", solveTargetValid=" + std::to_string(solveTargetValid ? 1 : 0) +
+            ", solveTargetPx=(" + std::to_string(solveTargetPx.x) + "," + std::to_string(solveTargetPx.y) + ")" +
+            ", targetRA=" + std::to_string(targetRA) +
+            ", targetDEC=" + std::to_string(targetDEC),
+            LogLevel::WARNING,
+            DeviceType::MAIN);
+        emitFrameSnapshot("target-pixel-invalid");
+        return false;
+    }
+    const cv::Point2d frameDeltaPx = imageCenterPx - imageGuideEstimatedTargetPx;
+
+    if (!guidanceAlgoV2Enabled) imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+    if (imageGuideMode == PolarImageGuidanceMode::LOCKING_SINGLE_STAR || imageGuideMode == PolarImageGuidanceMode::RELOCK) {
+        imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+    }
+
+    if (imageGuideHasLock && transformGood) {
+        cv::Point2d lp(lockedGuideStar.x, lockedGuideStar.y);
+        if (propagateTargetsByTransform(transform, lp) && isPointValid(lp)) {
+            lockedGuideStar.x = lp.x;
+            lockedGuideStar.y = lp.y;
+            if (lockStarTargetReady) {
+                cv::Point2d ltp = lockStarFixedTargetPx;
+                if (propagateTargetsByTransform(transform, ltp) && isFinitePoint(ltp)) lockStarFixedTargetPx = ltp;
+            }
+        }
+    }
+
+    if (!imageGuideHasLock) {
+        PolarImageGuidePoint selected;
+        if (selectSingleGuideStar(stars, imageW, imageH, selected)) {
+            lockedGuideStar = selected;
+            imageGuideHasLock = true;
+            imageGuideLostFrames = 0;
+            imageGuideLockConfidence = 1.0;
+            lockStarFixedTargetPx = cv::Point2d(selected.x + frameDeltaPx.x, selected.y + frameDeltaPx.y);
+            lockStarTargetReady = true;
+            imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+        } else {
+            imageGuideMode = PolarImageGuidanceMode::FALLBACK_MULTI_STAR;
+        }
+    } else {
+        const double adaptiveRadius = std::clamp(
+            imageGuideTrackBaseRadiusPxV2 + imageGuideTrackRadiusVelGainV2 * std::max(0.0, reprojErrPx),
+            imageGuideTrackBaseRadiusPxV2, imageGuideTrackMaxRadiusPxV2);
+        PolarImageGuidePoint tracked = lockedGuideStar;
+        if (refineLockByLocalTrack(stars, gray8, adaptiveRadius, tracked) &&
+            !isPointNearOrOutsideEdge(cv::Point2d(tracked.x, tracked.y), imageW, imageH, imageGuideEdgeMarginRatio)) {
+            lockedGuideStar = tracked;
+            imageGuideLostFrames = 0;
+            imageGuideLockConfidence = std::clamp(0.4 + inlierRatio * 0.6, 0.0, 1.0);
+            imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+        } else {
+            ++imageGuideLostFrames;
+            imageGuideLockConfidence = std::max(0.0, imageGuideLockConfidence - 0.15);
+            imageGuideMode = PolarImageGuidanceMode::FALLBACK_MULTI_STAR;
+        }
+    }
+
+    if (imageGuideMode == PolarImageGuidanceMode::FALLBACK_MULTI_STAR) {
+        if (imageGuideLostFrames == 1) {
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "星点丢失，尝试重定位...", -1);
+        }
+        // 修复：只有在“已有可靠锁点”时，才允许通过变换保持 TRACKING_SINGLE。
+        // 若已无锁点(hasLock=false)，必须走全图重锁星，而不能仅凭 transformGood 直接切回 single。
+        if (!imageGuideHasLock) {
+            PolarImageGuidePoint relockCandidate;
+            if (selectSingleGuideStar(stars, imageW, imageH, relockCandidate)) {
+                lockedGuideStar = relockCandidate;
+                imageGuideHasLock = true;
+                imageGuideLostFrames = 0;
+                imageGuideLockConfidence = std::max(imageGuideLockConfidence, 0.6);
+                lockStarFixedTargetPx = cv::Point2d(lockedGuideStar.x + frameDeltaPx.x, lockedGuideStar.y + frameDeltaPx.y);
+                lockStarTargetReady = true;
+                imageGuideMode = PolarImageGuidanceMode::RELOCK;
+                emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "全图重锁星成功", -1);
+            } else if (imageGuideLostFrames >= imageGuideRecoverMaxFramesV2) {
+                imageGuideMode = PolarImageGuidanceMode::REANCHOR_PLATESOLVE;
+                imageGuideReanchorStartedMs = nowMs;
+                imageGuideReanchorNeedFreshSolve = true;
+                emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "全图重锁星失败，正在重锚定解析...", -1);
+            }
+        } else if (transformGood) {
+            imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+        } else if (imageGuideLostFrames >= imageGuideRecoverMaxFramesV2) {
+            imageGuideMode = PolarImageGuidanceMode::REANCHOR_PLATESOLVE;
+            imageGuideReanchorStartedMs = nowMs;
+            imageGuideReanchorNeedFreshSolve = true;
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "星点持续丢失，正在重锚定解析...", -1);
+        }
+    }
+
+    const bool needPeriodicSolve = (imageGuideFrameId - imageGuideLastFullSolveFrameId) >= imageGuideFullSolveMaxIntervalV2;
+    if (needPeriodicSolve || !transformGood || imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) {
+        forceGlobalSolveOnce = true;
+        imageGuideLastFullSolveFrameId = imageGuideFrameId;
+    }
+
+    if (imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) {
+        if (solveTargetValid && imageGuideFreshSolveThisFrame) {
+            imageGuideEstimatedTargetPx = solveTargetPx;
+            imageGuideEstimatedTargetValid = true;
+            imageGuideReanchorNeedFreshSolve = false;
+            imageGuideLastReanchorMs = nowMs;
+            imageGuideHasLock = false;
+            lockStarTargetReady = false;
+            imageGuideMode = PolarImageGuidanceMode::LOCKING_SINGLE_STAR;
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "重锚定完成，正在重新锁定星点...", -1);
+        }
+        if (imageGuideReanchorStartedMs > 0 && nowMs - imageGuideReanchorStartedMs > imageGuideReanchorTimeoutMs) {
+            imageGuideMode = PolarImageGuidanceMode::FAILED;
+            imageGuideHasLock = false;
+            lockStarTargetReady = false;
+            emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "重锚定超时，星点锁定失败", -1);
+        }
+    }
+
+    if (imageGuideMode == PolarImageGuidanceMode::FAILED && nowMs - imageGuideLastReanchorMs >= imageGuideReanchorCooldownMs) {
+        imageGuideMode = PolarImageGuidanceMode::REANCHOR_PLATESOLVE;
+        imageGuideReanchorStartedMs = nowMs;
+        imageGuideReanchorNeedFreshSolve = true;
+        forceGlobalSolveOnce = true;
+    }
+
+    cv::Point2d currentStarPx = imageGuideHasLock ? cv::Point2d(lockedGuideStar.x, lockedGuideStar.y) : imageCenterPx;
+    cv::Point2d lockStarFinalTargetPx = imageGuideHasLock ? lockStarFixedTargetPx : imageCenterPx;
+
+    // 低置信度时，旧锁点可能已经漂离真实星点。为避免前端看到“选星点落在黑底”，
+    // 在本帧星表里将当前点吸附到最近星点，并同步目标点偏移关系。
+    if (imageGuideHasLock && !stars.empty() && imageGuideLockConfidence <= 0.05) {
+        double bestD2 = std::numeric_limits<double>::infinity();
+        PolarImageGuidePoint bestStar = stars.front();
+        for (const auto& s : stars) {
+            const double dx = s.x - currentStarPx.x;
+            const double dy = s.y - currentStarPx.y;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                bestStar = s;
+            }
+        }
+        const cv::Point2d snapped(bestStar.x, bestStar.y);
+        // 仅在偏差明显时才重置，避免微抖。
+        if (std::isfinite(bestD2) && bestD2 > 9.0) {
+            currentStarPx = snapped;
+            lockedGuideStar = bestStar;
+            lockStarFixedTargetPx = cv::Point2d(currentStarPx.x + frameDeltaPx.x, currentStarPx.y + frameDeltaPx.y);
+            lockStarFinalTargetPx = lockStarFixedTargetPx;
+            if (imageGuideMode != PolarImageGuidanceMode::DONE) {
+                imageGuideMode = PolarImageGuidanceMode::RELOCK;
+            }
+            imageGuideLockConfidence = std::max(imageGuideLockConfidence, 0.25);
+            Logger::Log(
+                "PolarAlignment: ImageGuide relock snap to nearest star current=(" +
+                    std::to_string(currentStarPx.x) + "," + std::to_string(currentStarPx.y) +
+                    ") bestD2=" + std::to_string(bestD2),
+                LogLevel::INFO, DeviceType::MAIN
+            );
+        }
+    }
+
+    cv::Point2d displayTargetPx = lockStarFinalTargetPx;
+    bool segmentedTarget = false;
+    double remainPxAfterSegment = 0.0;
+    auto makeSegmentTarget = [&](const cv::Point2d& cur, const cv::Point2d& final) {
+        cv::Point2d seg = final;
+        const double minDim = static_cast<double>(std::max(1, std::min(imageW, imageH)));
+        const double margin = std::max(8.0, minDim * imageGuideEdgeMarginRatio);
+        const double maxStepPx = std::max(28.0, minDim * 0.35);
+        const cv::Point2d d = final - cur;
+        const double dist = std::hypot(d.x, d.y);
+        if (dist <= 1e-6) return seg;
+        const double t = std::clamp(maxStepPx / dist, 0.0, 1.0);
+        seg = cur + d * t;
+        seg.x = std::clamp(seg.x, margin, static_cast<double>(imageW) - margin);
+        seg.y = std::clamp(seg.y, margin, static_cast<double>(imageH) - margin);
+        segmentedTarget = (t < 0.999);
+        remainPxAfterSegment = std::hypot(final.x - seg.x, final.y - seg.y);
+        return seg;
+    };
+
+    if (imageGuideHasLock) displayTargetPx = makeSegmentTarget(currentStarPx, lockStarFinalTargetPx);
+    const cv::Point2d arrow = displayTargetPx - currentStarPx;
+    const bool inFrame = isPointValid(currentStarPx) && isPointValid(displayTargetPx);
+    const double totalRemainPx = std::hypot(lockStarFinalTargetPx.x - currentStarPx.x, lockStarFinalTargetPx.y - currentStarPx.y);
+
+    if (imageGuideHasLock && totalRemainPx < imageGuideDoneThresholdPx) ++imageGuideStableFrames;
+    else imageGuideStableFrames = 0;
+    if (imageGuideStableFrames >= imageGuideStableFramesNeeded) imageGuideMode = PolarImageGuidanceMode::DONE;
+
+    const double arcsecPerPixel =
+        (std::isfinite(solveResult.pixelScaleArcsecPerPixel) && solveResult.pixelScaleArcsecPerPixel > 0.0)
+            ? solveResult.pixelScaleArcsecPerPixel : 0.0;
+    const double remainArcsec = (arcsecPerPixel > 0.0) ? totalRemainPx * arcsecPerPixel : 0.0;
+    const double segmentRemainArcsec = (arcsecPerPixel > 0.0) ? remainPxAfterSegment * arcsecPerPixel : 0.0;
+
+    QString statusText = "tracking_fused";
+    QString v2Mode = "tracking_fused";
+    if (imageGuideMode == PolarImageGuidanceMode::LOCKING_SINGLE_STAR) { statusText = "init"; v2Mode = "init"; }
+    else if (imageGuideMode == PolarImageGuidanceMode::FALLBACK_MULTI_STAR) { statusText = "recovering_multi"; v2Mode = "recovering_multi"; }
+    else if (imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) { statusText = "reanchor_solve"; v2Mode = "reanchor_solve"; }
+    else if (imageGuideMode == PolarImageGuidanceMode::DONE) { statusText = "done"; v2Mode = "done"; }
+    else if (imageGuideMode == PolarImageGuidanceMode::FAILED) { statusText = "failed"; v2Mode = "failed"; }
+    if (arcsecPerPixel > 0.0) statusText += QString(" rem=%1\"").arg(std::round(remainArcsec * 10.0) / 10.0, 0, 'f', 1);
+
+    guidanceV2.hasLock = imageGuideHasLock;
+    guidanceV2.lockConfidence = imageGuideLockConfidence;
+    guidanceV2.stableFrames = imageGuideStableFrames;
+    guidanceV2.lostFrames = imageGuideLostFrames;
+    guidanceV2.currentStarPx = currentStarPx;
+    guidanceV2.displayTargetPx = displayTargetPx;
+    guidanceV2.finalTargetPx = lockStarFinalTargetPx;
+    guidanceV2.inFrame = inFrame;
+    guidanceV2.transformModel = transformModel;
+    guidanceV2.inliers = inliers;
+    guidanceV2.inlierRatio = inlierRatio;
+    guidanceV2.reprojErrPx = reprojErrPx;
+
+    if (guidanceEmitV1Compat) {
+        emit polarImageGuidanceData(imageGuideFrameId, polarImageGuidanceModeToToken(imageGuideMode), imageGuideLockConfidence,
+                                    currentStarPx.x, currentStarPx.y, displayTargetPx.x, displayTargetPx.y,
+                                    arrow.x, arrow.y, inFrame, imageGuideLastReprojErrPx, imageGuideStableFrames,
+                                    arcsecPerPixel, statusText + " V1_DEPRECATED");
+    }
+    emit polarImageGuidanceDataV2(buildPolarGuidanceDataV2Payload(
+        imageGuideFrameId, v2Mode, arcsecPerPixel, statusText, arrow, remainArcsec, segmentRemainArcsec));
+
+    QByteArray jpegBase64;
+    int jpegW = 0, jpegH = 0;
+    if (buildGuidanceJpegFrame(image, jpegBase64, jpegW, jpegH)) {
+        emit polarImageGuidanceFrame(imageGuideFrameId, jpegW, jpegH, QString::fromLatin1(jpegBase64));
+    }
+
+    previousGuideStars = stars;
+    if (previousGuideStars.size() > static_cast<size_t>(imageGuideMatchMaxStars)) {
+        previousGuideStars.resize(static_cast<size_t>(imageGuideMatchMaxStars));
+    }
+    previousGuideGray8 = gray8.clone();
+    imageGuideLastFrameProcessMs = static_cast<double>(processTimer.elapsed());
+    imageGuidePerfReduced = imageGuideLastFrameProcessMs > static_cast<double>(imageGuideFastLoopBudgetMs);
+    return true;
 }

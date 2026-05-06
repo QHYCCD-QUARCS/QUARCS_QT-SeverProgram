@@ -1663,6 +1663,7 @@ public:
     int glMainCameraBinning = 1;   // 主相机 bin
 
     bool isFilterOnCamera = false; // 滤镜是否内置相机
+    int sdkMainCfwSlotsCached = 0; // SDK 主相机内置 CFW 槽位缓存（>0 有效）
     QString sdkMainCameraId;       // SDK 主相机 cameraId（用于 CFWList 等稳定 key；避免依赖 INDI 的 FILTER_NAME）
 
     /**
@@ -1891,6 +1892,8 @@ public:
     void wifiSaveFromB64Payload(const QString &b64Payload);
 
 private:
+    bool networkConfigChanging = false;
+
     /**
      * @brief 以异步方式执行 sudo 命令，避免阻塞主线程
      */
@@ -2034,11 +2037,17 @@ public:
 
 /**********************  自动极轴校准  **********************/
 public:
+    enum class PolarAlignmentCameraRole
+    {
+        MainCamera = 0,
+        Guider = 1
+    };
+
     /**
      * @brief 初始化自动极轴校准
      * @return 成功返回 true
      */
-    bool initPolarAlignment();
+    bool initPolarAlignment(PolarAlignmentCameraRole role = PolarAlignmentCameraRole::MainCamera);
 
     PolarAlignment *polarAlignment = nullptr; // 极轴校准对象
 
@@ -2057,6 +2066,16 @@ private slots:
     void onParseInfoEmitted(const QString &message);
 
 private:
+    PolarAlignmentCameraRole currentPolarAlignmentCameraRole = PolarAlignmentCameraRole::MainCamera;
+    bool polarGuiderSingleCapturePending = false;
+
+    bool isGuiderCameraSDK() const;
+    bool isGuiderCameraConnected() const;
+    int getMainCameraFocalLengthFromConfigAndMigrateIfNeeded();
+    void notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role, const QString &fitsPath);
+    void startGuiderSingleCapture(int exposureMs);
+    static PolarAlignmentCameraRole parsePolarAlignmentCameraRole(const QString &roleText);
+
     // WebSocket消息防抖机制（只保留最后一条命令）
     QString lastCommandMessage; // 存储最后一条完整消息（命令+参数）
     qint64 lastCommandTime = 0; // 存储最后一条消息的执行时间（毫秒时间戳）

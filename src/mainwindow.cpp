@@ -72,6 +72,19 @@ SdkDeviceHandle sdkCFWHandle        = nullptr;  // SDK 滤镜轮句柄
 
 static QString sdkFocuserPort;  // SDK 电调串口路径
 
+namespace {
+bool isValidObservatoryLocation(double latitude, double longitude)
+{
+    return std::isfinite(latitude) &&
+           std::isfinite(longitude) &&
+           std::abs(latitude) <= 90.0 &&
+           std::abs(longitude) <= 180.0 &&
+           !(latitude == 0.0 && longitude == 0.0) &&
+           latitude != -1.0 &&
+           longitude != -1.0;
+}
+}
+
 // ============================================================================
 // QHYCCD SDK 多相机句柄池（用于"设备分配"逻辑）
 // ============================================================================
@@ -574,6 +587,49 @@ QString readWpaCliField(const QString &field)
     return QString();
 }
 
+QString readIwLinkedSsid(const QString &ifname)
+{
+    const QStringList iwPrograms = {
+        QStringLiteral("/sbin/iw"),
+        QStringLiteral("/usr/sbin/iw"),
+        QStringLiteral("/usr/bin/iw"),
+        QStringLiteral("iw")
+    };
+
+    for (const QString &program : iwPrograms) {
+        const SyncCommandResult result = runCommandSync(program, {"dev", ifname, "link"}, 2500);
+        if (result.exitCode != 0 || result.out.isEmpty()) {
+            continue;
+        }
+
+        const QStringList lines = result.out.split('\n');
+        for (const QString &rawLine : lines) {
+            const QString line = rawLine.trimmed();
+            if (line.startsWith(QStringLiteral("Not connected"), Qt::CaseInsensitive)) {
+                return QString();
+            }
+            if (line.startsWith(QStringLiteral("SSID:"))) {
+                const QString ssid = line.mid(QStringLiteral("SSID:").length()).trimmed();
+                if (!ssid.isEmpty()) {
+                    return ssid;
+                }
+            }
+        }
+    }
+
+    return QString();
+}
+
+QString readCurrentStaSsid(const QString &ifname)
+{
+    const QString wpaSsid = readWpaCliField("ssid");
+    if (!wpaSsid.isEmpty()) {
+        return wpaSsid;
+    }
+
+    return readIwLinkedSsid(ifname);
+}
+
 QString readDefaultGateway()
 {
     const SyncCommandResult result = runCommandSync("/sbin/ip", {"route", "show", "default"}, 2000);
@@ -609,7 +665,6 @@ QString readSystemdIsActive(const QString &service)
 QJsonObject buildPreferredNetStatusJson()
 {
     const QString hotspotName = readPreferredHotspotName();
-    const QString staSsid = readWpaCliField("ssid");
     const QJsonObject currentWpaProfile = readPreferredSavedStaConfig();
     const QJsonArray savedStaProfiles = readSavedStaProfilesFromConfig();
     const QString wlanIp = readInterfaceIpv4("wlan0");
@@ -618,6 +673,16 @@ QJsonObject buildPreferredNetStatusJson()
     const QString gateway = readDefaultGateway();
     const QString hostapdState = readSystemdIsActive(QString::fromUtf8(kPreferredHostapdService));
     const QString wpaState = readWpaCliField("wpa_state");
+    QString staSsid = readCurrentStaSsid("wlan0");
+    if (staSsid.isEmpty() && !wlanIp.isEmpty()) {
+        const QString configuredSsid = currentWpaProfile.value("ssid").toString().trimmed();
+        const bool explicitlyDisconnected =
+            wpaState.compare(QStringLiteral("DISCONNECTED"), Qt::CaseInsensitive) == 0 ||
+            wpaState.compare(QStringLiteral("INACTIVE"), Qt::CaseInsensitive) == 0;
+        if (!configuredSsid.isEmpty() && !explicitlyDisconnected) {
+            staSsid = configuredSsid;
+        }
+    }
 
     QString mode = "ap";
     if (hostapdState == "active" && !staSsid.isEmpty() && !wlanIp.isEmpty()) {
@@ -1484,6 +1549,91 @@ bool MainWindow::isMainCameraConnected()
     
     // INDI 模式：检查 INDI 设备指针是否有效
     return dpMainCamera != nullptr;
+}
+
+bool MainWindow::isGuiderCameraSDK() const
+{
+    return (systemdevicelist.system_devices.size() > 1 &&
+            systemdevicelist.system_devices[1].isSDKConnect &&
+            sdkGuiderHandle != nullptr);
+}
+
+bool MainWindow::isGuiderCameraConnected() const
+{
+    if (systemdevicelist.system_devices.size() > 1 &&
+        systemdevicelist.system_devices[1].isSDKConnect)
+    {
+        return sdkGuiderHandle != nullptr;
+    }
+    return dpGuider != nullptr;
+}
+
+MainWindow::PolarAlignmentCameraRole MainWindow::parsePolarAlignmentCameraRole(const QString &roleText)
+{
+    const QString normalized = roleText.trimmed().toLower();
+    if (normalized == "guider")
+        return PolarAlignmentCameraRole::Guider;
+    return PolarAlignmentCameraRole::MainCamera;
+}
+
+int MainWindow::getMainCameraFocalLengthFromConfigAndMigrateIfNeeded()
+{
+    if (glFocalLength > 0)
+        return glFocalLength;
+
+    std::unordered_map<std::string, std::string> config;
+    Tools::readClientSettings("config/config.ini", config);
+
+    QString mainFocal;
+    auto itMain = config.find("MainCameraFocalLength");
+    if (itMain != config.end())
+    {
+        mainFocal = QString::fromStdString(itMain->second).trimmed();
+    }
+    else
+    {
+        auto itLegacy = config.find("FocalLength");
+        if (itLegacy != config.end())
+        {
+            mainFocal = QString::fromStdString(itLegacy->second).trimmed();
+            if (!mainFocal.isEmpty())
+            {
+                setClientSettings("MainCameraFocalLength", mainFocal);
+                Logger::Log("Migrate focal length config: FocalLength -> MainCameraFocalLength = " +
+                                mainFocal.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+    }
+
+    bool ok = false;
+    const int focal = mainFocal.toInt(&ok);
+    if (ok && focal > 0)
+    {
+        glFocalLength = focal;
+        return focal;
+    }
+    return 0;
+}
+
+void MainWindow::notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role, const QString &fitsPath)
+{
+    if (polarAlignment == nullptr || !polarAlignment->isRunning())
+        return;
+
+    if (role != currentPolarAlignmentCameraRole)
+        return;
+
+    const QString normalizedPath = fitsPath.trimmed();
+    if (normalizedPath.isEmpty())
+        return;
+
+    polarAlignment->setCapturedImagePath(normalizedPath);
+    polarAlignment->setCaptureEnd(true);
+    Logger::Log("PolarAlignment capture ready | role=" +
+                    std::string(role == PolarAlignmentCameraRole::Guider ? "Guider" : "MainCamera") +
+                    " | fits=" + normalizedPath.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
 }
 
 /**
@@ -3340,12 +3490,20 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 if (sdkGuiderExposureTimer)
                     sdkGuiderExposureTimer->stop();
-                sdkGuiderFrameTaskInFlight = false;
-                SdkCommand abortCmd;
-                abortCmd.type = SdkCommandType::Custom;
-                abortCmd.name = "CancelExposure";
-                abortCmd.payload = std::any();
-                SdkManager::instance().callByHandle(sdkGuiderHandle, abortCmd);
+                // Do not clear sdkGuiderFrameTaskInFlight here: a GetSingleFrame task may
+                // still be inside the vendor SDK. Forcing the flag open allows another
+                // QHY call on the same handle and can crash libqhyccd.
+                const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+                if (sdkCamExec && sdkCamExec->isRunning())
+                {
+                    sdkCamExec->post([handleSnap]() {
+                        SdkCommand abortCmd;
+                        abortCmd.type = SdkCommandType::Custom;
+                        abortCmd.name = "CancelExposure";
+                        abortCmd.payload = std::any();
+                        SdkManager::instance().callByHandle(handleSnap, abortCmd);
+                    });
+                }
             }
             else if (indi_Client && dpGuider)
             {
@@ -4110,11 +4268,28 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             glFocalLength = ConfigValue.toInt();
         }
+        else if (ConfigName == "MainCameraFocalLength")
+        {
+            glFocalLength = ConfigValue.toInt();
+        }
+        else if (ConfigName == "GuiderFocalLength")
+        {
+            guiderFocalLengthMm = ConfigValue.toDouble();
+        }
+        if (wsThread != nullptr)
+        {
+            if (ConfigName == "FocalLength" || ConfigName == "MainCameraFocalLength")
+            {
+                emit wsThread->sendMessageToClient("ConfigureRecovery:MainCameraFocalLength:" + QString::number(glFocalLength));
+            }
+            else if (ConfigName == "GuiderFocalLength")
+            {
+                emit wsThread->sendMessageToClient("ConfigureRecovery:GuiderFocalLength:" + QString::number(guiderFocalLengthMm, 'g', 12));
+            }
+        }
 
         Logger::Log("saveToConfigFile finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
-
-    // PHD2 已移除：不再支持 GuiderFocalLength / MultiStarGuider / GuiderPixelSize / CalibrationDuration / RaAggression / DecAggression
 
     else if (message == "RestartRaspberryPi")
     {
@@ -4129,9 +4304,42 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("ShutdownRaspberryPi finish!", LogLevel::DEBUG, DeviceType::MAIN);
     }
 
+    else if (parts.size() == 2 && parts[0].trimmed() == "MainCameraFocalLength")
+    {
+        const QString v = parts[1].trimmed();
+        bool ok = false;
+        const int focal = v.toInt(&ok);
+        if (ok && focal > 0)
+        {
+            setClientSettings("MainCameraFocalLength", QString::number(focal));
+            Logger::Log("MainCameraFocalLength updated: " + std::to_string(glFocalLength),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+        else
+        {
+            Logger::Log("MainCameraFocalLength ignored because value is invalid: " + v.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderFocalLength")
+    {
+        const QString v = parts[1].trimmed();
+        bool ok = false;
+        const double focal = v.toDouble(&ok);
+        if (ok && focal > 0.0)
+        {
+            setClientSettings("GuiderFocalLength", QString::number(focal, 'g', 12));
+            Logger::Log("GuiderFocalLength updated: " + std::to_string(guiderFocalLengthMm),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
+        else
+        {
+            Logger::Log("GuiderFocalLength ignored because value is invalid: " + v.toStdString(),
+                        LogLevel::WARNING, DeviceType::GUIDER);
+        }
+    }
     else if (parts.size() == 2 &&
-             (parts[0].trimmed() == "GuiderFocalLength" ||
-              parts[0].trimmed() == "MultiStarGuider" ||
+             (parts[0].trimmed() == "MultiStarGuider" ||
               parts[0].trimmed() == "GuiderPixelSize" ||
               parts[0].trimmed() == "CalibrationDuration" ||
               parts[0].trimmed() == "RaAggression" ||
@@ -4618,7 +4826,11 @@ void MainWindow::onMessageReceived(const QString &message)
     }
     else if (parts[0].trimmed() == "StartAutoPolarAlignment")
     {
-        Logger::Log("StartAutoPolarAlignment ...", LogLevel::DEBUG, DeviceType::MAIN);
+        const QString roleText = (parts.size() >= 2) ? parts[1].trimmed() : QStringLiteral("MainCamera");
+        currentPolarAlignmentCameraRole = parsePolarAlignmentCameraRole(roleText);
+        Logger::Log("StartAutoPolarAlignment ... role=" +
+                        std::string(currentPolarAlignmentCameraRole == PolarAlignmentCameraRole::Guider ? "Guider" : "MainCamera"),
+                    LogLevel::DEBUG, DeviceType::MAIN);
         if (polarAlignment != nullptr)
         {
             polarAlignment->stopPolarAlignment();
@@ -4631,7 +4843,32 @@ void MainWindow::onMessageReceived(const QString &message)
             Logger::Log("ResetAutoPolarAlignment: polarAlignment is nullptr", LogLevel::WARNING, DeviceType::MAIN);
         }
 
-        bool isSuccess = initPolarAlignment();
+        // 从客户端配置同步自动极轴解析模式到模块环境变量。
+        {
+            std::unordered_map<std::string, std::string> config;
+            Tools::readClientSettings("config/config.ini", config);
+
+            auto normalizeGuidanceMode = [](const QString& raw) -> QString {
+                const QString v = raw.trimmed().toLower();
+                if (v == "trajectory_full" || v == "trajectory" || v == "full" ||
+                    v == "full_solve" || v == "per_frame" || v == "1") {
+                    return "trajectory_full";
+                }
+                return "guide_fast";
+            };
+
+            QString guideMode = "guide_fast";
+            auto itMode = config.find("PolarAlignmentGuidanceSolveMode");
+            if (itMode != config.end())
+            {
+                guideMode = normalizeGuidanceMode(QString::fromStdString(itMode->second));
+            }
+            qputenv("QUARCS_POLAR_GUIDANCE_SOLVE_MODE", guideMode.toUtf8());
+            Logger::Log("StartAutoPolarAlignment: PolarAlignmentGuidanceSolveMode=" + guideMode.toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+
+        bool isSuccess = initPolarAlignment(currentPolarAlignmentCameraRole);
         if (isSuccess)
         {
             // 启动自动极轴校准前，先关闭赤道仪跟踪
@@ -4869,8 +5106,17 @@ void MainWindow::switchNetMode(const QString &mode)
         return;
     }
 
+    if (networkConfigChanging) {
+        Logger::Log("switchNetMode ignored because network config is already changing",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("NetModeResult|" + m + "|fail|busy");
+        return;
+    }
+    networkConfigChanging = true;
+
     if (preferApStaStack()) {
         auto finish = [this, m](int exitCode, const QString &detail) {
+            networkConfigChanging = false;
             if (exitCode == 0) emit wsThread->sendMessageToClient("NetModeResult|" + m + "|ok");
             else emit wsThread->sendMessageToClient("NetModeResult|" + m + "|fail|" + detail.left(200));
             QTimer::singleShot(500, this, [this]() { requestNetStatus(); });
@@ -4884,22 +5130,15 @@ void MainWindow::switchNetMode(const QString &mode)
             return;
         }
 
-        runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredHostapdService)},
-                     [this, finish](int codeHostapd, const QString &outHostapd, const QString &errHostapd) {
-                         if (codeHostapd != 0) {
-                             finish(codeHostapd, (errHostapd.isEmpty() ? outHostapd : errHostapd).trimmed());
+        runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWpaService)},
+                     [this, finish](int codeWpa, const QString &outWpa, const QString &errWpa) {
+                         if (codeWpa != 0) {
+                             finish(codeWpa, (errWpa.isEmpty() ? outWpa : errWpa).trimmed());
                              return;
                          }
-                         runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWpaService)},
-                                      [this, finish](int codeWpa, const QString &outWpa, const QString &errWpa) {
-                                          if (codeWpa != 0) {
-                                              finish(codeWpa, (errWpa.isEmpty() ? outWpa : errWpa).trimmed());
-                                              return;
-                                          }
-                                          runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWlanDhcpService)},
-                                                       [finish](int codeDhcp, const QString &outDhcp, const QString &errDhcp) {
-                                                           finish(codeDhcp, (errDhcp.isEmpty() ? outDhcp : errDhcp).trimmed());
-                                                       });
+                         runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWlanDhcpService)},
+                                      [finish](int codeDhcp, const QString &outDhcp, const QString &errDhcp) {
+                                          finish(codeDhcp, (errDhcp.isEmpty() ? outDhcp : errDhcp).trimmed());
                                       });
                      });
         return;
@@ -4907,6 +5146,7 @@ void MainWindow::switchNetMode(const QString &mode)
 
     runSudoAsync("/usr/local/sbin/net-mode.sh", {m},
                  [this, m](int exitCode, const QString &out, const QString &err) {
+                     networkConfigChanging = false;
                      if (exitCode == 0) {
                          emit wsThread->sendMessageToClient("NetModeResult|" + m + "|ok");
                      } else {
@@ -5001,9 +5241,18 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
         return;
     }
 
+    if (networkConfigChanging) {
+        Logger::Log("wifiSave ignored because network config is already changing",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|busy");
+        return;
+    }
+    networkConfigChanging = true;
+
     if (preferApStaStack()) {
         QString writeErr;
         if (!writePreferredWpaSupplicantConf(ssid, psk, &writeErr)) {
+            networkConfigChanging = false;
             emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + writeErr.left(200));
             return;
         }
@@ -5013,6 +5262,7 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
             runSudoSync("/bin/chmod", {"600", QString::fromUtf8(kPreferredWpaSupplicantConf)}, 2000);
         if (chmodRes.exitCode != 0) {
             const QString detail = (chmodRes.err.isEmpty() ? chmodRes.out : chmodRes.err).trimmed();
+            networkConfigChanging = false;
             emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + detail.left(200));
             return;
         }
@@ -5020,12 +5270,14 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
         runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWpaService)},
                      [this](int codeWpa, const QString &outWpa, const QString &errWpa) {
                          if (codeWpa != 0) {
+                             networkConfigChanging = false;
                              emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" +
                                                                 (errWpa.isEmpty() ? outWpa : errWpa).trimmed().left(200));
                              return;
                          }
                          runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWlanDhcpService)},
                                       [this](int codeDhcp, const QString &outDhcp, const QString &errDhcp) {
+                                          networkConfigChanging = false;
                                           if (codeDhcp == 0) {
                                               emit wsThread->sendMessageToClient("WiFiSaveResult|save|ok");
                                           } else {
@@ -5041,6 +5293,7 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
     runSudoAsync("/usr/bin/nmcli", {"-t", "-f", "NAME", "con", "show"},
                  [this, name, ssid, psk](int exitCode, const QString &out, const QString &err) {
                      if (exitCode != 0) {
+                         networkConfigChanging = false;
                          emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + err.left(200));
                          return;
                      }
@@ -5048,10 +5301,12 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
                      const bool exists = names.contains(name);
 
                      auto finishOk = [this, name, ssid, psk]() {
+                         networkConfigChanging = false;
                          writeSavedStaProfilesToConfig(upsertSavedStaProfile(readSavedStaProfilesFromConfig(), ssid, psk, name));
                          emit wsThread->sendMessageToClient("WiFiSaveResult|save|ok");
                      };
                      auto finishFail = [this](const QString &e) {
+                         networkConfigChanging = false;
                          emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|" + e.left(200));
                      };
 
@@ -5257,8 +5512,8 @@ void MainWindow::initINDIClient()
                         {
                             if (polarAlignment->isRunning())
                             {
-                                polarAlignment->setCaptureEnd(true);
-                                Logger::Log("ExposureCompleted, but polarAlignment is not idle", LogLevel::INFO, DeviceType::MAIN);
+                                notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::MainCamera,
+                                                                 QString::fromStdString(filename));
                                 return;
                             }
                         }
@@ -5293,6 +5548,11 @@ void MainWindow::initINDIClient()
                 if (dpGuider->getDeviceName() == devname)
                 {
                     const QString fitsPath = QString::fromStdString(filename);
+                    if (polarGuiderSingleCapturePending)
+                    {
+                        notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::Guider, fitsPath);
+                        polarGuiderSingleCapturePending = false;
+                    }
 
                     // 1) 预览：从 FITS 读取单通道并拉伸为 8-bit，复用原有 saveGuiderImageAsJPG 的前端协议
                     {
@@ -5693,6 +5953,175 @@ void MainWindow::onGuiderLoopTimeout()
     guiderExposureInFlight = true;
     const double expSec = std::max(1, guiderExpMs) / 1000.0;
     Logger::Log("onGuiderLoopTimeout | taking guider exposure " + std::to_string(expSec) + "s", LogLevel::DEBUG, DeviceType::GUIDER);
+    indi_Client->takeExposure(dpGuider, expSec);
+}
+
+void MainWindow::startGuiderSingleCapture(int exposureMs)
+{
+    const int expMs = std::max(1, exposureMs);
+
+    if (isGuiderLoopExp)
+    {
+        Logger::Log("startGuiderSingleCapture | stopping guider loop before polar capture",
+                    LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            guiderCore->stopGuiding();
+            guiderCore->stopLoop();
+        }
+        isGuiderLoopExp = false;
+        if (guiderLoopTimer)
+            guiderLoopTimer->stop();
+        if (sdkGuiderExposureTimer)
+            sdkGuiderExposureTimer->stop();
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+    }
+
+    const bool guiderSdk = isGuiderCameraSDK();
+    if (guiderSdk)
+    {
+        if (!sdkCamExec || !sdkCamExec->isRunning())
+        {
+            Logger::Log("startGuiderSingleCapture | sdkCamExec is not running", LogLevel::ERROR, DeviceType::GUIDER);
+            polarGuiderSingleCapturePending = false;
+            guiderExposureInFlight = false;
+            return;
+        }
+        if (guiderExposureInFlight || sdkGuiderFrameTaskInFlight.load())
+        {
+            Logger::Log("startGuiderSingleCapture | guider exposure/readout is already in flight, retrying shortly",
+                        LogLevel::WARNING, DeviceType::GUIDER);
+            QTimer::singleShot(250, this, [this, expMs]() {
+                if (polarAlignment != nullptr && polarAlignment->isRunning() &&
+                    currentPolarAlignmentCameraRole == PolarAlignmentCameraRole::Guider)
+                {
+                    startGuiderSingleCapture(expMs);
+                }
+            });
+            return;
+        }
+
+        polarGuiderSingleCapturePending = true;
+        guiderExposureInFlight = true;
+        const double expSec = expMs / 1000.0;
+        const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+
+        sdkCamExec->post([this, handleSnap, expMs, expSec]() {
+            auto failOnMain = [this](const std::string &message) {
+                QMetaObject::invokeMethod(this, [this, message]() {
+                    Logger::Log(message, LogLevel::ERROR, DeviceType::GUIDER);
+                    polarGuiderSingleCapturePending = false;
+                    guiderExposureInFlight = false;
+                }, Qt::QueuedConnection);
+            };
+
+            SdkCommand cancelCmd;
+            cancelCmd.type = SdkCommandType::Custom;
+            cancelCmd.name = "CancelExposure";
+            cancelCmd.payload = std::any();
+            SdkManager::instance().callByHandle(handleSnap, cancelCmd);
+
+            SdkAreaInfo fullRoi;
+            bool haveFullRoi = false;
+            SdkCommand effCmd;
+            effCmd.type = SdkCommandType::Custom;
+            effCmd.name = "GetEffectiveArea";
+            effCmd.payload = std::any();
+            SdkResult effRes = SdkManager::instance().callByHandle(handleSnap, effCmd);
+            if (effRes.success)
+            {
+                try
+                {
+                    fullRoi = std::any_cast<SdkAreaInfo>(effRes.payload);
+                    haveFullRoi = (fullRoi.sizeX > 0 && fullRoi.sizeY > 0);
+                }
+                catch (const std::bad_any_cast &)
+                {
+                    haveFullRoi = false;
+                }
+            }
+            if (!haveFullRoi)
+            {
+                SdkCommand chipCmd;
+                chipCmd.type = SdkCommandType::Custom;
+                chipCmd.name = "GetChipInfo";
+                chipCmd.payload = std::any();
+                SdkResult chipRes = SdkManager::instance().callByHandle(handleSnap, chipCmd);
+                if (chipRes.success)
+                {
+                    try
+                    {
+                        SdkChipInfo chip = std::any_cast<SdkChipInfo>(chipRes.payload);
+                        fullRoi.startX = 0;
+                        fullRoi.startY = 0;
+                        fullRoi.sizeX = chip.maxImageSizeX;
+                        fullRoi.sizeY = chip.maxImageSizeY;
+                        haveFullRoi = (fullRoi.sizeX > 0 && fullRoi.sizeY > 0);
+                    }
+                    catch (const std::bad_any_cast &)
+                    {
+                        haveFullRoi = false;
+                    }
+                }
+            }
+            if (haveFullRoi)
+            {
+                SdkCommand setResCmd;
+                setResCmd.type = SdkCommandType::Custom;
+                setResCmd.name = "SetResolution";
+                setResCmd.payload = fullRoi;
+                SdkResult setResRes = SdkManager::instance().callByHandle(handleSnap, setResCmd);
+                if (!setResRes.success)
+                {
+                    Logger::Log("startGuiderSingleCapture | SDK SetResolution(full) failed: " + setResRes.message,
+                                LogLevel::WARNING, DeviceType::GUIDER);
+                }
+            }
+
+            SdkCommand setExpCmd;
+            setExpCmd.type = SdkCommandType::Custom;
+            setExpCmd.name = "SetExposure";
+            setExpCmd.payload = expSec * 1000000.0;
+            SdkResult setRes = SdkManager::instance().callByHandle(handleSnap, setExpCmd);
+            if (!setRes.success)
+            {
+                failOnMain("startGuiderSingleCapture | SDK SetExposure failed: " + setRes.message);
+                return;
+            }
+
+            SdkCommand startExpCmd;
+            startExpCmd.type = SdkCommandType::Custom;
+            startExpCmd.name = "StartSingleExposure";
+            startExpCmd.payload = std::any();
+            SdkResult startRes = SdkManager::instance().callByHandle(handleSnap, startExpCmd);
+            if (!startRes.success)
+            {
+                failOnMain("startGuiderSingleCapture | SDK StartSingleExposure failed: " + startRes.message);
+                return;
+            }
+
+            QMetaObject::invokeMethod(this, [this, expMs]() {
+                sdkGuiderExposureStartTime = QDateTime::currentMSecsSinceEpoch();
+                sdkGuiderExposureExpectedDuration = expMs;
+                if (sdkGuiderExposureTimer)
+                    sdkGuiderExposureTimer->start(expMs);
+            }, Qt::QueuedConnection);
+        });
+        return;
+    }
+
+    if (!indi_Client || dpGuider == nullptr || !dpGuider->isConnected())
+    {
+        Logger::Log("startGuiderSingleCapture | guider is not connected", LogLevel::ERROR, DeviceType::GUIDER);
+        polarGuiderSingleCapturePending = false;
+        guiderExposureInFlight = false;
+        return;
+    }
+
+    polarGuiderSingleCapturePending = true;
+    guiderExposureInFlight = true;
+    const double expSec = expMs / 1000.0;
     indi_Client->takeExposure(dpGuider, expSec);
 }
 
@@ -10161,6 +10590,9 @@ void MainWindow::ConnectAllDeviceOnce()
                 auto bindMainCameraFromPool = [&](int poolIndex) -> bool {
                     if (!sdkPoolIndexValid(poolIndex))
                         return false;
+                    // 防御：同一池索引不能重复分配给多个角色
+                    if (poolAssigned[poolIndex])
+                        return false;
 
                     poolAssigned[poolIndex] = true;
                     g_sdkMainCameraPoolIndex = poolIndex;
@@ -10196,6 +10628,9 @@ void MainWindow::ConnectAllDeviceOnce()
                 };
                 auto bindGuiderFromPool = [&](int poolIndex) -> bool {
                     if (!sdkPoolIndexValid(poolIndex))
+                        return false;
+                    // 防御：同一池索引不能重复分配给多个角色
+                    if (poolAssigned[poolIndex])
                         return false;
 
                     poolAssigned[poolIndex] = true;
@@ -10243,6 +10678,138 @@ void MainWindow::ConnectAllDeviceOnce()
                     guiderPickIndex = findPreferredPoolIndex(savedGuiderId);
                 }
 
+                // QHYCCD 自动绑定规则（仅在主相机+导星均为 SDK 且存在多相机时生效）：
+                // 1) 若仅一台是 5III 系列：5III -> Guider，另一台 -> MainCamera
+                // 2) 若两台系列相同（都 5III 或都非 5III）：分辨率高 -> MainCamera，低 -> Guider
+                const bool shouldApplyQhyAutoBindRule =
+                    mainWantsSdk && guiderWantsSdk && g_sdkQhyCamHandles.size() >= 2;
+                if (shouldApplyQhyAutoBindRule && (mainPickIndex < 0 || guiderPickIndex < 0))
+                {
+                    struct QhyCandidate
+                    {
+                        int poolIndex = -1;
+                        bool is5III = false;
+                        long long pixelCount = -1;
+                    };
+
+                    auto is5iiiSeries = [](const QString &cameraId) -> bool {
+                        return cameraId.contains("5III", Qt::CaseInsensitive);
+                    };
+                    auto readPixelCountByPoolIndex = [&](int poolIndex) -> long long {
+                        if (!sdkPoolIndexValid(poolIndex))
+                            return -1;
+                        SdkDeviceHandle handle = g_sdkQhyCamHandles[poolIndex];
+                        if (handle == nullptr)
+                            return -1;
+
+                        SdkCommand chipInfoCmd;
+                        chipInfoCmd.type = SdkCommandType::Custom;
+                        chipInfoCmd.name = "GetChipInfo";
+                        chipInfoCmd.payload = std::any();
+                        SdkResult chipInfoRes = SdkManager::instance().callByHandle(handle, chipInfoCmd);
+                        if (!chipInfoRes.success)
+                            return -1;
+                        try
+                        {
+                            SdkChipInfo chipInfo = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
+                            if (chipInfo.maxImageSizeX <= 0 || chipInfo.maxImageSizeY <= 0)
+                                return -1;
+                            return static_cast<long long>(chipInfo.maxImageSizeX) *
+                                   static_cast<long long>(chipInfo.maxImageSizeY);
+                        }
+                        catch (const std::bad_any_cast &)
+                        {
+                            return -1;
+                        }
+                    };
+
+                    std::vector<QhyCandidate> candidates;
+                    candidates.reserve(static_cast<size_t>(g_sdkQhyCamHandles.size()));
+                    for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
+                    {
+                        if (!sdkPoolIndexValid(i))
+                            continue;
+                        QhyCandidate c;
+                        c.poolIndex = i;
+                        c.is5III = is5iiiSeries(g_sdkQhyCamIds[i]);
+                        c.pixelCount = readPixelCountByPoolIndex(i);
+                        candidates.push_back(c);
+                    }
+
+                    if (candidates.size() >= 2)
+                    {
+                        int ruleMainPickIndex = -1;
+                        int ruleGuiderPickIndex = -1;
+
+                        const auto betterForMain = [&](const QhyCandidate &a, const QhyCandidate &b) -> bool {
+                            if (a.pixelCount != b.pixelCount)
+                                return a.pixelCount > b.pixelCount;
+                            return a.poolIndex < b.poolIndex;
+                        };
+                        std::sort(candidates.begin(), candidates.end(), [&](const QhyCandidate &a, const QhyCandidate &b) {
+                            if (a.is5III != b.is5III)
+                                return a.is5III && !b.is5III; // 先把 5III 放前面，便于后续取组
+                            if (a.pixelCount != b.pixelCount)
+                                return a.pixelCount > b.pixelCount;
+                            return a.poolIndex < b.poolIndex;
+                        });
+
+                        std::vector<QhyCandidate> fiveIIIGroup;
+                        std::vector<QhyCandidate> nonFiveIIIGroup;
+                        for (const auto &c : candidates)
+                        {
+                            if (c.is5III)
+                                fiveIIIGroup.push_back(c);
+                            else
+                                nonFiveIIIGroup.push_back(c);
+                        }
+
+                        if (!fiveIIIGroup.empty() && !nonFiveIIIGroup.empty())
+                        {
+                            // 混合系列：5III -> Guider；非 5III -> MainCamera
+                            const QhyCandidate guiderCandidate = fiveIIIGroup.front();
+                            const QhyCandidate mainCandidate = nonFiveIIIGroup.front();
+                            ruleGuiderPickIndex = guiderCandidate.poolIndex;
+                            ruleMainPickIndex = mainCandidate.poolIndex;
+                            Logger::Log("ConnectAllDeviceOnce | QHY auto-bind rule hit (mixed 5III/non-5III, fallback): "
+                                            "MainCamera=" +
+                                            g_sdkQhyCamIds[ruleMainPickIndex].toStdString() +
+                                            ", Guider=" + g_sdkQhyCamIds[ruleGuiderPickIndex].toStdString(),
+                                        LogLevel::INFO, DeviceType::CAMERA);
+                        }
+                        else
+                        {
+                            // 同系列：分辨率高 -> MainCamera，低 -> Guider
+                            // 用总体排序结果挑两个最高优先级候选，再按分辨率拆主/导。
+                            QhyCandidate first = candidates[0];
+                            QhyCandidate second = candidates[1];
+                            if (betterForMain(second, first))
+                                std::swap(first, second);
+                            ruleMainPickIndex = first.poolIndex;
+                            ruleGuiderPickIndex = second.poolIndex;
+                            Logger::Log("ConnectAllDeviceOnce | QHY auto-bind rule hit (same series, fallback): "
+                                            "MainCamera=" +
+                                            g_sdkQhyCamIds[ruleMainPickIndex].toStdString() +
+                                            ", Guider=" + g_sdkQhyCamIds[ruleGuiderPickIndex].toStdString(),
+                                        LogLevel::INFO, DeviceType::CAMERA);
+                        }
+
+                        // 仅填充“历史回绑缺失”的角色，不覆盖历史回绑成功的选择。
+                        if (mainPickIndex < 0)
+                        {
+                            mainPickIndex = ruleMainPickIndex;
+                            if (mainPickIndex >= 0 && mainPickIndex == guiderPickIndex)
+                                mainPickIndex = ruleGuiderPickIndex;
+                        }
+                        if (guiderPickIndex < 0)
+                        {
+                            guiderPickIndex = ruleGuiderPickIndex;
+                            if (guiderPickIndex >= 0 && guiderPickIndex == mainPickIndex)
+                                guiderPickIndex = ruleMainPickIndex;
+                        }
+                    }
+                }
+
                 // 若上次保存的同一设备仍然存在，优先自动回绑；否则按剩余未分配相机顺序补齐
                 if (mainWantsSdk && mainPickIndex < 0)
                     mainPickIndex = findFirstUnassignedPoolIndexExcept(guiderPickIndex);
@@ -10251,10 +10818,29 @@ void MainWindow::ConnectAllDeviceOnce()
 
                 if (guiderWantsSdk)
                 {
+                    // 若导星与主相机命中同一台，强制改选其它未分配相机
+                    if (guiderPickIndex >= 0 && guiderPickIndex == mainPickIndex)
+                        guiderPickIndex = -1;
+                    if (guiderPickIndex >= 0 && poolAssigned[guiderPickIndex])
+                        guiderPickIndex = -1;
                     if (guiderPickIndex < 0)
                         guiderPickIndex = findFirstUnassignedPoolIndexExcept(mainPickIndex);
                     if (guiderPickIndex >= 0)
                         bindGuiderFromPool(guiderPickIndex);
+                }
+
+                // 关键修复：
+                // 全部连接路径下，即使主相机/导星镜都已自动绑定，也要把“完整相机池”同步给前端分配列表。
+                // 否则前端只收到未分配设备，导致“已绑定设备之间的交换”没有候选可选。
+                if (wsThread)
+                {
+                    for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
+                    {
+                        if (!sdkPoolIndexValid(i))
+                            continue;
+                        const int uiIdx = sdkUiIndexFromPoolIndex(i);
+                        emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + g_sdkQhyCamIds[i]);
+                    }
                 }
 
                 bool hasUnassignedCamera = false;
@@ -10734,8 +11320,8 @@ void MainWindow::ConnectAllDeviceOnce()
 
     QTimer *timer = new QTimer(this);
     timer->setInterval(1000); // 设置定时器间隔为1000毫秒
-    int time = 0;
-    connect(timer, &QTimer::timeout, this, [this, timer, &time]()
+    timer->setProperty("connectAllWaitCount", 0);
+    connect(timer, &QTimer::timeout, this, [this, timer]()
             {
         // 防御性检查：避免 indi_Client 为空导致段错误
         if (indi_Client == nullptr) {
@@ -10748,14 +11334,15 @@ void MainWindow::ConnectAllDeviceOnce()
             return;
         }
 
-        if (indi_Client->GetDeviceCount() > 0 || time >= 10) {
+        const int waitCount = timer->property("connectAllWaitCount").toInt();
+        if (indi_Client->GetDeviceCount() > 0 || waitCount >= 10) {
             timer->stop();
             timer->deleteLater();
             sleep(2);
             continueConnectAllDeviceOnce(); // 继续执行设备连接的剩余部分
         } else {
             Logger::Log("Waiting for devices...", LogLevel::INFO, DeviceType::MAIN);
-            time++;
+            timer->setProperty("connectAllWaitCount", waitCount + 1);
         } });
     timer->start();
 }
@@ -11300,6 +11887,153 @@ void MainWindow::continueConnectAllDeviceOnce()
         autoBindCcdRole("MainCamera");
         autoBindCcdRole("Guider");
         autoBindCcdRole("PoleCamera");
+
+        const bool mainBoundByHistory = (dpMainCamera != nullptr);
+        const bool guiderBoundByHistory = (dpGuider != nullptr);
+        const bool mainNeedsFallback = !mainBoundByHistory;
+        const bool guiderNeedsFallback = !guiderBoundByHistory;
+        const QString mainDriverName = (systemdevicelist.system_devices.size() > 20)
+                                           ? systemdevicelist.system_devices[20].DriverIndiName
+                                           : QString();
+        const QString guiderDriverName = (systemdevicelist.system_devices.size() > 1)
+                                             ? systemdevicelist.system_devices[1].DriverIndiName
+                                             : QString();
+        const bool isQhyDualRole =
+            mainDriverName.contains("qhy", Qt::CaseInsensitive) &&
+            guiderDriverName.contains("qhy", Qt::CaseInsensitive);
+
+        if ((mainNeedsFallback || guiderNeedsFallback) &&
+            isQhyDualRole &&
+            ConnectedCCDList.size() >= 2)
+        {
+            struct IndiQhyCandidate
+            {
+                int index = -1;
+                QString name;
+                bool is5III = false;
+                long long pixelCount = -1;
+            };
+
+            auto makeCandidate = [&](int idx) -> IndiQhyCandidate {
+                IndiQhyCandidate c;
+                c.index = idx;
+                INDI::BaseDevice *dev = indi_Client->GetDeviceFromList(idx);
+                if (dev && dev->getDeviceName())
+                {
+                    c.name = QString::fromUtf8(dev->getDeviceName());
+                    c.is5III = c.name.contains("5III", Qt::CaseInsensitive);
+                    int maxX = 0, maxY = 0, bitDepth = 0;
+                    double pixelsize = 0.0, pixelsizX = 0.0, pixelsizY = 0.0;
+                    if (indi_Client->getCCDBasicInfo(dev, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth) == 0 &&
+                        maxX > 0 && maxY > 0)
+                    {
+                        c.pixelCount = static_cast<long long>(maxX) * static_cast<long long>(maxY);
+                    }
+                }
+                return c;
+            };
+
+            std::vector<IndiQhyCandidate> pool;
+            pool.reserve(static_cast<size_t>(ConnectedCCDList.size()));
+            for (int idx : ConnectedCCDList)
+            {
+                if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                    continue;
+                if (boundCcdIndexes.contains(idx))
+                    continue;
+                pool.push_back(makeCandidate(idx));
+            }
+
+            if (!pool.empty())
+            {
+                std::sort(pool.begin(), pool.end(), [](const IndiQhyCandidate &a, const IndiQhyCandidate &b) {
+                    if (a.is5III != b.is5III)
+                        return a.is5III && !b.is5III;
+                    if (a.pixelCount != b.pixelCount)
+                        return a.pixelCount > b.pixelCount;
+                    return a.index < b.index;
+                });
+
+                int fallbackMainIdx = -1;
+                int fallbackGuiderIdx = -1;
+
+                if (mainNeedsFallback && guiderNeedsFallback && pool.size() >= 2)
+                {
+                    std::vector<IndiQhyCandidate> fiveIIIGroup;
+                    std::vector<IndiQhyCandidate> nonFiveIIIGroup;
+                    for (const auto &c : pool)
+                    {
+                        if (c.is5III)
+                            fiveIIIGroup.push_back(c);
+                        else
+                            nonFiveIIIGroup.push_back(c);
+                    }
+
+                    if (!fiveIIIGroup.empty() && !nonFiveIIIGroup.empty())
+                    {
+                        fallbackGuiderIdx = fiveIIIGroup.front().index;
+                        fallbackMainIdx = nonFiveIIIGroup.front().index;
+                    }
+                    else
+                    {
+                        // 同系列：分辨率高 -> Main，低 -> Guider
+                        const IndiQhyCandidate &high = pool[0];
+                        const IndiQhyCandidate &low = pool[1];
+                        fallbackMainIdx = high.index;
+                        fallbackGuiderIdx = low.index;
+                    }
+                }
+                else if (mainNeedsFallback)
+                {
+                    // 仅缺 Main：优先非 5III；若无则选分辨率高
+                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return !c.is5III; });
+                    fallbackMainIdx = (it != pool.end()) ? it->index : pool.front().index;
+                }
+                else if (guiderNeedsFallback)
+                {
+                    // 仅缺 Guider：优先 5III；若无则选分辨率低
+                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return c.is5III; });
+                    if (it != pool.end())
+                        fallbackGuiderIdx = it->index;
+                    else
+                        fallbackGuiderIdx = pool.back().index;
+                }
+
+                auto bindByIdx = [&](const QString &description, int idx) {
+                    if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                        return;
+                    if (boundCcdIndexes.contains(idx))
+                        return;
+                    INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+                    if (!device)
+                        return;
+                    if (description == "MainCamera")
+                    {
+                        dpMainCamera = device;
+                        if (systemdevicelist.system_devices.size() > 20)
+                            systemdevicelist.system_devices[20].isConnect = true;
+                        AfterDeviceConnect(dpMainCamera);
+                    }
+                    else if (description == "Guider")
+                    {
+                        dpGuider = device;
+                        if (systemdevicelist.system_devices.size() > 1)
+                            systemdevicelist.system_devices[1].isConnect = true;
+                        AfterDeviceConnect(dpGuider);
+                    }
+                    boundCcdIndexes.insert(idx);
+                    Logger::Log("continueConnectAllDeviceOnce | INDI QHY fallback auto-bind: " +
+                                    description.toStdString() + " -> " +
+                                    QString::fromUtf8(device->getDeviceName()).toStdString(),
+                                LogLevel::INFO, DeviceType::MAIN);
+                };
+
+                if (mainNeedsFallback)
+                    bindByIdx("MainCamera", fallbackMainIdx);
+                if (guiderNeedsFallback)
+                    bindByIdx("Guider", fallbackGuiderIdx);
+            }
+        }
 
         for (int i = 0; i < ConnectedCCDList.size(); i++)
         {
@@ -12052,6 +12786,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
             if (isFilterOnCamera)
             {
                 isFilterOnCamera = false;
+                sdkMainCfwSlotsCached = 0;
                 emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
             }
 
@@ -12268,6 +13003,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             // 记录“上一轮是否为相机内置 CFW”，用于在本轮未检测到 CFW 时清理前端残留状态
             const bool prevFilterOnCamera = isFilterOnCamera;
             isFilterOnCamera = false;
+            sdkMainCfwSlotsCached = 0;
 
             // 0. 读取本地保存的主相机参数（config/config.ini）
             // 注意：INDI 分支在 dpMainCamera == dp 时会调用 getMainCameraParameters() 并设置初始参数；
@@ -12735,6 +13471,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                                 : ("CFW (on camera) - " + sdkMainCameraId);
 
                             isFilterOnCamera = true;
+                            sdkMainCfwSlotsCached = slotsNum;
                             Logger::Log("AfterDeviceConnect | SDK CFW detected, slotsNum=" + std::to_string(slotsNum),
                                        LogLevel::INFO, DeviceType::CFW);
 
@@ -15231,22 +15968,16 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
             resetMainCameraRuntimeState();
 
             // 设备表复位：
-            // - All：复位所有 isSDKConnect 的设备（跳过电调，它已在上面处理）
-            // - 非 All：原始代码仅复位主相机槽位（保持行为一致）
-            if (cleanupAll)
+            // CameraPool/All 都应清理“相机角色”绑定状态，避免仅清主相机导致 Guider/PoleCamera 残留“已连接”。
+            for (int i = 0; i < systemdevicelist.system_devices.size(); ++i)
             {
-                for (int i = 0; i < systemdevicelist.system_devices.size(); ++i)
-                {
-                    if (!systemdevicelist.system_devices[i].isSDKConnect)
-                        continue;
-                    if (i == kIdxFocuser)
-                        continue;
+                if (!systemdevicelist.system_devices[i].isSDKConnect)
+                    continue;
+                if (i == kIdxFocuser)
+                    continue;
+                const QString desc = systemdevicelist.system_devices[i].Description;
+                if (desc == "MainCamera" || desc == "Guider" || desc == "PoleCamera")
                     resetDeviceEntry(i);
-                }
-            }
-            else
-            {
-                resetDeviceEntry(kIdxMainCamera);
             }
         }
     }
@@ -15284,6 +16015,11 @@ bool MainWindow::connectIndiServer(MyClient *client)
         sleep(1);
         // qApp->processEvents();
         Logger::Log("connectIndiServer | waiting for client connected ...", LogLevel::INFO, DeviceType::MAIN);
+    }
+    if (client->isServerConnected() == false)
+    {
+        Logger::Log("connectIndiServer | failed: client is not connected after timeout.", LogLevel::ERROR, DeviceType::MAIN);
+        return false;
     }
     sleep(1);
     client->PrintDevices();
@@ -15698,9 +16434,8 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
 
             if (polarAlignment != nullptr && polarAlignment->isRunning())
             {
-                polarAlignment->setCaptureEnd(true);
-                Logger::Log("SDK_BurstCapture | ExposureCompleted -> polarAlignment capture end",
-                            LogLevel::INFO, DeviceType::MAIN);
+                notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::MainCamera,
+                                                 QString::fromStdString(fitsPath));
                 return;
             }
 
@@ -15879,6 +16614,44 @@ void MainWindow::startMainCameraCapture(int exposureMs)
         Logger::Log("startMainCameraCapture | SDK Mode | Main Camera Status: " + glMainCameraStatu.toStdString(),
                    LogLevel::INFO, DeviceType::CAMERA);
         const qint64 sdkCaptureStageStartMs = QDateTime::currentMSecsSinceEpoch();
+
+        const bool polarAlignmentCapture =
+            (polarAlignment != nullptr && polarAlignment->isRunning());
+        int requestedSdkBin = 1;
+        if (polarAlignmentCapture) {
+            requestedSdkBin = 2;
+            if (const char* envBin = std::getenv("QUARCS_POLAR_SDK_BIN")) {
+                bool ok = false;
+                const int parsed = QString::fromLocal8Bit(envBin).trimmed().toInt(&ok);
+                if (ok) requestedSdkBin = std::clamp(parsed, 1, 4);
+            }
+        }
+
+        {
+            const qint64 setBinStartMs = QDateTime::currentMSecsSinceEpoch();
+            SdkCommand binCmd;
+            binCmd.type = SdkCommandType::Custom;
+            binCmd.name = "SetBinMode";
+            binCmd.payload = std::make_pair(requestedSdkBin, requestedSdkBin);
+            SdkResult binRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, binCmd);
+            emitCaptureTrace(QStringLiteral("backend_set_bin_done"), setBinStartMs,
+                             QString("success=%1,bin=%2,polar=%3")
+                                 .arg(binRes.success ? QStringLiteral("true") : QStringLiteral("false"))
+                                 .arg(requestedSdkBin)
+                                 .arg(polarAlignmentCapture ? QStringLiteral("true") : QStringLiteral("false")));
+            if (!binRes.success) {
+                Logger::Log("startMainCameraCapture | SDK SetBinMode(" +
+                                std::to_string(requestedSdkBin) + "," +
+                                std::to_string(requestedSdkBin) + ") failed: " + binRes.message,
+                            LogLevel::WARNING, DeviceType::CAMERA);
+            } else {
+                Logger::Log("startMainCameraCapture | SDK SetBinMode(" +
+                                std::to_string(requestedSdkBin) + "," +
+                                std::to_string(requestedSdkBin) + ") success" +
+                                (polarAlignmentCapture ? " for polar alignment" : " for normal capture"),
+                            LogLevel::INFO, DeviceType::CAMERA);
+            }
+        }
 
         // 0. 确保全分辨率 ROI/分辨率已设置（否则部分机型会出现 ret=0 但 roi=0x0，导致上层一直轮询）
         // 优先从 SDK 获取有效区域，避免依赖 UI 侧 glMainCCDSizeX/Y 的时序。
@@ -16441,11 +17214,8 @@ void MainWindow::onSdkExposureTimerTimeout()
 
                         if (polarAlignment != nullptr && polarAlignment->isRunning())
                         {
-                            // PolarAlignment 后续会立即读取 /dev/shm/ccd_simulator.fits，
-                            // 这里必须先把本次 SDK 新帧落盘，再通知拍摄结束。
-                            polarAlignment->setCaptureEnd(true);
-                            Logger::Log("onSdkExposureTimerTimeout | ExposureCompleted -> polarAlignment capture end, FITS updated: " + fitsPath,
-                                        LogLevel::INFO, DeviceType::MAIN);
+                            notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::MainCamera,
+                                                             QString::fromStdString(fitsPath));
                             return;
                         }
 
@@ -16546,7 +17316,7 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
          systemdevicelist.system_devices[1].isSDKConnect &&
          sdkGuiderHandle != nullptr);
 
-    if (!guiderSdk || !isGuiderLoopExp)
+    if (!guiderSdk || (!isGuiderLoopExp && !polarGuiderSingleCapturePending))
     {
         guiderExposureInFlight = false;
         return;
@@ -16600,6 +17370,7 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                                 LogLevel::WARNING, DeviceType::GUIDER);
                 }
                 guiderExposureInFlight = false;
+                polarGuiderSingleCapturePending = false;
                 isGuiderLoopExp = false;
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
@@ -16644,6 +17415,12 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                     // 2) 交给 GuiderCore::onNewFrame（内部会触发 PersistGuidingFits + 识别）
                     const QString sdkGuiderFitsPath = QStringLiteral("/dev/shm/guiding.fits");
                     SaveQhyFrameDataToFits(frame, sdkGuiderFitsPath.toStdString());
+
+                    if (polarGuiderSingleCapturePending)
+                    {
+                        notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::Guider, sdkGuiderFitsPath);
+                        polarGuiderSingleCapturePending = false;
+                    }
 
                     if (guiderCore)
                     {
@@ -21985,6 +22762,21 @@ void MainWindow::getClientSettings()
 
     Tools::readClientSettings(fileName, config);
 
+    const auto itMain = config.find("MainCameraFocalLength");
+    const auto itLegacy = config.find("FocalLength");
+    if (itMain == config.end() && itLegacy != config.end())
+    {
+        const QString legacyValue = QString::fromStdString(itLegacy->second).trimmed();
+        if (!legacyValue.isEmpty())
+        {
+            setClientSettings("MainCameraFocalLength", legacyValue);
+            config["MainCameraFocalLength"] = legacyValue.toStdString();
+            Logger::Log("getClientSettings | migrated FocalLength -> MainCameraFocalLength = " +
+                            legacyValue.toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+    }
+
     Logger::Log("getClientSettings | Current Config:", LogLevel::INFO, DeviceType::MAIN);
     for (const auto &pair : config)
     {
@@ -22017,9 +22809,19 @@ void MainWindow::setClientSettings(QString ConfigName, QString ConfigValue)
 
     Logger::Log("setClientSettings | Save Client Setting:" + ConfigName.toStdString() + " = " + ConfigValue.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     Tools::saveClientSettings(fileName, config);
-    if (ConfigName == "FocalLength")
+    if (ConfigName == "FocalLength" || ConfigName == "MainCameraFocalLength")
     {
         glFocalLength = ConfigValue.toDouble();
+        if (ConfigName == "FocalLength")
+        {
+            std::unordered_map<std::string, std::string> migrateConfig;
+            migrateConfig["MainCameraFocalLength"] = ConfigValue.toStdString();
+            Tools::saveClientSettings(fileName, migrateConfig);
+        }
+    }
+    if (ConfigName == "GuiderFocalLength")
+    {
+        guiderFocalLengthMm = ConfigValue.toDouble();
     }
     Logger::Log("setClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
 }
@@ -22422,14 +23224,62 @@ void MainWindow::TelescopeControl_SolveSYNC()
 
 LocationResult MainWindow::TelescopeControl_GetLocation()
 {
-    if (dpMount != NULL)
+    LocationResult result;
+
+    if (dpMount != NULL && indi_Client != nullptr)
     {
-        LocationResult result;
+        const uint32_t getLocationResult =
+            indi_Client->getLocation(dpMount, result.latitude_degree, result.longitude_degree, result.elevation);
+        if (getLocationResult == QHYCCD_SUCCESS &&
+            isValidObservatoryLocation(result.latitude_degree, result.longitude_degree))
+        {
+            observatorylatitude = result.latitude_degree;
+            observatorylongitude = result.longitude_degree;
+            if (indi_Client != nullptr)
+                indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
+            return result;
+        }
 
-        indi_Client->getLocation(dpMount, result.latitude_degree, result.longitude_degree, result.elevation);
-
-        return result;
+        Logger::Log("TelescopeControl_GetLocation | INDI location unavailable or invalid, fallback to MainWindow cached location",
+                    LogLevel::WARNING, DeviceType::MAIN);
     }
+
+    if (!isValidObservatoryLocation(observatorylatitude, observatorylongitude))
+    {
+        bool latOk = false;
+        bool lonOk = false;
+        const double cachedLat = localLat.trimmed().toDouble(&latOk);
+        const double cachedLon = localLon.trimmed().toDouble(&lonOk);
+        if (latOk && lonOk && isValidObservatoryLocation(cachedLat, cachedLon))
+        {
+            observatorylatitude = cachedLat;
+            observatorylongitude = cachedLon;
+            if (indi_Client != nullptr)
+                indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
+            Logger::Log("TelescopeControl_GetLocation | restored MainWindow cached location from localLat/localLon: Latitude: " +
+                            QString::number(observatorylatitude).toStdString() +
+                            ", Longitude: " + QString::number(observatorylongitude).toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+    }
+
+    if (isValidObservatoryLocation(observatorylatitude, observatorylongitude))
+    {
+        result.latitude_degree = observatorylatitude;
+        result.longitude_degree = observatorylongitude;
+        result.elevation = 50.0;
+        Logger::Log("TelescopeControl_GetLocation | using MainWindow cached location: Latitude: " +
+                        QString::number(result.latitude_degree).toStdString() +
+                        ", Longitude: " + QString::number(result.longitude_degree).toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+    }
+    else
+    {
+        Logger::Log("TelescopeControl_GetLocation | no valid INDI or MainWindow cached location available",
+                    LogLevel::WARNING, DeviceType::MAIN);
+    }
+
+    return result;
 }
 
 QDateTime MainWindow::TelescopeControl_GetTimeUTC()
@@ -23393,10 +24243,20 @@ void MainWindow::editHotspotName(QString newName)
 {
     Logger::Log("editHotspotName(" + newName.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
 
+    if (networkConfigChanging) {
+        Logger::Log("editHotspotName ignored because network config is already changing",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("EditHotspotNameFailed");
+        emit wsThread->sendMessageToClient("WiFiSaveResult|save|fail|busy");
+        return;
+    }
+
     if (preferApStaStack()) {
+        networkConfigChanging = true;
         QString writeErr;
         const bool writeOk = writePreferredHotspotName(newName, &writeErr);
         if (!writeOk) {
+            networkConfigChanging = false;
             emit wsThread->sendMessageToClient("EditHotspotNameFailed");
             Logger::Log("editHotspotName | write hostapd conf failed: " + writeErr.toStdString(),
                         LogLevel::WARNING, DeviceType::MAIN);
@@ -23406,6 +24266,7 @@ void MainWindow::editHotspotName(QString newName)
         const SyncCommandResult restartRes =
             runSudoSync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredHostapdService)}, 5000);
         const QString HostpotName = getHotspotName();
+        networkConfigChanging = false;
         if (restartRes.exitCode == 0 && HostpotName == newName) {
             emit wsThread->sendMessageToClient("EditHotspotNameSuccess");
         } else {
@@ -23418,6 +24279,7 @@ void MainWindow::editHotspotName(QString newName)
     }
 
     const QString connectionName = QString::fromUtf8(kLegacyHotspotConnectionName);
+    networkConfigChanging = true;
 
     // Remote control is optional. When sudoers is not configured, fail fast instead of
     // blocking the Qt backend on a password prompt.
@@ -23447,6 +24309,7 @@ void MainWindow::editHotspotName(QString newName)
         emit wsThread->sendMessageToClient("EditHotspotNameFailed");
         Logger::Log("editHotspotName | Edit Hotspot name failed.", LogLevel::WARNING, DeviceType::MAIN);
     }
+    networkConfigChanging = false;
 }
 
 QString MainWindow::getHotspotName()
@@ -23786,6 +24649,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         if (DriverType.contains("MainCamera", Qt::CaseInsensitive))
         {
             Logger::Log("ConnectDriver | Use SDK connection for MainCamera.", LogLevel::INFO, DeviceType::MAIN);
+            bool needAllocation = false;
+            bool boundByThisCall = false;
 
             // 标记主相机槽位为 SDK 连接，以便后续"全部连接"流程识别
             if (systemdevicelist.system_devices.size() > 20)
@@ -23936,6 +24801,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         g_sdkMainCameraPoolIndex = pickIndex;
                         sdkMainCameraHandle = g_sdkQhyCamHandles[pickIndex];
                         sdkMainCameraId = g_sdkQhyCamIds[pickIndex];
+                        boundByThisCall = true;
 
                         Tools::systemDeviceList().currentDeviceCode = static_cast<int>(SystemNumber::MainCamera1);
                         if (systemdevicelist.system_devices.size() > 20)
@@ -23965,11 +24831,21 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             systemdevicelist.system_devices[20].isConnect = false;
                             systemdevicelist.system_devices[20].isBind = false;
                         }
-                        emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                        needAllocation = true;
                     }
 
-                    emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
-                    emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                    if (boundByThisCall)
+                    {
+                        emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
+                        emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                    }
+                    else if (needAllocation)
+                    {
+                        // 多相机未分配时不要提前宣告连接成功，避免前端立刻下发曝光命令导致空句柄访问
+                        emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
+                        emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                        emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:MainCamera");
+                    }
                     return;
                 }
 
@@ -24108,13 +24984,77 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            // 5. 多相机：触发原本的设备分配窗口；单相机：自动绑定
-            if (g_sdkQhyCamHandles.size() == 1)
+            // 5) 自动选择 MainCamera：
+            //    - 优先历史回绑（保存的 DeviceIndiName）
+            //    - 若未命中：QHY 规则兜底（优先非 5III；若同系列按分辨率高）
+            int pickIndex = -1;
+            QString preferredId = systemdevicelist.system_devices.size() > 20
+                                      ? systemdevicelist.system_devices[20].DeviceIndiName
+                                      : QString();
+
+            if (!preferredId.isEmpty())
             {
-                const int poolIndex = 0;
+                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                {
+                    if (g_sdkQhyCamIds[i] == preferredId && sdkPoolIndexValid(i))
+                    {
+                        pickIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            if (pickIndex < 0 && !g_sdkQhyCamHandles.isEmpty())
+            {
+                struct QhyCand { int idx = -1; bool is5iii = false; long long pixels = -1; };
+                std::vector<QhyCand> cands;
+                cands.reserve(static_cast<size_t>(g_sdkQhyCamHandles.size()));
+                for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
+                {
+                    if (!sdkPoolIndexValid(i))
+                        continue;
+                    QhyCand c;
+                    c.idx = i;
+                    c.is5iii = g_sdkQhyCamIds[i].contains("5III", Qt::CaseInsensitive);
+                    SdkCommand chipInfoCmd;
+                    chipInfoCmd.type = SdkCommandType::Custom;
+                    chipInfoCmd.name = "GetChipInfo";
+                    chipInfoCmd.payload = std::any();
+                    SdkResult chipInfoRes = SdkManager::instance().callByHandle(g_sdkQhyCamHandles[i], chipInfoCmd);
+                    if (chipInfoRes.success)
+                    {
+                        try
+                        {
+                            SdkChipInfo chip = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
+                            if (chip.maxImageSizeX > 0 && chip.maxImageSizeY > 0)
+                                c.pixels = static_cast<long long>(chip.maxImageSizeX) * static_cast<long long>(chip.maxImageSizeY);
+                        }
+                        catch (const std::bad_any_cast &) {}
+                    }
+                    cands.push_back(c);
+                }
+                if (!cands.empty())
+                {
+                    // MainCamera：优先非 5III；若都同系列按分辨率高
+                    std::sort(cands.begin(), cands.end(), [](const QhyCand &a, const QhyCand &b) {
+                        if (a.is5iii != b.is5iii)
+                            return !a.is5iii && b.is5iii; // 非5III优先
+                        if (a.pixels != b.pixels)
+                            return a.pixels > b.pixels;
+                        return a.idx < b.idx;
+                    });
+                    pickIndex = cands.front().idx;
+                }
+            }
+
+            // 单/多相机：都先尝试自动绑定；仅选不到时弹分配窗口
+            if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
+            {
+                const int poolIndex = pickIndex;
                 g_sdkMainCameraPoolIndex = poolIndex;
                 sdkMainCameraHandle = g_sdkQhyCamHandles[poolIndex];
                 sdkMainCameraId = g_sdkQhyCamIds[poolIndex];
+                boundByThisCall = true;
 
                 Tools::systemDeviceList().currentDeviceCode = static_cast<int>(SystemNumber::MainCamera1);
                 systemdevicelist.system_devices[20].isConnect = true;
@@ -24140,19 +25080,29 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 }
 
                 AfterDeviceConnect(nullptr);
-                Logger::Log("ConnectDriver | SDK MainCamera auto-bound (single camera).", LogLevel::INFO, DeviceType::MAIN);
+                Logger::Log("ConnectDriver | SDK MainCamera auto-bound: " + sdkMainCameraId.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
             }
             else
             {
                 systemdevicelist.system_devices[20].isConnect = false;
                 systemdevicelist.system_devices[20].isBind = false;
-                emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                needAllocation = true;
                 Logger::Log("ConnectDriver | Multiple SDK cameras opened, waiting for allocation.", LogLevel::INFO, DeviceType::MAIN);
             }
 
-            // 对齐 INDI：通知前端驱动连接成功
-            emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
-            emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+            if (boundByThisCall)
+            {
+                // 对齐 INDI：通知前端驱动连接成功
+                emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
+                emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+            }
+            else if (needAllocation)
+            {
+                emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
+                emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:MainCamera");
+            }
             return;
         }
 
@@ -24160,6 +25110,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         if (DriverType.contains("Guider", Qt::CaseInsensitive))
         {
             Logger::Log("ConnectDriver | Use SDK connection for Guider.", LogLevel::INFO, DeviceType::GUIDER);
+            bool needAllocation = false;
+            bool boundByThisCall = false;
 
             // 标记导星相机槽位为 SDK 连接，以便后续流程识别
             if (systemdevicelist.system_devices.size() > 1)
@@ -24386,6 +25338,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         g_sdkGuiderPoolIndex = pickIndex;
                         sdkGuiderHandle = g_sdkQhyCamHandles[pickIndex];
                         const QString guiderId = g_sdkQhyCamIds[pickIndex];
+                        boundByThisCall = true;
 
                         if (systemdevicelist.system_devices.size() > 1)
                         {
@@ -24534,7 +25487,9 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            // 5) 单相机：自动绑定；多相机：弹出分配窗口（由 BindingDevice 处理最终绑定）
+            // 5) 自动选择 Guider：
+            //    - 优先历史回绑（保存的 DeviceIndiName）
+            //    - 若未命中：QHY 规则兜底（优先 5III；若同系列按分辨率低）
             int pickIndex = -1;
             QString preferredId = systemdevicelist.system_devices.size() > 1 ? systemdevicelist.system_devices[1].DeviceIndiName : "";
             if (preferredId.isEmpty() && systemdevicelist.system_devices.size() > 1)
@@ -24551,8 +25506,49 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     }
                 }
             }
-            if (pickIndex < 0 && g_sdkQhyCamHandles.size() == 1)
-                pickIndex = 0;
+
+            if (pickIndex < 0 && !g_sdkQhyCamHandles.isEmpty())
+            {
+                struct QhyCand { int idx = -1; bool is5iii = false; long long pixels = -1; };
+                std::vector<QhyCand> cands;
+                cands.reserve(static_cast<size_t>(g_sdkQhyCamHandles.size()));
+                for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
+                {
+                    if (!sdkPoolIndexValid(i))
+                        continue;
+                    QhyCand c;
+                    c.idx = i;
+                    c.is5iii = g_sdkQhyCamIds[i].contains("5III", Qt::CaseInsensitive);
+                    SdkCommand chipInfoCmd;
+                    chipInfoCmd.type = SdkCommandType::Custom;
+                    chipInfoCmd.name = "GetChipInfo";
+                    chipInfoCmd.payload = std::any();
+                    SdkResult chipInfoRes = SdkManager::instance().callByHandle(g_sdkQhyCamHandles[i], chipInfoCmd);
+                    if (chipInfoRes.success)
+                    {
+                        try
+                        {
+                            SdkChipInfo chip = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
+                            if (chip.maxImageSizeX > 0 && chip.maxImageSizeY > 0)
+                                c.pixels = static_cast<long long>(chip.maxImageSizeX) * static_cast<long long>(chip.maxImageSizeY);
+                        }
+                        catch (const std::bad_any_cast &) {}
+                    }
+                    cands.push_back(c);
+                }
+                if (!cands.empty())
+                {
+                    // Guider：优先 5III；若都同系列按分辨率低
+                    std::sort(cands.begin(), cands.end(), [](const QhyCand &a, const QhyCand &b) {
+                        if (a.is5iii != b.is5iii)
+                            return a.is5iii && !b.is5iii; // 5III优先
+                        if (a.pixels != b.pixels)
+                            return a.pixels < b.pixels; // 低分辨率优先给导星
+                        return a.idx < b.idx;
+                    });
+                    pickIndex = cands.front().idx;
+                }
+            }
 
             // 避免同一个句柄同时被 MainCamera/Guider 绑定
             if (pickIndex == g_sdkMainCameraPoolIndex)
@@ -24563,6 +25559,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 g_sdkGuiderPoolIndex = pickIndex;
                 sdkGuiderHandle = g_sdkQhyCamHandles[pickIndex];
                 const QString guiderId = g_sdkQhyCamIds[pickIndex];
+                boundByThisCall = true;
 
                 if (systemdevicelist.system_devices.size() > 1)
                 {
@@ -24591,13 +25588,22 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     systemdevicelist.system_devices[1].isConnect = false;
                     systemdevicelist.system_devices[1].isBind = false;
                 }
-                emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                needAllocation = true;
                 Logger::Log("ConnectDriver | Multiple SDK cameras opened, waiting for allocation (Guider).", LogLevel::INFO, DeviceType::GUIDER);
             }
 
-            // 对齐 INDI：通知前端驱动连接成功
-            emit wsThread->sendMessageToClient("AddDeviceType:Guider");
-            emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+            if (boundByThisCall)
+            {
+                // 对齐 INDI：通知前端驱动连接成功
+                emit wsThread->sendMessageToClient("AddDeviceType:Guider");
+                emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+            }
+            else if (needAllocation)
+            {
+                emit wsThread->sendMessageToClient("AddDeviceType:Guider");
+                emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:Guider");
+            }
             return;
         }
 
@@ -24830,8 +25836,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 else
                 {
                     Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") is not connected, start to connect", LogLevel::INFO, DeviceType::MAIN);
+                    QString startError;
+                    if (!Tools::startIndiDriver(DriverName, &startError))
+                    {
+                        Logger::Log("ConnectDriver | Failed to start INDI driver. Driver=" + DriverName.toStdString() +
+                                        ", Type=" + DriverType.toStdString() + ", Reason=" + startError.toStdString(),
+                                    LogLevel::ERROR, DeviceType::MAIN);
+                        emit wsThread->sendMessageToClient("ConnectDriverFailed:" + DriverType + ":Start driver failed: " + startError);
+                        return;
+                    }
                     ConnectDriverList.push_back(DriverName);
-                    Tools::startIndiDriver(DriverName);
                 }
             }
             driverCode = i;
@@ -24888,7 +25902,15 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             ConnectDriverList.removeAll(DriverName);
             return;
         }
-        Tools::startIndiDriver(DriverName);
+        QString startError;
+        if (!Tools::startIndiDriver(DriverName, &startError))
+        {
+            Logger::Log("ConnectDriver | Failed to start INDI driver for unselected device. Driver=" + DriverName.toStdString() +
+                            ", Type=" + DriverType.toStdString() + ", Reason=" + startError.toStdString(),
+                        LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectDriverFailed:" + DriverType + ":Start driver failed: " + startError);
+            return;
+        }
         ConnectDriverList.push_back(DriverName);
     }
     sleep(1);
@@ -24907,23 +25929,41 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         }
     }
     sleep(1);
+    auto hasRequestedDriver = [&]() -> bool {
+        for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(i);
+            if (device != nullptr && device->getDriverExec() == DriverName)
+                return true;
+        }
+        return false;
+    };
+
     int time = 0;
     while (time < 10)
     {
-        if (indi_Client->GetDeviceCount() > 0)
+        if (hasRequestedDriver())
         {
-            Logger::Log("ConnectDriver | Find device!", LogLevel::INFO, DeviceType::MAIN);
+            Logger::Log("ConnectDriver | Requested driver published device. Driver=" + DriverName.toStdString() +
+                            ", DeviceCount=" + std::to_string(indi_Client->GetDeviceCount()),
+                        LogLevel::INFO, DeviceType::MAIN);
             break;
         }
-        Logger::Log("ConnectDriver | Wait find device...", LogLevel::INFO, DeviceType::MAIN);
+        Logger::Log("ConnectDriver | Waiting for requested driver to publish device. Driver=" + DriverName.toStdString() +
+                        ", Type=" + DriverType.toStdString() +
+                        ", DeviceCount=" + std::to_string(indi_Client->GetDeviceCount()),
+                    LogLevel::INFO, DeviceType::MAIN);
         QThread::msleep(1000);
         time++;
     }
     sleep(1);
-    if (indi_Client->GetDeviceCount() == 0)
+    if (!hasRequestedDriver())
     {
-        Logger::Log("ConnectDriver | No device found", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectDriverFailed:No device found.");
+        Logger::Log("ConnectDriver | Requested driver did not publish any device. Driver=" + DriverName.toStdString() +
+                        ", Type=" + DriverType.toStdString() +
+                        ", TotalDeviceCount=" + std::to_string(indi_Client->GetDeviceCount()),
+                    LogLevel::WARNING, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectDriverFailed:" + DriverType + ":Driver did not publish device: " + DriverName);
         Tools::stopIndiDriver(DriverName);
         ConnectDriverList.removeAll(DriverName);
         return;
@@ -25230,7 +26270,9 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
     if (connectedDeviceIdList.size() == 0)
     {
-        Logger::Log("ConnectDriver | Driver(" + DriverName.toStdString() + ") No Device found.", LogLevel::WARNING, DeviceType::MAIN);
+        Logger::Log("ConnectDriver | Requested driver published device but no device connected. Driver=" + DriverName.toStdString() +
+                        ", Type=" + DriverType.toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
         Tools::stopIndiDriver(DriverName);
         int index = ConnectDriverList.indexOf(DriverName);
         if (index != -1)
@@ -25242,7 +26284,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         {
             Logger::Log("Driver not found in list: " + DriverName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
         }
-        emit wsThread->sendMessageToClient("ConnectDriverFailed:Driver(" + DriverName + ") No Device found.");
+        emit wsThread->sendMessageToClient("ConnectDriverFailed:" + DriverType + ":Device connection failed: " + DriverName);
         return;
     }
 
@@ -25331,6 +26373,11 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         }
         return -1;
     };
+
+    const bool requestMainCameraOnly = DriverType.contains("MainCamera", Qt::CaseInsensitive);
+    const bool requestGuiderOnly = DriverType.contains("Guider", Qt::CaseInsensitive);
+    const bool requestPoleOnly = DriverType.contains("PoleCamera", Qt::CaseInsensitive);
+    const bool requestSingleCcdRole = requestMainCameraOnly || requestGuiderOnly || requestPoleOnly;
 
     // 判断连接设备的数量,
     bool EachDeviceOne = true;
@@ -25421,14 +26468,172 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         LogLevel::INFO, DeviceType::MAIN);
         };
 
-        autoBindCcdRole("MainCamera");
-        autoBindCcdRole("Guider");
-        autoBindCcdRole("PoleCamera");
+        if (requestSingleCcdRole)
+        {
+            if (requestMainCameraOnly)
+                autoBindCcdRole("MainCamera");
+            else if (requestGuiderOnly)
+                autoBindCcdRole("Guider");
+            else if (requestPoleOnly)
+                autoBindCcdRole("PoleCamera");
+        }
+        else
+        {
+            autoBindCcdRole("MainCamera");
+            autoBindCcdRole("Guider");
+            autoBindCcdRole("PoleCamera");
+        }
+
+        const bool mainBoundByHistory = (dpMainCamera != nullptr);
+        const bool guiderBoundByHistory = (dpGuider != nullptr);
+        const bool mainNeedsFallback = !mainBoundByHistory && (!requestSingleCcdRole || requestMainCameraOnly);
+        const bool guiderNeedsFallback = !guiderBoundByHistory && (!requestSingleCcdRole || requestGuiderOnly);
+        const QString mainDriverName = (systemdevicelist.system_devices.size() > 20)
+                                           ? systemdevicelist.system_devices[20].DriverIndiName
+                                           : QString();
+        const QString guiderDriverName = (systemdevicelist.system_devices.size() > 1)
+                                             ? systemdevicelist.system_devices[1].DriverIndiName
+                                             : QString();
+        const bool isQhyDualRole =
+            mainDriverName.contains("qhy", Qt::CaseInsensitive) &&
+            guiderDriverName.contains("qhy", Qt::CaseInsensitive);
+
+        if ((mainNeedsFallback || guiderNeedsFallback) &&
+            isQhyDualRole &&
+            ConnectedCCDList.size() >= 2)
+        {
+            struct IndiQhyCandidate
+            {
+                int index = -1;
+                QString name;
+                bool is5III = false;
+                long long pixelCount = -1;
+            };
+
+            auto makeCandidate = [&](int idx) -> IndiQhyCandidate {
+                IndiQhyCandidate c;
+                c.index = idx;
+                INDI::BaseDevice *dev = indi_Client->GetDeviceFromList(idx);
+                if (dev && dev->getDeviceName())
+                {
+                    c.name = QString::fromUtf8(dev->getDeviceName());
+                    c.is5III = c.name.contains("5III", Qt::CaseInsensitive);
+                    int maxX = 0, maxY = 0, bitDepth = 0;
+                    double pixelsize = 0.0, pixelsizX = 0.0, pixelsizY = 0.0;
+                    if (indi_Client->getCCDBasicInfo(dev, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth) == 0 &&
+                        maxX > 0 && maxY > 0)
+                    {
+                        c.pixelCount = static_cast<long long>(maxX) * static_cast<long long>(maxY);
+                    }
+                }
+                return c;
+            };
+
+            std::vector<IndiQhyCandidate> pool;
+            pool.reserve(static_cast<size_t>(ConnectedCCDList.size()));
+            for (int idx : ConnectedCCDList)
+            {
+                if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                    continue;
+                if (boundCcdIndexes.contains(idx))
+                    continue;
+                pool.push_back(makeCandidate(idx));
+            }
+
+            if (!pool.empty())
+            {
+                std::sort(pool.begin(), pool.end(), [](const IndiQhyCandidate &a, const IndiQhyCandidate &b) {
+                    if (a.is5III != b.is5III)
+                        return a.is5III && !b.is5III;
+                    if (a.pixelCount != b.pixelCount)
+                        return a.pixelCount > b.pixelCount;
+                    return a.index < b.index;
+                });
+
+                int fallbackMainIdx = -1;
+                int fallbackGuiderIdx = -1;
+
+                if (mainNeedsFallback && guiderNeedsFallback && pool.size() >= 2)
+                {
+                    std::vector<IndiQhyCandidate> fiveIIIGroup;
+                    std::vector<IndiQhyCandidate> nonFiveIIIGroup;
+                    for (const auto &c : pool)
+                    {
+                        if (c.is5III)
+                            fiveIIIGroup.push_back(c);
+                        else
+                            nonFiveIIIGroup.push_back(c);
+                    }
+
+                    if (!fiveIIIGroup.empty() && !nonFiveIIIGroup.empty())
+                    {
+                        fallbackGuiderIdx = fiveIIIGroup.front().index;
+                        fallbackMainIdx = nonFiveIIIGroup.front().index;
+                    }
+                    else
+                    {
+                        const IndiQhyCandidate &high = pool[0];
+                        const IndiQhyCandidate &low = pool[1];
+                        fallbackMainIdx = high.index;
+                        fallbackGuiderIdx = low.index;
+                    }
+                }
+                else if (mainNeedsFallback)
+                {
+                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return !c.is5III; });
+                    fallbackMainIdx = (it != pool.end()) ? it->index : pool.front().index;
+                }
+                else if (guiderNeedsFallback)
+                {
+                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return c.is5III; });
+                    if (it != pool.end())
+                        fallbackGuiderIdx = it->index;
+                    else
+                        fallbackGuiderIdx = pool.back().index;
+                }
+
+                auto bindByIdx = [&](const QString &description, int idx) {
+                    if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                        return;
+                    if (boundCcdIndexes.contains(idx))
+                        return;
+                    INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+                    if (!device)
+                        return;
+                    if (description == "MainCamera")
+                    {
+                        dpMainCamera = device;
+                        if (systemdevicelist.system_devices.size() > 20)
+                            systemdevicelist.system_devices[20].isConnect = true;
+                        AfterDeviceConnect(dpMainCamera);
+                    }
+                    else if (description == "Guider")
+                    {
+                        dpGuider = device;
+                        if (systemdevicelist.system_devices.size() > 1)
+                            systemdevicelist.system_devices[1].isConnect = true;
+                        AfterDeviceConnect(dpGuider);
+                    }
+                    boundCcdIndexes.insert(idx);
+                    Logger::Log("ConnectDriver | INDI QHY fallback auto-bind: " +
+                                    description.toStdString() + " -> " +
+                                    QString::fromUtf8(device->getDeviceName()).toStdString(),
+                                LogLevel::INFO, DeviceType::MAIN);
+                };
+
+                if (mainNeedsFallback)
+                    bindByIdx("MainCamera", fallbackMainIdx);
+                if (guiderNeedsFallback)
+                    bindByIdx("Guider", fallbackGuiderIdx);
+            }
+        }
 
         for (int i = 0; i < ConnectedCCDList.size(); i++)
         {
             if (boundCcdIndexes.contains(ConnectedCCDList[i]))
                 continue;
+            if (requestSingleCcdRole)
+                continue; // 单角色连接时，不因为同驱动其它 CCD 触发分配窗口
             // 修复：检查索引有效性
             if (ConnectedCCDList[i] >= 0 && ConnectedCCDList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[i]);
@@ -25708,56 +26913,30 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 // 保留 cameraId，便于下次发现同一设备时自动回绑
             }
 
-            // 若这是最后一个使用相机 SDK 的设备，则释放全局资源（ReleaseSdkResource）
-            // 说明：导星相机可能是唯一使用 SDK 的设备；若不释放会导致“所有设备都断开但 SDK 仍占用”。
-            auto isSdkOpenedByDeviceType = [&](int idx) -> bool {
-                switch (idx)
-                {
-                case static_cast<int>(SystemNumber::MainCamera1):
-                    return sdkMainCameraHandle != nullptr;
-                case static_cast<int>(SystemNumber::Mount):
-                    return sdkMountHandle != nullptr;
-                case static_cast<int>(SystemNumber::PoleCamera):
-                    return sdkPoleScopeHandle != nullptr;
-                case static_cast<int>(SystemNumber::Focuser1):
-                    return sdkFocuserHandle != nullptr;
-                default:
-                    return false;
-                }
-            };
-
-            bool anyOtherUsingSDK = false;
-            const int kGuiderIdx = static_cast<int>(SystemNumber::Guider);
-            for (int i = 0; i < systemdevicelist.system_devices.size(); ++i)
-            {
-                if (i == kGuiderIdx)
-                    continue;
-                const auto &dev = systemdevicelist.system_devices[i];
-                if (dev.isSDKConnect && dev.isConnect && isSdkOpenedByDeviceType(i))
-                {
-                    anyOtherUsingSDK = true;
-                    break;
-                }
-            }
-            if (!anyOtherUsingSDK)
-            {
-                cleanupQhySdkPoolAndResource("DisconnectDevice: Guider no other device using SDK", "CameraPool");
-            }
+            // 相机 SDK（QHYCCD）由主相机/导星等角色共享句柄池。
+            // 按需求：断开任一相机角色时，统一清理相机池并释放 SDK 资源，避免另一个角色残留占用。
+            const bool shouldNotifyMainCameraDisconnected =
+                (systemdevicelist.system_devices.size() > 20 &&
+                 systemdevicelist.system_devices[20].isSDKConnect &&
+                 (systemdevicelist.system_devices[20].isConnect || sdkMainCameraHandle != nullptr));
+            cleanupQhySdkPoolAndResource("DisconnectDevice: Guider -> cleanup shared SDK camera pool", "CameraPool");
 
             eraseConnectedDeviceByType("Guider");
+            eraseConnectedDeviceByType("MainCamera");
             QStringList removeNames;
             appendDeleteCandidate(removeNames, DeviceName);
             if (systemdevicelist.system_devices.size() > 1)
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
-            if (!anyOtherUsingSDK)
-            {
-                for (const auto &name : sdkPoolNamesBeforeCleanup)
-                    appendDeleteCandidate(removeNames, name);
-            }
+            if (shouldNotifyMainCameraDisconnected && systemdevicelist.system_devices.size() > 20)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
+            for (const auto &name : sdkPoolNamesBeforeCleanup)
+                appendDeleteCandidate(removeNames, name);
             emitDeleteDeviceAllocationListBatch(removeNames);
             if (wsThread != nullptr)
             {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
+                if (shouldNotifyMainCameraDisconnected)
+                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
             }
             Tools::saveSystemDeviceList(systemdevicelist);
             Logger::Log("DisconnectDevice | Guider (SDK) disconnected.", LogLevel::INFO, DeviceType::GUIDER);
@@ -25795,6 +26974,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             if (isFilterOnCamera)
             {
                 isFilterOnCamera = false;
+                sdkMainCfwSlotsCached = 0;
                 if (wsThread != nullptr)
                     emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
             }
@@ -25851,265 +27031,34 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             glMainCameraStatu = "IDLE";
             ShootStatus = "IDLE";
 
-            // 5) 判断是否仍有其它 DeviceType 在使用“通过 SDK 打开”的设备（句柄仍在被占用）
-            // 说明：
-            // - dev.isSDKConnect: 该 DeviceType 选择 SDK 模式
-            // - dev.isConnect:    该 DeviceType 当前处于已连接
-            // - 对于“是否真的占用 SDK 资源”，以对应的 SDK 句柄是否非空为准（避免仅凭 isSDKConnect/isConnect 误判）
-            const int kMainCameraIdx = static_cast<int>(SystemNumber::MainCamera1);
-            auto isSdkOpenedByDeviceType = [&](int idx) -> bool {
-                switch (idx)
-                {
-                case static_cast<int>(SystemNumber::Mount):
-                    return sdkMountHandle != nullptr;
-                case static_cast<int>(SystemNumber::Guider):
-                    return sdkGuiderHandle != nullptr;
-                case static_cast<int>(SystemNumber::PoleCamera):
-                    return sdkPoleScopeHandle != nullptr;
-                case static_cast<int>(SystemNumber::Focuser1):
-                    return sdkFocuserHandle != nullptr;
-                default:
-                    return false;
-                }
-            };
+            const bool shouldNotifyGuiderDisconnected =
+                (systemdevicelist.system_devices.size() > 1 &&
+                 systemdevicelist.system_devices[1].isSDKConnect &&
+                 (systemdevicelist.system_devices[1].isConnect || sdkGuiderHandle != nullptr));
 
-            bool anyOtherUsingSDK = false;
-            for (int i = 0; i < systemdevicelist.system_devices.size(); ++i)
-            {
-                if (i == kMainCameraIdx)
-                    continue;
-                const auto &dev = systemdevicelist.system_devices[i];
-                if (dev.isSDKConnect && dev.isConnect && isSdkOpenedByDeviceType(i))
-                {
-                    anyOtherUsingSDK = true;
-                    break;
-                }
-            }
-
-            // 6) 若没有其它设备使用：关闭池中所有句柄并释放 SDK 全局资源；否则：重新 open 该相机并放回待分配列表
-            if (!anyOtherUsingSDK)
-            {
-                Logger::Log("DisconnectDevice | No other SDK device is using resource. Close all SDK handles and release SDK resource.", LogLevel::INFO, DeviceType::MAIN);
-
-                // 使用异步清理函数，避免主线程阻塞
-                // 这里应释放 SDK 全局资源：需要走 CameraPool 路径（会 close 所有句柄 + ReleaseSdkResource）
-                cleanupQhySdkPoolAndResource("DisconnectDevice: no other device using SDK", "CameraPool");
-
-                // 保留 isSDKConnect（模式选择），仅清理连接状态；避免下次连接又默认回到 INDI
-            }
-            else
-            {
-                // 仍有其它设备使用 SDK：
-                // - 若“同一 SDK 驱动”仍被其它 DeviceType 占用，则提示用户是否“断开该驱动”（从而关闭该 SDK 下所有设备并释放 SDK 资源）
-                // - 若用户取消断开驱动：我们会把主相机自动 reopen 回待分配池，便于继续分配/绑定
-                const QString mainSdkDriver = getSDKDriverName("MainCamera");
-                QStringList otherTypesUsingSameSdk;
-                if (!mainSdkDriver.isEmpty())
-                {
-                    for (int i = 0; i < systemdevicelist.system_devices.size(); ++i)
-                    {
-                        if (i == kMainCameraIdx)
-                            continue;
-                        const auto &dev = systemdevicelist.system_devices[i];
-                        if (!dev.isSDKConnect || !dev.isConnect || !isSdkOpenedByDeviceType(i))
-                            continue;
-                        const QString otherSdk = getSDKDriverName(dev.Description);
-                        if (!otherSdk.isEmpty() && otherSdk == mainSdkDriver)
-                        {
-                            otherTypesUsingSameSdk << dev.Description;
-                        }
-                    }
-                }
-
-                if (!otherTypesUsingSameSdk.isEmpty() && wsThread != nullptr)
-                {
-                    // 这里走“断开驱动确认”既有协议：
-                    // - 前端收到后会弹窗确认
-                    // - 用户确认后会发回：disconnectSelectDriver:<DriverIndiName>
-                    // - 后端统一走 disconnectDriver()，从而断开该驱动下所有设备并释放 SDK 资源
-                    QString disconnectdriverName;
-                    if (kMainCameraIdx >= 0 && kMainCameraIdx < systemdevicelist.system_devices.size())
-                        disconnectdriverName = systemdevicelist.system_devices[kMainCameraIdx].DriverIndiName;
-
-                    if (!disconnectdriverName.isEmpty())
-                    {
-                        Logger::Log("DisconnectDevice | Other device(s) still using same SDK (" + mainSdkDriver.toStdString() +
-                                        "), ask user whether to disconnect driver: " + disconnectdriverName.toStdString() +
-                                        " | Users: " + otherTypesUsingSameSdk.join(",").toStdString(),
-                                    LogLevel::INFO, DeviceType::MAIN);
-                        emit wsThread->sendMessageToClient("disconnectDevicehasortherdevice:" + disconnectdriverName);
-                        // 兼容前端：若用户点确认，会走 disconnectSelectDriver->disconnectDriver（会关闭池并释放资源）。
-                        // 同时把主相机 reopen 回待分配池：若用户点取消，也能继续分配主相机（confirm 时会再被统一关闭）。
-                        if (!closedCameraId.isEmpty())
-                        {
-                            const QString driverName = getSDKDriverName("MainCamera");
-                            if (driverName.isEmpty()) {
-                                Logger::Log("DisconnectDevice | Cannot get SDK driver name for MainCamera (prompt reopen)",
-                                            LogLevel::ERROR, DeviceType::MAIN);
-                                return;
-                            }
-                            const std::string driverNameStd = driverName.toStdString();
-                            const std::string camIdStd = closedCameraId.toStdString();
-                            const int boundIdxSnap = boundIdx;
-                            const QString closedCameraIdSnap = closedCameraId;
-                            postToCamThread([this, driverNameStd, camIdStd, boundIdxSnap, closedCameraIdSnap]() {
-                                SdkResult reopenRes = SdkManager::instance().open(driverNameStd, camIdStd);
-                                QMetaObject::invokeMethod(this, [this, reopenRes, boundIdxSnap, closedCameraIdSnap]() {
-                                    if (reopenRes.success && reopenRes.payload.has_value())
-                                    {
-                                        int poolIndex = boundIdxSnap;
-                                        if (poolIndex < 0 || poolIndex >= g_sdkQhyCamHandles.size())
-                                        {
-                                            g_sdkQhyCamHandles.push_back(std::any_cast<SdkDeviceHandle>(reopenRes.payload));
-                                            g_sdkQhyCamIds.push_back(closedCameraIdSnap);
-                                            poolIndex = g_sdkQhyCamHandles.size() - 1;
-                                        }
-                                        else
-                                        {
-                                            g_sdkQhyCamHandles[poolIndex] = std::any_cast<SdkDeviceHandle>(reopenRes.payload);
-                                            if (poolIndex < g_sdkQhyCamIds.size())
-                                                g_sdkQhyCamIds[poolIndex] = closedCameraIdSnap;
-                                        }
-
-                                        if (wsThread)
-                                        {
-                                            const int uiIdx = sdkUiIndexFromPoolIndex(poolIndex);
-                                            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + closedCameraIdSnap);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        Logger::Log("DisconnectDevice | reopen camera failed (prompt): " + reopenRes.message,
-                                                    LogLevel::WARNING, DeviceType::MAIN);
-                                    }
-                                }, Qt::QueuedConnection);
-                            });
-                        }
-                    }
-                    else
-                    {
-                        Logger::Log("DisconnectDevice | Other device(s) using same SDK but DriverIndiName is empty, fallback to reopen into pool.",
-                                    LogLevel::WARNING, DeviceType::MAIN);
-                        // 兜底：把刚断开的相机 reopen 回池中，放入待分配列表
-                        if (!closedCameraId.isEmpty())
-                        {
-                            // 使用getSDKDriverName动态获取驱动名称
-                            const QString driverName = getSDKDriverName("MainCamera");
-                            if (driverName.isEmpty()) {
-                                Logger::Log("DisconnectDevice | Cannot get SDK driver name for MainCamera (fallback reopen)",
-                                            LogLevel::ERROR, DeviceType::MAIN);
-                                return;
-                            }
-                            const std::string driverNameStd = driverName.toStdString();
-                            const std::string camIdStd = closedCameraId.toStdString();
-                            const int boundIdxSnap = boundIdx;
-                            const QString closedCameraIdSnap = closedCameraId;
-                            postToCamThread([this, driverNameStd, camIdStd, boundIdxSnap, closedCameraIdSnap]() {
-                                SdkResult reopenRes = SdkManager::instance().open(driverNameStd, camIdStd);
-                                QMetaObject::invokeMethod(this, [this, reopenRes, boundIdxSnap, closedCameraIdSnap]() {
-                                    if (reopenRes.success && reopenRes.payload.has_value())
-                                    {
-                                        int poolIndex = boundIdxSnap;
-                                        if (poolIndex < 0 || poolIndex >= g_sdkQhyCamHandles.size())
-                                        {
-                                            g_sdkQhyCamHandles.push_back(std::any_cast<SdkDeviceHandle>(reopenRes.payload));
-                                            g_sdkQhyCamIds.push_back(closedCameraIdSnap);
-                                            poolIndex = g_sdkQhyCamHandles.size() - 1;
-                                        }
-                                        else
-                                        {
-                                            g_sdkQhyCamHandles[poolIndex] = std::any_cast<SdkDeviceHandle>(reopenRes.payload);
-                                            if (poolIndex < g_sdkQhyCamIds.size())
-                                                g_sdkQhyCamIds[poolIndex] = closedCameraIdSnap;
-                                        }
-
-                                        if (wsThread)
-                                        {
-                                            const int uiIdx = sdkUiIndexFromPoolIndex(poolIndex);
-                                            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + closedCameraIdSnap);
-                                        }
-                                    }
-                                    else
-                                    {
-                                        Logger::Log("DisconnectDevice | reopen camera failed (fallback): " + reopenRes.message,
-                                                    LogLevel::WARNING, DeviceType::MAIN);
-                                    }
-                                }, Qt::QueuedConnection);
-                            });
-                        }
-                    }
-                }
-                else
-                {
-                    // 兜底：无法确定同 SDK 使用者或前端不可用时，保持原行为：把刚断开的相机 reopen 回池中
-                    if (!closedCameraId.isEmpty())
-                    {
-                        Logger::Log("DisconnectDevice | Other SDK devices exist, reopen MainCamera into allocation pool: " + closedCameraId.toStdString(),
-                                    LogLevel::INFO, DeviceType::MAIN);
-                        // 使用getSDKDriverName动态获取驱动名称
-                        QString driverName = getSDKDriverName("MainCamera");
-                        if (driverName.isEmpty()) {
-                            Logger::Log("DisconnectDevice | Cannot get SDK driver name for MainCamera",
-                                        LogLevel::ERROR, DeviceType::MAIN);
-                            return;
-                        }
-                        // open 同样串行到 sdkCamExec，确保发生在 close 之后，避免 SDK 内部竞态
-                        const std::string driverNameStd = driverName.toStdString();
-                        const std::string camIdStd = closedCameraId.toStdString();
-                        const int boundIdxSnap = boundIdx;
-                        const QString closedCameraIdSnap = closedCameraId;
-                        postToCamThread([this, driverNameStd, camIdStd, boundIdxSnap, closedCameraIdSnap]() {
-                            SdkResult reopenRes = SdkManager::instance().open(driverNameStd, camIdStd);
-                            QMetaObject::invokeMethod(this, [this, reopenRes, boundIdxSnap, closedCameraIdSnap]() {
-                                if (reopenRes.success && reopenRes.payload.has_value())
-                                {
-                                    // 找回原来的池索引（若原索引有效），否则追加
-                                    int poolIndex = boundIdxSnap;
-                                    if (poolIndex < 0 || poolIndex >= g_sdkQhyCamHandles.size())
-                                    {
-                                        g_sdkQhyCamHandles.push_back(std::any_cast<SdkDeviceHandle>(reopenRes.payload));
-                                        g_sdkQhyCamIds.push_back(closedCameraIdSnap);
-                                        poolIndex = g_sdkQhyCamHandles.size() - 1;
-                                    }
-                                    else
-                                    {
-                                        g_sdkQhyCamHandles[poolIndex] = std::any_cast<SdkDeviceHandle>(reopenRes.payload);
-                                        if (poolIndex < g_sdkQhyCamIds.size())
-                                            g_sdkQhyCamIds[poolIndex] = closedCameraIdSnap;
-                                    }
-
-                                    if (wsThread)
-                                    {
-                                        const int uiIdx = sdkUiIndexFromPoolIndex(poolIndex);
-                                        emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + closedCameraIdSnap);
-                                    }
-                                }
-                                else
-                                {
-                                    Logger::Log("DisconnectDevice | reopen camera failed: " + reopenRes.message, LogLevel::WARNING, DeviceType::MAIN);
-                                }
-                            }, Qt::QueuedConnection);
-                        });
-                    }
-                }
-            }
+            Logger::Log("DisconnectDevice | MainCamera SDK disconnect -> cleanup shared SDK camera pool.",
+                        LogLevel::INFO, DeviceType::MAIN);
+            cleanupQhySdkPoolAndResource("DisconnectDevice: MainCamera -> cleanup shared SDK camera pool", "CameraPool");
 
             // 7) 通知前端断开成功（SDK 模式不会命中 INDI 的循环）
             eraseConnectedDeviceByType("MainCamera");
+            if (shouldNotifyGuiderDisconnected)
+                eraseConnectedDeviceByType("Guider");
             QStringList removeNames;
             appendDeleteCandidate(removeNames, DeviceName);
             appendDeleteCandidate(removeNames, closedCameraId);
             if (systemdevicelist.system_devices.size() > 20)
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
-            if (!anyOtherUsingSDK)
-            {
-                for (const auto &name : sdkPoolNamesBeforeCleanup)
-                    appendDeleteCandidate(removeNames, name);
-            }
+            if (shouldNotifyGuiderDisconnected && systemdevicelist.system_devices.size() > 1)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
+            for (const auto &name : sdkPoolNamesBeforeCleanup)
+                appendDeleteCandidate(removeNames, name);
             emitDeleteDeviceAllocationListBatch(removeNames);
             if (wsThread != nullptr)
             {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
+                if (shouldNotifyGuiderDisconnected)
+                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
             }
 
             // 关键修复：
@@ -26291,6 +27240,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 if (DeviceType == "MainCamera" && isFilterOnCamera)
                 {
                     isFilterOnCamera = false;
+                    sdkMainCfwSlotsCached = 0;
                     if (wsThread != nullptr)
                         emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
                 }
@@ -26751,61 +27701,35 @@ void MainWindow::loadBindDeviceTypeList()
                 }
                 else
                 {
-                    // SDK 模式下：刷新/重连恢复时也需要把“相机内置 CFW”同步给前端。
-                    // 否则前端只会看到主相机已连接，但 CFW 入口不会出现（缺少 CFWPositionMax / getCFWList 触发链路）。
+                    // SDK 模式下不在此处重复调用 IsCFWPlugged（QHY SDK 该调用可能阻塞 10~30s）。
+                    // 这里改用连接阶段（AfterDeviceConnect）缓存结果，避免“加载绑定列表”链路长时间卡顿。
                     if (sdkMainCameraHandle != nullptr)
                     {
-                        bool plugged = false;
-                        try
+                        if (isFilterOnCamera)
                         {
-                            SdkCommand plugCmd;
-                            plugCmd.type = SdkCommandType::Custom;
-                            plugCmd.name = "IsCFWPlugged";
-                            plugCmd.payload = std::any();
-                            // 直接通过设备句柄调用，无需指定驱动名称
-                SdkResult plugRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, plugCmd);
-                            if (plugRes.success && plugRes.payload.has_value())
+                            const QString cfwDisplayName = sdkMainCameraId.isEmpty()
+                                ? "CFW (on camera)"
+                                : ("CFW (on camera) - " + sdkMainCameraId);
+
+                            order += ":CFW:" + cfwDisplayName + ":" +
+                                     QString::fromLatin1("indi_qhy_ccd") + ":" +
+                                     (systemdevicelist.system_devices[i].isBind ? "true" : "false");
+
+                            if (sdkMainCfwSlotsCached > 0)
                             {
-                                plugged = std::any_cast<bool>(plugRes.payload);
+                                emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(sdkMainCfwSlotsCached));
                             }
-                        }
-                        catch (const std::bad_any_cast &)
-                        {
-                            plugged = false;
-                        }
 
-                        if (plugged)
-                        {
-                            isFilterOnCamera = true;
-                            int slotsNum = 0;
-                            std::string err;
-                            if (sdkGetCfwSlotsNum(sdkMainCameraHandle, slotsNum, &err) && slotsNum > 0)
-                            {
-                                const QString cfwDisplayName = sdkMainCameraId.isEmpty()
-                                    ? "CFW (on camera)"
-                                    : ("CFW (on camera) - " + sdkMainCameraId);
-
-                                order += ":CFW:" + cfwDisplayName + ":" +
-                                         QString::fromLatin1("indi_qhy_ccd") + ":" +
-                                         (systemdevicelist.system_devices[i].isBind ? "true" : "false");
-
-                                emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(slotsNum));
-
-                                // 若已有缓存名称列表，则直接推送一次，避免刷新后列表为空
-                                const QString key = sdkCfwStorageKey(sdkMainCameraId);
-                                const QString list = Tools::readCFWList(key);
-                                if (!list.isEmpty())
-                                    emit wsThread->sendMessageToClient("getCFWList:" + list);
-                            }
-                            else
-                            {
-                                Logger::Log("LoadBindDeviceTypeList | SDK CFW plugged but GetCFWSlotsNum failed: " + err,
-                                            LogLevel::WARNING, DeviceType::MAIN);
-                            }
+                            // 若已有缓存名称列表，则直接推送一次，避免刷新后列表为空
+                            const QString key = sdkCfwStorageKey(sdkMainCameraId);
+                            const QString list = Tools::readCFWList(key);
+                            if (!list.isEmpty())
+                                emit wsThread->sendMessageToClient("getCFWList:" + list);
                         }
                         else
                         {
-                            Logger::Log("LoadBindDeviceTypeList | MainCamera is in SDK mode, no CFW plugged", LogLevel::DEBUG, DeviceType::MAIN);
+                            Logger::Log("LoadBindDeviceTypeList | MainCamera is in SDK mode, no cached CFW state",
+                                        LogLevel::DEBUG, DeviceType::MAIN);
                         }
                     }
                     else
@@ -26834,7 +27758,9 @@ void MainWindow::loadBindDeviceList(MyClient *client)
         const QString trimmedName = name.trimmed();
         if (trimmedType.isEmpty() || trimmedName.isEmpty())
             return;
-        const QString dedupKey = trimmedType + ":" + trimmedName;
+        // 去重键必须包含 index，避免“同型号同名但不同设备”被误合并，
+        // 导致设备绑定界面看不到可交换设备。
+        const QString dedupKey = trimmedType + ":" + QString::number(index);
         if (emittedKeys.contains(dedupKey))
             return;
         emittedKeys.insert(dedupKey);
@@ -26929,6 +27855,9 @@ void MainWindow::loadBindDeviceList(MyClient *client)
             else if (iface & INDI::BaseDevice::FILTER_INTERFACE) type = "CFW";
             else if (iface & INDI::BaseDevice::TELESCOPE_INTERFACE) type = "Mount";
             else if (iface & INDI::BaseDevice::FOCUSER_INTERFACE) type = "Focuser";
+            // 待分配设备列表中暂时不展示 Mount（望远镜）项
+            if (type == "Mount")
+                continue;
             // BindDeviceList 升级为：Type:Name:Index
             appendDeviceToOrder(type, qName, i);
         }
@@ -29210,24 +30139,33 @@ void MainWindow::getLastSelectDevice()
 }
 
 /** 自动极轴校准 */
-bool MainWindow::initPolarAlignment()
+bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
 {
-    // 检查赤道仪是否连接（支持SDK和INDI模式）
-    bool mountConnected = (dpMount != nullptr) || isMountSDK();
-    
-    if (!mountConnected || !isMainCameraConnected())
+    const bool mountConnected = (dpMount != nullptr) || isMountSDK();
+    if (!mountConnected)
     {
-        Logger::Log("initPolarAlignment | dpMount or dpMainCamera is nullptr", LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,dpMount or dpMainCamera is nullptr");
+        Logger::Log("initPolarAlignment | mount is not connected", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient(
+            "StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,Mount must be connected");
         return false;
     }
-    
-    // TODO: 实现赤道仪SDK模式的支持
-    // 目前PolarAlignment类需要INDI设备指针（dpMount），在SDK模式下需要：
-    // 1. 实现isMountSDK()函数，检查赤道仪是否为SDK模式
-    // 2. 扩展PolarAlignment类以支持SDK模式，或创建SDK版本的实现
-    // 3. 在SDK模式下，通过SdkManager调用赤道仪的控制接口（移动、位置同步等）
-    // 4. 确认赤道仪在systemdevicelist.system_devices中的索引位置
+
+    if (role == PolarAlignmentCameraRole::MainCamera && !isMainCameraConnected())
+    {
+        Logger::Log("initPolarAlignment | main camera is selected but not connected", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient(
+            "StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,MainCamera is not connected");
+        return false;
+    }
+
+    if (role == PolarAlignmentCameraRole::Guider && !isGuiderCameraConnected())
+    {
+        Logger::Log("initPolarAlignment | guider is selected but not connected", LogLevel::ERROR, DeviceType::GUIDER);
+        emit wsThread->sendMessageToClient(
+            "StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,Guider is not connected");
+        return false;
+    }
+
     if (isMountSDK() && dpMount == nullptr)
     {
         Logger::Log("initPolarAlignment | SDK模式赤道仪暂不支持，请使用INDI模式", LogLevel::ERROR, DeviceType::MAIN);
@@ -29240,62 +30178,161 @@ bool MainWindow::initPolarAlignment()
         emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,indi_Client is nullptr");
         return false;
     }
-    if (glFocalLength == 0)
+
+    int selectedFocalLength = 0;
+    if (role == PolarAlignmentCameraRole::MainCamera)
     {
-        Logger::Log("initPolarAlignment | glFocalLength is 0, trying to set default value", LogLevel::WARNING, DeviceType::MAIN);
-        // 尝试从配置文件读取默认焦距
-        QMap<QString, QString> parameters = Tools::readParameters("MainCamera");
-        if (parameters.contains("FocalLength"))
+        selectedFocalLength = getMainCameraFocalLengthFromConfigAndMigrateIfNeeded();
+        if (selectedFocalLength <= 0)
         {
-            glFocalLength = parameters["FocalLength"].toInt();
-            Logger::Log("initPolarAlignment | Loaded focal length from config: " + std::to_string(glFocalLength), LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            Logger::Log("initPolarAlignment | focal length is not set, please set it in the config file", LogLevel::WARNING, DeviceType::MAIN);
+            Logger::Log("initPolarAlignment | MainCameraFocalLength is not set", LogLevel::WARNING, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,focal length is not set");
             return false;
         }
     }
-    if (observatorylatitude == 0 || observatorylongitude == 0)
+    else
     {
-        Logger::Log("initPolarAlignment | observatorylatitude or observatorylongitude is 0", LogLevel::WARNING, DeviceType::MAIN);
+        double guiderFocal = guiderFocalLengthMm;
+        if (guiderFocal <= 0.0)
+        {
+            std::unordered_map<std::string, std::string> config;
+            Tools::readClientSettings("config/config.ini", config);
+            auto it = config.find("GuiderFocalLength");
+            if (it != config.end())
+            {
+                bool ok = false;
+                const double v = QString::fromStdString(it->second).trimmed().toDouble(&ok);
+                if (ok && v > 0.0)
+                    guiderFocal = v;
+            }
+        }
+        if (guiderFocal <= 0.0)
+        {
+            Logger::Log("initPolarAlignment | GuiderFocalLength is not set", LogLevel::WARNING, DeviceType::GUIDER);
+            emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,guider focal length is not set");
+            return false;
+        }
+        guiderFocalLengthMm = guiderFocal;
+        selectedFocalLength = static_cast<int>(std::lround(guiderFocal));
     }
 
-    // 检查相机参数是否有效
-    if (glCameraSize_width <= 0 || glCameraSize_height <= 0)
+    if (!isValidObservatoryLocation(observatorylatitude, observatorylongitude))
     {
-        // 如果相机参数无效，则尝试重新获取（SDK / INDI 双通路）
-        if (!isMainCameraSDK() && dpMainCamera != nullptr)
+        bool latOk = false;
+        bool lonOk = false;
+        const double cachedLat = localLat.trimmed().toDouble(&latOk);
+        const double cachedLon = localLon.trimmed().toDouble(&lonOk);
+        if (latOk && lonOk && isValidObservatoryLocation(cachedLat, cachedLon))
         {
-            // INDI 模式：通过 INDI 获取基本信息
+            observatorylatitude = cachedLat;
+            observatorylongitude = cachedLon;
+            if (indi_Client != nullptr)
+                indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
+            Logger::Log("initPolarAlignment | using MainWindow localLat/localLon fallback - Latitude: " +
+                            QString::number(observatorylatitude).toStdString() +
+                            ", Longitude: " + QString::number(observatorylongitude).toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+    }
+
+    if (!isValidObservatoryLocation(observatorylatitude, observatorylongitude))
+    {
+        Logger::Log("initPolarAlignment | observatorylatitude or observatorylongitude is invalid", LogLevel::WARNING, DeviceType::MAIN);
+    }
+
+    double cameraWidthMm = 0.0;
+    double cameraHeightMm = 0.0;
+    INDI::BaseDevice *captureDevice = nullptr;
+    bool useSdkCaptureSource = false;
+    QString captureRoleName = "MainCamera";
+
+    if (role == PolarAlignmentCameraRole::MainCamera)
+    {
+        captureDevice = dpMainCamera;
+        useSdkCaptureSource = isMainCameraSDK();
+        captureRoleName = "MainCamera";
+        cameraWidthMm = glCameraSize_width;
+        cameraHeightMm = glCameraSize_height;
+
+        if (cameraWidthMm <= 0 || cameraHeightMm <= 0)
+        {
+            if (!isMainCameraSDK() && dpMainCamera != nullptr)
+            {
+                double pixelsize, pixelsizX, pixelsizY;
+                int maxX, maxY, bitDepth;
+                indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+                cameraWidthMm = maxX * pixelsize / 1000.0;
+                cameraHeightMm = maxY * pixelsize / 1000.0;
+                cameraWidthMm = std::round(cameraWidthMm * 10.0) / 10.0;
+                cameraHeightMm = std::round(cameraHeightMm * 10.0) / 10.0;
+                glCameraSize_width = cameraWidthMm;
+                glCameraSize_height = cameraHeightMm;
+            }
+            else if (isMainCameraSDK() && sdkMainCameraHandle != nullptr)
+            {
+                SdkCommand chipInfoCmd;
+                chipInfoCmd.type = SdkCommandType::Custom;
+                chipInfoCmd.name = "GetChipInfo";
+                chipInfoCmd.payload = std::any();
+                SdkResult chipInfoRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, chipInfoCmd);
+
+                if (chipInfoRes.success)
+                {
+                    try
+                    {
+                        SdkChipInfo chipInfo = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
+                        glMainCCDSizeX = chipInfo.maxImageSizeX;
+                        glMainCCDSizeY = chipInfo.maxImageSizeY;
+                        cameraWidthMm = chipInfo.chipWidthMM;
+                        cameraHeightMm = chipInfo.chipHeightMM;
+                        glCameraSize_width = cameraWidthMm;
+                        glCameraSize_height = cameraHeightMm;
+                    }
+                    catch (const std::bad_any_cast &e)
+                    {
+                        Logger::Log("initPolarAlignment | SDK GetChipInfo bad_any_cast: " + std::string(e.what()),
+                                    LogLevel::ERROR, DeviceType::MAIN);
+                    }
+                }
+                else
+                {
+                    Logger::Log("initPolarAlignment | SDK GetChipInfo failed: " + chipInfoRes.message,
+                                LogLevel::WARNING, DeviceType::MAIN);
+                }
+            }
+        }
+    }
+    else
+    {
+        captureDevice = dpGuider;
+        useSdkCaptureSource = isGuiderCameraSDK();
+        captureRoleName = "Guider";
+
+        if (!isGuiderCameraSDK() && dpGuider != nullptr)
+        {
             double pixelsize, pixelsizX, pixelsizY;
             int maxX, maxY, bitDepth;
-            indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
-            glCameraSize_width = maxX * pixelsize / 1000;
-            glCameraSize_width = std::round(glCameraSize_width * 10) / 10;
-            glCameraSize_height = maxY * pixelsize / 1000;
-            glCameraSize_height = std::round(glCameraSize_height * 10) / 10;
+            indi_Client->getCCDBasicInfo(dpGuider, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+            cameraWidthMm = maxX * pixelsize / 1000.0;
+            cameraHeightMm = maxY * pixelsize / 1000.0;
+            cameraWidthMm = std::round(cameraWidthMm * 10.0) / 10.0;
+            cameraHeightMm = std::round(cameraHeightMm * 10.0) / 10.0;
         }
-        else if (isMainCameraSDK() && sdkMainCameraHandle != nullptr)
+        else if (isGuiderCameraSDK() && sdkGuiderHandle != nullptr)
         {
-            // SDK 模式：通过 SDK 获取芯片信息（避免依赖连接时序）
             SdkCommand chipInfoCmd;
             chipInfoCmd.type = SdkCommandType::Custom;
             chipInfoCmd.name = "GetChipInfo";
             chipInfoCmd.payload = std::any();
-            // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult chipInfoRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, chipInfoCmd);
+            SdkResult chipInfoRes = SdkManager::instance().callByHandle(sdkGuiderHandle, chipInfoCmd);
 
             if (chipInfoRes.success)
             {
                 try
                 {
                     SdkChipInfo chipInfo = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
-                    glMainCCDSizeX = chipInfo.maxImageSizeX;
-                    glMainCCDSizeY = chipInfo.maxImageSizeY;
-                    glCameraSize_width = chipInfo.chipWidthMM;
-                    glCameraSize_height = chipInfo.chipHeightMM;
+                    cameraWidthMm = chipInfo.chipWidthMM;
+                    cameraHeightMm = chipInfo.chipHeightMM;
                 }
                 catch (const std::bad_any_cast &e)
                 {
@@ -29306,20 +30343,22 @@ bool MainWindow::initPolarAlignment()
             else
             {
                 Logger::Log("initPolarAlignment | SDK GetChipInfo failed: " + chipInfoRes.message,
-                            LogLevel::WARNING, DeviceType::MAIN);
+                            LogLevel::WARNING, DeviceType::GUIDER);
             }
-        }
-
-        if (glCameraSize_width <= 0 || glCameraSize_height <= 0)
-        {
-            Logger::Log("initPolarAlignment | Camera size parameters are invalid", LogLevel::ERROR, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,Camera size parameters are invalid");
-            return false;
         }
     }
 
-    // 自动极轴校准初始化（单设备：主相机可走 SDK）
-    polarAlignment = new PolarAlignment(indi_Client, dpMount, dpMainCamera, isMainCameraSDK());
+    if (cameraWidthMm <= 0 || cameraHeightMm <= 0)
+    {
+        Logger::Log("initPolarAlignment | Camera size parameters are invalid", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,Camera size parameters are invalid");
+        return false;
+    }
+
+    currentPolarAlignmentCameraRole = role;
+    polarGuiderSingleCapturePending = false;
+
+    polarAlignment = new PolarAlignment(indi_Client, dpMount, captureDevice, useSdkCaptureSource, captureRoleName);
     if (polarAlignment == nullptr)
     {
         Logger::Log("initPolarAlignment | Failed to create PolarAlignment object", LogLevel::ERROR, DeviceType::MAIN);
@@ -29327,11 +30366,17 @@ bool MainWindow::initPolarAlignment()
         return false;
     }
 
-    // SDK/INDI 统一拍摄入口：由 PolarAlignment 发起 requestCapture，MainWindow 调用 startMainCameraCapture 执行
-    QObject::connect(polarAlignment, &PolarAlignment::requestCapture,
-                     this, [this](int exposureMs)
+    QObject::connect(polarAlignment, &PolarAlignment::requestCaptureForRole,
+                     this, [this](const QString &cameraRole, int exposureMs)
                      {
-                         this->startMainCameraCapture(exposureMs);
+                         if (parsePolarAlignmentCameraRole(cameraRole) == PolarAlignmentCameraRole::Guider)
+                         {
+                             this->startGuiderSingleCapture(exposureMs);
+                         }
+                         else
+                         {
+                             this->startMainCameraCapture(exposureMs);
+                         }
                      },
                      Qt::QueuedConnection);
 
@@ -29346,9 +30391,9 @@ bool MainWindow::initPolarAlignment()
     config.movementTimeout = 15000;            // 移动超时15秒
     config.maxAdjustmentAttempts = 3;          // 最大调整尝试次数3次
     config.adjustmentAngleReduction = 0.5;     // 调整角度减半
-    config.cameraWidth = glCameraSize_width;   // 相机传感器宽度（毫米）
-    config.cameraHeight = glCameraSize_height; // 相机传感器高度（毫米）
-    config.focalLength = glFocalLength;        // 焦距（毫米）
+    config.cameraWidth = cameraWidthMm;   // 相机传感器宽度（毫米）
+    config.cameraHeight = cameraHeightMm; // 相机传感器高度（毫米）
+    config.focalLength = selectedFocalLength; // 焦距（毫米）
     config.latitude = observatorylatitude;     // 观测地点纬度（度）
     config.longitude = observatorylongitude;   // 观测地点经度（度）
     config.finalVerificationThreshold = 0.5;   // 最终验证精度阈值（度）
@@ -29440,7 +30485,11 @@ bool MainWindow::initPolarAlignment()
                     emit this->wsThread->sendMessageToClient(logMsg);
                 });
 
-    Logger::Log("initPolarAlignment | PolarAlignment initialized successfully", LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("initPolarAlignment | PolarAlignment initialized successfully, role=" +
+                    std::string(role == PolarAlignmentCameraRole::Guider ? "Guider" : "MainCamera") +
+                    ", focal=" + std::to_string(selectedFocalLength) +
+                    ", size(mm)=" + std::to_string(cameraWidthMm) + "x" + std::to_string(cameraHeightMm),
+                LogLevel::INFO, DeviceType::MAIN);
     return true;
 }
 
@@ -29969,6 +31018,13 @@ void MainWindow::clearBoxCache(bool clearCache, bool clearUpdatePack, bool clear
             }
         }
     };
+    auto clearFileIfExists = [](const QString &filePath)
+    {
+        if (filePath.isEmpty()) return;
+        QFileInfo fi(filePath);
+        if (!fi.exists() || !fi.isFile()) return;
+        QFile::remove(filePath);
+    };
 
     // 1. 清理系统/应用缓存与回收站
     if (clearCache)
@@ -29979,13 +31035,18 @@ void MainWindow::clearBoxCache(bool clearCache, bool clearUpdatePack, bool clear
         caches << QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation)
                << QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
                << QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+        // 额外补充持久临时目录与常见开发工具缓存
+        caches << "/var/tmp";
+        caches << (QDir::homePath() + "/.cursor-server/data/CachedExtensionVSIXs");
         // XDG 垃圾箱（当前用户）常规路径与 XDG_DATA_HOME 路径
         const QString trashBase = QDir::homePath() + "/.local/share/Trash";
-        caches << (trashBase + "/files") << (trashBase + "/info");
+        caches << (trashBase + "/files") << (trashBase + "/info") << (trashBase + "/expunged");
         const QString xdgDataHome = qEnvironmentVariableIsSet("XDG_DATA_HOME")
                                     ? QString::fromLocal8Bit(qgetenv("XDG_DATA_HOME"))
                                     : (QDir::homePath() + "/.local/share");
-        caches << (xdgDataHome + "/Trash/files") << (xdgDataHome + "/Trash/info");
+        caches << (xdgDataHome + "/Trash/files")
+               << (xdgDataHome + "/Trash/info")
+               << (xdgDataHome + "/Trash/expunged");
         // 常见桌面环境的垃圾箱路径（可能存在）
         caches << (QDir::homePath() + "/.Trash")
                << (QDir::homePath() + "/.Trash-1000/files")
@@ -30010,10 +31071,23 @@ void MainWindow::clearBoxCache(bool clearCache, bool clearUpdatePack, bool clear
                 const QString base = fi.absoluteFilePath();
                 clearDirContents(base + "/.Trash-" + uidStr + "/files");
                 clearDirContents(base + "/.Trash-" + uidStr + "/info");
+                clearDirContents(base + "/.Trash-" + uidStr + "/expunged");
                 clearDirContents(base + "/.Trash/files");
                 clearDirContents(base + "/.Trash/info");
+                clearDirContents(base + "/.Trash/expunged");
             }
         }
+
+        // 清理 apt 缓存与包索引，避免更新缓存长期堆积。
+        clearDirContents("/var/cache/apt");
+        clearDirContents("/var/lib/apt/lists");
+
+        // 清掉常见锁文件，避免目录已清空但索引残留。
+        clearFileIfExists("/var/lib/apt/lists/lock");
+        clearFileIfExists("/var/cache/apt/archives/lock");
+
+        // 限制 systemd journal 体积；失败时静默跳过，避免无 sudo 能力时中断清理。
+        runSudoSync("/usr/bin/journalctl", {"--vacuum-size=100M"}, 15000);
     }
 
     // 2. 可选：清理更新包目录
