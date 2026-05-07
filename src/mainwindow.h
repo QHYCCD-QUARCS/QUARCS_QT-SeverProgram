@@ -955,6 +955,10 @@ private:
     // 内置导星核心；未初始化时保持为空，相关逻辑自动降级为仅取图/显示。
     GuiderCore *guiderCore = nullptr;
     std::unique_ptr<guiding::SimGuiderFrameSource> simGuiderFrameSource;
+    double currentGuiderArcsecPerPixel() const;
+    bool guiderUsesArcsecUnit() const;
+    void publishGuiderErrorUnit(bool force = false, bool emitInfo = false);
+    void syncGuiderScaleParams(bool forcePublishUnit = false, bool emitInfo = false);
     // 导星循环曝光定时器（singleShot：收到一帧后再触发下一帧，避免重入）
     QTimer *guiderLoopTimer = nullptr;
     bool guiderExposureInFlight = false;
@@ -962,6 +966,8 @@ private:
     double guiderPixelSizeUm = 0.0;
     double guiderFocalLengthMm = 0.0;
     bool guiderScaleHintSent = false;
+    QString guiderLastPublishedErrorUnit{};
+    double guiderLastPublishedArcsecPerPixel = 0.0;
     // 导星 UI 叠加层缓存（供前端复用既有 PHD2Box/Cross/MultiStar 协议）。
     int glPHD_CurrentImageSizeX = 0;
     int glPHD_CurrentImageSizeY = 0;
@@ -970,7 +976,21 @@ private:
     bool guiderDirectionDetectActive = false;
     bool guiderForceRecalibrateOnNextStart = false;
     int guiderChartSampleIndex = 0;
+    bool guiderLockPosValid = false;
+    bool guiderGuideStarCentroidValid = false;
+    QPointF guiderLockPosPx;
+    QPointF guiderGuideStarCentroidPx;
+    QVector<QPointF> guiderDetectedStarsPtsPx;
+    QVector<double> guiderDetectedStarsHfdPx;
+    QVector<double> guiderDetectedStarsSnr;
+    QVector<QPointF> guiderRejectedStarsPtsPx;
+    QVector<double> guiderRejectedStarsHfdPx;
+    QVector<double> guiderRejectedStarsSnr;
     QVector<QPointF> guiderMultiStarSecondaryPtsPx;
+    QString guiderDiagnosticSourceFitsPath;
+    QString guiderDiagnosticBatchDir;
+    int guiderDiagnosticBatchRemaining = 0;
+    int guiderDiagnosticBatchIndex = 0;
 
 private Q_SLOTS:
     void onGuiderLoopTimeout();

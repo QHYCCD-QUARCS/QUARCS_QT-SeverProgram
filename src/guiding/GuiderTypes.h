@@ -89,6 +89,12 @@ struct GuidingParams
 {
     int exposureMs = 1500; // 0.5s--2s，默认 1.5s（室外起步更稳）
 
+    // ===== Multi-star guiding =====
+    // 对齐 PHD2 语义：
+    // - 仅在自动选星拿到“主星 + 副星候选”时启用
+    // - 手动点星时保持单星导星
+    bool enableMultiStar = false;
+
     // ===== RA 导星算法：Hysteresis（PHD2 风格）=====
     // 说明：
     // - 将“本帧应纠正量”与“上一帧输出”做滞后融合，能显著降低 seeing 抖动导致的 RA 脉冲抖动
@@ -133,7 +139,7 @@ struct GuidingParams
     // 单向导星：允许方向集合门控（用户补充的流程）
     // 经验上 RA 建议默认双向（E/W），DEC 可按需要单向
     std::set<GuideDir> allowedRaDirs{GuideDir::East, GuideDir::West};
-    std::set<GuideDir> allowedDecDirs{GuideDir::North};
+    std::set<GuideDir> allowedDecDirs{GuideDir::North, GuideDir::South};
 
     // ===== DEC 回差（backlash）测量与补偿 =====
     // 注意：回差单位统一为 “导星脉冲时长 ms”（与 INDI guide pulse 一致）
@@ -158,7 +164,7 @@ struct GuidingParams
     // 通过线性拟合 raErrPx(t) / decErrPx(t) 得到漂移方向与速度，并推荐/自动设置 allowedRaDirs/allowedDecDirs 为反向以抵消漂移。
     // 检测完成后，自动锁定为单向（不再允许双向）。
     bool autoRaGuideDir = false;  // 默认关闭：RA 通常建议双向；需要时再开启 AUTO
-    bool autoDecGuideDir = true; // 默认启用 AUTO 模式（见下方“DEC 单向策略”）
+    bool autoDecGuideDir = false; // 暂时关闭 AUTO，DEC 方向仅按手动门控设置执行
 
     // ===== DEC 单向策略（按用户需求的两种情况）=====
     // (1) 对极轴很准（DEC移动幅度小）：导星开始先允许 DEC 双向，收集足够数据后再锁定为单向
@@ -227,5 +233,3 @@ Q_DECLARE_METATYPE(guiding::State)
 Q_DECLARE_METATYPE(guiding::GuideDir)
 Q_DECLARE_METATYPE(guiding::PulseCommand)
 Q_DECLARE_METATYPE(guiding::CalibrationResult)
-
-

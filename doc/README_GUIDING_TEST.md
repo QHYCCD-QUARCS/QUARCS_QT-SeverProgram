@@ -32,5 +32,27 @@ cd /home/quarcs/workspace/QUARCS/QUARCS_QT-SeverProgram/src/build
   - `[GuideGate] ...`：门控测试结果（默认配置下应 “gated”）\n
 - FITS 测试帧会写入你传入的输出目录（默认 `/tmp/guiding_offline`）。
 
+## 真实批次离线分析
+
+当业务机已经采回 `~/images/GuiderDiagnostics/batch_*` 一组真实导星样本时，优先用这个工具做离线分析：
+
+```bash
+cd /home/q/workspace_origin/QUARCS_QT-SeverProgram/src
+mkdir -p build
+cd build
+cmake ..
+make -j"$(nproc)" guiding_batch_analyzer
+./guiding_batch_analyzer /path/to/batch_xxx
+```
+
+默认会在该批次目录下生成 `analysis/`：
+
+- `frame_XX_analysis.jpg`
+  黄色圆：按原始 ADU 排序的亮峰参考
+  红框：当前算法通过筛选的候选星
+  蓝框：当前算法拒绝的候选星
+  绿框：最终主星
+- `summary.json`
+  每帧的主星、validated、rejected、brightPeaks 汇总
 
 

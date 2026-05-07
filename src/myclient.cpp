@@ -2403,6 +2403,18 @@ uint32_t MyClient::setTelescopeGuideNS(INDI::BaseDevice *dp, int dir, int time_g
     }
     if (mountState.isParked)
         return QHYCCD_ERROR;
+
+    const std::string deviceName = dp && dp->getDeviceName() ? dp->getDeviceName() : "UNKNOWN";
+    const char *stateName = "UNKNOWN";
+    switch (property->getState())
+    {
+    case IPS_IDLE: stateName = "IDLE"; break;
+    case IPS_OK: stateName = "OK"; break;
+    case IPS_BUSY: stateName = "BUSY"; break;
+    case IPS_ALERT: stateName = "ALERT"; break;
+    default: break;
+    }
+
     if (dir == 1)
     {
         property->np[1].value = time_guide;
@@ -2415,6 +2427,13 @@ uint32_t MyClient::setTelescopeGuideNS(INDI::BaseDevice *dp, int dir, int time_g
         property->np[1].value = 0;
         mountState.isGuiding = false;
     }
+    Logger::Log("indi_client | setTelescopeGuideNS | dev=" + deviceName +
+                    " dir=" + std::to_string(dir) +
+                    " durationMs=" + std::to_string(time_guide) +
+                    " | S=" + std::to_string(static_cast<int>(property->np[0].value)) +
+                    " N=" + std::to_string(static_cast<int>(property->np[1].value)) +
+                    " stateBefore=" + stateName,
+                LogLevel::INFO, DeviceType::MOUNT);
     sendNewProperty(property);
     return QHYCCD_SUCCESS;
 }
@@ -2427,6 +2446,18 @@ uint32_t MyClient::setTelescopeGuideWE(INDI::BaseDevice *dp, int dir, int time_g
         Logger::Log("indi_client | setTelescopeGuideWE | Error: unable to find TELESCOPE_TIMED_GUIDE_WE property...", LogLevel::WARNING, DeviceType::CAMERA);
         return QHYCCD_ERROR;
     }
+
+    const std::string deviceName = dp && dp->getDeviceName() ? dp->getDeviceName() : "UNKNOWN";
+    const char *stateName = "UNKNOWN";
+    switch (property->getState())
+    {
+    case IPS_IDLE: stateName = "IDLE"; break;
+    case IPS_OK: stateName = "OK"; break;
+    case IPS_BUSY: stateName = "BUSY"; break;
+    case IPS_ALERT: stateName = "ALERT"; break;
+    default: break;
+    }
+
     if (dir == 3)
     {
         property->np[0].value = time_guide;
@@ -2439,6 +2470,13 @@ uint32_t MyClient::setTelescopeGuideWE(INDI::BaseDevice *dp, int dir, int time_g
         property->np[0].value = 0;
         mountState.isGuiding = false;
     }
+    Logger::Log("indi_client | setTelescopeGuideWE | dev=" + deviceName +
+                    " dir=" + std::to_string(dir) +
+                    " durationMs=" + std::to_string(time_guide) +
+                    " | W=" + std::to_string(static_cast<int>(property->np[0].value)) +
+                    " E=" + std::to_string(static_cast<int>(property->np[1].value)) +
+                    " stateBefore=" + stateName,
+                LogLevel::INFO, DeviceType::MOUNT);
     sendNewProperty(property);
     return QHYCCD_SUCCESS;
 }

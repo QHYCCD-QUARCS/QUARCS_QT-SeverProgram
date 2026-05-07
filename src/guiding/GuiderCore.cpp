@@ -7,7 +7,13 @@
 
 #include <QByteArray>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <limits>
 
 namespace {
@@ -130,6 +136,20 @@ static QString resolveGuiderFrameFitsForTest(const QString& incomingPath)
     }
     return incomingPath;
 }
+
+static QJsonObject pointToJson(const QPointF& p)
+{
+    QJsonObject obj;
+    obj.insert(QStringLiteral("x"), p.x());
+    obj.insert(QStringLiteral("y"), p.y());
+    return obj;
+}
+
+static QPointF pointFromJson(const QJsonObject& obj)
+{
+    return QPointF(obj.value(QStringLiteral("x")).toDouble(),
+                   obj.value(QStringLiteral("y")).toDouble());
+}
 } // namespace
 
 double GuiderCore::RmsWindow::raRms() const
@@ -162,6 +182,7 @@ double GuiderCore::RmsWindow::totalRms() const
 GuiderCore::GuiderCore(QObject* parent) : QObject(parent)
 {
     m_rms.reset(m_params.rmsWindowFrames);
+    loadPersistedCalibrationSnapshot();
 }
 
 guiding::GuidingParams GuiderCore::sanitizeParams(const guiding::GuidingParams& in) const
@@ -175,6 +196,22 @@ guiding::GuidingParams GuiderCore::sanitizeParams(const guiding::GuidingParams& 
     out.allowedRaDirs.clear();
     out.allowedRaDirs.insert(guiding::GuideDir::East);
     out.allowedRaDirs.insert(guiding::GuideDir::West);
+
+    // ===== 选项B：DEC 仅保留手动门控 =====
+    // - 暂时关闭 AUTO 锁向/运行中翻向
+    // - 前端只允许设置：双向 / DEC+ / DEC-
+    out.autoDecGuideDir = false;
+    std::set<guiding::GuideDir> normalizedDecDirs;
+    if (out.allowedDecDirs.count(guiding::GuideDir::North) > 0)
+        normalizedDecDirs.insert(guiding::GuideDir::North);
+    if (out.allowedDecDirs.count(guiding::GuideDir::South) > 0)
+        normalizedDecDirs.insert(guiding::GuideDir::South);
+    if (normalizedDecDirs.empty())
+    {
+        normalizedDecDirs.insert(guiding::GuideDir::North);
+        normalizedDecDirs.insert(guiding::GuideDir::South);
+    }
+    out.allowedDecDirs = normalizedDecDirs;
 
     // 基本防御：数值范围
     if (out.exposureMs < 50) out.exposureMs = 50;
@@ -339,6 +376,9 @@ void GuiderCore::startGuiding()
     m_lastRaPulseMs = 0;
     m_lastDecPulseMs = 0;
     m_selectingNoStarFrameCount = 0;
+    resetMultiStarState();
+    emit autoSelectDetectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
+    emit autoSelectRejectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
 
     setState(guiding::State::Selecting);
     if (preserveManualLock)
@@ -382,6 +422,7 @@ void GuiderCore::clearCachedCalibration()
     m_hasLastBacklash = false;
     m_lastBacklashMsBase = 0;
     m_lastBacklashMsRuntime = 0;
+    clearPersistedCalibrationSnapshot();
 }
 
 void GuiderCore::stopGuiding()
@@ -433,24 +474,64 @@ void GuiderCore::stopGuiding()
     m_lastRaPulseMs = 0;
     m_lastDecPulseMs = 0;
     m_selectingNoStarFrameCount = 0;
+    resetMultiStarState();
+    emit autoSelectDetectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
+    emit autoSelectRejectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
     emit infoMessage(QStringLiteral("停止导星。"));
 }
 
 void GuiderCore::setManualLock(double xPx, double yPx)
 {
-    // 规则：只允许在 Looping 状态下手动选星
-    if (m_state != guiding::State::Looping)
+    const bool allowSelectOnly = (m_state == guiding::State::Looping);
+    const bool allowHotSwitchDuringGuiding = (m_state == guiding::State::Guiding) && m_calibResult.valid;
+    if (!allowSelectOnly && !allowHotSwitchDuringGuiding)
         return;
 
+    const auto picked = evaluateManualLockCandidate(xPx, yPx);
+    const double targetXPx = picked.has_value() ? picked->x : xPx;
+    const double targetYPx = picked.has_value() ? picked->y : yPx;
+
     m_hasLock = true;
-    m_lockPosPx = QPointF(xPx, yPx);
+    m_lockPosPx = QPointF(targetXPx, targetYPx);
     m_lastGuideCentroid = m_lockPosPx;
+    resetMultiStarState();
+    if (m_calibResult.valid)
+        m_calibResult.lockPosPx = m_lockPosPx;
     emit lockPositionChanged(m_lockPosPx);
-    // 点击即用户确认：不做 SNR/HFD 评估
-    emit lockStarSelected(xPx, yPx, 0.0, 0.0);
-    emit infoMessage(QStringLiteral("手动选星：x=%1 y=%2（请点击开始导星继续）")
-                         .arg(xPx, 0, 'f', 2)
-                         .arg(yPx, 0, 'f', 2));
+
+    if (allowSelectOnly)
+    {
+        emitManualLockSelected(targetXPx, targetYPx, QStringLiteral("（请点击开始导星继续）"));
+        return;
+    }
+
+    m_centroidFailCount = 0;
+    m_guidingFrameCount = 0;
+    m_guidingDiagTimer.restart();
+    m_reselectAfterLostStar = false;
+    m_errEmaInit = false;
+    m_raErrEma = 0.0;
+    m_decErrEma = 0.0;
+    m_raGatedCount = 0;
+    m_decGatedCount = 0;
+    m_pulseEffActive = false;
+    m_pulseEffFramesLeft = 0;
+    m_pulseEffFailStreak = 0;
+    m_rms.reset(m_params.rmsWindowFrames);
+    m_rmsEmitCounter = 0;
+
+    if (m_params.autoDecGuideDir && m_decUniPolicyActive && !m_decUniPolicyDecided)
+    {
+        m_decUniLargeMove = false;
+        m_decUniFrames = 0;
+        m_decUniSum = 0.0;
+        m_decUniSumSq = 0.0;
+        m_decDriftSamples.clear();
+        m_decDriftTimer.restart();
+    }
+
+    emit calibrationResultChanged(m_calibResult);
+    emitManualLockSelected(targetXPx, targetYPx, QStringLiteral("（导星不中断，沿用当前校准继续）"));
 }
 
 void GuiderCore::clearManualLock()
@@ -459,6 +540,7 @@ void GuiderCore::clearManualLock()
     m_hasLock = false;
     m_lockPosPx = QPointF(0.0, 0.0);
     m_lastGuideCentroid = QPointF(0.0, 0.0);
+    resetMultiStarState();
 }
 
 bool GuiderCore::canReuseLastCalibration(QString* reason) const
@@ -533,6 +615,347 @@ bool GuiderCore::canReuseStartupSnapshot(QString* reason) const
 
     if (reason) *reason = calibReason;
     return true;
+}
+
+QString GuiderCore::snapshotFilePath() const
+{
+    const QString baseDir = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    if (baseDir.isEmpty())
+        return QString();
+    return QDir(baseDir).filePath(QStringLiteral("guider_calibration_snapshot.json"));
+}
+
+void GuiderCore::loadPersistedCalibrationSnapshot()
+{
+    const QString path = snapshotFilePath();
+    if (path.isEmpty() || !QFile::exists(path))
+        return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        Logger::Log(("GuiderCore | failed to open calibration snapshot: " + path).toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject())
+    {
+        Logger::Log(("GuiderCore | invalid calibration snapshot json: " + parseError.errorString()).toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        clearPersistedCalibrationSnapshot();
+        return;
+    }
+
+    const QJsonObject root = doc.object();
+    if (root.value(QStringLiteral("version")).toInt() != 1)
+    {
+        Logger::Log("GuiderCore | calibration snapshot version mismatch, clearing persisted snapshot.",
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        clearPersistedCalibrationSnapshot();
+        return;
+    }
+
+    const QJsonObject calib = root.value(QStringLiteral("calibration")).toObject();
+    guiding::CalibrationResult loaded;
+    loaded.valid = calib.value(QStringLiteral("valid")).toBool(false);
+    loaded.cameraAngleDeg = calib.value(QStringLiteral("cameraAngleDeg")).toDouble();
+    loaded.orthoErrDeg = calib.value(QStringLiteral("orthoErrDeg")).toDouble();
+    loaded.raRatePxPerSec = calib.value(QStringLiteral("raRatePxPerSec")).toDouble();
+    loaded.decRatePxPerSec = calib.value(QStringLiteral("decRatePxPerSec")).toDouble();
+    loaded.raMsPerPixel = calib.value(QStringLiteral("raMsPerPixel")).toDouble();
+    loaded.decMsPerPixel = calib.value(QStringLiteral("decMsPerPixel")).toDouble();
+    loaded.raTravelPx = calib.value(QStringLiteral("raTravelPx")).toDouble();
+    loaded.decTravelPx = calib.value(QStringLiteral("decTravelPx")).toDouble();
+    loaded.raTotalPulseMs = calib.value(QStringLiteral("raTotalPulseMs")).toInt();
+    loaded.decTotalPulseMs = calib.value(QStringLiteral("decTotalPulseMs")).toInt();
+    loaded.raStepCount = calib.value(QStringLiteral("raStepCount")).toInt();
+    loaded.decStepCount = calib.value(QStringLiteral("decStepCount")).toInt();
+    loaded.raUnitVec = pointFromJson(calib.value(QStringLiteral("raUnitVec")).toObject());
+    loaded.decUnitVec = pointFromJson(calib.value(QStringLiteral("decUnitVec")).toObject());
+    loaded.lockPosPx = pointFromJson(calib.value(QStringLiteral("lockPosPx")).toObject());
+    loaded.timestampMs = static_cast<qint64>(calib.value(QStringLiteral("timestampMs")).toDouble());
+
+    if (!loaded.valid)
+    {
+        Logger::Log("GuiderCore | persisted calibration snapshot invalid, clearing.",
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        clearPersistedCalibrationSnapshot();
+        return;
+    }
+
+    m_hasLastCalibration = true;
+    m_lastCalibration = loaded;
+
+    const QJsonObject ctx = root.value(QStringLiteral("context")).toObject();
+    m_lastCalibrationCtx.guiderBinning = std::max(1, ctx.value(QStringLiteral("guiderBinning")).toInt(1));
+    m_lastCalibrationCtx.guideSpeedSidereal = ctx.value(QStringLiteral("guideSpeedSidereal")).toDouble();
+    m_lastCalibrationCtx.imageScaleArcsecPerPixel = ctx.value(QStringLiteral("imageScaleArcsecPerPixel")).toDouble();
+
+    const QJsonObject backlash = root.value(QStringLiteral("backlash")).toObject();
+    m_hasLastBacklash = backlash.value(QStringLiteral("hasLastBacklash")).toBool(false);
+    m_lastBacklashMsBase = backlash.value(QStringLiteral("lastBacklashMsBase")).toInt();
+    m_lastBacklashMsRuntime = backlash.value(QStringLiteral("lastBacklashMsRuntime")).toInt();
+
+    Logger::Log(("GuiderCore | loaded persisted calibration snapshot from: " + path).toStdString(),
+                LogLevel::INFO, DeviceType::GUIDER);
+}
+
+void GuiderCore::persistCalibrationSnapshot() const
+{
+    if (!m_hasLastCalibration || !m_lastCalibration.valid)
+        return;
+
+    const QString path = snapshotFilePath();
+    if (path.isEmpty())
+        return;
+
+    const QFileInfo info(path);
+    QDir dir;
+    if (!dir.mkpath(info.absolutePath()))
+    {
+        Logger::Log(("GuiderCore | failed to create snapshot dir: " + info.absolutePath()).toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        return;
+    }
+
+    QJsonObject calib;
+    calib.insert(QStringLiteral("valid"), m_lastCalibration.valid);
+    calib.insert(QStringLiteral("cameraAngleDeg"), m_lastCalibration.cameraAngleDeg);
+    calib.insert(QStringLiteral("orthoErrDeg"), m_lastCalibration.orthoErrDeg);
+    calib.insert(QStringLiteral("raRatePxPerSec"), m_lastCalibration.raRatePxPerSec);
+    calib.insert(QStringLiteral("decRatePxPerSec"), m_lastCalibration.decRatePxPerSec);
+    calib.insert(QStringLiteral("raMsPerPixel"), m_lastCalibration.raMsPerPixel);
+    calib.insert(QStringLiteral("decMsPerPixel"), m_lastCalibration.decMsPerPixel);
+    calib.insert(QStringLiteral("raTravelPx"), m_lastCalibration.raTravelPx);
+    calib.insert(QStringLiteral("decTravelPx"), m_lastCalibration.decTravelPx);
+    calib.insert(QStringLiteral("raTotalPulseMs"), m_lastCalibration.raTotalPulseMs);
+    calib.insert(QStringLiteral("decTotalPulseMs"), m_lastCalibration.decTotalPulseMs);
+    calib.insert(QStringLiteral("raStepCount"), m_lastCalibration.raStepCount);
+    calib.insert(QStringLiteral("decStepCount"), m_lastCalibration.decStepCount);
+    calib.insert(QStringLiteral("raUnitVec"), pointToJson(m_lastCalibration.raUnitVec));
+    calib.insert(QStringLiteral("decUnitVec"), pointToJson(m_lastCalibration.decUnitVec));
+    calib.insert(QStringLiteral("lockPosPx"), pointToJson(m_lastCalibration.lockPosPx));
+    calib.insert(QStringLiteral("timestampMs"), static_cast<double>(m_lastCalibration.timestampMs));
+
+    QJsonObject ctx;
+    ctx.insert(QStringLiteral("guiderBinning"), m_lastCalibrationCtx.guiderBinning);
+    ctx.insert(QStringLiteral("guideSpeedSidereal"), m_lastCalibrationCtx.guideSpeedSidereal);
+    ctx.insert(QStringLiteral("imageScaleArcsecPerPixel"), m_lastCalibrationCtx.imageScaleArcsecPerPixel);
+
+    QJsonObject backlash;
+    backlash.insert(QStringLiteral("hasLastBacklash"), m_hasLastBacklash);
+    backlash.insert(QStringLiteral("lastBacklashMsBase"), m_lastBacklashMsBase);
+    backlash.insert(QStringLiteral("lastBacklashMsRuntime"), m_lastBacklashMsRuntime);
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("savedAtMs"), static_cast<double>(QDateTime::currentMSecsSinceEpoch()));
+    root.insert(QStringLiteral("calibration"), calib);
+    root.insert(QStringLiteral("context"), ctx);
+    root.insert(QStringLiteral("backlash"), backlash);
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+    {
+        Logger::Log(("GuiderCore | failed to open snapshot for write: " + path).toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        return;
+    }
+
+    const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (file.write(bytes) != bytes.size() || !file.commit())
+    {
+        Logger::Log(("GuiderCore | failed to write calibration snapshot: " + path).toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+    }
+}
+
+void GuiderCore::clearPersistedCalibrationSnapshot() const
+{
+    const QString path = snapshotFilePath();
+    if (path.isEmpty() || !QFile::exists(path))
+        return;
+
+    if (!QFile::remove(path))
+    {
+        Logger::Log(("GuiderCore | failed to remove persisted snapshot: " + path).toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+    }
+}
+
+std::optional<guiding::StarCandidate> GuiderCore::evaluateManualLockCandidate(double xPx, double yPx) const
+{
+    if (m_lastGuiderFrameFitsPath.isEmpty())
+        return std::nullopt;
+
+    cv::Mat img16;
+    if (Tools::readFits(m_lastGuiderFrameFitsPath.toUtf8().constData(), img16) != 0 || img16.empty())
+        return std::nullopt;
+
+    guiding::StarSelectionParams p;
+    p.minSNR = 0.0;
+    p.minHFD = 0.5;
+    p.maxHFD = 50.0;
+    p.edgeMarginPx = 0.0;
+    p.nearSaturationRatio = 1.01;
+    p.kSigma = 3.0;
+    p.minArea = 3;
+    p.maxArea = 400;
+    p.detectMinSNR = 2.0;
+
+    std::vector<guiding::StarCandidate> candidates;
+    (void)m_detector.selectGuideStar(img16, p, m_lastGuiderFrameFitsPath, &candidates);
+    if (candidates.empty())
+        return std::nullopt;
+
+    constexpr double kManualPickMaxDistPx = 28.0;
+    const QPointF click(xPx, yPx);
+
+    const guiding::StarCandidate* nearest = nullptr;
+    double bestDist2 = std::numeric_limits<double>::max();
+    for (const auto& c : candidates)
+    {
+        const double dx = c.x - click.x();
+        const double dy = c.y - click.y();
+        const double dist2 = dx * dx + dy * dy;
+        if (dist2 < bestDist2)
+        {
+            bestDist2 = dist2;
+            nearest = &c;
+        }
+    }
+
+    if (!nearest || std::sqrt(bestDist2) > kManualPickMaxDistPx)
+        return std::nullopt;
+
+    return *nearest;
+}
+
+void GuiderCore::emitManualLockSelected(double xPx, double yPx, const QString& infoSuffix)
+{
+    const auto picked = evaluateManualLockCandidate(xPx, yPx);
+    double snr = 0.0;
+    double hfd = 0.0;
+    QString extra;
+
+    if (picked.has_value())
+    {
+        snr = picked->snr;
+        hfd = picked->hfd;
+        extra = QStringLiteral(" SNR=%1 HFD=%2")
+                    .arg(snr, 0, 'f', 1)
+                    .arg(hfd, 0, 'f', 2);
+    }
+    else
+    {
+        extra = QStringLiteral(" SNR/HFD=unavailable");
+    }
+
+    emit lockStarSelected(xPx, yPx, snr, hfd);
+    emit infoMessage(QStringLiteral("手动选星：x=%1 y=%2%3%4")
+                         .arg(xPx, 0, 'f', 2)
+                         .arg(yPx, 0, 'f', 2)
+                         .arg(extra)
+                         .arg(infoSuffix));
+}
+
+void GuiderCore::resetMultiStarState(bool emitPointsChanged)
+{
+    m_multiStarTracker.reset();
+    if (emitPointsChanged)
+        emit multiStarSecondaryPointsChanged(QVector<QPointF>{});
+}
+
+void GuiderCore::configureMultiStarReferenceStars(const std::vector<guiding::StarCandidate>& candidates,
+                                                  const guiding::StarCandidate& primary)
+{
+    resetMultiStarState(false);
+
+    if (!m_params.enableMultiStar)
+        return;
+
+    std::vector<guiding::MultiGuideStar> stars;
+    stars.reserve(std::min<size_t>(candidates.size() + 1, 9));
+
+    guiding::MultiGuideStar primaryStar;
+    primaryStar.referencePoint = QPointF(primary.x, primary.y);
+    primaryStar.lastPoint = primaryStar.referencePoint;
+    primaryStar.offsetFromPrimary = QPointF(0.0, 0.0);
+    primaryStar.snr = std::max(1.0, primary.snr);
+    stars.push_back(primaryStar);
+
+    auto brightnessOrder = [](const guiding::StarCandidate& a, const guiding::StarCandidate& b) {
+        if (a.peakADU == b.peakADU)
+            return a.snr > b.snr;
+        return a.peakADU > b.peakADU;
+    };
+
+    std::vector<guiding::StarCandidate> orderedCandidates = candidates;
+    std::stable_sort(orderedCandidates.begin(), orderedCandidates.end(), brightnessOrder);
+
+    int primaryLoc = -1;
+    for (int i = 0; i < static_cast<int>(orderedCandidates.size()); ++i)
+    {
+        const auto& c = orderedCandidates[static_cast<size_t>(i)];
+        const double dx = c.x - primary.x;
+        const double dy = c.y - primary.y;
+        if ((dx * dx + dy * dy) <= (2.0 * 2.0))
+        {
+            primaryLoc = i;
+            break;
+        }
+    }
+
+    std::vector<guiding::StarCandidate> secondaryCandidates;
+    if (primaryLoc >= 0)
+    {
+        secondaryCandidates.reserve(orderedCandidates.size() - static_cast<size_t>(primaryLoc));
+        for (size_t i = static_cast<size_t>(primaryLoc); i < orderedCandidates.size(); ++i)
+        {
+            const auto& c = orderedCandidates[i];
+            const double dx = c.x - primary.x;
+            const double dy = c.y - primary.y;
+            const double dist = std::hypot(dx, dy);
+            if (dist < 12.0)
+                continue;
+            secondaryCandidates.push_back(c);
+        }
+    }
+    else
+    {
+        emit infoMessage(QStringLiteral("多星导星：主星未出现在已验证候选列表中，按 PHD2 语义暂不建立副星。"));
+    }
+
+    constexpr int kMaxStars = 9;
+    for (const auto& c : secondaryCandidates)
+    {
+        if ((int)stars.size() >= kMaxStars)
+            break;
+
+        guiding::MultiGuideStar s;
+        s.referencePoint = QPointF(c.x, c.y);
+        s.lastPoint = s.referencePoint;
+        s.offsetFromPrimary = s.referencePoint - primaryStar.referencePoint;
+        s.snr = std::max(0.1, c.snr);
+        stars.push_back(s);
+    }
+
+    if (stars.size() < 2)
+    {
+        emit multiStarSecondaryPointsChanged(QVector<QPointF>{});
+        emit infoMessage(QStringLiteral("多星导星已开启，但当前自动选星未找到足够副星，回退为单星导星。"));
+        return;
+    }
+
+    m_multiStarTracker.setReferenceStars(stars, kMaxStars, 5.0, 8);
+    emit multiStarSecondaryPointsChanged(m_multiStarTracker.secondaryReferencePoints());
+    emit infoMessage(QStringLiteral("多星导星参考星已建立：主星1颗 + 副星%1颗（validated=%2，primaryLoc=%3）。")
+                         .arg(m_multiStarTracker.referenceStarCount() - 1)
+                         .arg(static_cast<int>(orderedCandidates.size()))
+                         .arg(primaryLoc));
 }
 
 void GuiderCore::startGuidingFromLock(bool isManualLock)
@@ -619,6 +1042,8 @@ void GuiderCore::enterGuidingState()
 
     setState(guiding::State::Guiding);
     m_lastGuideCentroid = m_lockPosPx;
+    if (m_multiStarTracker.hasReferenceStars())
+        m_multiStarTracker.notifyLockPositionMoved();
     m_guidingFrameCount = 0;
     m_centroidFailCount = 0;
     m_guidingDiagTimer.restart();
@@ -681,19 +1106,19 @@ void GuiderCore::startGuidingWithManualLock(double xPx, double yPx)
     // 统一入口：确保从 Selecting 开始并清理上次残留
     startGuiding();
 
-    // 设置锁星点（不做 SNR/HFD 评估：点击即用户确认）
+    // 设置锁星点并尽量复用最近一帧给出真实 SNR/HFD
     m_hasLock = true;
     m_lockPosPx = QPointF(xPx, yPx);
     m_lastGuideCentroid = m_lockPosPx;
     emit lockPositionChanged(m_lockPosPx);
-    emit lockStarSelected(xPx, yPx, 0.0, 0.0);
-    emit infoMessage(QStringLiteral("手动选星：x=%1 y=%2").arg(xPx, 0, 'f', 2).arg(yPx, 0, 'f', 2));
+    emitManualLockSelected(xPx, yPx);
     startGuidingFromLock(true);
 }
 
 void GuiderCore::onNewFrame(const QString& fitsPath)
 {
     const QString effectiveFitsPath = resolveGuiderFrameFitsForTest(fitsPath);
+    m_lastGuiderFrameFitsPath = effectiveFitsPath;
 
     // 先按你的要求：每帧都固定命名并落盘（MainWindow 实现）
     emit requestPersistGuidingFits(effectiveFitsPath);
@@ -705,14 +1130,61 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     m_schedSeq++;
     int nextExposureDelayMs = 0;
 
-    if (m_state == guiding::State::Selecting && !m_hasLock)
+    if (m_state == guiding::State::Looping && m_hasLock)
+    {
+        cv::Mat img16;
+        if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
+        {
+            if (m_lastGuideCentroid.isNull())
+                m_lastGuideCentroid = m_lockPosPx;
+
+            QPointF centroid;
+            bool gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, 8, centroid, 2.0);
+            if (!gotCentroid)
+            {
+                gotCentroid = guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, 16, centroid, 2.0) ||
+                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        16, centroid, 2.0) ||
+                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        24, centroid, 2.0);
+            }
+
+            if (gotCentroid)
+            {
+                m_lastGuideCentroid = centroid;
+                emit guideStarCentroidChanged(centroid);
+            }
+        }
+    }
+    else if (m_state == guiding::State::Selecting && !m_hasLock)
     {
         cv::Mat img16;
         if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
         {
             guiding::StarSelectionParams sp;
             std::vector<guiding::StarCandidate> candidates;
-            auto best = m_detector.selectGuideStar(img16, sp, effectiveFitsPath, &candidates);
+            std::vector<guiding::StarCandidate> rejectedCandidates;
+            auto best = m_detector.selectGuideStar(img16, sp, effectiveFitsPath, &candidates, &rejectedCandidates);
+            auto emitStarSet = [](const std::vector<guiding::StarCandidate>& stars,
+                                  auto emitFn) {
+                QVector<QPointF> pts;
+                QVector<double> hfds;
+                QVector<double> snrs;
+                pts.reserve(static_cast<int>(stars.size()));
+                hfds.reserve(static_cast<int>(stars.size()));
+                snrs.reserve(static_cast<int>(stars.size()));
+                for (const auto& c : stars)
+                {
+                    pts.push_back(QPointF(c.x, c.y));
+                    hfds.push_back(c.hfd);
+                    snrs.push_back(c.snr);
+                }
+                emitFn(pts, hfds, snrs);
+            };
+            emitStarSet(candidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
+                emit autoSelectDetectedStarsChanged(pts, hfds, snrs);
+            });
+            emitStarSet(rejectedCandidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
+                emit autoSelectRejectedStarsChanged(pts, hfds, snrs);
+            });
             bool usedRelaxedParams = false;
             if (!best.has_value())
             {
@@ -722,7 +1194,13 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 relaxed.minHFD = 1.0;
                 relaxed.edgeMarginPx = 20.0;
                 relaxed.kSigma = 3.0;
-                best = m_detector.selectGuideStar(img16, relaxed, effectiveFitsPath, &candidates);
+                best = m_detector.selectGuideStar(img16, relaxed, effectiveFitsPath, &candidates, &rejectedCandidates);
+                emitStarSet(candidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
+                    emit autoSelectDetectedStarsChanged(pts, hfds, snrs);
+                });
+                emitStarSet(rejectedCandidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
+                    emit autoSelectRejectedStarsChanged(pts, hfds, snrs);
+                });
                 usedRelaxedParams = best.has_value();
             }
             if (best.has_value())
@@ -734,6 +1212,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_lastGuideCentroid = m_lockPosPx;
                 emit lockPositionChanged(m_lockPosPx);
                 emit lockStarSelected(best->x, best->y, best->snr, best->hfd);
+                configureMultiStarReferenceStars(candidates, *best);
                 if (usedRelaxedParams)
                     emit infoMessage(QStringLiteral("自动选星：默认阈值未命中，已使用宽松阈值锁定星点。"));
                 emit infoMessage(QStringLiteral("选星成功：x=%1 y=%2 SNR=%3 HFD=%4（候选=%5）")
@@ -849,6 +1328,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_hasLastBacklash = false;
                 m_lastBacklashMsBase = 0;
                 m_lastBacklashMsRuntime = 0;
+                persistCalibrationSnapshot();
 
                 // ===== 校准质量硬门槛（不达标直接失败，室外更安全）=====
                 {
@@ -985,6 +1465,8 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                                              .arg(m_decBacklashMsBase));
                     }
 
+                    persistCalibrationSnapshot();
+
                     // 关键修复：回差测量阶段会用脉冲把星点推离 lockPos。
                     // 为避免“导星一开始误差巨大”，在进入 Guiding 前把 lockPos 重新对齐到当前质心位置。
                     m_lockPosPx = m_lastGuideCentroid;
@@ -1054,11 +1536,22 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_lastGuideCentroid = centroid;
                 emit guideStarCentroidChanged(centroid);
 
+                QPointF effectiveCentroid = centroid;
+                if (m_params.enableMultiStar && m_multiStarTracker.hasReferenceStars())
+                {
+                    const QPointF singleOffset = centroid - m_lockPosPx;
+                    const auto multiStarResult = m_multiStarTracker.refineOffset(img16, centroid, singleOffset);
+                    if (m_multiStarTracker.consumeReferencePointsUpdatedFlag())
+                        emit multiStarSecondaryPointsChanged(m_multiStarTracker.secondaryReferencePoints());
+                    if (multiStarResult.refined)
+                        effectiveCentroid = m_lockPosPx + multiStarResult.refinedOffset;
+                }
+
                 // ===== PHD2 对齐路径：使用 PHD2 同款算法结构（RA Hysteresis + DEC ResistSwitch） =====
                 // 先在这里“短路”旧的自定义导星逻辑，确保导星闭环行为以 PHD2 为准。
                 // 后续会把下方旧逻辑整体删掉（当前先保证功能与效果对齐、构建通过）。
                 {
-                    auto out2 = m_phd2Guiding.compute(m_calibResult, m_params, m_lockPosPx, centroid);
+                    auto out2 = m_phd2Guiding.compute(m_calibResult, m_params, m_lockPosPx, effectiveCentroid);
 
                     // ===== 关键修复：DEC 单向锁定后，若“需要纠偏但被门控”持续发生，则自动翻向 =====
                     // 现象：DEC 锁错方向时，RA 仍会不断发脉冲，导致 DEC 长期得不到纠正而持续漂离。

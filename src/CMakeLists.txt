@@ -187,22 +187,103 @@ add_executable(guiding_offline_test
   mountstate.h
 )
 
+add_executable(guiding_batch_analyzer
+  tests/guiding_batch_analyzer.cpp
+  guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
+  guiding/CentroidUtils.h guiding/CentroidUtils.cpp
+  focused_star_detection.cpp
+  tools.h tools.cpp
+  Logger.h Logger.cpp
+  websocketthread.h websocketthread.cpp
+  websocketclient.h websocketclient.cpp
+  mountstate.h
+)
+
 # sysroot 中 /usr/local/include 常含旧版 opencv2 树；-I 会优先于 -isystem(opencv4)，导致头文件与 apt 的 libopencv 不一致。
 # 不要用 -I/usr/local/include，改为 -idirafter，使 QHY 等仍能找到，且 <opencv2/...> 先命中 /usr/include/opencv4。
 if(CMAKE_SYSROOT)
   target_compile_options(client PRIVATE "-idirafter" "${CMAKE_SYSROOT}/usr/local/include")
   target_compile_options(guiding_offline_test PRIVATE "-idirafter" "${CMAKE_SYSROOT}/usr/local/include")
+  target_compile_options(guiding_batch_analyzer PRIVATE "-idirafter" "${CMAKE_SYSROOT}/usr/local/include")
+endif()
+
+# Ubuntu 24.04 宿主机的 aarch64 g++ 会自动追加宿主机交叉 libstdc++.so，
+# 该库依赖 GLIBC_2.38，无法在树莓派 Debian 12 上运行。
+# sysroot 构建时关闭默认 C++ 标准库注入，并显式改用树莓派 sysroot 中的 libstdc++。
+if(CMAKE_SYSROOT)
+  set(_QUARCS_TARGET_LIBSTDCXX "${CMAKE_SYSROOT}/usr/lib/gcc/${QUARCS_DEB_MULTIARCH}/${QUARCS_SYSROOT_GCC_VERSION}/libstdc++.so")
+  set(_QUARCS_TARGET_LIBM "${CMAKE_SYSROOT}/lib/${QUARCS_DEB_MULTIARCH}/libm.so.6")
+  set(_QUARCS_TARGET_LIBC "${CMAKE_SYSROOT}/lib/${QUARCS_DEB_MULTIARCH}/libc.so.6")
+  set(_QUARCS_TARGET_LIBGCC_S "${CMAKE_SYSROOT}/lib/${QUARCS_DEB_MULTIARCH}/libgcc_s.so.1")
+  set(_QUARCS_TARGET_LD_SO "${CMAKE_SYSROOT}/usr/lib/${QUARCS_DEB_MULTIARCH}/ld-linux-aarch64.so.1")
+  set(_QUARCS_TARGET_LIBGCC_A "${CMAKE_SYSROOT}/usr/lib/gcc/${QUARCS_DEB_MULTIARCH}/${QUARCS_SYSROOT_GCC_VERSION}/libgcc.a")
+  if(EXISTS "${_QUARCS_TARGET_LIBSTDCXX}")
+    target_link_options(client PRIVATE "-nodefaultlibs")
+    target_link_options(guiding_offline_test PRIVATE "-nodefaultlibs")
+    target_link_options(guiding_batch_analyzer PRIVATE "-nodefaultlibs")
+    target_link_libraries(client PRIVATE
+      "${_QUARCS_TARGET_LIBSTDCXX}"
+      "${_QUARCS_TARGET_LIBM}"
+      "${_QUARCS_TARGET_LIBC}"
+      "${_QUARCS_TARGET_LIBGCC_S}"
+      "${_QUARCS_TARGET_LD_SO}"
+      "${_QUARCS_TARGET_LIBGCC_A}"
+    )
+    target_link_libraries(guiding_offline_test PRIVATE
+      "${_QUARCS_TARGET_LIBSTDCXX}"
+      "${_QUARCS_TARGET_LIBM}"
+      "${_QUARCS_TARGET_LIBC}"
+      "${_QUARCS_TARGET_LIBGCC_S}"
+      "${_QUARCS_TARGET_LD_SO}"
+      "${_QUARCS_TARGET_LIBGCC_A}"
+    )
+    target_link_libraries(guiding_batch_analyzer PRIVATE
+      "${_QUARCS_TARGET_LIBSTDCXX}"
+      "${_QUARCS_TARGET_LIBM}"
+      "${_QUARCS_TARGET_LIBC}"
+      "${_QUARCS_TARGET_LIBGCC_S}"
+      "${_QUARCS_TARGET_LD_SO}"
+      "${_QUARCS_TARGET_LIBGCC_A}"
+    )
+  endif()
+  unset(_QUARCS_TARGET_LIBM)
+  unset(_QUARCS_TARGET_LIBC)
+  unset(_QUARCS_TARGET_LIBGCC_S)
+  unset(_QUARCS_TARGET_LD_SO)
+  unset(_QUARCS_TARGET_LIBGCC_A)
+  unset(_QUARCS_TARGET_LIBSTDCXX)
 endif()
 
 target_include_directories(guiding_offline_test PUBLIC
   "${QUARCS_INDI_INCLUDE}"
   "${QUARCS_STELLARSOLVER_INCLUDE}"
 )
+target_include_directories(guiding_batch_analyzer PUBLIC
+  "${QUARCS_INDI_INCLUDE}"
+  "${QUARCS_STELLARSOLVER_INCLUDE}"
+)
 if(NOT CMAKE_SYSROOT)
   target_include_directories(guiding_offline_test PUBLIC "${QUARCS_LOCAL_INCLUDE}")
+  target_include_directories(guiding_batch_analyzer PUBLIC "${QUARCS_LOCAL_INCLUDE}")
 endif()
 
 target_link_libraries(guiding_offline_test PRIVATE
+  ${OpenCV_LIBS}
+  -lcfitsio
+  Qt5::Core
+  Qt5::Gui
+  Qt5::Widgets
+  Qt5::Network
+  Qt5::WebSockets
+  indiclient
+  ${ZLIB_LIBRARY}
+  ${NOVA_LIBRARIES}
+  qhyccd
+  stellarsolver
+  ${StellarSolver_LIBS}
+)
+
+target_link_libraries(guiding_batch_analyzer PRIVATE
   ${OpenCV_LIBS}
   -lcfitsio
   Qt5::Core
@@ -285,6 +366,7 @@ if(CMAKE_SYSROOT)
   if(EXISTS "${_QUARCS_ATLAS_BLAS}" AND EXISTS "${_QUARCS_ATLAS_LAPACK}")
     target_link_libraries(client PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
     target_link_libraries(guiding_offline_test PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
+    target_link_libraries(guiding_batch_analyzer PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
   endif()
   unset(_QUARCS_ATLAS_BLAS)
   unset(_QUARCS_ATLAS_LAPACK)

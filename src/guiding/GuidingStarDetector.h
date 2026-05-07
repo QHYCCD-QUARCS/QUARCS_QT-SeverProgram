@@ -19,6 +19,8 @@ struct StarCandidate
 
 struct StarSelectionParams
 {
+    int searchRegionPx = 15;      // PHD2 DEFAULT_SEARCH_REGION
+    int autoSelDownsample = 1;    // 1=disabled; PHD2 还支持 Auto/2x/3x，这里先默认 1x
     double minSNR = 10.0;
     double minHFD = 1.5;
     double maxHFD = 12.0;
@@ -36,11 +38,13 @@ struct StarSelectionParams
 class GuidingStarDetector
 {
 public:
-    // 三遍扫描：SNR → HFD → 饱和 + 边缘，最后按评分选最佳星
+    // 返回主星；outCandidates 若提供，则返回接近 PHD2 foundStars 语义的“已验证可用候选星”：
+    // 已通过 HFD / 边缘 / 质心复核，且满足最小 SNR。多星副星应只从这批候选星里选。
     std::optional<StarCandidate> selectGuideStar(const cv::Mat& image16,
                                                  const StarSelectionParams& p,
                                                  const QString& fitsPath = QString(),
-                                                 std::vector<StarCandidate>* outCandidates = nullptr) const;
+                                                 std::vector<StarCandidate>* outCandidates = nullptr,
+                                                 std::vector<StarCandidate>* outRejectedCandidates = nullptr) const;
 
 private:
     static double maxADUForMat(const cv::Mat& img);
@@ -48,5 +52,3 @@ private:
 };
 
 } // namespace guiding
-
-
