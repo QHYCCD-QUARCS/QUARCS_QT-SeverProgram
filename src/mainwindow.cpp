@@ -21,6 +21,7 @@
 #include <sstream>
 #include <unordered_set>
 #include <chrono>
+#include <utility>
 
 // Qt 相关头文件（用于文件/目录操作）
 #include <QDir>
@@ -58,6 +59,22 @@ INDI::BaseDevice *dpPoleScope  = nullptr;  // 极轴镜设备指针
 INDI::BaseDevice *dpMainCamera = nullptr;  // 主相机设备指针
 INDI::BaseDevice *dpFocuser    = nullptr;  // 电调设备指针
 INDI::BaseDevice *dpCFW        = nullptr;  // 滤镜轮设备指针
+
+namespace {
+
+template <typename Func>
+void postGuiderCore(GuiderCore *core, Func &&func)
+{
+    if (!core)
+        return;
+    QMetaObject::invokeMethod(core,
+                              [core, fn = std::forward<Func>(func)]() mutable {
+                                  fn(core);
+                              },
+                              Qt::QueuedConnection);
+}
+
+} // namespace
 
 // ============================================================================
 // SDK 设备句柄（当设备使用 SDK 模式时使用对应句柄）
@@ -1271,7 +1288,16 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     guiderLoopTimer = new QTimer(this);
     guiderLoopTimer->setSingleShot(true);
     connect(guiderLoopTimer, &QTimer::timeout, this, &MainWindow::onGuiderLoopTimeout);
-    guiderCore = new GuiderCore(this);
+    guiderCoreThread = new QThread(this);
+    guiderCoreThread->setObjectName(QStringLiteral("GuiderCoreThread"));
+    guiderCore = new GuiderCore();
+    guiderParamsCache = guiderCore->params();
+    guiderCoreStateCache = guiderCore->state();
+    guiderCore->moveToThread(guiderCoreThread);
+    connect(guiderCoreThread, &QThread::finished, guiderCore, &QObject::deleteLater);
+    guiderCoreThread->start();
+    Logger::Log("BuiltInGuider | GuiderCore moved to GuiderCoreThread",
+                LogLevel::INFO, DeviceType::GUIDER);
     syncGuiderScaleParams(true, false);
 #if QUARCS_SIM_GUIDER
     simGuiderFrameSource = std::make_unique<guiding::SimGuiderFrameSource>();
@@ -1421,6 +1447,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             ":decTravelPx=" + QString::number(r.decTravelPx, 'f', 2));
     });
     connect(guiderCore, &GuiderCore::stateChanged, this, [this](guiding::State state) {
+        guiderCoreStateCache = state;
         guiderPhaseGuiding = (state == guiding::State::Guiding);
         if (state == guiding::State::Idle || state == guiding::State::Looping ||
             state == guiding::State::Stopped || state == guiding::State::Error)
@@ -1560,6 +1587,17 @@ MainWindow::~MainWindow()
         sdkGuiderExposureTimer->stop();
     if (focusMoveTimer)
         focusMoveTimer->stop();
+
+    if (guiderCoreThread && guiderCoreThread->isRunning() && guiderCore)
+    {
+        QMetaObject::invokeMethod(guiderCore, [core = guiderCore]() {
+            core->stopGuiding();
+            core->stopLoop();
+        }, Qt::BlockingQueuedConnection);
+        guiderCoreThread->quit();
+        guiderCoreThread->wait(3000);
+        guiderCore = nullptr;
+    }
 
     // 析构兜底：若仍有 SDK 设备/句柄存在，统一关闭句柄并释放 SDK 全局资源
     //（例如用户直接关闭程序而未点“断开所有设备”）
@@ -3416,7 +3454,7 @@ void MainWindow::onMessageReceived(const QString &message)
         guiderForceRecalibrateOnNextStart = true;
         if (guiderCore)
         {
-            guiderCore->clearCachedCalibration();
+            postGuiderCore(guiderCore, [](GuiderCore *core) { core->clearCachedCalibration(); });
             emit wsThread->sendMessageToClient("GuiderCoreInfo:CachedCalibrationAndBacklashCleared:WillRecalibrateOnNextStart");
 
             const bool guiderSdk =
@@ -3424,7 +3462,7 @@ void MainWindow::onMessageReceived(const QString &message)
                  systemdevicelist.system_devices[1].isSDKConnect &&
                  sdkGuiderHandle != nullptr);
             const bool guiderConnected = ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk);
-            const guiding::State gs = guiderCore->state();
+            const guiding::State gs = guiderCoreStateCache;
 
             // OpenPHD2-style UX: if the user confirms recalibration while Loop is already active,
             // start the fresh calibration flow immediately instead of waiting for another click.
@@ -3432,7 +3470,7 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 Logger::Log("BuiltInGuider | loop is active, start forced recalibration immediately.",
                             LogLevel::INFO, DeviceType::GUIDER);
-                guiderCore->startGuidingForceCalibrate();
+                postGuiderCore(guiderCore, [](GuiderCore *core) { core->startGuidingForceCalibrate(); });
                 guiderForceRecalibrateOnNextStart = false;
             }
         }
@@ -3452,7 +3490,7 @@ void MainWindow::onMessageReceived(const QString &message)
         QString guiderStatus;
         if (guiderCore)
         {
-            switch (guiderCore->state())
+            switch (guiderCoreStateCache)
             {
             case guiding::State::Selecting:
                 guidingOn = true;
@@ -3510,18 +3548,18 @@ void MainWindow::onMessageReceived(const QString &message)
             {
                 Logger::Log("GuiderSwitch -> start built-in guider with forced recalibration",
                             LogLevel::INFO, DeviceType::GUIDER);
-                guiderCore->startGuidingForceCalibrate();
+                postGuiderCore(guiderCore, [](GuiderCore *core) { core->startGuidingForceCalibrate(); });
                 guiderForceRecalibrateOnNextStart = false;
             }
             else
             {
-                guiderCore->startGuiding();
+                postGuiderCore(guiderCore, [](GuiderCore *core) { core->startGuiding(); });
             }
         }
         else
         {
             Logger::Log("GuiderSwitch -> stop built-in guider", LogLevel::INFO, DeviceType::GUIDER);
-            guiderCore->stopGuiding();
+            postGuiderCore(guiderCore, [](GuiderCore *core) { core->stopGuiding(); });
         }
     }
 
@@ -3583,7 +3621,7 @@ void MainWindow::onMessageReceived(const QString &message)
                         LogLevel::INFO, DeviceType::GUIDER);
             if (guiderCore)
             {
-                guiderCore->startLoop();
+                postGuiderCore(guiderCore, [](GuiderCore *core) { core->startLoop(); });
             }
             else
             {
@@ -3602,8 +3640,10 @@ void MainWindow::onMessageReceived(const QString &message)
                         LogLevel::INFO, DeviceType::GUIDER);
             if (guiderCore)
             {
-                guiderCore->stopGuiding();
-                guiderCore->stopLoop();
+                postGuiderCore(guiderCore, [](GuiderCore *core) {
+                    core->stopGuiding();
+                    core->stopLoop();
+                });
             }
             isGuiderLoopExp = false;
             guiderExposureInFlight = false;
@@ -4275,7 +4315,9 @@ void MainWindow::onMessageReceived(const QString &message)
         const double mappedY = std::clamp(clickY * static_cast<double>(imageH) / static_cast<double>(canvasH),
                                           0.0, static_cast<double>(imageH - 1));
 
-        guiderCore->setManualLock(mappedX, mappedY);
+        postGuiderCore(guiderCore, [mappedX, mappedY](GuiderCore *core) {
+            core->setManualLock(mappedX, mappedY);
+        });
         Logger::Log("GuiderCanvasClick -> built-in manual lock: canvas=" +
                         std::to_string(canvasW) + "x" + std::to_string(canvasH) +
                         " click=(" + std::to_string(clickX) + "," + std::to_string(clickY) + ")" +
@@ -4486,9 +4528,10 @@ void MainWindow::onMessageReceived(const QString &message)
         {
             const QString rawValue = parts[1].trimmed().toLower();
             const bool enabled = (rawValue == "true" || rawValue == "1" || rawValue == "yes" || rawValue == "on");
-            auto p = guiderCore->params();
+            auto p = guiderParamsCache;
             p.enableMultiStar = enabled;
-            guiderCore->setParams(p);
+            guiderParamsCache = p;
+            postGuiderCore(guiderCore, [p](GuiderCore *core) { core->setParams(p); });
             Logger::Log(std::string("BuiltInGuider | MultiStarGuider set to ") + (enabled ? "true" : "false"),
                         LogLevel::INFO, DeviceType::GUIDER);
             emit wsThread->sendMessageToClient(QStringLiteral("GuiderCoreInfo:%1")
@@ -4508,7 +4551,7 @@ void MainWindow::onMessageReceived(const QString &message)
         else
         {
             const QString rawMode = parts[1].trimmed().toUpper();
-            auto p = guiderCore->params();
+            auto p = guiderParamsCache;
             p.autoDecGuideDir = false;
             p.allowedDecDirs.clear();
 
@@ -4530,7 +4573,8 @@ void MainWindow::onMessageReceived(const QString &message)
                 appliedMode = QStringLiteral("BOTH");
             }
 
-            guiderCore->setParams(p);
+            guiderParamsCache = p;
+            postGuiderCore(guiderCore, [p](GuiderCore *core) { core->setParams(p); });
             Logger::Log(("BuiltInGuider | GuiderDecGuideDir set to " + appliedMode).toStdString(),
                         LogLevel::INFO, DeviceType::GUIDER);
             emit wsThread->sendMessageToClient("GuiderCoreInfo:DEC单向导星模式已设置为:" + appliedMode);
@@ -5980,7 +6024,8 @@ void MainWindow::onGuiderLoopTimeout()
 
         if (guiderCore)
         {
-            guiderCore->onNewFrame(fitsPath);
+            QMetaObject::invokeMethod(guiderCore, "onNewFrame", Qt::QueuedConnection,
+                                      Q_ARG(QString, fitsPath));
         }
         else
         {
@@ -6007,8 +6052,10 @@ void MainWindow::onGuiderLoopTimeout()
             guiderExposureInFlight = false;
             if (guiderCore)
             {
-                guiderCore->stopGuiding();
-                guiderCore->stopLoop();
+                postGuiderCore(guiderCore, [](GuiderCore *core) {
+                    core->stopGuiding();
+                    core->stopLoop();
+                });
             }
             if (guiderLoopTimer)
                 guiderLoopTimer->stop();
@@ -6025,12 +6072,29 @@ void MainWindow::onGuiderLoopTimeout()
 
         // 0) 对齐主相机 SDK：曝光前确保分辨率/ROI 为有效全分辨率，否则某些机型会出现 GetSingleFrame 卡死/返回无效帧
         {
+            QElapsedTimer loopPerf;
+            loopPerf.start();
+            qint64 loopLastMs = 0;
+            auto logLoopStage = [&](const std::string& stage) {
+                const qint64 nowMs = loopPerf.elapsed();
+                Logger::Log("GuiderPerf | GuiderLoop(SDK) | stage=" + stage +
+                                " deltaMs=" + std::to_string(nowMs - loopLastMs) +
+                                " totalMs=" + std::to_string(nowMs),
+                            LogLevel::INFO, DeviceType::GUIDER);
+                loopLastMs = nowMs;
+            };
+
             // 尝试取消上一帧可能残留的曝光/读出（避免连续触发时卡死）
             SdkCommand cancelCmd;
             cancelCmd.type = SdkCommandType::Custom;
             cancelCmd.name = "CancelExposure";
             cancelCmd.payload = std::any();
-            SdkManager::instance().callByHandle(sdkGuiderHandle, cancelCmd);
+            SdkResult cancelRes = SdkManager::instance().callByHandle(sdkGuiderHandle, cancelCmd);
+            Logger::Log("GuiderPerf | GuiderLoop(SDK) | CancelExposure success=" +
+                            std::to_string(cancelRes.success ? 1 : 0) +
+                            " msg=" + cancelRes.message,
+                        LogLevel::INFO, DeviceType::GUIDER);
+            logLoopStage("cancel_previous_exposure");
 
             SdkAreaInfo fullRoi;
             bool haveFullRoi = false;
@@ -6040,6 +6104,11 @@ void MainWindow::onGuiderLoopTimeout()
                 effCmd.name = "GetEffectiveArea";
                 effCmd.payload = std::any();
                 SdkResult effRes = SdkManager::instance().callByHandle(sdkGuiderHandle, effCmd);
+                Logger::Log("GuiderPerf | GuiderLoop(SDK) | GetEffectiveArea success=" +
+                                std::to_string(effRes.success ? 1 : 0) +
+                                " msg=" + effRes.message,
+                            LogLevel::INFO, DeviceType::GUIDER);
+                logLoopStage("get_effective_area");
                 if (effRes.success)
                 {
                     try
@@ -6061,6 +6130,11 @@ void MainWindow::onGuiderLoopTimeout()
                 chipCmd.name = "GetChipInfo";
                 chipCmd.payload = std::any();
                 SdkResult chipRes = SdkManager::instance().callByHandle(sdkGuiderHandle, chipCmd);
+                Logger::Log("GuiderPerf | GuiderLoop(SDK) | GetChipInfo fallback success=" +
+                                std::to_string(chipRes.success ? 1 : 0) +
+                                " msg=" + chipRes.message,
+                            LogLevel::INFO, DeviceType::GUIDER);
+                logLoopStage("get_chip_info_fallback");
                 if (chipRes.success)
                 {
                     try
@@ -6086,6 +6160,13 @@ void MainWindow::onGuiderLoopTimeout()
                 setResCmd.name = "SetResolution";
                 setResCmd.payload = fullRoi;
                 SdkResult setResRes = SdkManager::instance().callByHandle(sdkGuiderHandle, setResCmd);
+                Logger::Log("GuiderPerf | GuiderLoop(SDK) | SetResolution success=" +
+                                std::to_string(setResRes.success ? 1 : 0) +
+                                " roi=" + std::to_string(fullRoi.startX) + "," + std::to_string(fullRoi.startY) +
+                                "," + std::to_string(fullRoi.sizeX) + "x" + std::to_string(fullRoi.sizeY) +
+                                " msg=" + setResRes.message,
+                            LogLevel::INFO, DeviceType::GUIDER);
+                logLoopStage("set_resolution");
                 if (!setResRes.success)
                 {
                     Logger::Log("GuiderLoop(SDK) | SetResolution(full) failed: " + setResRes.message,
@@ -6096,16 +6177,25 @@ void MainWindow::onGuiderLoopTimeout()
             {
                 Logger::Log("GuiderLoop(SDK) | SetResolution(full) skipped: cannot get valid full ROI",
                             LogLevel::WARNING, DeviceType::GUIDER);
+                logLoopStage("set_resolution_skipped");
             }
         }
 
         // 1) SetExposure（us）
         {
+            QElapsedTimer setExpPerf;
+            setExpPerf.start();
             SdkCommand setExpCmd;
             setExpCmd.type = SdkCommandType::Custom;
             setExpCmd.name = "SetExposure";
             setExpCmd.payload = expSec * 1000000.0;
             SdkResult setRes = SdkManager::instance().callByHandle(sdkGuiderHandle, setExpCmd);
+            Logger::Log("GuiderPerf | GuiderLoop(SDK) | SetExposure success=" +
+                            std::to_string(setRes.success ? 1 : 0) +
+                            " costMs=" + std::to_string(setExpPerf.elapsed()) +
+                            " exposureUs=" + std::to_string(static_cast<qint64>(expSec * 1000000.0)) +
+                            " msg=" + setRes.message,
+                        LogLevel::INFO, DeviceType::GUIDER);
             if (!setRes.success)
             {
                 Logger::Log("GuiderLoop(SDK) | SetExposure failed: " + setRes.message, LogLevel::ERROR, DeviceType::GUIDER);
@@ -6114,11 +6204,18 @@ void MainWindow::onGuiderLoopTimeout()
 
         // 2) StartSingleExposure
         {
+            QElapsedTimer startExpPerf;
+            startExpPerf.start();
             SdkCommand startExpCmd;
             startExpCmd.type = SdkCommandType::Custom;
             startExpCmd.name = "StartSingleExposure";
             startExpCmd.payload = std::any();
             SdkResult startRes = SdkManager::instance().callByHandle(sdkGuiderHandle, startExpCmd);
+            Logger::Log("GuiderPerf | GuiderLoop(SDK) | StartSingleExposure success=" +
+                            std::to_string(startRes.success ? 1 : 0) +
+                            " costMs=" + std::to_string(startExpPerf.elapsed()) +
+                            " msg=" + startRes.message,
+                        LogLevel::INFO, DeviceType::GUIDER);
             if (!startRes.success)
             {
                 Logger::Log("GuiderLoop(SDK) | StartSingleExposure failed: " + startRes.message, LogLevel::ERROR, DeviceType::GUIDER);
@@ -6133,7 +6230,12 @@ void MainWindow::onGuiderLoopTimeout()
         sdkGuiderExposureStartTime = QDateTime::currentMSecsSinceEpoch();
         sdkGuiderExposureExpectedDuration = expMs;
         if (sdkGuiderExposureTimer)
+        {
             sdkGuiderExposureTimer->start(expMs);
+            Logger::Log("GuiderPerf | GuiderLoop(SDK) | exposure timer started delayMs=" +
+                            std::to_string(expMs),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
         return;
     }
 
@@ -6144,8 +6246,10 @@ void MainWindow::onGuiderLoopTimeout()
         guiderExposureInFlight = false;
         if (guiderCore)
         {
-            guiderCore->stopGuiding();
-            guiderCore->stopLoop();
+            postGuiderCore(guiderCore, [](GuiderCore *core) {
+                core->stopGuiding();
+                core->stopLoop();
+            });
         }
         if (guiderLoopTimer)
             guiderLoopTimer->stop();
@@ -6173,8 +6277,10 @@ void MainWindow::startGuiderSingleCapture(int exposureMs)
                     LogLevel::INFO, DeviceType::GUIDER);
         if (guiderCore)
         {
-            guiderCore->stopGuiding();
-            guiderCore->stopLoop();
+            postGuiderCore(guiderCore, [](GuiderCore *core) {
+                core->stopGuiding();
+                core->stopLoop();
+            });
         }
         isGuiderLoopExp = false;
         if (guiderLoopTimer)
@@ -6641,15 +6747,17 @@ void MainWindow::onTimeout()
                         // 翻转会改变力学状态，且可能导致相机/视场变化；继续使用旧校准容易越导越偏。
                         if (guiderCore)
                         {
-                            const guiding::State gs = guiderCore->state();
+                            const guiding::State gs = guiderCoreStateCache;
                             if (gs == guiding::State::Guiding || gs == guiding::State::Calibrating)
                             {
                                 Logger::Log("BuiltInGuider | pier side changed, force recalibrate after meridian flip.",
                                             LogLevel::INFO, DeviceType::GUIDER);
                                 emit wsThread->sendMessageToClient("GuiderCoreInfo:MeridianFlipDetected:Recalibrating");
-                                guiderCore->clearCachedCalibration();
-                                guiderCore->stopGuiding();
-                                guiderCore->startGuidingForceCalibrate();
+                                postGuiderCore(guiderCore, [](GuiderCore *core) {
+                                    core->clearCachedCalibration();
+                                    core->stopGuiding();
+                                    core->startGuidingForceCalibrate();
+                                });
                             }
                         }
                     }
@@ -10003,6 +10111,18 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
 {
     // 循环曝光会高频触发：降为 DEBUG（默认关闭 DEBUG）避免刷屏
     Logger::Log("Starting to save guider image as JPG...", LogLevel::DEBUG, DeviceType::GUIDER);
+    QElapsedTimer perfTimer;
+    perfTimer.start();
+    qint64 perfLastMs = 0;
+    auto logPerfStage = [&](const std::string& stage) {
+        const qint64 nowMs = perfTimer.elapsed();
+        Logger::Log("GuiderPerf | saveGuiderImageAsJPG | stage=" + stage +
+                        " deltaMs=" + std::to_string(nowMs - perfLastMs) +
+                        " totalMs=" + std::to_string(nowMs),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        perfLastMs = nowMs;
+    };
+
     constexpr int kKeepRecentGuiderImages = 12;
     constexpr int kKeepRecentGuiderDiagnostics = 40;
     constexpr int kGuiderPreviewMaxWidth = 1920;
@@ -10016,6 +10136,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
         preview = downsampled;
         ++downsampleLevel;
     }
+    logPerfStage("preview_downsample");
 
     if (downsampleLevel > 0)
     {
@@ -10128,20 +10249,24 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     };
 
     drawGuiderDiagnostics(preview);
+    logPerfStage("draw_diagnostics_overlay");
 
     // 生成唯一ID
     QString uniqueId = QUuid::createUuid().toString();
     Logger::Log("Generated unique ID for new guider image: " + uniqueId.toStdString(), LogLevel::DEBUG, DeviceType::GUIDER);
+    logPerfStage("generate_unique_id");
 
     // 保存新的图像带有唯一ID的文件名
     std::string fileName = "GuiderImage_" + uniqueId.toStdString() + ".jpg";
     std::string filePath = vueDirectoryPath + fileName;
     bool saved = cv::imwrite(filePath, preview);
     Logger::Log("Attempted to save new guider image.", LogLevel::DEBUG, DeviceType::GUIDER);
+    logPerfStage("write_preview_jpg");
 
     std::string Command = "sudo ln -sf " + filePath + " " + vueImagePath + fileName;
     system(Command.c_str());
     Logger::Log("Created symbolic link for new guider image.", LogLevel::DEBUG, DeviceType::GUIDER);
+    logPerfStage("create_preview_symlink");
 
     PriorGuiderImage = vueImagePath + fileName;
 
@@ -10241,20 +10366,40 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     };
 
     cleanupOldGuiderImages(QString::fromStdString(vueDirectoryPath), false, QString::fromStdString(fileName));
+    logPerfStage("cleanup_preview_dir");
     cleanupOldGuiderImages(QString::fromStdString(vueImagePath), true, QString::fromStdString(fileName));
+    logPerfStage("cleanup_preview_symlink_dir");
 
     auto saveGuiderDiagnosticSnapshot = [&](const cv::Mat& savedPreview) {
+        QElapsedTimer diagTimer;
+        diagTimer.start();
+        qint64 diagLastMs = 0;
+        auto logDiagStage = [&](const std::string& stage) {
+            const qint64 nowMs = diagTimer.elapsed();
+            Logger::Log("GuiderPerf | saveGuiderImageAsJPG | diagnosticStage=" + stage +
+                            " deltaMs=" + std::to_string(nowMs - diagLastMs) +
+                            " diagTotalMs=" + std::to_string(nowMs) +
+                            " outerTotalMs=" + std::to_string(perfTimer.elapsed()),
+                        LogLevel::INFO, DeviceType::GUIDER);
+            diagLastMs = nowMs;
+        };
+
         if (guiderDiagnosticBatchRemaining <= 0 || guiderDiagnosticBatchDir.isEmpty())
+        {
+            logDiagStage("skip_no_active_batch");
             return;
+        }
 
         if (!QDir().mkpath(guiderDiagnosticBatchDir))
         {
+            logDiagStage("mkpath_failed");
             Logger::Log("saveGuiderImageAsJPG | failed to create guider diagnostics batch dir: " +
                             guiderDiagnosticBatchDir.toStdString(),
                         LogLevel::WARNING, DeviceType::GUIDER);
             guiderDiagnosticBatchRemaining = 0;
             return;
         }
+        logDiagStage("mkpath");
 
         const int frameIndex = guiderDiagnosticBatchIndex + 1;
         const QString diagBase = QStringLiteral("frame_%1").arg(frameIndex, 2, 10, QChar('0'));
@@ -10266,11 +10411,15 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
         {
             Logger::Log("saveGuiderImageAsJPG | failed to save guider diagnostic jpg: " + jpgPath.toStdString(),
                         LogLevel::WARNING, DeviceType::GUIDER);
+            logDiagStage("write_diag_jpg_failed");
             return;
         }
+        logDiagStage("write_diag_jpg");
 
         QString copiedFitsPath;
-        if (!guiderDiagnosticSourceFitsPath.isEmpty() && QFile::exists(guiderDiagnosticSourceFitsPath))
+        if (guiderDiagnosticCopyFitsEnabled &&
+            !guiderDiagnosticSourceFitsPath.isEmpty() &&
+            QFile::exists(guiderDiagnosticSourceFitsPath))
         {
             QFile::remove(fitsPath);
             if (QFile::copy(guiderDiagnosticSourceFitsPath, fitsPath))
@@ -10280,6 +10429,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
                                 guiderDiagnosticSourceFitsPath.toStdString(),
                             LogLevel::WARNING, DeviceType::GUIDER);
         }
+        logDiagStage("copy_diag_fits");
 
         auto pointsToJson = [](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
             QJsonArray arr;
@@ -10303,6 +10453,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
         meta["framesRemainingBeforeSave"] = guiderDiagnosticBatchRemaining;
         meta["previewJpgPath"] = jpgPath;
         meta["sourceFitsPath"] = guiderDiagnosticSourceFitsPath;
+        meta["copyFitsEnabled"] = guiderDiagnosticCopyFitsEnabled;
         meta["copiedFitsPath"] = copiedFitsPath;
         meta["rawWidth"] = Image.cols;
         meta["rawHeight"] = Image.rows;
@@ -10335,6 +10486,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
             obj["y"] = guiderGuideStarCentroidPx.y();
             meta["guideCentroid"] = obj;
         }
+        logDiagStage("build_diag_json");
 
         QFile jsonFile(jsonPath);
         if (jsonFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
@@ -10347,6 +10499,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
             Logger::Log("saveGuiderImageAsJPG | failed to save guider diagnostic json: " + jsonPath.toStdString(),
                         LogLevel::WARNING, DeviceType::GUIDER);
         }
+        logDiagStage("write_diag_json");
 
         guiderDiagnosticBatchIndex = frameIndex;
         guiderDiagnosticBatchRemaining = std::max(0, guiderDiagnosticBatchRemaining - 1);
@@ -10380,6 +10533,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
             Logger::Log("saveGuiderImageAsJPG | guider diagnostics batch cleanup failed",
                         LogLevel::WARNING, DeviceType::GUIDER);
         }
+        logDiagStage("cleanup_diag_batches");
 
         Logger::Log("saveGuiderImageAsJPG | diagnostic batch frame saved to " + jpgPath.toStdString() +
                         " remaining=" + std::to_string(guiderDiagnosticBatchRemaining),
@@ -10387,16 +10541,19 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     };
 
     saveGuiderDiagnosticSnapshot(preview);
+    logPerfStage("diagnostic_snapshot");
 
     if (saved)
     {
         emit wsThread->sendMessageToClient(QString("GuideSize:%1:%2").arg(preview.cols).arg(preview.rows));
         emit wsThread->sendMessageToClient("SaveGuiderImageSuccess:" + QString::fromStdString(fileName));
         Logger::Log("Guider image saved successfully and client notified.", LogLevel::DEBUG, DeviceType::GUIDER);
+        logPerfStage("notify_client");
     }
     else
     {
         Logger::Log("Failed to save guider image.", LogLevel::ERROR, DeviceType::GUIDER);
+        logPerfStage("notify_client_failed");
     }
 }
 void MainWindow::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
@@ -15762,15 +15919,12 @@ double MainWindow::currentGuiderArcsecPerPixel() const
     double pixelUm = guiderPixelSizeUm;
     int bin = 1;
 
-    if (guiderCore)
-    {
-        const auto p = guiderCore->params();
-        if (p.guiderFocalLengthMm > 0.0)
-            focalMm = p.guiderFocalLengthMm;
-        if (p.guiderPixelSizeUm > 0.0)
-            pixelUm = p.guiderPixelSizeUm;
-        bin = std::max(1, p.guiderBinning);
-    }
+    const auto p = guiderParamsCache;
+    if (p.guiderFocalLengthMm > 0.0)
+        focalMm = p.guiderFocalLengthMm;
+    if (p.guiderPixelSizeUm > 0.0)
+        pixelUm = p.guiderPixelSizeUm;
+    bin = std::max(1, p.guiderBinning);
 
     if (!(focalMm > 0.0 && pixelUm > 0.0))
         return 0.0;
@@ -15824,20 +15978,18 @@ void MainWindow::publishGuiderErrorUnit(bool force, bool emitInfo)
 
 void MainWindow::syncGuiderScaleParams(bool forcePublishUnit, bool emitInfo)
 {
-    if (guiderCore)
+    auto p = guiderParamsCache;
+    p.guiderFocalLengthMm = std::max(0.0, guiderFocalLengthMm);
+    p.guiderPixelSizeUm = std::max(0.0, guiderPixelSizeUm);
+    p.pixelScaleArcsecPerPixel = 0.0;
+    if (p.guiderFocalLengthMm > 0.0 && p.guiderPixelSizeUm > 0.0)
     {
-        auto p = guiderCore->params();
-        p.guiderFocalLengthMm = std::max(0.0, guiderFocalLengthMm);
-        p.guiderPixelSizeUm = std::max(0.0, guiderPixelSizeUm);
-        p.pixelScaleArcsecPerPixel = 0.0;
-        if (p.guiderFocalLengthMm > 0.0 && p.guiderPixelSizeUm > 0.0)
-        {
-            const double bin = std::max(1, p.guiderBinning);
-            p.pixelScaleArcsecPerPixel = 206.265 * (p.guiderPixelSizeUm * bin) / p.guiderFocalLengthMm;
-            guiderScaleHintSent = false;
-        }
-        guiderCore->setParams(p);
+        const double bin = std::max(1, p.guiderBinning);
+        p.pixelScaleArcsecPerPixel = 206.265 * (p.guiderPixelSizeUm * bin) / p.guiderFocalLengthMm;
+        guiderScaleHintSent = false;
     }
+    guiderParamsCache = p;
+    postGuiderCore(guiderCore, [p](GuiderCore *core) { core->setParams(p); });
 
     publishGuiderErrorUnit(forcePublishUnit, emitInfo);
 }
@@ -18029,8 +18181,10 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
         isGuiderLoopExp = false;
         if (guiderCore)
         {
-            guiderCore->stopGuiding();
-            guiderCore->stopLoop();
+            postGuiderCore(guiderCore, [](GuiderCore *core) {
+                core->stopGuiding();
+                core->stopLoop();
+            });
         }
         emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
         emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
@@ -18040,6 +18194,8 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
     // 防重入：如果上一轮 GetSingleFrame 还在 SDK 线程执行，就稍后再试
     if (sdkGuiderFrameTaskInFlight.exchange(true))
     {
+        Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | frame task already in flight, retry timer in 10ms",
+                    LogLevel::INFO, DeviceType::GUIDER);
         sdkGuiderExposureTimer->start(10);
         return;
     }
@@ -18047,26 +18203,54 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
     const SdkDeviceHandle handleSnap = sdkGuiderHandle;
     const qint64 startSnap = sdkGuiderExposureStartTime;
     const int expectedSnap = sdkGuiderExposureExpectedDuration;
+    const qint64 timerFiredAtMs = QDateTime::currentMSecsSinceEpoch();
 
-    sdkCamExec->post([this, handleSnap, startSnap, expectedSnap]() {
+    Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | fired elapsedSinceExposureStartMs=" +
+                    std::to_string(timerFiredAtMs - startSnap) +
+                    " expectedMs=" + std::to_string(expectedSnap),
+                LogLevel::INFO, DeviceType::GUIDER);
+
+    sdkCamExec->post([this, handleSnap, startSnap, expectedSnap, timerFiredAtMs]() {
+        QElapsedTimer workerPerf;
+        workerPerf.start();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         const qint64 elapsed = now - startSnap;
         const qint64 expected = std::max<qint64>(1, expectedSnap);
         const qint64 maxWaitMs = std::max<qint64>(expected + 5000, expected * 3);
 
+        Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | sdkWorkerEnter queueDelayMs=" +
+                        std::to_string(now - timerFiredAtMs) +
+                        " elapsedSinceExposureStartMs=" + std::to_string(elapsed) +
+                        " expectedMs=" + std::to_string(expected) +
+                        " maxWaitMs=" + std::to_string(maxWaitMs),
+                    LogLevel::INFO, DeviceType::GUIDER);
+
         if (elapsed > maxWaitMs)
         {
+            QElapsedTimer cancelPerf;
+            cancelPerf.start();
             SdkCommand cancelCmd;
             cancelCmd.type = SdkCommandType::Custom;
             cancelCmd.name = "CancelExposure";
             cancelCmd.payload = std::any();
             SdkResult cancelRes = SdkManager::instance().callByHandle(handleSnap, cancelCmd);
+            const qint64 cancelCostMs = cancelPerf.elapsed();
+            const qint64 workerTotalMs = workerPerf.elapsed();
 
-            QMetaObject::invokeMethod(this, [this, cancelRes, elapsed, expected, maxWaitMs]() {
+            Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | timeout CancelExposure returned success=" +
+                            std::to_string(cancelRes.success ? 1 : 0) +
+                            " costMs=" + std::to_string(cancelCostMs) +
+                            " workerTotalMs=" + std::to_string(workerTotalMs) +
+                            " msg=" + cancelRes.message,
+                        LogLevel::INFO, DeviceType::GUIDER);
+
+            QMetaObject::invokeMethod(this, [this, cancelRes, elapsed, expected, maxWaitMs, cancelCostMs, workerTotalMs]() {
                 sdkGuiderFrameTaskInFlight = false;
                 Logger::Log("onSdkGuiderExposureTimerTimeout | TIMEOUT waiting guider frame (elapsed=" +
                                 std::to_string(elapsed) + "ms, expected=" + std::to_string(expected) +
-                                "ms, maxWait=" + std::to_string(maxWaitMs) + "ms)",
+                                "ms, maxWait=" + std::to_string(maxWaitMs) +
+                                "ms, cancelCost=" + std::to_string(cancelCostMs) +
+                                "ms, workerTotal=" + std::to_string(workerTotalMs) + "ms)",
                             LogLevel::ERROR, DeviceType::GUIDER);
                 if (!cancelRes.success)
                 {
@@ -18078,8 +18262,10 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                 isGuiderLoopExp = false;
                 if (guiderCore)
                 {
-                    guiderCore->stopGuiding();
-                    guiderCore->stopLoop();
+                    postGuiderCore(guiderCore, [](GuiderCore *core) {
+                        core->stopGuiding();
+                        core->stopLoop();
+                    });
                 }
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
@@ -18092,10 +18278,29 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
         getFrameCmd.type = SdkCommandType::Custom;
         getFrameCmd.name = "GetSingleFrame";
         getFrameCmd.payload = std::any();
+        QElapsedTimer getFramePerf;
+        getFramePerf.start();
         SdkResult frameRes = SdkManager::instance().callByHandle(handleSnap, getFrameCmd);
+        const qint64 getFrameCostMs = getFramePerf.elapsed();
+        const qint64 workerTotalMs = workerPerf.elapsed();
 
-        QMetaObject::invokeMethod(this, [this, frameRes, expected]() mutable {
+        Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | GetSingleFrame returned success=" +
+                        std::to_string(frameRes.success ? 1 : 0) +
+                        " costMs=" + std::to_string(getFrameCostMs) +
+                        " workerTotalMs=" + std::to_string(workerTotalMs) +
+                        " msg=" + frameRes.message,
+                    LogLevel::INFO, DeviceType::GUIDER);
+
+        QMetaObject::invokeMethod(this, [this, frameRes, expected, getFrameCostMs, workerTotalMs, timerFiredAtMs]() mutable {
+            QElapsedTimer mainPerf;
+            mainPerf.start();
             sdkGuiderFrameTaskInFlight = false;
+
+            Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | mainThreadResultEnter totalSinceTimerFiredMs=" +
+                            std::to_string(QDateTime::currentMSecsSinceEpoch() - timerFiredAtMs) +
+                            " getFrameCostMs=" + std::to_string(getFrameCostMs) +
+                            " workerTotalMs=" + std::to_string(workerTotalMs),
+                        LogLevel::INFO, DeviceType::GUIDER);
 
             const bool guiderSdk =
                 (systemdevicelist.system_devices.size() > 1 &&
@@ -18123,7 +18328,13 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                     // 1) 先写固定 FITS 路径
                     // 2) 交给 GuiderCore::onNewFrame（内部会触发 PersistGuidingFits + 识别）
                     const QString sdkGuiderFitsPath = QStringLiteral("/dev/shm/guiding.fits");
+                    QElapsedTimer saveFitsPerf;
+                    saveFitsPerf.start();
                     SaveQhyFrameDataToFits(frame, sdkGuiderFitsPath.toStdString());
+                    Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | SaveQhyFrameDataToFits costMs=" +
+                                    std::to_string(saveFitsPerf.elapsed()) +
+                                    " mainTotalMs=" + std::to_string(mainPerf.elapsed()),
+                                LogLevel::INFO, DeviceType::GUIDER);
 
                     if (polarGuiderSingleCapturePending)
                     {
@@ -18133,12 +18344,24 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
 
                     if (guiderCore)
                     {
+                        QElapsedTimer invokePerf;
+                        invokePerf.start();
                         QMetaObject::invokeMethod(guiderCore, "onNewFrame", Qt::QueuedConnection,
                                                   Q_ARG(QString, sdkGuiderFitsPath));
+                        Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | invoke guiderCore onNewFrame costMs=" +
+                                        std::to_string(invokePerf.elapsed()) +
+                                        " mainTotalMs=" + std::to_string(mainPerf.elapsed()),
+                                    LogLevel::INFO, DeviceType::GUIDER);
                     }
                     else
                     {
+                        QElapsedTimer persistPerf;
+                        persistPerf.start();
                         PersistGuidingFits(sdkGuiderFitsPath);
+                        Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | PersistGuidingFits costMs=" +
+                                        std::to_string(persistPerf.elapsed()) +
+                                        " mainTotalMs=" + std::to_string(mainPerf.elapsed()),
+                                    LogLevel::INFO, DeviceType::GUIDER);
                     }
                 }
 
@@ -18146,6 +18369,9 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                 guiderExposureInFlight = false;
                 if (isGuiderLoopExp && guiderLoopTimer)
                     guiderLoopTimer->start(1);
+                Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | success path done mainTotalMs=" +
+                                std::to_string(mainPerf.elapsed()),
+                            LogLevel::INFO, DeviceType::GUIDER);
                 return;
             }
 
@@ -18159,6 +18385,11 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
             } else if (elapsed2 > expected + 2000) {
                 retryMs = 50;
             }
+            Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | not ready retryMs=" +
+                            std::to_string(retryMs) +
+                            " elapsedSinceExposureStartMs=" + std::to_string(elapsed2) +
+                            " mainTotalMs=" + std::to_string(mainPerf.elapsed()),
+                        LogLevel::INFO, DeviceType::GUIDER);
             sdkGuiderExposureTimer->start(retryMs);
         }, Qt::QueuedConnection);
     });
@@ -27563,8 +27794,10 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         guiderExposureInFlight = false;
         if (guiderCore)
         {
-            guiderCore->stopGuiding();
-            guiderCore->stopLoop();
+            postGuiderCore(guiderCore, [](GuiderCore *core) {
+                core->stopGuiding();
+                core->stopLoop();
+            });
         }
     }
 

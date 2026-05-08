@@ -1432,8 +1432,21 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
                 r.message = "CancelExposure requires a valid device handle";
                 return r;
             }
+            const auto t0 = std::chrono::steady_clock::now();
+            Logger::Log("QHYCCD CancelExposure | CancelQHYCCDExposingAndReadout enter: handle=" +
+                            std::to_string(reinterpret_cast<uintptr_t>(handle)),
+                        LogLevel::INFO, DeviceType::CAMERA);
             unsigned int ret = CancelQHYCCDExposingAndReadout(handle);
-            return makeResultFromRet("CancelQHYCCDExposingAndReadout", ret);
+            const auto t1 = std::chrono::steady_clock::now();
+            const auto costMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            Logger::Log("QHYCCD CancelExposure | CancelQHYCCDExposingAndReadout return: handle=" +
+                            std::to_string(reinterpret_cast<uintptr_t>(handle)) +
+                            " costMs=" + std::to_string(costMs) +
+                            " ret=" + std::to_string(ret),
+                        LogLevel::INFO, DeviceType::CAMERA);
+            SdkResult cancelResult = makeResultFromRet("CancelQHYCCDExposingAndReadout", ret);
+            cancelResult.message += " costMs=" + std::to_string(costMs);
+            return cancelResult;
         }
 
         // 27. 检测滤镜轮（CFW）是否连接

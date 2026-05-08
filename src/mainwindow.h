@@ -83,6 +83,8 @@ namespace fs = std::filesystem;
 #include "sdks/SdkSerialExecutor.h"
 #include "sdks/SdkCommon.h"  // SDK 通用类型（SdkFrameData, SdkChipInfo, SdkAreaInfo 等）
 
+class QThread;
+
 /**********************  宏与常量定义  **********************/
 #ifndef QUARCS_QT_CLIENT_VERSION
 #define QUARCS_QT_CLIENT_VERSION "000000000000"
@@ -954,6 +956,7 @@ public:
 private:
     // 内置导星核心；未初始化时保持为空，相关逻辑自动降级为仅取图/显示。
     GuiderCore *guiderCore = nullptr;
+    QThread *guiderCoreThread = nullptr;
     std::unique_ptr<guiding::SimGuiderFrameSource> simGuiderFrameSource;
     double currentGuiderArcsecPerPixel() const;
     bool guiderUsesArcsecUnit() const;
@@ -965,6 +968,8 @@ private:
     // 用于像素尺度换算（arcsec/px）的导星相机/镜筒参数缓存。
     double guiderPixelSizeUm = 0.0;
     double guiderFocalLengthMm = 0.0;
+    guiding::State guiderCoreStateCache = guiding::State::Idle;
+    guiding::GuidingParams guiderParamsCache{};
     bool guiderScaleHintSent = false;
     QString guiderLastPublishedErrorUnit{};
     double guiderLastPublishedArcsecPerPixel = 0.0;
@@ -989,6 +994,7 @@ private:
     QVector<QPointF> guiderMultiStarSecondaryPtsPx;
     QString guiderDiagnosticSourceFitsPath;
     QString guiderDiagnosticBatchDir;
+    bool guiderDiagnosticCopyFitsEnabled = false;
     int guiderDiagnosticBatchRemaining = 0;
     int guiderDiagnosticBatchIndex = 0;
 
