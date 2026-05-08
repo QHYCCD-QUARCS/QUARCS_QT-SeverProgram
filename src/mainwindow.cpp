@@ -1356,18 +1356,6 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
                 .arg(snr, 0, 'f', 2)
                 .arg(hfd, 0, 'f', 2));
     });
-    connect(guiderCore, &GuiderCore::autoSelectDetectedStarsChanged, this,
-            [this](const QVector<QPointF>& ptsPx, const QVector<double>& hfdPx, const QVector<double>& snrVals) {
-        guiderDetectedStarsPtsPx = ptsPx;
-        guiderDetectedStarsHfdPx = hfdPx;
-        guiderDetectedStarsSnr = snrVals;
-    });
-    connect(guiderCore, &GuiderCore::autoSelectRejectedStarsChanged, this,
-            [this](const QVector<QPointF>& ptsPx, const QVector<double>& hfdPx, const QVector<double>& snrVals) {
-        guiderRejectedStarsPtsPx = ptsPx;
-        guiderRejectedStarsHfdPx = hfdPx;
-        guiderRejectedStarsSnr = snrVals;
-    });
     connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
         guiderGuideStarCentroidPx = centroidPx;
         guiderGuideStarCentroidValid = true;
@@ -1456,12 +1444,6 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             guiderChartSampleIndex = 0;
             guiderLockPosValid = false;
             guiderGuideStarCentroidValid = false;
-            guiderDetectedStarsPtsPx.clear();
-            guiderDetectedStarsHfdPx.clear();
-            guiderDetectedStarsSnr.clear();
-            guiderRejectedStarsPtsPx.clear();
-            guiderRejectedStarsHfdPx.clear();
-            guiderRejectedStarsSnr.clear();
             isGuiderLoopExp = false;
             guiderExposureInFlight = false;
             if (guiderLoopTimer)
@@ -2714,6 +2696,9 @@ void MainWindow::onMessageReceived(const QString &message)
     {
         Logger::Log("disconnectAllDevice ...", LogLevel::DEBUG, DeviceType::MAIN);
 
+        // 先显式停止导星循环与当前曝光，避免残留 isGuiderLoopExp 状态影响后续 reconnect all 自动起循环。
+        stopGuiderLoopAndExposure(QStringLiteral("disconnectAllDevice"));
+
         // 先清理 SDK：SDK 设备不止主相机，多相机场景会在池中打开多个句柄
         // 统一关闭所有 SDK 句柄并释放资源，避免"断开后 SDK 仍占用/仍在调用"
         cleanupQhySdkPoolAndResource("disconnectAllDevice", "All");
@@ -3565,41 +3550,6 @@ void MainWindow::onMessageReceived(const QString &message)
 
     else if (parts[0].trimmed() == "GuiderLoopExpSwitch" && parts.size() == 2)
     {
-        auto beginGuiderDiagnosticBatch = [this]() {
-            constexpr int kBatchFrames = 12;
-            const QString diagRoot = QDir::cleanPath(ImageSaveBaseDirectory + "/GuiderDiagnostics");
-            if (!QDir().mkpath(diagRoot))
-            {
-                Logger::Log("GuiderDiagnostics | failed to create root dir: " + diagRoot.toStdString(),
-                            LogLevel::WARNING, DeviceType::GUIDER);
-                guiderDiagnosticBatchDir.clear();
-                guiderDiagnosticBatchRemaining = 0;
-                guiderDiagnosticBatchIndex = 0;
-                return;
-            }
-
-            guiderDiagnosticBatchDir =
-                QDir(diagRoot).filePath(
-                    QStringLiteral("batch_%1_%2")
-                        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"),
-                             QUuid::createUuid().toString(QUuid::WithoutBraces).left(8)));
-            if (!QDir().mkpath(guiderDiagnosticBatchDir))
-            {
-                Logger::Log("GuiderDiagnostics | failed to create batch dir: " + guiderDiagnosticBatchDir.toStdString(),
-                            LogLevel::WARNING, DeviceType::GUIDER);
-                guiderDiagnosticBatchDir.clear();
-                guiderDiagnosticBatchRemaining = 0;
-                guiderDiagnosticBatchIndex = 0;
-                return;
-            }
-
-            guiderDiagnosticBatchRemaining = kBatchFrames;
-            guiderDiagnosticBatchIndex = 0;
-            Logger::Log("GuiderDiagnostics | started batch capture dir=" + guiderDiagnosticBatchDir.toStdString() +
-                            " frames=" + std::to_string(kBatchFrames),
-                        LogLevel::INFO, DeviceType::GUIDER);
-        };
-
         const bool guiderSdk =
             (systemdevicelist.system_devices.size() > 1 &&
              systemdevicelist.system_devices[1].isSDKConnect &&
@@ -3616,7 +3566,6 @@ void MainWindow::onMessageReceived(const QString &message)
         const bool wantOn = (parts[1].trimmed() == "true");
         if (wantOn && !isGuiderLoopExp)
         {
-            beginGuiderDiagnosticBatch();
             Logger::Log(std::string("Start GuiderLoopExp (") + (guiderSdk ? "SDK" : "INDI") + ") ...",
                         LogLevel::INFO, DeviceType::GUIDER);
             if (guiderCore)
@@ -5878,7 +5827,6 @@ void MainWindow::initINDIClient()
                                                         std::to_string(B) + " W=" + std::to_string(W),
                                                     LogLevel::INFO, DeviceType::GUIDER);
                                     }
-                                    guiderDiagnosticSourceFitsPath = fitsPath;
                                     saveGuiderImageAsJPG(img8);
                                 }
                             }
@@ -10124,7 +10072,6 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     };
 
     constexpr int kKeepRecentGuiderImages = 12;
-    constexpr int kKeepRecentGuiderDiagnostics = 40;
     constexpr int kGuiderPreviewMaxWidth = 1920;
 
     cv::Mat preview = Image;
@@ -10146,110 +10093,6 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
                         " (2x2 level=" + std::to_string(downsampleLevel) + ")",
                     LogLevel::INFO, DeviceType::GUIDER);
     }
-
-    auto drawGuiderDiagnostics = [&](cv::Mat& target) {
-        if (target.empty())
-            return;
-
-        cv::Mat overlay;
-        if (target.channels() == 1)
-            cv::cvtColor(target, overlay, cv::COLOR_GRAY2BGR);
-        else
-            overlay = target.clone();
-
-        const double scaleX = (Image.cols > 0) ? static_cast<double>(overlay.cols) / static_cast<double>(Image.cols) : 1.0;
-        const double scaleY = (Image.rows > 0) ? static_cast<double>(overlay.rows) / static_cast<double>(Image.rows) : 1.0;
-        auto mapPoint = [&](const QPointF& p) {
-            return cv::Point(static_cast<int>(std::lround(p.x() * scaleX)),
-                             static_cast<int>(std::lround(p.y() * scaleY)));
-        };
-
-        const int secondaryRadius = std::max(6, static_cast<int>(std::lround(6.0 * std::max(scaleX, scaleY))));
-        const int centroidHalf = std::max(8, static_cast<int>(std::lround(10.0 * std::max(scaleX, scaleY))));
-        const int crossHalf = std::max(10, static_cast<int>(std::lround(14.0 * std::max(scaleX, scaleY))));
-        const int lineThickness = std::max(1, static_cast<int>(std::lround(std::max(scaleX, scaleY))));
-        const int detectedMinHalf = std::max(6, static_cast<int>(std::lround(6.0 * std::max(scaleX, scaleY))));
-        const int rejectedMinHalf = detectedMinHalf;
-
-        const int rejectedCount = std::min({guiderRejectedStarsPtsPx.size(), guiderRejectedStarsHfdPx.size(), guiderRejectedStarsSnr.size()});
-        for (int i = 0; i < rejectedCount; ++i)
-        {
-            const cv::Point c = mapPoint(guiderRejectedStarsPtsPx[i]);
-            const double hfd = guiderRejectedStarsHfdPx[i];
-            const int half = std::max(rejectedMinHalf, static_cast<int>(std::lround(std::max(6.0, hfd) * 0.5 * std::max(scaleX, scaleY))));
-            const cv::Rect r(c.x - half, c.y - half, half * 2, half * 2);
-            cv::rectangle(overlay, r, cv::Scalar(255, 120, 40), lineThickness, cv::LINE_AA);
-        }
-
-        const int detectedCount = std::min({guiderDetectedStarsPtsPx.size(), guiderDetectedStarsHfdPx.size(), guiderDetectedStarsSnr.size()});
-        for (int i = 0; i < detectedCount; ++i)
-        {
-            const cv::Point c = mapPoint(guiderDetectedStarsPtsPx[i]);
-            const double hfd = guiderDetectedStarsHfdPx[i];
-            const int half = std::max(detectedMinHalf, static_cast<int>(std::lround(std::max(6.0, hfd) * 0.5 * std::max(scaleX, scaleY))));
-            const cv::Rect r(c.x - half, c.y - half, half * 2, half * 2);
-            cv::rectangle(overlay, r, cv::Scalar(0, 0, 255), lineThickness, cv::LINE_AA);
-            cv::putText(overlay,
-                        QString("SNR %1").arg(guiderDetectedStarsSnr[i], 0, 'f', 1).toStdString(),
-                        cv::Point(c.x + half + 4, c.y - half - 4),
-                        cv::FONT_HERSHEY_SIMPLEX,
-                        0.4,
-                        cv::Scalar(0, 0, 255),
-                        1,
-                        cv::LINE_AA);
-        }
-
-        for (int i = 0; i < guiderMultiStarSecondaryPtsPx.size(); ++i)
-        {
-            const cv::Point c = mapPoint(guiderMultiStarSecondaryPtsPx[i]);
-            cv::circle(overlay, c, secondaryRadius, cv::Scalar(60, 220, 60), lineThickness, cv::LINE_AA);
-            cv::putText(overlay,
-                        std::to_string(i + 1),
-                        cv::Point(c.x + secondaryRadius + 2, c.y - secondaryRadius - 2),
-                        cv::FONT_HERSHEY_SIMPLEX,
-                        0.4,
-                        cv::Scalar(60, 220, 60),
-                        1,
-                        cv::LINE_AA);
-        }
-
-        if (guiderLockPosValid)
-        {
-            const cv::Point c = mapPoint(guiderLockPosPx);
-            cv::line(overlay, cv::Point(c.x - crossHalf, c.y), cv::Point(c.x + crossHalf, c.y),
-                     cv::Scalar(255, 255, 0), lineThickness, cv::LINE_AA);
-            cv::line(overlay, cv::Point(c.x, c.y - crossHalf), cv::Point(c.x, c.y + crossHalf),
-                     cv::Scalar(255, 255, 0), lineThickness, cv::LINE_AA);
-            cv::putText(overlay,
-                        "Lock",
-                        cv::Point(c.x + crossHalf + 4, c.y - crossHalf - 4),
-                        cv::FONT_HERSHEY_SIMPLEX,
-                        0.45,
-                        cv::Scalar(255, 255, 0),
-                        1,
-                        cv::LINE_AA);
-        }
-
-        if (guiderGuideStarCentroidValid)
-        {
-            const cv::Point c = mapPoint(guiderGuideStarCentroidPx);
-            const cv::Rect r(c.x - centroidHalf, c.y - centroidHalf, centroidHalf * 2, centroidHalf * 2);
-            cv::rectangle(overlay, r, cv::Scalar(0, 165, 255), lineThickness, cv::LINE_AA);
-            cv::putText(overlay,
-                        "Guide",
-                        cv::Point(c.x + centroidHalf + 4, c.y + centroidHalf + 12),
-                        cv::FONT_HERSHEY_SIMPLEX,
-                        0.45,
-                        cv::Scalar(0, 165, 255),
-                        1,
-                        cv::LINE_AA);
-        }
-
-        target = overlay;
-    };
-
-    drawGuiderDiagnostics(preview);
-    logPerfStage("draw_diagnostics_overlay");
 
     // 生成唯一ID
     QString uniqueId = QUuid::createUuid().toString();
@@ -10369,179 +10212,6 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     logPerfStage("cleanup_preview_dir");
     cleanupOldGuiderImages(QString::fromStdString(vueImagePath), true, QString::fromStdString(fileName));
     logPerfStage("cleanup_preview_symlink_dir");
-
-    auto saveGuiderDiagnosticSnapshot = [&](const cv::Mat& savedPreview) {
-        QElapsedTimer diagTimer;
-        diagTimer.start();
-        qint64 diagLastMs = 0;
-        auto logDiagStage = [&](const std::string& stage) {
-            const qint64 nowMs = diagTimer.elapsed();
-            Logger::Log("GuiderPerf | saveGuiderImageAsJPG | diagnosticStage=" + stage +
-                            " deltaMs=" + std::to_string(nowMs - diagLastMs) +
-                            " diagTotalMs=" + std::to_string(nowMs) +
-                            " outerTotalMs=" + std::to_string(perfTimer.elapsed()),
-                        LogLevel::INFO, DeviceType::GUIDER);
-            diagLastMs = nowMs;
-        };
-
-        if (guiderDiagnosticBatchRemaining <= 0 || guiderDiagnosticBatchDir.isEmpty())
-        {
-            logDiagStage("skip_no_active_batch");
-            return;
-        }
-
-        if (!QDir().mkpath(guiderDiagnosticBatchDir))
-        {
-            logDiagStage("mkpath_failed");
-            Logger::Log("saveGuiderImageAsJPG | failed to create guider diagnostics batch dir: " +
-                            guiderDiagnosticBatchDir.toStdString(),
-                        LogLevel::WARNING, DeviceType::GUIDER);
-            guiderDiagnosticBatchRemaining = 0;
-            return;
-        }
-        logDiagStage("mkpath");
-
-        const int frameIndex = guiderDiagnosticBatchIndex + 1;
-        const QString diagBase = QStringLiteral("frame_%1").arg(frameIndex, 2, 10, QChar('0'));
-        const QString jpgPath = QDir(guiderDiagnosticBatchDir).filePath(diagBase + ".jpg");
-        const QString fitsPath = QDir(guiderDiagnosticBatchDir).filePath(diagBase + ".fits");
-        const QString jsonPath = QDir(guiderDiagnosticBatchDir).filePath(diagBase + ".json");
-
-        if (!cv::imwrite(jpgPath.toStdString(), savedPreview))
-        {
-            Logger::Log("saveGuiderImageAsJPG | failed to save guider diagnostic jpg: " + jpgPath.toStdString(),
-                        LogLevel::WARNING, DeviceType::GUIDER);
-            logDiagStage("write_diag_jpg_failed");
-            return;
-        }
-        logDiagStage("write_diag_jpg");
-
-        QString copiedFitsPath;
-        if (guiderDiagnosticCopyFitsEnabled &&
-            !guiderDiagnosticSourceFitsPath.isEmpty() &&
-            QFile::exists(guiderDiagnosticSourceFitsPath))
-        {
-            QFile::remove(fitsPath);
-            if (QFile::copy(guiderDiagnosticSourceFitsPath, fitsPath))
-                copiedFitsPath = fitsPath;
-            else
-                Logger::Log("saveGuiderImageAsJPG | failed to copy guider diagnostic fits from " +
-                                guiderDiagnosticSourceFitsPath.toStdString(),
-                            LogLevel::WARNING, DeviceType::GUIDER);
-        }
-        logDiagStage("copy_diag_fits");
-
-        auto pointsToJson = [](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
-            QJsonArray arr;
-            const int count = std::min({pts.size(), hfds.size(), snrs.size()});
-            for (int i = 0; i < count; ++i)
-            {
-                QJsonObject obj;
-                obj["x"] = pts[i].x();
-                obj["y"] = pts[i].y();
-                obj["hfd"] = hfds[i];
-                obj["snr"] = snrs[i];
-                arr.push_back(obj);
-            }
-            return arr;
-        };
-
-        QJsonObject meta;
-        meta["savedAt"] = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
-        meta["batchDir"] = guiderDiagnosticBatchDir;
-        meta["frameIndex"] = frameIndex;
-        meta["framesRemainingBeforeSave"] = guiderDiagnosticBatchRemaining;
-        meta["previewJpgPath"] = jpgPath;
-        meta["sourceFitsPath"] = guiderDiagnosticSourceFitsPath;
-        meta["copyFitsEnabled"] = guiderDiagnosticCopyFitsEnabled;
-        meta["copiedFitsPath"] = copiedFitsPath;
-        meta["rawWidth"] = Image.cols;
-        meta["rawHeight"] = Image.rows;
-        meta["previewWidth"] = savedPreview.cols;
-        meta["previewHeight"] = savedPreview.rows;
-        meta["detectedStars"] = pointsToJson(guiderDetectedStarsPtsPx, guiderDetectedStarsHfdPx, guiderDetectedStarsSnr);
-        meta["rejectedStars"] = pointsToJson(guiderRejectedStarsPtsPx, guiderRejectedStarsHfdPx, guiderRejectedStarsSnr);
-
-        QJsonArray secondaryStars;
-        for (const auto& p : guiderMultiStarSecondaryPtsPx)
-        {
-            QJsonObject obj;
-            obj["x"] = p.x();
-            obj["y"] = p.y();
-            secondaryStars.push_back(obj);
-        }
-        meta["secondaryStars"] = secondaryStars;
-
-        if (guiderLockPosValid)
-        {
-            QJsonObject obj;
-            obj["x"] = guiderLockPosPx.x();
-            obj["y"] = guiderLockPosPx.y();
-            meta["lockPos"] = obj;
-        }
-        if (guiderGuideStarCentroidValid)
-        {
-            QJsonObject obj;
-            obj["x"] = guiderGuideStarCentroidPx.x();
-            obj["y"] = guiderGuideStarCentroidPx.y();
-            meta["guideCentroid"] = obj;
-        }
-        logDiagStage("build_diag_json");
-
-        QFile jsonFile(jsonPath);
-        if (jsonFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        {
-            jsonFile.write(QJsonDocument(meta).toJson(QJsonDocument::Indented));
-            jsonFile.close();
-        }
-        else
-        {
-            Logger::Log("saveGuiderImageAsJPG | failed to save guider diagnostic json: " + jsonPath.toStdString(),
-                        LogLevel::WARNING, DeviceType::GUIDER);
-        }
-        logDiagStage("write_diag_json");
-
-        guiderDiagnosticBatchIndex = frameIndex;
-        guiderDiagnosticBatchRemaining = std::max(0, guiderDiagnosticBatchRemaining - 1);
-
-        try {
-            const QString diagRoot = QDir::cleanPath(ImageSaveBaseDirectory + "/GuiderDiagnostics");
-            struct BatchEntry
-            {
-                QString name;
-                fs::file_time_type t;
-            };
-
-            std::vector<BatchEntry> batches;
-            for (const auto& entry : fs::directory_iterator(diagRoot.toStdString()))
-            {
-                if (!entry.is_directory())
-                    continue;
-                const QString name = QString::fromStdString(entry.path().filename().string());
-                if (!name.startsWith("batch_"))
-                    continue;
-                batches.push_back({name, entry.last_write_time()});
-            }
-
-            std::sort(batches.begin(), batches.end(), [](const BatchEntry& a, const BatchEntry& b) { return a.t > b.t; });
-            for (int i = kKeepRecentGuiderDiagnostics; i < static_cast<int>(batches.size()); ++i)
-            {
-                std::error_code ec;
-                fs::remove_all(QDir(diagRoot).filePath(batches[i].name).toStdString(), ec);
-            }
-        } catch (...) {
-            Logger::Log("saveGuiderImageAsJPG | guider diagnostics batch cleanup failed",
-                        LogLevel::WARNING, DeviceType::GUIDER);
-        }
-        logDiagStage("cleanup_diag_batches");
-
-        Logger::Log("saveGuiderImageAsJPG | diagnostic batch frame saved to " + jpgPath.toStdString() +
-                        " remaining=" + std::to_string(guiderDiagnosticBatchRemaining),
-                    LogLevel::INFO, DeviceType::GUIDER);
-    };
-
-    saveGuiderDiagnosticSnapshot(preview);
-    logPerfStage("diagnostic_snapshot");
 
     if (saved)
     {
@@ -13674,6 +13344,44 @@ void MainWindow::UnBindingDevice(QString DeviceType)
 
 void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 {
+    auto ensureGuiderLoopStarted = [this](const QString& sourceTag) {
+        const bool guiderSdk =
+            (systemdevicelist.system_devices.size() > 1 &&
+             systemdevicelist.system_devices[1].isSDKConnect &&
+             sdkGuiderHandle != nullptr);
+        const bool guiderConnected = ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk);
+        if (!guiderConnected)
+        {
+            Logger::Log("AfterDeviceConnect | skip auto-start guider loop: guider not connected (" +
+                            sourceTag.toStdString() + ")",
+                        LogLevel::DEBUG, DeviceType::GUIDER);
+            return;
+        }
+        if (isGuiderLoopExp)
+        {
+            Logger::Log("AfterDeviceConnect | guider loop already running, keep current state (" +
+                            sourceTag.toStdString() + ")",
+                        LogLevel::DEBUG, DeviceType::GUIDER);
+            return;
+        }
+
+        Logger::Log("AfterDeviceConnect | auto-start guider loop after guider connected (" +
+                        sourceTag.toStdString() + ")",
+                    LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            guiderCore->startLoop();
+            return;
+        }
+
+        isGuiderLoopExp = true;
+        guiderExposureInFlight = false;
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+        if (guiderLoopTimer)
+            guiderLoopTimer->start(0);
+    };
+
     // 处理 SDK 设备（dp 为 nullptr 的情况）
     if (dp == nullptr)
     {
@@ -14573,6 +14281,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             QString driverNameForConnect = systemdevicelist.system_devices[1].DriverIndiName;
             emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + deviceName + ":" + driverNameForConnect);
             ConnectedDevices.push_back({"Guider", deviceName});
+            ensureGuiderLoopStarted(QStringLiteral("SDK"));
             Logger::Log("AfterDeviceConnect | SDK Guider initialization completed",
                         LogLevel::INFO, DeviceType::GUIDER);
         }
@@ -15067,6 +14776,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         }
 
         emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + QString::fromUtf8(dpGuider->getDeviceName()) + ":" + QString::fromUtf8(dpGuider->getDriverExec()));
+        ensureGuiderLoopStarted(QStringLiteral("INDI"));
     }
 
     Tools::saveSystemDeviceList(systemdevicelist);
@@ -20451,7 +20161,6 @@ void MainWindow::ShowPHDdata()
         W = (PHDImg.depth() == CV_8U) ? 255 : 65535;  // 根据图像位深度设置默认最大值
     }
     Tools::Bit16To8_Stretch(PHDImg, image_raw8, B, W);
-    guiderDiagnosticSourceFitsPath.clear();
     saveGuiderImageAsJPG(image_raw8);
 
 }
@@ -23041,7 +22750,6 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
             }
         }
 
-        guiderDiagnosticSourceFitsPath = effectiveFitsPath;
         saveGuiderImageAsJPG(img8);
     }
 }
@@ -27785,20 +27493,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     if (DeviceType == "Guider")
 
         {
-        // TODO(PHD2): 停止导星（PHD2 已移除/禁用）。如需停止导星相机取图，请使用 INDI 导星循环曝光逻辑。
-        // call_phd_StopLooping();
-        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
-        isGuiderLoopExp = false;
-        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
-        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
-        guiderExposureInFlight = false;
-        if (guiderCore)
-        {
-            postGuiderCore(guiderCore, [](GuiderCore *core) {
-                core->stopGuiding();
-                core->stopLoop();
-            });
-        }
+        stopGuiderLoopAndExposure(QStringLiteral("DisconnectDevice:Guider"));
     }
 
     Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") start...", LogLevel::INFO, DeviceType::MAIN);
@@ -28420,6 +28115,56 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         }
     }
     emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + DeviceName);
+}
+
+void MainWindow::stopGuiderLoopAndExposure(const QString &reason, bool emitStatus)
+{
+    Logger::Log("stopGuiderLoopAndExposure | reason=" + reason.toStdString(),
+                LogLevel::INFO, DeviceType::GUIDER);
+
+    if (emitStatus && wsThread != nullptr)
+    {
+        emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
+    }
+
+    isGuiderLoopExp = false;
+    guiderExposureInFlight = false;
+    sdkGuiderFrameTaskInFlight = false;
+
+    if (guiderLoopTimer)
+        guiderLoopTimer->stop();
+    if (sdkGuiderExposureTimer)
+        sdkGuiderExposureTimer->stop();
+
+    if (guiderCore)
+    {
+        guiderCore->stopGuiding();
+        guiderCore->stopLoop();
+    }
+
+    if (sdkGuiderHandle != nullptr)
+    {
+        SdkCommand cancelCmd;
+        cancelCmd.type = SdkCommandType::Custom;
+        cancelCmd.name = "CancelExposure";
+        cancelCmd.payload = std::any();
+        SdkResult cancelRes = SdkManager::instance().callByHandle(sdkGuiderHandle, cancelCmd);
+        if (!cancelRes.success)
+        {
+            Logger::Log("stopGuiderLoopAndExposure | SDK CancelExposure failed: " + cancelRes.message,
+                        LogLevel::WARNING, DeviceType::GUIDER);
+        }
+    }
+    else if (indi_Client != nullptr && dpGuider != NULL)
+    {
+        indi_Client->setCCDAbortExposure(dpGuider);
+    }
+
+    if (emitStatus && wsThread != nullptr)
+    {
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+    }
 }
 
 bool MainWindow::isDeviceTypeSupportSDK(const QString &description, const QString &driverName)

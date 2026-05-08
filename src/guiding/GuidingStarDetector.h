@@ -20,7 +20,8 @@ struct StarCandidate
 struct StarSelectionParams
 {
     int searchRegionPx = 15;      // PHD2 DEFAULT_SEARCH_REGION
-    int autoSelDownsample = 1;    // 1=disabled; PHD2 还支持 Auto/2x/3x，这里先默认 1x
+    int autoSelDownsample = 0;    // 0=Auto（PHD2 默认语义），1=disabled，2/3=固定 downsample
+    double autoSelPixelScaleArcsecPerPixel = 0.0; // 用于 Auto downsample；<=0 时回退为 1x
     double minSNR = 10.0;
     double minHFD = 1.5;
     double maxHFD = 12.0;

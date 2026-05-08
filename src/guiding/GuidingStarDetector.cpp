@@ -5,6 +5,7 @@
 #include "../Logger.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <opencv2/imgproc.hpp>
 #include <set>
@@ -232,6 +233,17 @@ std::pair<double, double> rectStats(const cv::Mat& img32f, const cv::Rect& rect)
     cv::Scalar mean, stddev;
     cv::meanStdDev(img32f(rect), mean, stddev);
     return {mean[0], stddev[0]};
+}
+
+int resolveAutoSelDownsample(const StarSelectionParams& p)
+{
+    if (p.autoSelDownsample > 0)
+        return p.autoSelDownsample;
+
+    constexpr double kDownsampleScaleThresh = 0.6; // PHD2 DOWNSAMPLE_SCALE_THRESH
+    if (p.autoSelPixelScaleArcsecPerPixel > 0.0 && p.autoSelPixelScaleArcsecPerPixel <= kDownsampleScaleThresh)
+        return 2;
+    return 1;
 }
 
 std::vector<Peak> detectPHD2StylePeaks(const cv::Mat& image16, int searchRegionPx, int downsample)
@@ -619,8 +631,12 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
         return std::nullopt;
 
     constexpr const char* kLogPrefix = "[AutoGuideSelect]";
+    const auto t0 = std::chrono::steady_clock::now();
+    const int resolvedDownsample = resolveAutoSelDownsample(p);
+
     std::vector<StarCandidate> candidates;
-    const auto peaks = detectPHD2StylePeaks(image16, p.searchRegionPx, p.autoSelDownsample);
+    const auto peaks = detectPHD2StylePeaks(image16, p.searchRegionPx, resolvedDownsample);
+    const auto tDetectDone = std::chrono::steady_clock::now();
     candidates.reserve(peaks.size());
     for (const auto& peak : peaks)
     {
@@ -628,11 +644,18 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
         if (measureStarCandidate(image16, QPointF(peak.x, peak.y), p.searchRegionPx, c))
             candidates.push_back(c);
     }
+    const auto tMeasureDone = std::chrono::steady_clock::now();
+
+    const auto detectMs = std::chrono::duration_cast<std::chrono::milliseconds>(tDetectDone - t0).count();
+    const auto measureMs = std::chrono::duration_cast<std::chrono::milliseconds>(tMeasureDone - tDetectDone).count();
     Logger::Log(std::string(kLogPrefix) +
                     " base_detect engine=PHD2Style peaks=" + std::to_string(peaks.size()) +
                     " measured=" + std::to_string(candidates.size()) +
-                    " downsample=" + std::to_string(std::max(1, p.autoSelDownsample)) +
+                    " downsample=" + std::to_string(resolvedDownsample) +
+                    " pixelScale=" + std::to_string(p.autoSelPixelScaleArcsecPerPixel) +
                     " searchRegionPx=" + std::to_string(p.searchRegionPx) +
+                    " detectMs=" + std::to_string(detectMs) +
+                    " measureMs=" + std::to_string(measureMs) +
                     (!fitsPath.isEmpty() ? " fits=" + fitsPath.toStdString() : std::string()),
                 LogLevel::INFO, DeviceType::GUIDER);
 
@@ -739,6 +762,7 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                 rejectedSNR.push_back(c);
         }
     }
+    const auto tFilterDone = std::chrono::steady_clock::now();
 
     auto brightnessOrder = [](const StarCandidate& a, const StarCandidate& b) {
         if (a.peakADU == b.peakADU)
@@ -779,7 +803,12 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                     ", minHFD=" + std::to_string(p.minHFD) +
                     ", maxHFD=" + std::to_string(p.maxHFD) +
                     ", edgeMarginPx=" + std::to_string(p.edgeMarginPx) +
-                    ", nearSatRatio=" + std::to_string(p.nearSaturationRatio) + "}",
+                    ", nearSatRatio=" + std::to_string(p.nearSaturationRatio) +
+                    ", autoDownsample=" + std::to_string(resolvedDownsample) + "}" +
+                    " | timings{detectMs=" + std::to_string(detectMs) +
+                    ", measureMs=" + std::to_string(measureMs) +
+                    ", filterMs=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(tFilterDone - tMeasureDone).count()) +
+                    ", totalMs=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(tFilterDone - t0).count()) + "}",
                 LogLevel::INFO, DeviceType::GUIDER);
 
     for (const auto& c : rejectedSNR)

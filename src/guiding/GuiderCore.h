@@ -258,14 +258,6 @@ signals:
     void lockPositionChanged(const QPointF& lockPosPx);
     // 选星信息：用于前端显示"导的是哪一颗星点"（含 SNR/HFD）
     void lockStarSelected(double x, double y, double snr, double hfd);
-    // 自动选星：输出当前帧检测/测量到的全部候选星，供诊断叠加使用。
-    void autoSelectDetectedStarsChanged(const QVector<QPointF>& ptsPx,
-                                        const QVector<double>& hfdPx,
-                                        const QVector<double>& snrVals);
-    // 自动选星：输出当前帧被规则筛掉的星，供诊断叠加使用。
-    void autoSelectRejectedStarsChanged(const QVector<QPointF>& ptsPx,
-                                        const QVector<double>& hfdPx,
-                                        const QVector<double>& snrVals);
     // 导星中：每帧更新"当前星点质心"位置（用于前端让框跟随星点）
     void guideStarCentroidChanged(const QPointF& centroidPx);
     // 多星导星：用于前端绘制副星点绿色圆圈（当前实现可能暂不 emit，先保证接口/编译对齐）

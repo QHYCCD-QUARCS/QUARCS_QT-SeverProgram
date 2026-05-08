@@ -377,9 +377,6 @@ void GuiderCore::startGuiding()
     m_lastDecPulseMs = 0;
     m_selectingNoStarFrameCount = 0;
     resetMultiStarState();
-    emit autoSelectDetectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
-    emit autoSelectRejectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
-
     setState(guiding::State::Selecting);
     if (preserveManualLock)
     {
@@ -404,6 +401,16 @@ void GuiderCore::startGuiding()
     else
     {
         emit infoMessage(QStringLiteral("开始导星：进入自动选星阶段。"));
+    }
+
+    // 若循环曝光已经在跑，优先直接使用“当前最新一帧”做自动选星，
+    // 避免再等待一个曝光周期，导致前端看到的图与选星所基于的帧错开。
+    if (!m_lastGuiderFrameFitsPath.isEmpty() && QFile::exists(m_lastGuiderFrameFitsPath))
+    {
+        Logger::Log("[AutoGuideSelect] startGuiding | immediate select from latest frame: " +
+                        m_lastGuiderFrameFitsPath.toStdString(),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        onNewFrame(m_lastGuiderFrameFitsPath);
     }
 }
 
@@ -475,8 +482,6 @@ void GuiderCore::stopGuiding()
     m_lastDecPulseMs = 0;
     m_selectingNoStarFrameCount = 0;
     resetMultiStarState();
-    emit autoSelectDetectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
-    emit autoSelectRejectedStarsChanged(QVector<QPointF>{}, QVector<double>{}, QVector<double>{});
     emit infoMessage(QStringLiteral("停止导星。"));
 }
 
@@ -796,6 +801,8 @@ std::optional<guiding::StarCandidate> GuiderCore::evaluateManualLockCandidate(do
         return std::nullopt;
 
     guiding::StarSelectionParams p;
+    p.autoSelPixelScaleArcsecPerPixel = computeImageScaleArcsecPerPixel(m_params);
+    p.autoSelDownsample = 0;
     p.minSNR = 0.0;
     p.minHFD = 0.5;
     p.maxHFD = 50.0;
@@ -1160,31 +1167,11 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
         if (Tools::readFits(effectiveFitsPath.toUtf8().constData(), img16) == 0 && !img16.empty())
         {
             guiding::StarSelectionParams sp;
+            sp.autoSelPixelScaleArcsecPerPixel = computeImageScaleArcsecPerPixel(m_params);
+            sp.autoSelDownsample = 0;
             std::vector<guiding::StarCandidate> candidates;
             std::vector<guiding::StarCandidate> rejectedCandidates;
             auto best = m_detector.selectGuideStar(img16, sp, effectiveFitsPath, &candidates, &rejectedCandidates);
-            auto emitStarSet = [](const std::vector<guiding::StarCandidate>& stars,
-                                  auto emitFn) {
-                QVector<QPointF> pts;
-                QVector<double> hfds;
-                QVector<double> snrs;
-                pts.reserve(static_cast<int>(stars.size()));
-                hfds.reserve(static_cast<int>(stars.size()));
-                snrs.reserve(static_cast<int>(stars.size()));
-                for (const auto& c : stars)
-                {
-                    pts.push_back(QPointF(c.x, c.y));
-                    hfds.push_back(c.hfd);
-                    snrs.push_back(c.snr);
-                }
-                emitFn(pts, hfds, snrs);
-            };
-            emitStarSet(candidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
-                emit autoSelectDetectedStarsChanged(pts, hfds, snrs);
-            });
-            emitStarSet(rejectedCandidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
-                emit autoSelectRejectedStarsChanged(pts, hfds, snrs);
-            });
             bool usedRelaxedParams = false;
             if (!best.has_value())
             {
@@ -1194,13 +1181,9 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 relaxed.minHFD = 1.0;
                 relaxed.edgeMarginPx = 20.0;
                 relaxed.kSigma = 3.0;
+                relaxed.autoSelPixelScaleArcsecPerPixel = sp.autoSelPixelScaleArcsecPerPixel;
+                relaxed.autoSelDownsample = sp.autoSelDownsample;
                 best = m_detector.selectGuideStar(img16, relaxed, effectiveFitsPath, &candidates, &rejectedCandidates);
-                emitStarSet(candidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
-                    emit autoSelectDetectedStarsChanged(pts, hfds, snrs);
-                });
-                emitStarSet(rejectedCandidates, [this](const QVector<QPointF>& pts, const QVector<double>& hfds, const QVector<double>& snrs) {
-                    emit autoSelectRejectedStarsChanged(pts, hfds, snrs);
-                });
                 usedRelaxedParams = best.has_value();
             }
             if (best.has_value())

@@ -392,6 +392,7 @@ public:
      * @param client 客户端指针
      */
     void disconnectIndiServer(MyClient *client);
+    void stopGuiderLoopAndExposure(const QString &reason, bool emitStatus = true);
 
     /**
      * @brief 连接 INDI 服务器
@@ -985,18 +986,7 @@ private:
     bool guiderGuideStarCentroidValid = false;
     QPointF guiderLockPosPx;
     QPointF guiderGuideStarCentroidPx;
-    QVector<QPointF> guiderDetectedStarsPtsPx;
-    QVector<double> guiderDetectedStarsHfdPx;
-    QVector<double> guiderDetectedStarsSnr;
-    QVector<QPointF> guiderRejectedStarsPtsPx;
-    QVector<double> guiderRejectedStarsHfdPx;
-    QVector<double> guiderRejectedStarsSnr;
     QVector<QPointF> guiderMultiStarSecondaryPtsPx;
-    QString guiderDiagnosticSourceFitsPath;
-    QString guiderDiagnosticBatchDir;
-    bool guiderDiagnosticCopyFitsEnabled = true;  // 导星诊断图像是否复制 FITS 文件
-    int guiderDiagnosticBatchRemaining = 0;
-    int guiderDiagnosticBatchIndex = 0;
 
 private Q_SLOTS:
     void onGuiderLoopTimeout();
