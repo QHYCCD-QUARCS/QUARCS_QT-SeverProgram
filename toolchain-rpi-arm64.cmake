@@ -129,6 +129,12 @@ set(_QUARCS_LIBRARY_PATH_PREFIX
 set(ENV{LIBRARY_PATH} "${_QUARCS_LIBRARY_PATH_PREFIX}:$ENV{LIBRARY_PATH}")
 unset(_QUARCS_LIBRARY_PATH_PREFIX)
 
+# Ubuntu 的 cross GCC 默认仍会先查 /usr/aarch64-linux-gnu/lib 下的宿主机交叉运行库；
+# 这里显式把 startfile/lib 搜索前缀压到树莓派 sysroot 前面，避免把 glibc 版本抬高到宿主机的 2.38+。
+string(CONCAT _QUARCS_SYSROOT_B_PREFIX
+  "-B${CMAKE_SYSROOT}/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE} "
+  "-B${CMAKE_SYSROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+
 # 目标 pkg-config（OpenCV 等）
 set(ENV{PKG_CONFIG_SYSROOT_DIR} "${CMAKE_SYSROOT}")
 set(ENV{PKG_CONFIG_LIBDIR}
@@ -136,10 +142,11 @@ set(ENV{PKG_CONFIG_LIBDIR}
 
 # 链接时使用 sysroot；rpath-link 让 ld 在链接阶段解析 .so 的传递依赖（如 opencv_core → lapack/blas）
 set(_QUARCS_RL "-Wl,-rpath-link,${CMAKE_SYSROOT}/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE} -Wl,-rpath-link,${CMAKE_SYSROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE} -Wl,-rpath-link,${CMAKE_SYSROOT}/usr/local/lib")
-set(CMAKE_EXE_LINKER_FLAGS_INIT "--sysroot=${CMAKE_SYSROOT} ${_QUARCS_RL}")
-set(CMAKE_SHARED_LINKER_FLAGS_INIT "--sysroot=${CMAKE_SYSROOT} ${_QUARCS_RL}")
-set(CMAKE_MODULE_LINKER_FLAGS_INIT "--sysroot=${CMAKE_SYSROOT} ${_QUARCS_RL}")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "${_QUARCS_SYSROOT_B_PREFIX} --sysroot=${CMAKE_SYSROOT} ${_QUARCS_RL}")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "${_QUARCS_SYSROOT_B_PREFIX} --sysroot=${CMAKE_SYSROOT} ${_QUARCS_RL}")
+set(CMAKE_MODULE_LINKER_FLAGS_INIT "${_QUARCS_SYSROOT_B_PREFIX} --sysroot=${CMAKE_SYSROOT} ${_QUARCS_RL}")
 unset(_QUARCS_RL)
+unset(_QUARCS_SYSROOT_B_PREFIX)
 unset(_QUARCS_GCC_DIR)
 unset(_QUARCS_SYSROOT_GCC_DIRS)
 unset(_QUARCS_AR)

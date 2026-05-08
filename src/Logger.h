@@ -16,6 +16,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <thread>
+#include <atomic>
 #include "websocketthread.h"
 
 enum LogLevel {
@@ -48,6 +49,7 @@ private:
     static bool readyToFlush;  // 改为普通的 bool 变量
     static std::condition_variable logCond;
     static std::thread flushThread;
+    static std::atomic<bool> initialized;
     static const unsigned int maxLogSize ; // 设定最大日志文件大小为100MB
     static bool shouldLogDebug; // 添加静态成员变量控制 DEBUG 日志
     static TimePrecision timePrecision; // 时间打印精度，默认秒级

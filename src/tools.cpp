@@ -3364,9 +3364,9 @@ QList<FITSImage::Star> Tools::FindStarsByFocusedCppFromFile(const QString &fileN
   {
     cv::cvtColor(src, gray, cv::COLOR_RGB2GRAY);
   }
-  // 当前固定走简化 ROI 识星：全局峰值 + 50x50 局部加权质心。
+  // 当前优先走 QfdNative 多星识别/HFR 计算，若失败则自动退回到旧单峰质心兜底。
   std::vector<Tools::FocusedStar> fs = Tools::DetectFocusedStars(gray, 3.5, 3, 200, 3.0, 51, 1.0, true);
-  Logger::Log("FindStarsByFocusedCpp | using simplified peak-centroid detector",
+  Logger::Log("FindStarsByFocusedCpp | using local C++ focused-star detector (QfdNative + fallback)",
               LogLevel::INFO, DeviceType::MAIN);
   // 转换为 FITSImage::Star
   for (const auto &s : fs)

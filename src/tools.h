@@ -364,7 +364,7 @@ class Tools : public QObject {
 
   static int readFits_(const char* fileName, cv::Mat& image);
 
-  // ---------------- Focused star detection (ROI 简化峰值算法) ----------------
+  // ---------------- Focused star detection (QfdNative 多星算法 + 单峰兜底) ----------------
   struct FocusedStar {
     double x;       // 星心 x（当前输入图像坐标）
     double y;       // 星心 y（当前输入图像坐标）
@@ -379,7 +379,7 @@ class Tools : public QObject {
   };
 
   /**
-   * @brief ROI 简化识星：全局峰值 + 峰值附近窗口内加权质心
+   * @brief 本地 C++ 识星：优先走 QfdNative 多星识别/HFR 计算，失败时回退到单峰质心兜底
    * @param image16  原始16位（或8/16/32F可兼容）单通道图像，cv::Mat
    * @param kSigma   兼容保留参数，当前未使用
    * @param minArea  兼容保留参数，当前未使用
@@ -388,7 +388,7 @@ class Tools : public QObject {
    * @param bgKsize  兼容保留参数，当前未使用
    * @param smoothSigma 兼容保留参数，当前未使用
    * @param verbose  输出调试信息
-   * @return         检测到的星点列表（当前实现通常返回 0 或 1 颗）
+   * @return         检测到的星点列表
    */
   static std::vector<FocusedStar> DetectFocusedStars(const cv::Mat& image16,
                                                      double kSigma = 3.5,
@@ -402,7 +402,7 @@ class Tools : public QObject {
                                                      const QString& logPrefix = QString());
 
   /**
-   * @brief 从FITS文件直接执行 ROI 简化识星
+   * @brief 从FITS文件直接执行本地 C++ 识星
    * @param fileName FITS 文件路径（UTF-8 C字符串）
    * @param outStars 输出星点列表
    * @param verbose  输出调试信息

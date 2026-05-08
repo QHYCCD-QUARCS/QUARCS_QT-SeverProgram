@@ -23,8 +23,11 @@ std::mutex Logger::readyMutex;
 std::condition_variable Logger::logCond;
 std::thread Logger::flushThread;
 WebSocketThread *Logger::wsThread = nullptr;
+std::atomic<bool> Logger::initialized{false};
 
 void Logger::Initialize() {
+    if (initialized.load())
+        return;
     std::cout << "************************************" << std::endl;
     // 使用 std::filesystem 检查日志目录是否存在
     std::string logDir = "logs";
@@ -57,9 +60,12 @@ void Logger::Initialize() {
     }
     std::cout << "************************************" << std::endl;
     flushThread = std::thread(&Logger::MonitorFlush);
+    initialized.store(true);
 }
 
 void Logger::Close() {
+    if (!initialized.load())
+        return;
     {
         std::lock_guard<std::mutex> lock(readyMutex);
         readyToFlush = true;
@@ -70,6 +76,7 @@ void Logger::Close() {
     for (auto& file : logFiles) {
         file.second->close();
     }
+    initialized.store(false);
 }
 
 void Logger::RotateLogs(DeviceType device) {
@@ -102,8 +109,21 @@ void Logger::SetTimePrecision(TimePrecision precision) {
 
 void Logger::Log(const std::string& message, LogLevel level, DeviceType device) {
     if (level == DEBUG && !shouldLogDebug) return;
+    if (!initialized.load())
+        Initialize();
 
     std::lock_guard<std::mutex> lock(logMutex);  // 使用 lock_guard 管理互斥锁
+
+    auto ensureLogFile = [](DeviceType dev) -> bool {
+        auto it = logFiles.find(dev);
+        return it != logFiles.end() && it->second && it->second->is_open();
+    };
+    if (!ensureLogFile(device) || !ensureLogFile(MAIN))
+    {
+        std::cerr << "Logger not ready for device " << static_cast<int>(device)
+                  << ", fallback stderr: " << message << std::endl;
+        return;
+    }
 
     // 检查文件大小，如果需要则轮转日志
     if (device != MAIN && logFiles[device]->tellp() > maxLogSize) {
