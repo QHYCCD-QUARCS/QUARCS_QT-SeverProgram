@@ -13370,7 +13370,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                     LogLevel::INFO, DeviceType::GUIDER);
         if (guiderCore)
         {
-            guiderCore->startLoop();
+            postGuiderCore(guiderCore, [](GuiderCore *core) { core->startLoop(); });
             return;
         }
 
@@ -28138,8 +28138,10 @@ void MainWindow::stopGuiderLoopAndExposure(const QString &reason, bool emitStatu
 
     if (guiderCore)
     {
-        guiderCore->stopGuiding();
-        guiderCore->stopLoop();
+        postGuiderCore(guiderCore, [](GuiderCore *core) {
+            core->stopGuiding();
+            core->stopLoop();
+        });
     }
 
     if (sdkGuiderHandle != nullptr)
