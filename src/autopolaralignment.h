@@ -70,13 +70,12 @@ enum class GuidanceAdjustmentStep {
 
 // 图像内引导状态机（GUIDING_ADJUSTMENT阶段）
 enum class PolarImageGuidanceMode {
-    LOCKING_SINGLE_STAR = 0,
-    TRACKING_SINGLE = 1,
-    FALLBACK_MULTI_STAR = 2,
-    REANCHOR_PLATESOLVE = 3,
-    RELOCK = 4,
-    DONE = 5,
-    FAILED = 6
+    INIT = 0,
+    TRACKING_FUSED = 1,
+    RECOVERING_MULTI = 2,
+    REANCHOR_SOLVE = 3,
+    DONE = 4,
+    FAILED = 5
 };
 
 enum class PolarGuidanceTransformModel {
@@ -112,6 +111,10 @@ struct PolarGuidanceRuntimeV2 {
     double reprojErrPx = 0.0;
     double inlierRatio = 0.0;
     int inliers = 0;
+    double compensatedRemainArcsec = 0.0;
+    double dynamicDoneThresholdArcsec = 0.0;
+    double measurementNoiseArcsec = 0.0;
+    double driftPxPerSec = 0.0;
     PolarGuidanceTransformModel transformModel = PolarGuidanceTransformModel::NONE;
     qint64 reanchorStartedMs = 0;
     qint64 lastReanchorMs = 0;
@@ -460,20 +463,6 @@ signals:
      */
     void guidanceAdjustmentStepProgress(GuidanceAdjustmentStep step, QString message, int starCount = -1);
 
-    /**
-     * @brief 图像内引导数据（用于前端在图像上叠加十字/目标圈/箭头）
-     */
-    void polarImageGuidanceData(qint64 frameId,
-                                QString mode,
-                                double lockConfidence,
-                                double currentStarX, double currentStarY,
-                                double targetX, double targetY,
-                                double arrowDx, double arrowDy,
-                                bool inFrame,
-                                double reprojErrPx,
-                                int stableFrames,
-                                double arcsecPerPixel,
-                                QString statusText);
     void polarImageGuidanceDataV2(QString payloadJson);
     void polarImageGuidanceFrame(qint64 frameId,
                                  int imageW,
@@ -1214,7 +1203,7 @@ private:
     int testimage;
 
     // 图像引导状态（实时闭环）
-    PolarImageGuidanceMode imageGuideMode = PolarImageGuidanceMode::LOCKING_SINGLE_STAR;
+    PolarImageGuidanceMode imageGuideMode = PolarImageGuidanceMode::INIT;
     qint64 imageGuideFrameId = 0;
     bool imageGuideHasLock = false;
     PolarImageGuidePoint lockedGuideStar;
@@ -1232,6 +1221,9 @@ private:
     double imageGuideLastReprojErrPx = 0.0;
     qint64 imageGuideReanchorStartedMs = 0;
     qint64 imageGuideLastReanchorMs = 0;
+    qint64 imageGuideLastFrameTimestampMs = 0;
+    cv::Point2d imageGuideDriftVelocityPxPerSec{0.0, 0.0};
+    bool imageGuideDriftVelocityValid = false;
     bool forceGlobalSolveOnce = false;
     int lastSolveModeUsed = 1;
     bool imageGuideFreshSolveThisFrame = false;
@@ -1242,8 +1234,6 @@ private:
     QString guidanceSolveModeProfile = "guide_fast";
     int guidanceFullSolveIntervalFrames = 5;
     PolarGuidanceRuntimeV2 guidanceV2;
-    bool guidanceEmitV1Compat = true;
-    bool guidanceAlgoV2Enabled = true;
 
     // 图像引导固定参数（树莓派实时优先）
     int imageGuideLostFramesThreshold = 5;
@@ -1265,6 +1255,12 @@ private:
     int imageGuideRecoverMaxFramesV2 = 12;
     int imageGuideFullSolveMaxIntervalV2 = 8;
     qint64 imageGuideLastFullSolveFrameId = 0;
+    bool imageGuideDriftCompensationEnabled = true;
+    double imageGuideDriftLowPassAlpha = 0.25;
+    double imageGuideDriftExposureNoiseFactor = 0.5;
+    double imageGuideFreshSolveReanchorAlpha = 0.35;
+    double imageGuideDynamicThresholdSigmaFactor = 2.5;
+    double imageGuideDoneThresholdArcsec = 0.0;
 };
 
 #endif // POLARALIGNMENT_H

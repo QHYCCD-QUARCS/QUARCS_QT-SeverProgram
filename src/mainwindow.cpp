@@ -10912,18 +10912,35 @@ void MainWindow::ConnectAllDeviceOnce()
 
         // 2) 选择串口：手动覆盖 > 上次保存 > 自动识别
         QString portToUse;
+        QString portSource;
         if (!focuserSerialPortOverride.isEmpty())
         {
             portToUse = focuserSerialPortOverride;
+            portSource = "override";
         }
         else if (!systemdevicelist.system_devices[22].DeviceIndiName.isEmpty() &&
                  systemdevicelist.system_devices[22].DeviceIndiName.startsWith("/dev/"))
         {
             portToUse = systemdevicelist.system_devices[22].DeviceIndiName;
+            portSource = "saved";
         }
         else
         {
             portToUse = detector.getFocuserPort();
+            portSource = "auto";
+        }
+
+        if (!portToUse.isEmpty() && !detector.isPortPresent(portToUse))
+        {
+            Logger::Log("ConnectAllDeviceOnce | SDK focuser " + portSource.toStdString() +
+                            " port is not present: " + portToUse.toStdString() +
+                            ", rescan serial ports.",
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+            const DevicePorts ports = detector.rescan();
+            portToUse = ports.focuserPort;
+            portSource = "auto-rescan";
+            if (!portToUse.isEmpty())
+                focuserSerialPortOverride = portToUse;
         }
 
         if (portToUse.isEmpty())
@@ -25639,18 +25656,35 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
             // 选择串口：手动覆盖 > 上次保存 > 自动识别
             QString portToUse;
+            QString portSource;
             if (!focuserSerialPortOverride.isEmpty())
             {
                 portToUse = focuserSerialPortOverride;
+                portSource = "override";
             }
             else if (!systemdevicelist.system_devices[22].DeviceIndiName.isEmpty() &&
                      systemdevicelist.system_devices[22].DeviceIndiName.startsWith("/dev/"))
             {
                 portToUse = systemdevicelist.system_devices[22].DeviceIndiName;
+                portSource = "saved";
             }
             else
             {
                 portToUse = detector.getFocuserPort();
+                portSource = "auto";
+            }
+
+            if (!portToUse.isEmpty() && !detector.isPortPresent(portToUse))
+            {
+                Logger::Log("ConnectDriver | SDK focuser " + portSource.toStdString() +
+                                " port is not present: " + portToUse.toStdString() +
+                                ", rescan serial ports.",
+                            LogLevel::WARNING, DeviceType::FOCUSER);
+                const DevicePorts ports = detector.rescan();
+                portToUse = ports.focuserPort;
+                portSource = "auto-rescan";
+                if (!portToUse.isEmpty())
+                    focuserSerialPortOverride = portToUse;
             }
 
             if (portToUse.isEmpty())

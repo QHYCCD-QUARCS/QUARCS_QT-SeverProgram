@@ -331,6 +331,27 @@ static bool portNodeIsPresent(const QString& absPortPath)
     return fsOk || infoOk;
 }
 
+bool SerialDeviceDetector::isPortPresent(const QString& portPath) const
+{
+    if (portPath.isEmpty()) return false;
+
+    QString absInput = portPath;
+    if (!absInput.startsWith('/')) {
+        if (QFileInfo(QStringLiteral("/dev/serial/by-id/%1").arg(portPath)).exists())
+            absInput = QStringLiteral("/dev/serial/by-id/%1").arg(portPath);
+        else if (QFileInfo(QStringLiteral("/dev/%1").arg(portPath)).exists())
+            absInput = QStringLiteral("/dev/%1").arg(portPath);
+    }
+
+    QString realPort = absInput;
+    if (absInput.startsWith("/dev/serial/by-id/")) {
+        const QString real = resolveByIdAbsoluteToReal(absInput);
+        if (!real.isEmpty()) realPort = real;
+    }
+
+    return portNodeIsPresent(realPort);
+}
+
 QString SerialDeviceDetector::detectDeviceTypeForPort(const QString& portPath) const
 {
     if (portPath.isEmpty()) return {};

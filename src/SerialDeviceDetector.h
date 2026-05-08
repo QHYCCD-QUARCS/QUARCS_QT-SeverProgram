@@ -40,6 +40,9 @@ public:
     // 判断传入端口类型：返回 "Mount" / "Focuser" / 空字符串（未知）
     QString detectDeviceTypeForPort(const QString& portPath) const;
 
+    // 仅判断端口节点是否存在/可见，不判断设备类型
+    bool isPortPresent(const QString& portPath) const;
+
     // 可选：外部注入日志
     void setLogger(std::function<void(const QString&)> logger);
 

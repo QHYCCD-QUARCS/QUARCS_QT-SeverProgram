@@ -1791,7 +1791,7 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     const bool shouldFullSolve =
         forceGlobalSolveOnce ||
         !isAnalysisSuccessful(currentSolveResult) ||
-        (imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) ||
+        (imageGuideMode == PolarImageGuidanceMode::REANCHOR_SOLVE) ||
         periodicFullSolveHit;
 
     SloveResults analysisResult = currentSolveResult;
@@ -1910,8 +1910,8 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
     const bool needImmediateRescueSolve =
         !imageGuideFreshSolveThisFrame &&
         (forceGlobalSolveOnce ||
-         imageGuideMode == PolarImageGuidanceMode::FALLBACK_MULTI_STAR ||
-         imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE ||
+         imageGuideMode == PolarImageGuidanceMode::RECOVERING_MULTI ||
+         imageGuideMode == PolarImageGuidanceMode::REANCHOR_SOLVE ||
          imageGuideMode == PolarImageGuidanceMode::FAILED);
 
     if (needImmediateRescueSolve) {
@@ -2144,8 +2144,6 @@ void PolarAlignment::loadGuidanceTrackingConfigFromEnv()
         return (v == "1" || v == "true" || v == "yes" || v == "on");
     };
 
-    guidanceAlgoV2Enabled = envOrDefault("QUARCS_POLAR_GUIDANCE_ALGO", "v2").toLower() != "v1";
-    guidanceEmitV1Compat = envBool("QUARCS_POLAR_GUIDANCE_EMIT_V1_COMPAT", true);
     imageGuideMatchMaxStars = std::max(40, envInt("QUARCS_POLAR_MATCH_MAX_STARS", 200));
     imageGuideMatchMinInliersV2 = std::max(3, envInt("QUARCS_POLAR_MATCH_MIN_INLIERS", 8));
     imageGuideMatchMinInlierRatioV2 = std::clamp(envDouble("QUARCS_POLAR_MATCH_MIN_INLIER_RATIO", 0.35), 0.05, 0.95);
@@ -2161,17 +2159,25 @@ void PolarAlignment::loadGuidanceTrackingConfigFromEnv()
     imageGuideStableFramesNeeded = std::max(1, envInt("QUARCS_POLAR_DONE_STABLE_FRAMES", 8));
     imageGuideLostFramesThreshold = std::max(1, envInt("QUARCS_POLAR_LOST_FRAMES_THRESHOLD", 5));
     imageGuideReanchorCooldownMs = std::max(0, envInt("QUARCS_POLAR_REANCHOR_COOLDOWN_MS", 4000));
+    imageGuideDriftCompensationEnabled = envBool("QUARCS_POLAR_DRIFT_COMPENSATION", true);
+    imageGuideDriftLowPassAlpha = std::clamp(envDouble("QUARCS_POLAR_DRIFT_LOWPASS_ALPHA", 0.25), 0.01, 1.0);
+    imageGuideDriftExposureNoiseFactor = std::clamp(envDouble("QUARCS_POLAR_DRIFT_EXPOSURE_NOISE_FACTOR", 0.5), 0.0, 2.0);
+    imageGuideFreshSolveReanchorAlpha = std::clamp(envDouble("QUARCS_POLAR_FRESH_SOLVE_REANCHOR_ALPHA", 0.35), 0.0, 1.0);
+    imageGuideDynamicThresholdSigmaFactor = std::clamp(envDouble("QUARCS_POLAR_DYNAMIC_THRESHOLD_SIGMA", 2.5), 0.0, 10.0);
+    imageGuideDoneThresholdArcsec = std::max(0.0, envDouble("QUARCS_POLAR_DONE_THRESHOLD_ARCSEC", 0.0));
 
     Logger::Log(
-        "PolarAlignment: guidance tracking config algoV2=" + std::to_string(guidanceAlgoV2Enabled ? 1 : 0) +
-        " emitV1Compat=" + std::to_string(guidanceEmitV1Compat ? 1 : 0) +
-        " maxStars=" + std::to_string(imageGuideMatchMaxStars) +
+        "PolarAlignment: guidance tracking config maxStars=" + std::to_string(imageGuideMatchMaxStars) +
         " minInliers=" + std::to_string(imageGuideMatchMinInliersV2) +
         " minInlierRatio=" + std::to_string(imageGuideMatchMinInlierRatioV2) +
         " ransacThresh=" + std::to_string(imageGuideRansacThresholdPx) +
         " trackRadius=[" + std::to_string(imageGuideTrackBaseRadiusPxV2) + "," + std::to_string(imageGuideTrackMaxRadiusPxV2) + "]" +
         " recoverMaxFrames=" + std::to_string(imageGuideRecoverMaxFramesV2) +
-        " fullSolveMaxInterval=" + std::to_string(imageGuideFullSolveMaxIntervalV2),
+        " fullSolveMaxInterval=" + std::to_string(imageGuideFullSolveMaxIntervalV2) +
+        " driftComp=" + std::to_string(imageGuideDriftCompensationEnabled ? 1 : 0) +
+        " freshReanchorAlpha=" + std::to_string(imageGuideFreshSolveReanchorAlpha) +
+        " dynamicSigma=" + std::to_string(imageGuideDynamicThresholdSigmaFactor) +
+        " doneArcsec=" + std::to_string(imageGuideDoneThresholdArcsec),
         LogLevel::INFO, DeviceType::MAIN);
 }
 
@@ -4327,7 +4333,7 @@ bool PolarAlignment::moveToAvoidObstacleRA2()
 
 void PolarAlignment::resetPolarImageGuidanceState()
 {
-    imageGuideMode = PolarImageGuidanceMode::LOCKING_SINGLE_STAR;
+    imageGuideMode = PolarImageGuidanceMode::INIT;
     imageGuideFrameId = 0;
     imageGuideHasLock = false;
     lockedGuideStar = PolarImageGuidePoint();
@@ -4346,6 +4352,9 @@ void PolarAlignment::resetPolarImageGuidanceState()
     imageGuideLastReanchorMs = 0;
     imageGuideFreshSolveThisFrame = false;
     imageGuideReanchorNeedFreshSolve = false;
+    imageGuideLastFrameTimestampMs = 0;
+    imageGuideDriftVelocityPxPerSec = cv::Point2d(0.0, 0.0);
+    imageGuideDriftVelocityValid = false;
     previousGuideGray8.release();
     imageGuidePerfReduced = false;
     imageGuideLastFrameProcessMs = 0.0;
@@ -4886,11 +4895,10 @@ bool PolarAlignment::buildGuidanceJpegFrame(const cv::Mat& rawImage, QByteArray&
 QString PolarAlignment::polarImageGuidanceModeToToken(PolarImageGuidanceMode mode) const
 {
     switch (mode) {
-        case PolarImageGuidanceMode::LOCKING_SINGLE_STAR: return "locking";
-        case PolarImageGuidanceMode::TRACKING_SINGLE: return "single";
-        case PolarImageGuidanceMode::FALLBACK_MULTI_STAR: return "multi";
-        case PolarImageGuidanceMode::REANCHOR_PLATESOLVE: return "reanchor";
-        case PolarImageGuidanceMode::RELOCK: return "relock";
+        case PolarImageGuidanceMode::INIT: return "init";
+        case PolarImageGuidanceMode::TRACKING_FUSED: return "tracking_fused";
+        case PolarImageGuidanceMode::RECOVERING_MULTI: return "recovering_multi";
+        case PolarImageGuidanceMode::REANCHOR_SOLVE: return "reanchor_solve";
         case PolarImageGuidanceMode::DONE: return "done";
         case PolarImageGuidanceMode::FAILED: return "failed";
     }
@@ -5083,6 +5091,13 @@ QString PolarAlignment::buildPolarGuidanceDataV2Payload(qint64 frameId,
     matchObj["reprojErrPx"] = guidanceV2.reprojErrPx;
     root["match"] = matchObj;
 
+    QJsonObject precisionObj;
+    precisionObj["compensatedRemainArcsec"] = guidanceV2.compensatedRemainArcsec;
+    precisionObj["dynamicDoneThresholdArcsec"] = guidanceV2.dynamicDoneThresholdArcsec;
+    precisionObj["measurementNoiseArcsec"] = guidanceV2.measurementNoiseArcsec;
+    precisionObj["driftPxPerSec"] = guidanceV2.driftPxPerSec;
+    root["precision"] = precisionObj;
+
     QJsonObject solveObj;
     solveObj["usedThisFrame"] = imageGuideFreshSolveThisFrame;
     solveObj["solveModeUsed"] = lastSolveModeUsed;
@@ -5175,6 +5190,34 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
                                inlierRatio >= imageGuideMatchMinInlierRatioV2;
     imageGuideLastInliers = inliers;
 
+    if (imageGuideDriftCompensationEnabled && transformGood) {
+        const double dtSec = (imageGuideLastFrameTimestampMs > 0)
+            ? static_cast<double>(nowMs - imageGuideLastFrameTimestampMs) / 1000.0
+            : 0.0;
+        if (dtSec > 0.05 && dtSec < 120.0) {
+            cv::Point2d movedCenter = imageCenterPx;
+            if (propagateTargetsByTransform(transform, movedCenter)) {
+                const cv::Point2d v = (movedCenter - imageCenterPx) * (1.0 / dtSec);
+                if (std::isfinite(v.x) && std::isfinite(v.y)) {
+                    if (!imageGuideDriftVelocityValid) {
+                        imageGuideDriftVelocityPxPerSec = v;
+                        imageGuideDriftVelocityValid = true;
+                    } else {
+                        const double a = imageGuideDriftLowPassAlpha;
+                        imageGuideDriftVelocityPxPerSec =
+                            imageGuideDriftVelocityPxPerSec * (1.0 - a) + v * a;
+                    }
+                }
+            }
+        }
+    } else if (!transformGood && imageGuideDriftVelocityValid) {
+        imageGuideDriftVelocityPxPerSec *= 0.95;
+        if (std::hypot(imageGuideDriftVelocityPxPerSec.x, imageGuideDriftVelocityPxPerSec.y) < 1e-4) {
+            imageGuideDriftVelocityValid = false;
+            imageGuideDriftVelocityPxPerSec = cv::Point2d(0.0, 0.0);
+        }
+    }
+
     if (solveTargetValid && (imageGuideFreshSolveThisFrame || !imageGuideEstimatedTargetValid)) {
         imageGuideEstimatedTargetPx = solveTargetPx;
         imageGuideEstimatedTargetValid = isFinitePoint(imageGuideEstimatedTargetPx);
@@ -5202,9 +5245,8 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
     }
     const cv::Point2d frameDeltaPx = imageCenterPx - imageGuideEstimatedTargetPx;
 
-    if (!guidanceAlgoV2Enabled) imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
-    if (imageGuideMode == PolarImageGuidanceMode::LOCKING_SINGLE_STAR || imageGuideMode == PolarImageGuidanceMode::RELOCK) {
-        imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+    if (imageGuideMode == PolarImageGuidanceMode::INIT || imageGuideMode == PolarImageGuidanceMode::TRACKING_FUSED) {
+        imageGuideMode = PolarImageGuidanceMode::TRACKING_FUSED;
     }
 
     if (imageGuideHasLock && transformGood) {
@@ -5228,9 +5270,9 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
             imageGuideLockConfidence = 1.0;
             lockStarFixedTargetPx = cv::Point2d(selected.x + frameDeltaPx.x, selected.y + frameDeltaPx.y);
             lockStarTargetReady = true;
-            imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+            imageGuideMode = PolarImageGuidanceMode::TRACKING_FUSED;
         } else {
-            imageGuideMode = PolarImageGuidanceMode::FALLBACK_MULTI_STAR;
+            imageGuideMode = PolarImageGuidanceMode::RECOVERING_MULTI;
         }
     } else {
         const double adaptiveRadius = std::clamp(
@@ -5242,19 +5284,19 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
             lockedGuideStar = tracked;
             imageGuideLostFrames = 0;
             imageGuideLockConfidence = std::clamp(0.4 + inlierRatio * 0.6, 0.0, 1.0);
-            imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+            imageGuideMode = PolarImageGuidanceMode::TRACKING_FUSED;
         } else {
             ++imageGuideLostFrames;
             imageGuideLockConfidence = std::max(0.0, imageGuideLockConfidence - 0.15);
-            imageGuideMode = PolarImageGuidanceMode::FALLBACK_MULTI_STAR;
+            imageGuideMode = PolarImageGuidanceMode::RECOVERING_MULTI;
         }
     }
 
-    if (imageGuideMode == PolarImageGuidanceMode::FALLBACK_MULTI_STAR) {
+    if (imageGuideMode == PolarImageGuidanceMode::RECOVERING_MULTI) {
         if (imageGuideLostFrames == 1) {
             emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "星点丢失，尝试重定位...", -1);
         }
-        // 修复：只有在“已有可靠锁点”时，才允许通过变换保持 TRACKING_SINGLE。
+        // 只有在“已有可靠锁点”时，才允许通过变换保持 TRACKING_FUSED。
         // 若已无锁点(hasLock=false)，必须走全图重锁星，而不能仅凭 transformGood 直接切回 single。
         if (!imageGuideHasLock) {
             PolarImageGuidePoint relockCandidate;
@@ -5265,18 +5307,18 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
                 imageGuideLockConfidence = std::max(imageGuideLockConfidence, 0.6);
                 lockStarFixedTargetPx = cv::Point2d(lockedGuideStar.x + frameDeltaPx.x, lockedGuideStar.y + frameDeltaPx.y);
                 lockStarTargetReady = true;
-                imageGuideMode = PolarImageGuidanceMode::RELOCK;
+                imageGuideMode = PolarImageGuidanceMode::TRACKING_FUSED;
                 emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::CALCULATING, "全图重锁星成功", -1);
             } else if (imageGuideLostFrames >= imageGuideRecoverMaxFramesV2) {
-                imageGuideMode = PolarImageGuidanceMode::REANCHOR_PLATESOLVE;
+                imageGuideMode = PolarImageGuidanceMode::REANCHOR_SOLVE;
                 imageGuideReanchorStartedMs = nowMs;
                 imageGuideReanchorNeedFreshSolve = true;
                 emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "全图重锁星失败，正在重锚定解析...", -1);
             }
         } else if (transformGood) {
-            imageGuideMode = PolarImageGuidanceMode::TRACKING_SINGLE;
+            imageGuideMode = PolarImageGuidanceMode::TRACKING_FUSED;
         } else if (imageGuideLostFrames >= imageGuideRecoverMaxFramesV2) {
-            imageGuideMode = PolarImageGuidanceMode::REANCHOR_PLATESOLVE;
+            imageGuideMode = PolarImageGuidanceMode::REANCHOR_SOLVE;
             imageGuideReanchorStartedMs = nowMs;
             imageGuideReanchorNeedFreshSolve = true;
             emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "星点持续丢失，正在重锚定解析...", -1);
@@ -5284,12 +5326,12 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
     }
 
     const bool needPeriodicSolve = (imageGuideFrameId - imageGuideLastFullSolveFrameId) >= imageGuideFullSolveMaxIntervalV2;
-    if (needPeriodicSolve || !transformGood || imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) {
+    if (needPeriodicSolve || !transformGood || imageGuideMode == PolarImageGuidanceMode::REANCHOR_SOLVE) {
         forceGlobalSolveOnce = true;
         imageGuideLastFullSolveFrameId = imageGuideFrameId;
     }
 
-    if (imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) {
+    if (imageGuideMode == PolarImageGuidanceMode::REANCHOR_SOLVE) {
         if (solveTargetValid && imageGuideFreshSolveThisFrame) {
             imageGuideEstimatedTargetPx = solveTargetPx;
             imageGuideEstimatedTargetValid = true;
@@ -5297,7 +5339,7 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
             imageGuideLastReanchorMs = nowMs;
             imageGuideHasLock = false;
             lockStarTargetReady = false;
-            imageGuideMode = PolarImageGuidanceMode::LOCKING_SINGLE_STAR;
+            imageGuideMode = PolarImageGuidanceMode::INIT;
             emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::SOLVING, "重锚定完成，正在重新锁定星点...", -1);
         }
         if (imageGuideReanchorStartedMs > 0 && nowMs - imageGuideReanchorStartedMs > imageGuideReanchorTimeoutMs) {
@@ -5309,7 +5351,7 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
     }
 
     if (imageGuideMode == PolarImageGuidanceMode::FAILED && nowMs - imageGuideLastReanchorMs >= imageGuideReanchorCooldownMs) {
-        imageGuideMode = PolarImageGuidanceMode::REANCHOR_PLATESOLVE;
+        imageGuideMode = PolarImageGuidanceMode::REANCHOR_SOLVE;
         imageGuideReanchorStartedMs = nowMs;
         imageGuideReanchorNeedFreshSolve = true;
         forceGlobalSolveOnce = true;
@@ -5340,7 +5382,7 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
             lockStarFixedTargetPx = cv::Point2d(currentStarPx.x + frameDeltaPx.x, currentStarPx.y + frameDeltaPx.y);
             lockStarFinalTargetPx = lockStarFixedTargetPx;
             if (imageGuideMode != PolarImageGuidanceMode::DONE) {
-                imageGuideMode = PolarImageGuidanceMode::RELOCK;
+                imageGuideMode = PolarImageGuidanceMode::TRACKING_FUSED;
             }
             imageGuideLockConfidence = std::max(imageGuideLockConfidence, 0.25);
             Logger::Log(
@@ -5349,6 +5391,30 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
                     ") bestD2=" + std::to_string(bestD2),
                 LogLevel::INFO, DeviceType::MAIN
             );
+        }
+    }
+
+    if (imageGuideHasLock && imageGuideFreshSolveThisFrame && solveTargetValid &&
+        isFinitePoint(solveTargetPx) && imageGuideFreshSolveReanchorAlpha > 0.0) {
+        const cv::Point2d freshFrameDelta = imageCenterPx - solveTargetPx;
+        const cv::Point2d desiredTargetPx = currentStarPx + freshFrameDelta;
+        if (isFinitePoint(desiredTargetPx)) {
+            const double a = lockStarTargetReady ? imageGuideFreshSolveReanchorAlpha : 1.0;
+            const cv::Point2d oldTargetPx = lockStarTargetReady ? lockStarFixedTargetPx : desiredTargetPx;
+            const cv::Point2d reanchoredTargetPx = oldTargetPx * (1.0 - a) + desiredTargetPx * a;
+            if (isFinitePoint(reanchoredTargetPx)) {
+                lockStarFixedTargetPx = reanchoredTargetPx;
+                lockStarFinalTargetPx = lockStarFixedTargetPx;
+                lockStarTargetReady = true;
+                Logger::Log(
+                    "PolarAlignment: fresh solve reanchor lock target desired=(" +
+                        std::to_string(desiredTargetPx.x) + "," + std::to_string(desiredTargetPx.y) +
+                        ") applied=(" + std::to_string(lockStarFixedTargetPx.x) + "," +
+                        std::to_string(lockStarFixedTargetPx.y) + ") alpha=" +
+                        std::to_string(a),
+                    LogLevel::INFO,
+                    DeviceType::MAIN);
+            }
         }
     }
 
@@ -5377,24 +5443,57 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
     const bool inFrame = isPointValid(currentStarPx) && isPointValid(displayTargetPx);
     const double totalRemainPx = std::hypot(lockStarFinalTargetPx.x - currentStarPx.x, lockStarFinalTargetPx.y - currentStarPx.y);
 
-    if (imageGuideHasLock && totalRemainPx < imageGuideDoneThresholdPx) ++imageGuideStableFrames;
-    else imageGuideStableFrames = 0;
-    if (imageGuideStableFrames >= imageGuideStableFramesNeeded) imageGuideMode = PolarImageGuidanceMode::DONE;
-
     const double arcsecPerPixel =
         (std::isfinite(solveResult.pixelScaleArcsecPerPixel) && solveResult.pixelScaleArcsecPerPixel > 0.0)
             ? solveResult.pixelScaleArcsecPerPixel : 0.0;
+    const double exposureSec = std::max(0.0, static_cast<double>(config.defaultExposureTime) / 1000.0);
+    const double driftSpeedPxPerSec = imageGuideDriftVelocityValid
+        ? std::hypot(imageGuideDriftVelocityPxPerSec.x, imageGuideDriftVelocityPxPerSec.y)
+        : 0.0;
+    const cv::Point2d driftCompensationPx = (imageGuideDriftCompensationEnabled && imageGuideDriftVelocityValid)
+        ? imageGuideDriftVelocityPxPerSec * (exposureSec * imageGuideDriftExposureNoiseFactor)
+        : cv::Point2d(0.0, 0.0);
+    const cv::Point2d compensatedFinalDeltaPx = (lockStarFinalTargetPx - currentStarPx) - driftCompensationPx;
+    const double compensatedRemainPx = std::hypot(compensatedFinalDeltaPx.x, compensatedFinalDeltaPx.y);
+    const double driftDuringExposurePx = driftSpeedPxPerSec * exposureSec * imageGuideDriftExposureNoiseFactor;
+    const double measurementNoisePx = std::sqrt(
+        imageGuideLastReprojErrPx * imageGuideLastReprojErrPx +
+        reprojErrPx * reprojErrPx +
+        driftDuringExposurePx * driftDuringExposurePx);
+    double dynamicDoneThresholdPx = imageGuideDoneThresholdPx;
+    if (arcsecPerPixel > 0.0 && imageGuideDoneThresholdArcsec > 0.0) {
+        dynamicDoneThresholdPx = std::max(dynamicDoneThresholdPx, imageGuideDoneThresholdArcsec / arcsecPerPixel);
+    }
+    if (imageGuideDynamicThresholdSigmaFactor > 0.0 && std::isfinite(measurementNoisePx)) {
+        dynamicDoneThresholdPx = std::max(dynamicDoneThresholdPx,
+                                         imageGuideDynamicThresholdSigmaFactor * measurementNoisePx);
+    }
+
+    if (imageGuideHasLock && compensatedRemainPx < dynamicDoneThresholdPx) ++imageGuideStableFrames;
+    else imageGuideStableFrames = 0;
+    if (imageGuideStableFrames >= imageGuideStableFramesNeeded) imageGuideMode = PolarImageGuidanceMode::DONE;
+
     const double remainArcsec = (arcsecPerPixel > 0.0) ? totalRemainPx * arcsecPerPixel : 0.0;
+    const double compensatedRemainArcsec = (arcsecPerPixel > 0.0) ? compensatedRemainPx * arcsecPerPixel : 0.0;
     const double segmentRemainArcsec = (arcsecPerPixel > 0.0) ? remainPxAfterSegment * arcsecPerPixel : 0.0;
+    const double dynamicDoneThresholdArcsec = (arcsecPerPixel > 0.0)
+        ? dynamicDoneThresholdPx * arcsecPerPixel
+        : 0.0;
+    const double measurementNoiseArcsec = (arcsecPerPixel > 0.0) ? measurementNoisePx * arcsecPerPixel : 0.0;
 
     QString statusText = "tracking_fused";
     QString v2Mode = "tracking_fused";
-    if (imageGuideMode == PolarImageGuidanceMode::LOCKING_SINGLE_STAR) { statusText = "init"; v2Mode = "init"; }
-    else if (imageGuideMode == PolarImageGuidanceMode::FALLBACK_MULTI_STAR) { statusText = "recovering_multi"; v2Mode = "recovering_multi"; }
-    else if (imageGuideMode == PolarImageGuidanceMode::REANCHOR_PLATESOLVE) { statusText = "reanchor_solve"; v2Mode = "reanchor_solve"; }
+    if (imageGuideMode == PolarImageGuidanceMode::INIT) { statusText = "init"; v2Mode = "init"; }
+    else if (imageGuideMode == PolarImageGuidanceMode::RECOVERING_MULTI) { statusText = "recovering_multi"; v2Mode = "recovering_multi"; }
+    else if (imageGuideMode == PolarImageGuidanceMode::REANCHOR_SOLVE) { statusText = "reanchor_solve"; v2Mode = "reanchor_solve"; }
     else if (imageGuideMode == PolarImageGuidanceMode::DONE) { statusText = "done"; v2Mode = "done"; }
     else if (imageGuideMode == PolarImageGuidanceMode::FAILED) { statusText = "failed"; v2Mode = "failed"; }
-    if (arcsecPerPixel > 0.0) statusText += QString(" rem=%1\"").arg(std::round(remainArcsec * 10.0) / 10.0, 0, 'f', 1);
+    if (arcsecPerPixel > 0.0) {
+        statusText += QString(" rem=%1\" comp=%2\" thr=%3\"")
+            .arg(std::round(remainArcsec * 10.0) / 10.0, 0, 'f', 1)
+            .arg(std::round(compensatedRemainArcsec * 10.0) / 10.0, 0, 'f', 1)
+            .arg(std::round(dynamicDoneThresholdArcsec * 10.0) / 10.0, 0, 'f', 1);
+    }
 
     guidanceV2.hasLock = imageGuideHasLock;
     guidanceV2.lockConfidence = imageGuideLockConfidence;
@@ -5408,13 +5507,11 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
     guidanceV2.inliers = inliers;
     guidanceV2.inlierRatio = inlierRatio;
     guidanceV2.reprojErrPx = reprojErrPx;
+    guidanceV2.compensatedRemainArcsec = compensatedRemainArcsec;
+    guidanceV2.dynamicDoneThresholdArcsec = dynamicDoneThresholdArcsec;
+    guidanceV2.measurementNoiseArcsec = measurementNoiseArcsec;
+    guidanceV2.driftPxPerSec = driftSpeedPxPerSec;
 
-    if (guidanceEmitV1Compat) {
-        emit polarImageGuidanceData(imageGuideFrameId, polarImageGuidanceModeToToken(imageGuideMode), imageGuideLockConfidence,
-                                    currentStarPx.x, currentStarPx.y, displayTargetPx.x, displayTargetPx.y,
-                                    arrow.x, arrow.y, inFrame, imageGuideLastReprojErrPx, imageGuideStableFrames,
-                                    arcsecPerPixel, statusText + " V1_DEPRECATED");
-    }
     emit polarImageGuidanceDataV2(buildPolarGuidanceDataV2Payload(
         imageGuideFrameId, v2Mode, arcsecPerPixel, statusText, arrow, remainArcsec, segmentRemainArcsec));
 
@@ -5431,5 +5528,6 @@ bool PolarAlignment::processPolarImageGuidance(const cv::Mat& image, const Slove
     previousGuideGray8 = gray8.clone();
     imageGuideLastFrameProcessMs = static_cast<double>(processTimer.elapsed());
     imageGuidePerfReduced = imageGuideLastFrameProcessMs > static_cast<double>(imageGuideFastLoopBudgetMs);
+    imageGuideLastFrameTimestampMs = nowMs;
     return true;
 }
