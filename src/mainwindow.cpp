@@ -6005,6 +6005,11 @@ void MainWindow::onGuiderLoopTimeout()
             Logger::Log("onGuiderLoopTimeout | sdkCamExec not running, stopping guider loop", LogLevel::WARNING, DeviceType::GUIDER);
             isGuiderLoopExp = false;
             guiderExposureInFlight = false;
+            if (guiderCore)
+            {
+                guiderCore->stopGuiding();
+                guiderCore->stopLoop();
+            }
             if (guiderLoopTimer)
                 guiderLoopTimer->stop();
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
@@ -6137,6 +6142,11 @@ void MainWindow::onGuiderLoopTimeout()
         Logger::Log("onGuiderLoopTimeout | guider not connected, stopping loop", LogLevel::WARNING, DeviceType::GUIDER);
         isGuiderLoopExp = false;
         guiderExposureInFlight = false;
+        if (guiderCore)
+        {
+            guiderCore->stopGuiding();
+            guiderCore->stopLoop();
+        }
         if (guiderLoopTimer)
             guiderLoopTimer->stop();
         emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
@@ -18017,6 +18027,11 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                     LogLevel::ERROR, DeviceType::GUIDER);
         guiderExposureInFlight = false;
         isGuiderLoopExp = false;
+        if (guiderCore)
+        {
+            guiderCore->stopGuiding();
+            guiderCore->stopLoop();
+        }
         emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
         emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
         return;
@@ -18061,6 +18076,11 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                 guiderExposureInFlight = false;
                 polarGuiderSingleCapturePending = false;
                 isGuiderLoopExp = false;
+                if (guiderCore)
+                {
+                    guiderCore->stopGuiding();
+                    guiderCore->stopLoop();
+                }
                 emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
                 emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
             }, Qt::QueuedConnection);
