@@ -994,7 +994,7 @@ private:
     QVector<QPointF> guiderMultiStarSecondaryPtsPx;
     QString guiderDiagnosticSourceFitsPath;
     QString guiderDiagnosticBatchDir;
-    bool guiderDiagnosticCopyFitsEnabled = false;
+    bool guiderDiagnosticCopyFitsEnabled = true;  // 导星诊断图像是否复制 FITS 文件
     int guiderDiagnosticBatchRemaining = 0;
     int guiderDiagnosticBatchIndex = 0;
 
