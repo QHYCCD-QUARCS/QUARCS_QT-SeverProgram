@@ -15249,6 +15249,36 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
     }
 
+    if (dpPoleScope == dp)
+    {
+        const QString deviceName = QString::fromUtf8(dpPoleScope->getDeviceName());
+        const QString driverExec = QString::fromUtf8(dpPoleScope->getDriverExec());
+        Logger::Log("PoleCamera connected after Device(" + deviceName.toStdString() + ") Connect: " + deviceName.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+
+        indi_Client->GetAllPropertyName(dpPoleScope);
+        ConnectedDevices.push_back({"PoleCamera", deviceName});
+
+        if (systemdevicelist.system_devices.size() > 2)
+        {
+            systemdevicelist.system_devices[2].DeviceIndiName = deviceName;
+            systemdevicelist.system_devices[2].isBind = true;
+        }
+
+        indi_Client->setBLOBMode(B_ALSO, dpPoleScope->getDeviceName(), nullptr);
+        indi_Client->enableDirectBlobAccess(dpPoleScope->getDeviceName(), nullptr);
+        indi_Client->setCCDUploadModeToLacal(dpPoleScope);
+        indi_Client->setCCDUpload(dpPoleScope, "/dev/shm", "polecamera");
+
+        QString SDKVERSION;
+        indi_Client->getCCDSDKVersion(dpPoleScope, SDKVERSION);
+        emit wsThread->sendMessageToClient("getSDKVersion:PoleCamera:" + SDKVERSION);
+        Logger::Log("PoleCamera SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+
+        Logger::Log("PoleCamera connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:PoleCamera:" + deviceName + ":" + driverExec);
+    }
+
     if (dpGuider == dp)
     {
         Logger::Log("Guider connected after Device(" + QString::fromUtf8(dpGuider->getDeviceName()).toStdString() + ") Connect: " + dpGuider->getDeviceName(), LogLevel::INFO, DeviceType::MAIN);
