@@ -608,6 +608,7 @@ public:
     QTimer *sdkGuiderExposureTimer = nullptr;     // SDK 导星曝光图像获取定时器
     qint64 sdkGuiderExposureStartTime = 0;        // SDK 导星曝光开始时间戳（毫秒）
     int sdkGuiderExposureExpectedDuration = 0;    // SDK 导星预期曝光时长（毫秒）
+    QString sdkGuiderExposureRole = "Guider";     // 当前 SDK 导星定时器服务的角色：Guider/PoleCamera
 
     // SDK 串行执行线程：避免在主线程执行阻塞式 SDK 调用
     // 注意：相机与电调分开，避免相机读帧阻塞导致电调命令排队延迟
@@ -2056,7 +2057,8 @@ public:
     enum class PolarAlignmentCameraRole
     {
         MainCamera = 0,
-        Guider = 1
+        Guider = 1,
+        PoleCamera = 2
     };
 
     /**
@@ -2087,9 +2089,12 @@ private:
 
     bool isGuiderCameraSDK() const;
     bool isGuiderCameraConnected() const;
+    bool isPoleCameraSDK() const;
+    bool isPoleCameraConnected() const;
     int getMainCameraFocalLengthFromConfigAndMigrateIfNeeded();
     void notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role, const QString &fitsPath);
     void startGuiderSingleCapture(int exposureMs);
+    void startPoleCameraSingleCapture(int exposureMs);
     static PolarAlignmentCameraRole parsePolarAlignmentCameraRole(const QString &roleText);
 
     // WebSocket消息防抖机制（只保留最后一条命令）

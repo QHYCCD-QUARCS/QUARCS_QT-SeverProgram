@@ -100,6 +100,25 @@ bool isValidObservatoryLocation(double latitude, double longitude)
            latitude != -1.0 &&
            longitude != -1.0;
 }
+
+const char *polarRoleName(MainWindow::PolarAlignmentCameraRole role)
+{
+    switch (role)
+    {
+    case MainWindow::PolarAlignmentCameraRole::Guider:
+        return "Guider";
+    case MainWindow::PolarAlignmentCameraRole::PoleCamera:
+        return "PoleCamera";
+    case MainWindow::PolarAlignmentCameraRole::MainCamera:
+    default:
+        return "MainCamera";
+    }
+}
+
+bool isPoleMasterName(const QString &name)
+{
+    return name.contains("POLEMASTER", Qt::CaseInsensitive);
+}
 }
 
 // ============================================================================
@@ -115,6 +134,7 @@ static QVector<SdkDeviceHandle> g_sdkQhyCamHandles;      // SDK 相机句柄池
 static QVector<QString>         g_sdkQhyCamIds;         // SDK 相机 ID 池（与句柄一一对应）
 static int                      g_sdkMainCameraPoolIndex = -1;  // 当前分配给 MainCamera 的池索引（-1 表示未分配）
 static int                      g_sdkGuiderPoolIndex = -1;      // 当前分配给 Guider 的池索引（-1 表示未分配）
+static int                      g_sdkPoleCameraPoolIndex = -1;  // 当前分配给 PoleCamera 的池索引（-1 表示未分配）
 
 namespace {
 struct SyncCommandResult {
@@ -1661,11 +1681,30 @@ bool MainWindow::isGuiderCameraConnected() const
     return dpGuider != nullptr;
 }
 
+bool MainWindow::isPoleCameraSDK() const
+{
+    return (systemdevicelist.system_devices.size() > 2 &&
+            systemdevicelist.system_devices[2].isSDKConnect &&
+            sdkPoleScopeHandle != nullptr);
+}
+
+bool MainWindow::isPoleCameraConnected() const
+{
+    if (systemdevicelist.system_devices.size() > 2 &&
+        systemdevicelist.system_devices[2].isSDKConnect)
+    {
+        return sdkPoleScopeHandle != nullptr;
+    }
+    return dpPoleScope != nullptr;
+}
+
 MainWindow::PolarAlignmentCameraRole MainWindow::parsePolarAlignmentCameraRole(const QString &roleText)
 {
     const QString normalized = roleText.trimmed().toLower();
     if (normalized == "guider")
         return PolarAlignmentCameraRole::Guider;
+    if (normalized == "polecamera" || normalized == "pole" || normalized == "polescope")
+        return PolarAlignmentCameraRole::PoleCamera;
     return PolarAlignmentCameraRole::MainCamera;
 }
 
@@ -1724,7 +1763,7 @@ void MainWindow::notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role,
     polarAlignment->setCapturedImagePath(normalizedPath);
     polarAlignment->setCaptureEnd(true);
     Logger::Log("PolarAlignment capture ready | role=" +
-                    std::string(role == PolarAlignmentCameraRole::Guider ? "Guider" : "MainCamera") +
+                    std::string(polarRoleName(role)) +
                     " | fits=" + normalizedPath.toStdString(),
                 LogLevel::INFO, DeviceType::MAIN);
 }
@@ -4459,6 +4498,23 @@ void MainWindow::onMessageReceived(const QString &message)
                         LogLevel::WARNING, DeviceType::GUIDER);
         }
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "PoleCameraFocalLength")
+    {
+        const QString v = parts[1].trimmed();
+        bool ok = false;
+        const double focal = v.toDouble(&ok);
+        if (ok && focal > 0.0)
+        {
+            setClientSettings("PoleCameraFocalLength", QString::number(focal, 'g', 12));
+            Logger::Log("PoleCameraFocalLength updated: " + std::to_string(focal),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
+        else
+        {
+            Logger::Log("PoleCameraFocalLength ignored because value is invalid: " + v.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+    }
     else if (parts.size() == 2 && parts[0].trimmed() == "GuiderPixelSize")
     {
         guiderPixelSizeUm = std::max(0.0, parts[1].trimmed().toDouble());
@@ -4617,35 +4673,53 @@ void MainWindow::onMessageReceived(const QString &message)
             return;
         }
 
-        // 主相机/导星镜：同驱动时必须同模式；且若任一已通过 SDK 连接，则锁定禁止切到 INDI
-        const bool isMainOrGuider = (deviceDescription == "MainCamera" || deviceDescription == "Guider");
-        const int idxMain = isMainOrGuider ? findDeviceIndexByDesc("MainCamera") : -1;
-        const int idxGuider = isMainOrGuider ? findDeviceIndexByDesc("Guider") : -1;
+        // QHYCCD 相机三角色共享同一 SDK/INDI 驱动资源，同驱动时必须同模式。
+        const QStringList cameraMutexRoles = {"MainCamera", "Guider", "PoleCamera"};
+        const bool isCameraMutexRole = cameraMutexRoles.contains(deviceDescription);
+        const int idxMain = isCameraMutexRole ? findDeviceIndexByDesc("MainCamera") : -1;
+        const int idxGuider = isCameraMutexRole ? findDeviceIndexByDesc("Guider") : -1;
+        const int idxPole = isCameraMutexRole ? findDeviceIndexByDesc("PoleCamera") : -1;
 
-        bool mainGuiderSameDriver = false;
-        if (idxMain >= 0 && idxGuider >= 0) {
-            const QString d1 = systemdevicelist.system_devices[idxMain].DriverIndiName.trimmed();
-            const QString d2 = systemdevicelist.system_devices[idxGuider].DriverIndiName.trimmed();
-            if (!d1.isEmpty() && !d2.isEmpty() && d1.compare(d2, Qt::CaseInsensitive) == 0) {
-                mainGuiderSameDriver = true;
+        QVector<int> linkedCameraIndexes;
+        QStringList linkedCameraDescriptions;
+        if (isCameraMutexRole)
+        {
+            const QString targetDriver = systemdevicelist.system_devices[idx].DriverIndiName.trimmed();
+            if (!targetDriver.isEmpty())
+            {
+                for (const auto &role : cameraMutexRoles)
+                {
+                    const int roleIdx = findDeviceIndexByDesc(role);
+                    if (roleIdx < 0 || roleIdx >= systemdevicelist.system_devices.size())
+                        continue;
+                    const QString roleDriver = systemdevicelist.system_devices[roleIdx].DriverIndiName.trimmed();
+                    if (!roleDriver.isEmpty() && roleDriver.compare(targetDriver, Qt::CaseInsensitive) == 0)
+                    {
+                        linkedCameraIndexes.push_back(roleIdx);
+                        linkedCameraDescriptions.push_back(role);
+                    }
+                }
             }
         }
+        const bool sameDriverCameraGroup = isCameraMutexRole && linkedCameraIndexes.size() > 1;
 
-        if (isMainOrGuider && mainGuiderSameDriver)
+        if (sameDriverCameraGroup)
         {
-            const bool mainConnected = (idxMain >= 0) && systemdevicelist.system_devices[idxMain].isConnect;
-            const bool guiderConnected = (idxGuider >= 0) && systemdevicelist.system_devices[idxGuider].isConnect;
-
-            const bool mainSdkConnected = mainConnected && systemdevicelist.system_devices[idxMain].isSDKConnect;
-            const bool guiderSdkConnected = guiderConnected && systemdevicelist.system_devices[idxGuider].isSDKConnect;
-
-            const bool mainIndiConnected = mainConnected && !systemdevicelist.system_devices[idxMain].isSDKConnect;
-            const bool guiderIndiConnected = guiderConnected && !systemdevicelist.system_devices[idxGuider].isSDKConnect;
+            bool anyConnected = false;
+            bool anySdkConnected = false;
+            bool anyIndiConnected = false;
+            for (int roleIdx : linkedCameraIndexes)
+            {
+                const bool connected = systemdevicelist.system_devices[roleIdx].isConnect;
+                anyConnected = anyConnected || connected;
+                anySdkConnected = anySdkConnected || (connected && systemdevicelist.system_devices[roleIdx].isSDKConnect);
+                anyIndiConnected = anyIndiConnected || (connected && !systemdevicelist.system_devices[roleIdx].isSDKConnect);
+            }
 
             // 反向锁定：若任一已通过 INDI 连接，则禁止切到 SDK（避免同驱动混用两种连接方式）
-            if (newIsSdk && (mainIndiConnected || guiderIndiConnected))
+            if (newIsSdk && anyIndiConnected)
             {
-                Logger::Log("SetConnectionMode | INDI connected (MainCamera/Guider). Switching to SDK is forbidden.",
+                Logger::Log("SetConnectionMode | INDI connected in QHY camera group. Switching to SDK is forbidden.",
                             LogLevel::WARNING, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("SetConnectionModeFailed:" + deviceDescription +
                                                    ":INDIConnectedLockSdkForbidden");
@@ -4653,9 +4727,9 @@ void MainWindow::onMessageReceived(const QString &message)
             }
 
             // 原有锁定：若任一已通过 SDK 连接，则禁止切到 INDI
-            if (!newIsSdk && (mainSdkConnected || guiderSdkConnected))
+            if (!newIsSdk && anySdkConnected)
             {
-                Logger::Log("SetConnectionMode | SDK connected (MainCamera/Guider). Switching to INDI is forbidden.",
+                Logger::Log("SetConnectionMode | SDK connected in QHY camera group. Switching to INDI is forbidden.",
                             LogLevel::WARNING, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("SetConnectionModeFailed:" + deviceDescription +
                                                    ":SDKConnectedLockIndiForbidden");
@@ -4663,9 +4737,9 @@ void MainWindow::onMessageReceived(const QString &message)
             }
 
             // 额外兜底：任一已连接时，禁止对“另一台”做跨模式切换（需要先断开）
-            if ((mainConnected || guiderConnected) && oldIsSdk != newIsSdk)
+            if (anyConnected && oldIsSdk != newIsSdk)
             {
-                Logger::Log("SetConnectionMode | MainCamera/Guider already connected. Changing connection mode is forbidden. Please disconnect first.",
+                Logger::Log("SetConnectionMode | QHY camera group already connected. Changing connection mode is forbidden. Please disconnect first.",
                             LogLevel::WARNING, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("SetConnectionModeFailed:" + deviceDescription +
                                                    ":DeviceConnectedLockModeChangeForbidden");
@@ -4685,18 +4759,19 @@ void MainWindow::onMessageReceived(const QString &message)
                 return;
             }
 
-            if (isMainOrGuider && mainGuiderSameDriver && newIsSdk) {
-                // 对另一台也做一次支持性校验（防止配置异常）
-                const QString peerDesc = (deviceDescription == "MainCamera") ? "Guider" : "MainCamera";
-                const int peerIdx = (deviceDescription == "MainCamera") ? idxGuider : idxMain;
-                if (peerIdx >= 0) {
+            if (sameDriverCameraGroup && newIsSdk) {
+                // 对同驱动相机组也做一次支持性校验（防止配置异常）
+                for (int i = 0; i < linkedCameraIndexes.size(); ++i)
+                {
+                    const int peerIdx = linkedCameraIndexes[i];
+                    const QString peerDesc = linkedCameraDescriptions.value(i);
                     const QString peerDriverIndiName = systemdevicelist.system_devices[peerIdx].DriverIndiName;
                     const bool peerSupportSDK = isDeviceTypeSupportSDK(peerDesc, peerDriverIndiName);
                     if (!peerSupportSDK) {
-                        Logger::Log("SetConnectionMode | Peer device " + peerDesc.toStdString() +
+                        Logger::Log("SetConnectionMode | Linked camera device " + peerDesc.toStdString() +
                                     " does not support SDK mode", LogLevel::WARNING, DeviceType::MAIN);
                         emit wsThread->sendMessageToClient("SetConnectionModeFailed:" + deviceDescription +
-                                                           ":Peer device does not support SDK mode");
+                                                           ":Linked camera device does not support SDK mode");
                         return;
                     }
                 }
@@ -4706,12 +4781,10 @@ void MainWindow::onMessageReceived(const QString &message)
         // 应用模式（必要时同步另一台）
         systemdevicelist.system_devices[idx].isSDKConnect = newIsSdk;
 
-        // 同驱动联动：同步另一台相机的 isSDKConnect，防止一台 SDK 一台 INDI
-        if (isMainOrGuider && mainGuiderSameDriver) {
-            const int peerIdx = (deviceDescription == "MainCamera") ? idxGuider : idxMain;
-            if (peerIdx >= 0) {
-                systemdevicelist.system_devices[peerIdx].isSDKConnect = newIsSdk;
-            }
+        // 同驱动联动：同步相机三角色的 isSDKConnect，防止 Main/Guider/PoleCamera 混用 SDK/INDI
+        if (sameDriverCameraGroup) {
+            for (int roleIdx : linkedCameraIndexes)
+                systemdevicelist.system_devices[roleIdx].isSDKConnect = newIsSdk;
         }
 
         // ===== 关键修复：从 SDK 切到 INDI 时，释放 SDK 句柄以避免串口占用（仅 Focuser 需要） =====
@@ -4732,7 +4805,7 @@ void MainWindow::onMessageReceived(const QString &message)
                     sdkFocuserPort.clear();
                 }
             }
-            else if (deviceDescription == "MainCamera" || deviceDescription == "Guider")
+            else if (cameraMutexRoles.contains(deviceDescription))
             {
                 // 相机从 SDK 切到 INDI 时，必须清空 SDK 相机池与前端待分配列表残留。
                 // 否则后续 loadBindDeviceList 会把“旧 SDK 设备 + 新 INDI 设备”同时下发，造成重复显示。
@@ -4759,6 +4832,14 @@ void MainWindow::onMessageReceived(const QString &message)
                     systemdevicelist.system_devices[idxGuider].isConnect = false;
                     systemdevicelist.system_devices[idxGuider].isBind = false;
                 }
+                if (idxPole >= 0 && idxPole < systemdevicelist.system_devices.size())
+                {
+                    const QString name = systemdevicelist.system_devices[idxPole].DeviceIndiName.trimmed();
+                    if (!name.isEmpty() && !staleSdkCameraNames.contains(name))
+                        staleSdkCameraNames.push_back(name);
+                    systemdevicelist.system_devices[idxPole].isConnect = false;
+                    systemdevicelist.system_devices[idxPole].isBind = false;
+                }
 
                 cleanupQhySdkPoolAndResource("SetConnectionMode: Camera SDK->INDI", "CameraPool");
 
@@ -4779,11 +4860,14 @@ void MainWindow::onMessageReceived(const QString &message)
         // 保存配置到文件
         Tools::saveSystemDeviceList(systemdevicelist);
 
-        // 回包：当前设备 success；若联动了另一台也回包，方便前端 UI 同步
+        // 回包：当前设备 success；若联动了同驱动相机组也回包，方便前端 UI 同步
         emit wsThread->sendMessageToClient("SetConnectionModeSuccess:" + deviceDescription + ":" + mode);
-        if (isMainOrGuider && mainGuiderSameDriver) {
-            const QString peerDesc = (deviceDescription == "MainCamera") ? "Guider" : "MainCamera";
-            emit wsThread->sendMessageToClient("SetConnectionModeSuccess:" + peerDesc + ":" + mode);
+        if (sameDriverCameraGroup) {
+            for (const auto &peerDesc : linkedCameraDescriptions)
+            {
+                if (peerDesc != deviceDescription)
+                    emit wsThread->sendMessageToClient("SetConnectionModeSuccess:" + peerDesc + ":" + mode);
+            }
         }
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "disconnectSelectDriver")
@@ -5018,7 +5102,7 @@ void MainWindow::onMessageReceived(const QString &message)
         const QString roleText = (parts.size() >= 2) ? parts[1].trimmed() : QStringLiteral("MainCamera");
         currentPolarAlignmentCameraRole = parsePolarAlignmentCameraRole(roleText);
         Logger::Log("StartAutoPolarAlignment ... role=" +
-                        std::string(currentPolarAlignmentCameraRole == PolarAlignmentCameraRole::Guider ? "Guider" : "MainCamera"),
+                        std::string(polarRoleName(currentPolarAlignmentCameraRole)),
                     LogLevel::DEBUG, DeviceType::MAIN);
         if (polarAlignment != nullptr)
         {
@@ -5874,6 +5958,19 @@ void MainWindow::initINDIClient()
                     }
                 }
             }
+            if (dpPoleScope != NULL)
+            {
+                if (dpPoleScope->getDeviceName() == devname)
+                {
+                    const QString fitsPath = QString::fromStdString(filename);
+                    if (polarGuiderSingleCapturePending)
+                    {
+                        notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::PoleCamera, fitsPath);
+                        polarGuiderSingleCapturePending = false;
+                    }
+                    guiderExposureInFlight = false;
+                }
+            }
         });
     Logger::Log("indi_Client->setImageReceivedCallback finish!", LogLevel::INFO, DeviceType::MAIN);
 
@@ -6218,6 +6315,7 @@ void MainWindow::onGuiderLoopTimeout()
 void MainWindow::startGuiderSingleCapture(int exposureMs)
 {
     const int expMs = std::max(1, exposureMs);
+    sdkGuiderExposureRole = "Guider";
 
     if (isGuiderLoopExp)
     {
@@ -6384,6 +6482,121 @@ void MainWindow::startGuiderSingleCapture(int exposureMs)
     guiderExposureInFlight = true;
     const double expSec = expMs / 1000.0;
     indi_Client->takeExposure(dpGuider, expSec);
+}
+
+void MainWindow::startPoleCameraSingleCapture(int exposureMs)
+{
+    const int expMs = std::max(1, exposureMs);
+    sdkGuiderExposureRole = "PoleCamera";
+
+    if (isGuiderLoopExp)
+    {
+        Logger::Log("startPoleCameraSingleCapture | stopping guider loop before polar capture",
+                    LogLevel::INFO, DeviceType::GUIDER);
+        if (guiderCore)
+        {
+            postGuiderCore(guiderCore, [](GuiderCore *core) {
+                core->stopGuiding();
+                core->stopLoop();
+            });
+        }
+        isGuiderLoopExp = false;
+        if (guiderLoopTimer)
+            guiderLoopTimer->stop();
+        if (sdkGuiderExposureTimer)
+            sdkGuiderExposureTimer->stop();
+        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
+        emit wsThread->sendMessageToClient("GuiderUpdateStatus:0");
+    }
+
+    if (isPoleCameraSDK())
+    {
+        if (!sdkCamExec || !sdkCamExec->isRunning())
+        {
+            Logger::Log("startPoleCameraSingleCapture | sdkCamExec is not running", LogLevel::ERROR, DeviceType::MAIN);
+            polarGuiderSingleCapturePending = false;
+            guiderExposureInFlight = false;
+            return;
+        }
+        if (guiderExposureInFlight || sdkGuiderFrameTaskInFlight.load())
+        {
+            Logger::Log("startPoleCameraSingleCapture | exposure/readout is already in flight, retrying shortly",
+                        LogLevel::WARNING, DeviceType::MAIN);
+            QTimer::singleShot(250, this, [this, expMs]() {
+                if (polarAlignment != nullptr && polarAlignment->isRunning() &&
+                    currentPolarAlignmentCameraRole == PolarAlignmentCameraRole::PoleCamera)
+                {
+                    startPoleCameraSingleCapture(expMs);
+                }
+            });
+            return;
+        }
+
+        polarGuiderSingleCapturePending = true;
+        guiderExposureInFlight = true;
+        const double expSec = expMs / 1000.0;
+        const SdkDeviceHandle handleSnap = sdkPoleScopeHandle;
+
+        sdkCamExec->post([this, handleSnap, expMs, expSec]() {
+            auto failOnMain = [this](const std::string &message) {
+                QMetaObject::invokeMethod(this, [this, message]() {
+                    Logger::Log(message, LogLevel::ERROR, DeviceType::MAIN);
+                    polarGuiderSingleCapturePending = false;
+                    guiderExposureInFlight = false;
+                }, Qt::QueuedConnection);
+            };
+
+            SdkCommand cancelCmd;
+            cancelCmd.type = SdkCommandType::Custom;
+            cancelCmd.name = "CancelExposure";
+            cancelCmd.payload = std::any();
+            SdkManager::instance().callByHandle(handleSnap, cancelCmd);
+
+            SdkCommand setExpCmd;
+            setExpCmd.type = SdkCommandType::Custom;
+            setExpCmd.name = "SetExposure";
+            setExpCmd.payload = expSec * 1000000.0;
+            SdkResult setRes = SdkManager::instance().callByHandle(handleSnap, setExpCmd);
+            if (!setRes.success)
+            {
+                failOnMain("startPoleCameraSingleCapture | SDK SetExposure failed: " + setRes.message);
+                return;
+            }
+
+            SdkCommand startExpCmd;
+            startExpCmd.type = SdkCommandType::Custom;
+            startExpCmd.name = "StartSingleExposure";
+            startExpCmd.payload = std::any();
+            SdkResult startRes = SdkManager::instance().callByHandle(handleSnap, startExpCmd);
+            if (!startRes.success)
+            {
+                failOnMain("startPoleCameraSingleCapture | SDK StartSingleExposure failed: " + startRes.message);
+                return;
+            }
+
+            QMetaObject::invokeMethod(this, [this, expMs]() {
+                sdkGuiderExposureStartTime = QDateTime::currentMSecsSinceEpoch();
+                sdkGuiderExposureExpectedDuration = expMs;
+                sdkGuiderExposureRole = "PoleCamera";
+                if (sdkGuiderExposureTimer)
+                    sdkGuiderExposureTimer->start(expMs);
+            }, Qt::QueuedConnection);
+        });
+        return;
+    }
+
+    if (!indi_Client || dpPoleScope == nullptr || !dpPoleScope->isConnected())
+    {
+        Logger::Log("startPoleCameraSingleCapture | pole camera is not connected", LogLevel::ERROR, DeviceType::MAIN);
+        polarGuiderSingleCapturePending = false;
+        guiderExposureInFlight = false;
+        return;
+    }
+
+    polarGuiderSingleCapturePending = true;
+    guiderExposureInFlight = true;
+    const double expSec = expMs / 1000.0;
+    indi_Client->takeExposure(dpPoleScope, expSec);
 }
 
 DeviceType MainWindow::getDeviceTypeFromPartialString(const std::string &typeStr)
@@ -10759,11 +10972,13 @@ void MainWindow::ConnectAllDeviceOnce()
     // 目的：先连接标记为 SDK 的设备，避免 INDI 启动/等待/无设备场景影响 SDK 连接与前端体验。
     bool sdkMainConnectedNow = false;
     bool sdkGuiderConnectedNow = false;
+    bool sdkPoleConnectedNow = false;
     bool sdkFocuserConnectedNow = false;
     const bool wantSdkCamera =
         hasSDKDevice &&
         ((systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect) ||
-         (systemdevicelist.system_devices.size() > 1  && systemdevicelist.system_devices[1].isSDKConnect));
+         (systemdevicelist.system_devices.size() > 1  && systemdevicelist.system_devices[1].isSDKConnect) ||
+         (systemdevicelist.system_devices.size() > 2  && systemdevicelist.system_devices[2].isSDKConnect));
 
     if (wantSdkCamera)
     {
@@ -10779,7 +10994,9 @@ void MainWindow::ConnectAllDeviceOnce()
         const QString sdkCameraDeviceType =
             (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect)
                 ? QStringLiteral("MainCamera")
-                : QStringLiteral("Guider");
+                : ((systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[1].isSDKConnect)
+                       ? QStringLiteral("Guider")
+                       : QStringLiteral("PoleCamera"));
         QString driverName = getSDKDriverName(sdkCameraDeviceType);
         if (driverName.isEmpty()) {
             Logger::Log("ConnectAllDeviceOnce | Cannot get SDK driver name for " + sdkCameraDeviceType.toStdString(),
@@ -10853,8 +11070,10 @@ void MainWindow::ConnectAllDeviceOnce()
                 g_sdkQhyCamIds.clear();
                 g_sdkMainCameraPoolIndex = -1;
                 g_sdkGuiderPoolIndex = -1;
+                g_sdkPoleCameraPoolIndex = -1;
                 sdkMainCameraHandle = nullptr;
                 sdkGuiderHandle = nullptr;
+                sdkPoleScopeHandle = nullptr;
                 sdkMainCameraId.clear();
                 
                 if (!allHandlesNull)
@@ -10937,6 +11156,8 @@ void MainWindow::ConnectAllDeviceOnce()
                     (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect);
                 const bool guiderWantsSdk =
                     (systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[1].isSDKConnect);
+                const bool poleWantsSdk =
+                    (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[2].isSDKConnect);
 
                 QVector<bool> poolAssigned(g_sdkQhyCamHandles.size(), false);
                 auto findPreferredPoolIndex = [&](const QString &savedId) -> int {
@@ -11039,9 +11260,41 @@ void MainWindow::ConnectAllDeviceOnce()
                                 LogLevel::INFO, DeviceType::GUIDER);
                     return true;
                 };
+                auto bindPoleCameraFromPool = [&](int poolIndex) -> bool {
+                    if (!sdkPoolIndexValid(poolIndex))
+                        return false;
+                    if (poolAssigned[poolIndex])
+                        return false;
+
+                    poolAssigned[poolIndex] = true;
+                    g_sdkPoleCameraPoolIndex = poolIndex;
+                    sdkPoleScopeHandle = g_sdkQhyCamHandles[poolIndex];
+                    const QString poleId = g_sdkQhyCamIds[poolIndex];
+                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[2].DeviceIndiName = poleId;
+
+                    QString driverName = getSDKDriverName("PoleCamera");
+                    if (!driverName.isEmpty() && sdkPoleScopeHandle != nullptr)
+                    {
+                        SdkManager::instance().registerDevice(
+                            driverName.toStdString(),
+                            "PoleCamera",
+                            sdkPoleScopeHandle,
+                            "电子极轴镜",
+                            std::any(poleId.toStdString()));
+                    }
+
+                    AfterDeviceConnect(nullptr);
+                    emit wsThread->sendMessageToClient("AddDeviceType:PoleCamera");
+                    sdkPoleConnectedNow = true;
+                    Logger::Log("ConnectAllDeviceOnce | SDK PoleCamera auto-bound: " + poleId.toStdString(),
+                                LogLevel::INFO, DeviceType::CAMERA);
+                    return true;
+                };
 
                 int mainPickIndex = -1;
                 int guiderPickIndex = -1;
+                int polePickIndex = -1;
 
                 if (mainWantsSdk)
                 {
@@ -11057,6 +11310,30 @@ void MainWindow::ConnectAllDeviceOnce()
                         : QString();
                     guiderPickIndex = findPreferredPoolIndex(savedGuiderId);
                 }
+                if (poleWantsSdk)
+                {
+                    const QString savedPoleId = (systemdevicelist.system_devices.size() > 2)
+                        ? systemdevicelist.system_devices[2].DeviceIndiName.trimmed()
+                        : QString();
+                    polePickIndex = findPreferredPoolIndex(savedPoleId);
+                    if (polePickIndex < 0)
+                    {
+                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                        {
+                            if (!poolAssigned[i] && sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
+                            {
+                                polePickIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                    if (polePickIndex >= 0)
+                        bindPoleCameraFromPool(polePickIndex);
+                }
+                if (mainPickIndex >= 0 && poolAssigned.value(mainPickIndex, false))
+                    mainPickIndex = -1;
+                if (guiderPickIndex >= 0 && poolAssigned.value(guiderPickIndex, false))
+                    guiderPickIndex = -1;
 
                 // QHYCCD 自动绑定规则（仅在主相机+导星均为 SDK 且存在多相机时生效）：
                 // 1) 若仅一台是 5III 系列：5III -> Guider，另一台 -> MainCamera
@@ -11108,6 +11385,8 @@ void MainWindow::ConnectAllDeviceOnce()
                     for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
                     {
                         if (!sdkPoolIndexValid(i))
+                            continue;
+                        if (poolAssigned[i])
                             continue;
                         QhyCandidate c;
                         c.poolIndex = i;
@@ -11235,7 +11514,8 @@ void MainWindow::ConnectAllDeviceOnce()
 
                 const bool mainNeedsAllocation = mainWantsSdk && !sdkMainConnectedNow;
                 const bool guiderNeedsAllocation = guiderWantsSdk && !sdkGuiderConnectedNow;
-                if (hasUnassignedCamera && (mainNeedsAllocation || guiderNeedsAllocation) && g_sdkQhyCamHandles.size() > 1)
+                const bool poleNeedsAllocation = poleWantsSdk && !sdkPoleConnectedNow;
+                if (hasUnassignedCamera && (mainNeedsAllocation || guiderNeedsAllocation || poleNeedsAllocation) && g_sdkQhyCamHandles.size() > 1)
                 {
                     // 修复：先发送 AddDeviceType:MainCamera 以显示主相机绑定选项，
                     // 然后发送所有相机的 DeviceToBeAllocated 消息，最后发送 ShowDeviceAllocationWindow
@@ -11252,6 +11532,11 @@ void MainWindow::ConnectAllDeviceOnce()
                         {
                             emit wsThread->sendMessageToClient("AddDeviceType:Guider");
                             Logger::Log("ConnectAllDeviceOnce | Sending AddDeviceType:Guider", LogLevel::INFO, DeviceType::CAMERA);
+                        }
+                        if (poleWantsSdk)
+                        {
+                            emit wsThread->sendMessageToClient("AddDeviceType:PoleCamera");
+                            Logger::Log("ConnectAllDeviceOnce | Sending AddDeviceType:PoleCamera", LogLevel::INFO, DeviceType::CAMERA);
                         }
                         
                         // 2. 发送所有待分配的相机设备列表（右侧列表）
@@ -11548,13 +11833,15 @@ void MainWindow::ConnectAllDeviceOnce()
         // 清理全局变量（无论 driverName 是否为空都应该执行）
         g_sdkQhyCamHandles.clear();
         g_sdkQhyCamIds.clear();
-        sdkMainCameraHandle = nullptr;
-        sdkGuiderHandle = nullptr;
-        g_sdkMainCameraPoolIndex = -1;
-        g_sdkGuiderPoolIndex = -1;
-        sdkMainCameraId.clear();
-        glMainCameraStatu = "IDLE";
-        ShootStatus = "IDLE";
+            sdkMainCameraHandle = nullptr;
+            sdkGuiderHandle = nullptr;
+            sdkPoleScopeHandle = nullptr;
+            g_sdkMainCameraPoolIndex = -1;
+            g_sdkGuiderPoolIndex = -1;
+            g_sdkPoleCameraPoolIndex = -1;
+            sdkMainCameraId.clear();
+            glMainCameraStatu = "IDLE";
+            ShootStatus = "IDLE";
         
         // 等待一下，确保 USB 设备完全释放
         QThread::msleep(500);
@@ -12284,6 +12571,29 @@ void MainWindow::continueConnectAllDeviceOnce()
         autoBindCcdRole("MainCamera");
         autoBindCcdRole("Guider");
         autoBindCcdRole("PoleCamera");
+        if (dpPoleScope == nullptr)
+        {
+            for (int idx : ConnectedCCDList)
+            {
+                if (idx < 0 || idx >= indi_Client->GetDeviceCount() || boundCcdIndexes.contains(idx))
+                    continue;
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+                if (device == nullptr || device->getDeviceName() == nullptr)
+                    continue;
+                const QString name = QString::fromUtf8(device->getDeviceName());
+                if (!isPoleMasterName(name))
+                    continue;
+                dpPoleScope = device;
+                if (systemdevicelist.system_devices.size() > 2)
+                    systemdevicelist.system_devices[2].isConnect = true;
+                AfterDeviceConnect(dpPoleScope);
+                boundCcdIndexes.insert(idx);
+                Logger::Log("continueConnectAllDeviceOnce | INDI PoleCamera auto-bound by POLEMASTER: " +
+                                name.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+                break;
+            }
+        }
 
         const bool mainBoundByHistory = (dpMainCamera != nullptr);
         const bool guiderBoundByHistory = (dpGuider != nullptr);
@@ -12625,6 +12935,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         const std::string description =
             (role == "MainCamera") ? "主相机" :
             (role == "Guider") ? "导星相机" :
+            (role == "PoleCamera") ? "电子极轴镜" :
             role.toStdString();
         SdkResult regRes = SdkManager::instance().registerDevice(
             driverName.toStdString(),
@@ -12662,6 +12973,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
 
         const bool swapWithGuider = (poolIndex == g_sdkGuiderPoolIndex);
+        const bool swapWithPole = (poolIndex == g_sdkPoleCameraPoolIndex);
         const int previousMainPoolIndex = g_sdkMainCameraPoolIndex;
         const QString previousMainId =
             (sdkPoolIndexValid(previousMainPoolIndex) && previousMainPoolIndex < g_sdkQhyCamIds.size())
@@ -12691,6 +13003,31 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
                 sdkGuiderHandle = nullptr;
                 systemdevicelist.system_devices[1].isBind = false;
                 systemdevicelist.system_devices[1].DeviceIndiName.clear();
+            }
+        }
+        else if (swapWithPole)
+        {
+            Logger::Log("BindingDevice | Swap SDK cameras between MainCamera and PoleCamera. target poolIndex=" +
+                            std::to_string(poolIndex),
+                        LogLevel::INFO, DeviceType::MAIN);
+            g_sdkMainCameraPoolIndex = g_sdkPoleCameraPoolIndex;
+            sdkMainCameraHandle = g_sdkQhyCamHandles[g_sdkMainCameraPoolIndex];
+            sdkMainCameraId = g_sdkQhyCamIds[g_sdkMainCameraPoolIndex];
+
+            if (sdkPoolIndexValid(previousMainPoolIndex))
+            {
+                g_sdkPoleCameraPoolIndex = previousMainPoolIndex;
+                sdkPoleScopeHandle = g_sdkQhyCamHandles[previousMainPoolIndex];
+                systemdevicelist.system_devices[2].isConnect = true;
+                systemdevicelist.system_devices[2].isBind = false;
+                systemdevicelist.system_devices[2].DeviceIndiName = previousMainId;
+            }
+            else
+            {
+                g_sdkPoleCameraPoolIndex = -1;
+                sdkPoleScopeHandle = nullptr;
+                systemdevicelist.system_devices[2].isBind = false;
+                systemdevicelist.system_devices[2].DeviceIndiName.clear();
             }
         }
         else
@@ -12727,6 +13064,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
         if (swapWithGuider)
             registerSdkRole("Guider", sdkGuiderHandle, systemdevicelist.system_devices[1].DeviceIndiName);
+        if (swapWithPole)
+            registerSdkRole("PoleCamera", sdkPoleScopeHandle, systemdevicelist.system_devices[2].DeviceIndiName);
         // 注意：DriverIndiName 语义为“驱动名”（例如 indi_qhy_ccd），不能被 cameraId 覆盖；
         // SDK 相机的唯一标识（cameraId）只写入 DeviceIndiName。
         if (!systemdevicelist.system_devices[20].DriverFrom.contains("SDK", Qt::CaseInsensitive)) {
@@ -12759,6 +13098,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
 
         const bool swapWithMain = (poolIndex == g_sdkMainCameraPoolIndex);
+        const bool swapWithPole = (poolIndex == g_sdkPoleCameraPoolIndex);
         const int previousGuiderPoolIndex = g_sdkGuiderPoolIndex;
         const QString previousGuiderId =
             (sdkPoolIndexValid(previousGuiderPoolIndex) && previousGuiderPoolIndex < g_sdkQhyCamIds.size())
@@ -12789,6 +13129,30 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
                 sdkMainCameraId.clear();
                 systemdevicelist.system_devices[20].isBind = false;
                 systemdevicelist.system_devices[20].DeviceIndiName.clear();
+            }
+        }
+        else if (swapWithPole)
+        {
+            Logger::Log("BindingDevice | Swap SDK cameras between Guider and PoleCamera. target poolIndex=" +
+                            std::to_string(poolIndex),
+                        LogLevel::INFO, DeviceType::GUIDER);
+            g_sdkGuiderPoolIndex = g_sdkPoleCameraPoolIndex;
+            sdkGuiderHandle = g_sdkQhyCamHandles[g_sdkGuiderPoolIndex];
+
+            if (sdkPoolIndexValid(previousGuiderPoolIndex))
+            {
+                g_sdkPoleCameraPoolIndex = previousGuiderPoolIndex;
+                sdkPoleScopeHandle = g_sdkQhyCamHandles[previousGuiderPoolIndex];
+                systemdevicelist.system_devices[2].isConnect = true;
+                systemdevicelist.system_devices[2].isBind = false;
+                systemdevicelist.system_devices[2].DeviceIndiName = previousGuiderId;
+            }
+            else
+            {
+                g_sdkPoleCameraPoolIndex = -1;
+                sdkPoleScopeHandle = nullptr;
+                systemdevicelist.system_devices[2].isBind = false;
+                systemdevicelist.system_devices[2].DeviceIndiName.clear();
             }
         }
         else
@@ -12825,12 +13189,115 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
         if (swapWithMain)
             registerSdkRole("MainCamera", sdkMainCameraHandle, systemdevicelist.system_devices[20].DeviceIndiName);
+        if (swapWithPole)
+            registerSdkRole("PoleCamera", sdkPoleScopeHandle, systemdevicelist.system_devices[2].DeviceIndiName);
 
         Logger::Log("BindingDevice | Bind SDK Guider success: " + guiderId.toStdString() +
                         " (poolIndex=" + std::to_string(poolIndex) + ")",
                     LogLevel::INFO, DeviceType::GUIDER);
 
         // AfterDeviceConnect 负责完成 SDK 初始化并设置 isBind，同时发送 ConnectSuccess
+        AfterDeviceConnect(nullptr);
+        refreshBindUi();
+        return;
+    }
+
+    // ==================== SDK 多相机分配：PoleCamera ====================
+    if (DeviceType == "PoleCamera" &&
+        systemdevicelist.system_devices.size() > 2 &&
+        systemdevicelist.system_devices[2].isSDKConnect)
+    {
+        const int poolIndex = sdkPoolIndexFromUiIndex(DeviceIndex);
+        if (!sdkPoolIndexValid(poolIndex))
+        {
+            Logger::Log("BindingDevice | SDK pool index invalid for PoleCamera. uiIndex=" + std::to_string(DeviceIndex) +
+                            " poolIndex=" + std::to_string(poolIndex),
+                        LogLevel::ERROR, DeviceType::MAIN);
+            return;
+        }
+
+        const bool swapWithMain = (poolIndex == g_sdkMainCameraPoolIndex);
+        const bool swapWithGuider = (poolIndex == g_sdkGuiderPoolIndex);
+        const int previousPolePoolIndex = g_sdkPoleCameraPoolIndex;
+        const QString previousPoleId =
+            (sdkPoolIndexValid(previousPolePoolIndex) && previousPolePoolIndex < g_sdkQhyCamIds.size())
+                ? g_sdkQhyCamIds[previousPolePoolIndex]
+                : QString();
+
+        if (swapWithMain)
+        {
+            Logger::Log("BindingDevice | Swap SDK cameras between PoleCamera and MainCamera. target poolIndex=" +
+                            std::to_string(poolIndex),
+                        LogLevel::INFO, DeviceType::MAIN);
+            g_sdkPoleCameraPoolIndex = g_sdkMainCameraPoolIndex;
+            sdkPoleScopeHandle = g_sdkQhyCamHandles[g_sdkPoleCameraPoolIndex];
+
+            if (sdkPoolIndexValid(previousPolePoolIndex))
+            {
+                g_sdkMainCameraPoolIndex = previousPolePoolIndex;
+                sdkMainCameraHandle = g_sdkQhyCamHandles[previousPolePoolIndex];
+                sdkMainCameraId = g_sdkQhyCamIds[previousPolePoolIndex];
+                systemdevicelist.system_devices[20].isConnect = true;
+                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
+            }
+            else
+            {
+                g_sdkMainCameraPoolIndex = -1;
+                sdkMainCameraHandle = nullptr;
+                sdkMainCameraId.clear();
+                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[20].DeviceIndiName.clear();
+            }
+        }
+        else if (swapWithGuider)
+        {
+            Logger::Log("BindingDevice | Swap SDK cameras between PoleCamera and Guider. target poolIndex=" +
+                            std::to_string(poolIndex),
+                        LogLevel::INFO, DeviceType::MAIN);
+            g_sdkPoleCameraPoolIndex = g_sdkGuiderPoolIndex;
+            sdkPoleScopeHandle = g_sdkQhyCamHandles[g_sdkPoleCameraPoolIndex];
+
+            if (sdkPoolIndexValid(previousPolePoolIndex))
+            {
+                g_sdkGuiderPoolIndex = previousPolePoolIndex;
+                sdkGuiderHandle = g_sdkQhyCamHandles[previousPolePoolIndex];
+                systemdevicelist.system_devices[1].isConnect = true;
+                systemdevicelist.system_devices[1].isBind = false;
+                systemdevicelist.system_devices[1].DeviceIndiName = previousPoleId;
+            }
+            else
+            {
+                g_sdkGuiderPoolIndex = -1;
+                sdkGuiderHandle = nullptr;
+                systemdevicelist.system_devices[1].isBind = false;
+                systemdevicelist.system_devices[1].DeviceIndiName.clear();
+            }
+        }
+        else
+        {
+            g_sdkPoleCameraPoolIndex = poolIndex;
+            sdkPoleScopeHandle = g_sdkQhyCamHandles[poolIndex];
+        }
+
+        const QString poleId = g_sdkQhyCamIds[poolIndex];
+        systemdevicelist.system_devices[2].isConnect = true;
+        systemdevicelist.system_devices[2].isBind = false;
+        systemdevicelist.system_devices[2].DeviceIndiName = poleId;
+        if (!systemdevicelist.system_devices[2].DriverFrom.contains("SDK", Qt::CaseInsensitive))
+            systemdevicelist.system_devices[2].DriverFrom = "SDK";
+        Tools::saveSystemDeviceList(systemdevicelist);
+
+        registerSdkRole("PoleCamera", sdkPoleScopeHandle, poleId);
+        if (swapWithMain)
+            registerSdkRole("MainCamera", sdkMainCameraHandle, systemdevicelist.system_devices[20].DeviceIndiName);
+        if (swapWithGuider)
+            registerSdkRole("Guider", sdkGuiderHandle, systemdevicelist.system_devices[1].DeviceIndiName);
+
+        Logger::Log("BindingDevice | Bind SDK PoleCamera success: " + poleId.toStdString() +
+                        " (poolIndex=" + std::to_string(poolIndex) + ")",
+                    LogLevel::INFO, DeviceType::MAIN);
+
         AfterDeviceConnect(nullptr);
         refreshBindUi();
         return;
@@ -13306,7 +13773,32 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     }
     else if (DeviceType == "PoleCamera")
     {
-        int DeviceIndex;
+        if (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[2].isSDKConnect)
+        {
+            Logger::Log("UnBinding PoleCamera (SDK) start ...", LogLevel::INFO, DeviceType::MAIN);
+            systemdevicelist.system_devices[2].isBind = false;
+            systemdevicelist.system_devices[2].DeviceIndiName.clear();
+            dpPoleScope = nullptr;
+
+            if (g_sdkPoleCameraPoolIndex >= 0 && sdkPoolIndexValid(g_sdkPoleCameraPoolIndex))
+            {
+                const int uiIdx = sdkUiIndexFromPoolIndex(g_sdkPoleCameraPoolIndex);
+                emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + g_sdkQhyCamIds[g_sdkPoleCameraPoolIndex]);
+            }
+
+            g_sdkPoleCameraPoolIndex = -1;
+            sdkPoleScopeHandle = nullptr;
+            Tools::saveSystemDeviceList(systemdevicelist);
+            Logger::Log("UnBinding PoleCamera (SDK) end.", LogLevel::INFO, DeviceType::MAIN);
+            return;
+        }
+
+        if (!dpPoleScope)
+        {
+            Logger::Log("UnBinding PoleCamera Device skipped: dpPoleScope is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+            return;
+        }
+        int DeviceIndex = -1;
         for (int i = 0; i < indi_Client->GetDeviceCount(); i++) //  indi_Client->GetDeviceFromList(i)
         {
             if (indi_Client->GetDeviceFromList(i)->getDeviceName() == dpPoleScope->getDeviceName())
@@ -13319,7 +13811,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         dpPoleScope = nullptr;
         Tools::saveSystemDeviceList(systemdevicelist);
 
-        emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
+        if (DeviceIndex >= 0 && DeviceIndex < indi_Client->GetDeviceCount())
+            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
     }
     else if (DeviceType == "CFW")
     {
@@ -14284,6 +14777,66 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             ensureGuiderLoopStarted(QStringLiteral("SDK"));
             Logger::Log("AfterDeviceConnect | SDK Guider initialization completed",
                         LogLevel::INFO, DeviceType::GUIDER);
+        }
+
+        // ==================== SDK 电子极轴镜(PoleCamera)初始化流程 ====================
+        if (systemdevicelist.system_devices.size() > 2 &&
+            systemdevicelist.system_devices[2].isSDKConnect &&
+            systemdevicelist.system_devices[2].isConnect &&
+            sdkPoleScopeHandle != nullptr &&
+            !systemdevicelist.system_devices[2].isBind)
+        {
+            Logger::Log("AfterDeviceConnect | Processing SDK PoleCamera connection",
+                        LogLevel::INFO, DeviceType::MAIN);
+
+            SdkCommand initCmd;
+            initCmd.type = SdkCommandType::Custom;
+            initCmd.name = "InitCamera";
+            initCmd.payload = std::any();
+            SdkResult initRes = SdkManager::instance().callByHandle(sdkPoleScopeHandle, initCmd);
+            if (!initRes.success)
+            {
+                Logger::Log("AfterDeviceConnect | SDK PoleCamera InitCamera failed: " + initRes.message,
+                            LogLevel::ERROR, DeviceType::MAIN);
+            }
+
+            SdkCommand streamCmd;
+            streamCmd.type = SdkCommandType::Custom;
+            streamCmd.name = "SetStreamMode";
+            streamCmd.payload = 0;
+            SdkManager::instance().callByHandle(sdkPoleScopeHandle, streamCmd);
+
+            SdkCommand bitsCmd;
+            bitsCmd.type = SdkCommandType::Custom;
+            bitsCmd.name = "SetBitsMode";
+            bitsCmd.payload = 16;
+            SdkManager::instance().callByHandle(sdkPoleScopeHandle, bitsCmd);
+
+            SdkCommand verCmd;
+            verCmd.type = SdkCommandType::Custom;
+            verCmd.name = "GetSdkVersion";
+            verCmd.payload = std::any();
+            SdkResult verRes = SdkManager::instance().callByHandle(sdkPoleScopeHandle, verCmd);
+            if (verRes.success)
+            {
+                try
+                {
+                    std::string version = std::any_cast<std::string>(verRes.payload);
+                    emit wsThread->sendMessageToClient("getSDKVersion:PoleCamera:" + QString::fromStdString(version));
+                }
+                catch (const std::bad_any_cast &) {}
+            }
+
+            systemdevicelist.system_devices[2].isBind = true;
+            QString deviceName = systemdevicelist.system_devices[2].DeviceIndiName;
+            if (deviceName.isEmpty())
+                deviceName = "SDK_PoleCamera";
+
+            QString driverNameForConnect = systemdevicelist.system_devices[2].DriverIndiName;
+            emit wsThread->sendMessageToClient("ConnectSuccess:PoleCamera:" + deviceName + ":" + driverNameForConnect);
+            ConnectedDevices.push_back({"PoleCamera", deviceName});
+            Logger::Log("AfterDeviceConnect | SDK PoleCamera initialization completed",
+                        LogLevel::INFO, DeviceType::MAIN);
         }
         
         return;
@@ -16450,8 +17003,10 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
             // 主相机绑定/运行态复位
             sdkMainCameraHandle = nullptr;
             sdkGuiderHandle = nullptr;
+            sdkPoleScopeHandle = nullptr;
             g_sdkMainCameraPoolIndex = -1;
             g_sdkGuiderPoolIndex = -1;
+            g_sdkPoleCameraPoolIndex = -1;
             sdkMainCameraId.clear();
             resetMainCameraRuntimeState();
 
@@ -16523,8 +17078,10 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
             // 主相机绑定/运行态复位
             sdkMainCameraHandle = nullptr;
             sdkGuiderHandle = nullptr;
+            sdkPoleScopeHandle = nullptr;
             g_sdkMainCameraPoolIndex = -1;
             g_sdkGuiderPoolIndex = -1;
+            g_sdkPoleCameraPoolIndex = -1;
             sdkMainCameraId.clear();
             resetMainCameraRuntimeState();
 
@@ -16547,8 +17104,10 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
         // 4C) 没有可关闭的相机句柄，但仍要求“解绑主相机”（用于异常状态/句柄已丢失）
         sdkMainCameraHandle = nullptr;
         sdkGuiderHandle = nullptr;
+        sdkPoleScopeHandle = nullptr;
         g_sdkMainCameraPoolIndex = -1;
         g_sdkGuiderPoolIndex = -1;
+        g_sdkPoleCameraPoolIndex = -1;
         sdkMainCameraId.clear();
         resetMainCameraRuntimeState();
         resetDeviceEntry(kIdxMainCamera);
@@ -17872,12 +18431,19 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
     // 单次轮询：拿到结果后由本函数决定是否继续 start()
     sdkGuiderExposureTimer->stop();
 
+    const bool poleCapture = (sdkGuiderExposureRole == "PoleCamera");
     const bool guiderSdk =
-        (systemdevicelist.system_devices.size() > 1 &&
+        (!poleCapture &&
+         systemdevicelist.system_devices.size() > 1 &&
          systemdevicelist.system_devices[1].isSDKConnect &&
          sdkGuiderHandle != nullptr);
+    const bool poleSdk =
+        (poleCapture &&
+         systemdevicelist.system_devices.size() > 2 &&
+         systemdevicelist.system_devices[2].isSDKConnect &&
+         sdkPoleScopeHandle != nullptr);
 
-    if (!guiderSdk || (!isGuiderLoopExp && !polarGuiderSingleCapturePending))
+    if ((!guiderSdk && !poleSdk) || (!isGuiderLoopExp && !polarGuiderSingleCapturePending))
     {
         guiderExposureInFlight = false;
         return;
@@ -17910,7 +18476,9 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
         return;
     }
 
-    const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+    const SdkDeviceHandle handleSnap = poleCapture ? sdkPoleScopeHandle : sdkGuiderHandle;
+    const PolarAlignmentCameraRole captureRole =
+        poleCapture ? PolarAlignmentCameraRole::PoleCamera : PolarAlignmentCameraRole::Guider;
     const qint64 startSnap = sdkGuiderExposureStartTime;
     const int expectedSnap = sdkGuiderExposureExpectedDuration;
     const qint64 timerFiredAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -17920,7 +18488,7 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                     " expectedMs=" + std::to_string(expectedSnap),
                 LogLevel::INFO, DeviceType::GUIDER);
 
-    sdkCamExec->post([this, handleSnap, startSnap, expectedSnap, timerFiredAtMs]() {
+    sdkCamExec->post([this, handleSnap, startSnap, expectedSnap, timerFiredAtMs, captureRole]() {
         QElapsedTimer workerPerf;
         workerPerf.start();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -18001,7 +18569,7 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                         " msg=" + frameRes.message,
                     LogLevel::INFO, DeviceType::GUIDER);
 
-        QMetaObject::invokeMethod(this, [this, frameRes, expected, getFrameCostMs, workerTotalMs, timerFiredAtMs]() mutable {
+        QMetaObject::invokeMethod(this, [this, frameRes, expected, getFrameCostMs, workerTotalMs, timerFiredAtMs, captureRole]() mutable {
             QElapsedTimer mainPerf;
             mainPerf.start();
             sdkGuiderFrameTaskInFlight = false;
@@ -18012,11 +18580,16 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                             " workerTotalMs=" + std::to_string(workerTotalMs),
                         LogLevel::INFO, DeviceType::GUIDER);
 
-            const bool guiderSdk =
-                (systemdevicelist.system_devices.size() > 1 &&
-                 systemdevicelist.system_devices[1].isSDKConnect &&
-                 sdkGuiderHandle != nullptr);
-            if (!guiderSdk)
+            const bool poleCapture = (captureRole == PolarAlignmentCameraRole::PoleCamera);
+            const bool captureSdk =
+                poleCapture
+                    ? (systemdevicelist.system_devices.size() > 2 &&
+                       systemdevicelist.system_devices[2].isSDKConnect &&
+                       sdkPoleScopeHandle != nullptr)
+                    : (systemdevicelist.system_devices.size() > 1 &&
+                       systemdevicelist.system_devices[1].isSDKConnect &&
+                       sdkGuiderHandle != nullptr);
+            if (!captureSdk)
             {
                 guiderExposureInFlight = false;
                 return;
@@ -18037,7 +18610,9 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                     // SDK 导星帧统一走内置导星链路：
                     // 1) 先写固定 FITS 路径
                     // 2) 交给 GuiderCore::onNewFrame（内部会触发 PersistGuidingFits + 识别）
-                    const QString sdkGuiderFitsPath = QStringLiteral("/dev/shm/guiding.fits");
+                    const QString sdkGuiderFitsPath = poleCapture
+                        ? QStringLiteral("/dev/shm/polecamera.fits")
+                        : QStringLiteral("/dev/shm/guiding.fits");
                     QElapsedTimer saveFitsPerf;
                     saveFitsPerf.start();
                     SaveQhyFrameDataToFits(frame, sdkGuiderFitsPath.toStdString());
@@ -18048,11 +18623,11 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
 
                     if (polarGuiderSingleCapturePending)
                     {
-                        notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::Guider, sdkGuiderFitsPath);
+                        notifyPolarAlignmentCaptureReady(captureRole, sdkGuiderFitsPath);
                         polarGuiderSingleCapturePending = false;
                     }
 
-                    if (guiderCore)
+                    if (!poleCapture && guiderCore)
                     {
                         QElapsedTimer invokePerf;
                         invokePerf.start();
@@ -25429,14 +26004,14 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         }
                     }
 
-                    if (pickIndex == g_sdkGuiderPoolIndex)
+                    if (pickIndex == g_sdkGuiderPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
                         pickIndex = -1;
 
                     if (pickIndex < 0)
                     {
                         for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
                         {
-                            if (i == g_sdkGuiderPoolIndex)
+                            if (i == g_sdkGuiderPoolIndex || i == g_sdkPoleCameraPoolIndex)
                                 continue;
                             if (g_sdkQhyCamHandles[i] != nullptr)
                             {
@@ -25543,8 +26118,10 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 g_sdkQhyCamIds.clear();
                 g_sdkMainCameraPoolIndex = -1;
                 g_sdkGuiderPoolIndex = -1;
+                g_sdkPoleCameraPoolIndex = -1;
                 sdkMainCameraHandle = nullptr;
                 sdkGuiderHandle = nullptr;
+                sdkPoleScopeHandle = nullptr;
                 sdkMainCameraId.clear();
                 
                 if (!allHandlesNull)
@@ -25966,14 +26543,14 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         }
                     }
 
-                    if (pickIndex == g_sdkMainCameraPoolIndex)
+                    if (pickIndex == g_sdkMainCameraPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
                         pickIndex = -1;
 
                     if (pickIndex < 0)
                     {
                         for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
                         {
-                            if (i == g_sdkMainCameraPoolIndex)
+                            if (i == g_sdkMainCameraPoolIndex || i == g_sdkPoleCameraPoolIndex)
                                 continue;
                             if (g_sdkQhyCamHandles[i] != nullptr)
                             {
@@ -26059,8 +26636,10 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 g_sdkQhyCamIds.clear();
                 g_sdkMainCameraPoolIndex = -1;
                 g_sdkGuiderPoolIndex = -1;
+                g_sdkPoleCameraPoolIndex = -1;
                 sdkMainCameraHandle = nullptr;
                 sdkGuiderHandle = nullptr;
+                sdkPoleScopeHandle = nullptr;
                 sdkMainCameraId.clear();
 
                 // 额外等待，确保 SDK 线程中的 close 和 ReleaseSdkResource 完成
@@ -26201,7 +26780,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 避免同一个句柄同时被 MainCamera/Guider 绑定
-            if (pickIndex == g_sdkMainCameraPoolIndex)
+            if (pickIndex == g_sdkMainCameraPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
                 pickIndex = -1;
 
             if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
@@ -26253,6 +26832,200 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 emit wsThread->sendMessageToClient("AddDeviceType:Guider");
                 emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
                 emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:Guider");
+            }
+            return;
+        }
+
+        // SDK 电子极轴镜（PoleCamera）：支持“单独连接”入口
+        if (DriverType.contains("PoleCamera", Qt::CaseInsensitive))
+        {
+            Logger::Log("ConnectDriver | Use SDK connection for PoleCamera.", LogLevel::INFO, DeviceType::MAIN);
+            bool needAllocation = false;
+            bool boundByThisCall = false;
+
+            if (systemdevicelist.system_devices.size() > 2)
+            {
+                systemdevicelist.system_devices[2].Description = "PoleCamera";
+                systemdevicelist.system_devices[2].DriverIndiName = DriverName;
+                systemdevicelist.system_devices[2].isSDKConnect = true;
+                systemdevicelist.system_devices[2].DriverFrom = "SDK";
+            }
+
+            QString driverName = getSDKDriverName("PoleCamera");
+            if (driverName.isEmpty())
+            {
+                Logger::Log("ConnectDriver | Cannot get SDK driver name for PoleCamera",
+                            LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("ConnectDriverFailed:PoleCamera:Cannot get SDK driver");
+                return;
+            }
+
+            SdkCommand initCmd;
+            initCmd.type = SdkCommandType::Custom;
+            initCmd.name = "InitSdkResource";
+            initCmd.payload = std::any();
+            SdkResult initRes = SdkManager::instance().call(driverName.toStdString(), nullptr, initCmd);
+            if (!initRes.success)
+            {
+                Logger::Log("ConnectDriver | InitSdkResource(PoleCamera) failed: " + initRes.message,
+                            LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("ConnectDriverFailed:PoleCamera:SDK init failed");
+                return;
+            }
+
+            SdkCommand scanCmd;
+            scanCmd.type = SdkCommandType::Custom;
+            scanCmd.name = "ScanCameras";
+            scanCmd.payload = std::any();
+            SdkResult scanRes = SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
+            if (!scanRes.success || !scanRes.payload.has_value())
+            {
+                Logger::Log("ConnectDriver | ScanCameras(PoleCamera) failed: " + scanRes.message,
+                            LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("ConnectDriverFailed:PoleCamera:SDK scan failed");
+                return;
+            }
+
+            const int cameraCount = std::any_cast<int>(scanRes.payload);
+            if (cameraCount < 1)
+            {
+                Logger::Log("ConnectDriver | No SDK camera found for PoleCamera.", LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("ConnectDriverFailed:PoleCamera:No camera found");
+                return;
+            }
+
+            for (int idx = 0; idx < cameraCount; ++idx)
+            {
+                SdkCommand getIdCmd;
+                getIdCmd.type = SdkCommandType::Custom;
+                getIdCmd.name = "GetCameraIdByIndex";
+                getIdCmd.payload = idx;
+                SdkResult getIdRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
+                if (!getIdRes.success || !getIdRes.payload.has_value())
+                    continue;
+
+                const QString qid = QString::fromStdString(std::any_cast<std::string>(getIdRes.payload));
+                bool alreadyOpen = false;
+                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                {
+                    if (g_sdkQhyCamIds[i] == qid && g_sdkQhyCamHandles.value(i, nullptr) != nullptr)
+                    {
+                        alreadyOpen = true;
+                        break;
+                    }
+                }
+                if (alreadyOpen)
+                    continue;
+
+                SdkResult openRes;
+                const std::string driverNameStd = driverName.toStdString();
+                const std::string cameraIdSnap = qid.toStdString();
+                if (sdkCamExec && sdkCamExec->isRunning())
+                {
+                    openRes = sdkCamExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
+                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
+                    });
+                }
+                else
+                {
+                    openRes = SdkManager::instance().open(driverNameStd, cameraIdSnap);
+                }
+                if (!openRes.success || !openRes.payload.has_value())
+                    continue;
+
+                g_sdkQhyCamHandles.push_back(std::any_cast<SdkDeviceHandle>(openRes.payload));
+                g_sdkQhyCamIds.push_back(qid);
+                const int uiIdx = sdkUiIndexFromPoolIndex(g_sdkQhyCamIds.size() - 1);
+                emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + qid);
+            }
+
+            int pickIndex = -1;
+            const QString preferredId = systemdevicelist.system_devices.size() > 2
+                ? systemdevicelist.system_devices[2].DeviceIndiName.trimmed()
+                : QString();
+            for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+            {
+                if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex)
+                    continue;
+                if (!sdkPoolIndexValid(i))
+                    continue;
+                if (!preferredId.isEmpty() && g_sdkQhyCamIds[i] == preferredId)
+                {
+                    pickIndex = i;
+                    break;
+                }
+            }
+            if (pickIndex < 0)
+            {
+                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                {
+                    if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex)
+                        continue;
+                    if (sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
+                    {
+                        pickIndex = i;
+                        break;
+                    }
+                }
+            }
+            if (pickIndex < 0)
+            {
+                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                {
+                    if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex)
+                        continue;
+                    if (sdkPoolIndexValid(i))
+                    {
+                        pickIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
+            {
+                g_sdkPoleCameraPoolIndex = pickIndex;
+                sdkPoleScopeHandle = g_sdkQhyCamHandles[pickIndex];
+                const QString poleId = g_sdkQhyCamIds[pickIndex];
+                boundByThisCall = true;
+
+                if (systemdevicelist.system_devices.size() > 2)
+                {
+                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[2].DeviceIndiName = poleId;
+                }
+
+                SdkManager::instance().registerDevice(
+                    driverName.toStdString(),
+                    "PoleCamera",
+                    sdkPoleScopeHandle,
+                    "电子极轴镜",
+                    std::any(poleId.toStdString()));
+
+                AfterDeviceConnect(nullptr);
+                Logger::Log("ConnectDriver | SDK PoleCamera auto-bound: " + poleId.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+            else
+            {
+                if (systemdevicelist.system_devices.size() > 2)
+                {
+                    systemdevicelist.system_devices[2].isConnect = false;
+                    systemdevicelist.system_devices[2].isBind = false;
+                }
+                needAllocation = true;
+            }
+
+            if (boundByThisCall)
+            {
+                emit wsThread->sendMessageToClient("AddDeviceType:PoleCamera");
+                emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+            }
+            else if (needAllocation)
+            {
+                emit wsThread->sendMessageToClient("AddDeviceType:PoleCamera");
+                emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:PoleCamera");
             }
             return;
         }
@@ -27150,6 +27923,29 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             autoBindCcdRole("Guider");
             autoBindCcdRole("PoleCamera");
         }
+        if ((!requestSingleCcdRole || requestPoleOnly) && dpPoleScope == nullptr)
+        {
+            for (int idx : ConnectedCCDList)
+            {
+                if (idx < 0 || idx >= indi_Client->GetDeviceCount() || boundCcdIndexes.contains(idx))
+                    continue;
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+                if (device == nullptr || device->getDeviceName() == nullptr)
+                    continue;
+                const QString name = QString::fromUtf8(device->getDeviceName());
+                if (!isPoleMasterName(name))
+                    continue;
+                dpPoleScope = device;
+                if (systemdevicelist.system_devices.size() > 2)
+                    systemdevicelist.system_devices[2].isConnect = true;
+                AfterDeviceConnect(dpPoleScope);
+                boundCcdIndexes.insert(idx);
+                Logger::Log("ConnectDriver | INDI PoleCamera auto-bound by POLEMASTER: " +
+                                name.toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+                break;
+            }
+        }
 
         const bool mainBoundByHistory = (dpMainCamera != nullptr);
         const bool guiderBoundByHistory = (dpGuider != nullptr);
@@ -27575,16 +28371,24 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 (systemdevicelist.system_devices.size() > 20 &&
                  systemdevicelist.system_devices[20].isSDKConnect &&
                  (systemdevicelist.system_devices[20].isConnect || sdkMainCameraHandle != nullptr));
+            const bool shouldNotifyPoleCameraDisconnected =
+                (systemdevicelist.system_devices.size() > 2 &&
+                 systemdevicelist.system_devices[2].isSDKConnect &&
+                 (systemdevicelist.system_devices[2].isConnect || sdkPoleScopeHandle != nullptr));
             cleanupQhySdkPoolAndResource("DisconnectDevice: Guider -> cleanup shared SDK camera pool", "CameraPool");
 
             eraseConnectedDeviceByType("Guider");
             eraseConnectedDeviceByType("MainCamera");
+            if (shouldNotifyPoleCameraDisconnected)
+                eraseConnectedDeviceByType("PoleCamera");
             QStringList removeNames;
             appendDeleteCandidate(removeNames, DeviceName);
             if (systemdevicelist.system_devices.size() > 1)
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
             if (shouldNotifyMainCameraDisconnected && systemdevicelist.system_devices.size() > 20)
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
+            if (shouldNotifyPoleCameraDisconnected && systemdevicelist.system_devices.size() > 2)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
             for (const auto &name : sdkPoolNamesBeforeCleanup)
                 appendDeleteCandidate(removeNames, name);
             emitDeleteDeviceAllocationListBatch(removeNames);
@@ -27593,6 +28397,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
                 if (shouldNotifyMainCameraDisconnected)
                     emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
+                if (shouldNotifyPoleCameraDisconnected)
+                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:PoleCamera");
             }
             Tools::saveSystemDeviceList(systemdevicelist);
             Logger::Log("DisconnectDevice | Guider (SDK) disconnected.", LogLevel::INFO, DeviceType::GUIDER);
@@ -27691,6 +28497,10 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 (systemdevicelist.system_devices.size() > 1 &&
                  systemdevicelist.system_devices[1].isSDKConnect &&
                  (systemdevicelist.system_devices[1].isConnect || sdkGuiderHandle != nullptr));
+            const bool shouldNotifyPoleCameraDisconnected =
+                (systemdevicelist.system_devices.size() > 2 &&
+                 systemdevicelist.system_devices[2].isSDKConnect &&
+                 (systemdevicelist.system_devices[2].isConnect || sdkPoleScopeHandle != nullptr));
 
             Logger::Log("DisconnectDevice | MainCamera SDK disconnect -> cleanup shared SDK camera pool.",
                         LogLevel::INFO, DeviceType::MAIN);
@@ -27700,6 +28510,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             eraseConnectedDeviceByType("MainCamera");
             if (shouldNotifyGuiderDisconnected)
                 eraseConnectedDeviceByType("Guider");
+            if (shouldNotifyPoleCameraDisconnected)
+                eraseConnectedDeviceByType("PoleCamera");
             QStringList removeNames;
             appendDeleteCandidate(removeNames, DeviceName);
             appendDeleteCandidate(removeNames, closedCameraId);
@@ -27707,6 +28519,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
             if (shouldNotifyGuiderDisconnected && systemdevicelist.system_devices.size() > 1)
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
+            if (shouldNotifyPoleCameraDisconnected && systemdevicelist.system_devices.size() > 2)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
             for (const auto &name : sdkPoolNamesBeforeCleanup)
                 appendDeleteCandidate(removeNames, name);
             emitDeleteDeviceAllocationListBatch(removeNames);
@@ -27715,12 +28529,106 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
                 if (shouldNotifyGuiderDisconnected)
                     emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
+                if (shouldNotifyPoleCameraDisconnected)
+                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:PoleCamera");
             }
 
             // 关键修复：
             // 走到这里说明 MainCamera 是 SDK 断开路径。此时不应继续执行下面的 INDI 断开流程，
             // 否则可能对 INDI::BaseDevice*（已被 SDK/INDI 内部异步回收或根本不存在）调用 isConnected() 触发段错误。
             Tools::saveSystemDeviceList(systemdevicelist);
+            return;
+        }
+    }
+
+    // ===== PoleCamera SDK 模式断开 =====
+    if (DeviceType == "PoleCamera")
+    {
+        const bool poleCameraMarkedSDK =
+            (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[2].isSDKConnect);
+
+        if (poleCameraMarkedSDK || sdkPoleScopeHandle != nullptr)
+        {
+            Logger::Log("DisconnectDevice | PoleCamera is in SDK mode, closing pole camera handle ...",
+                        LogLevel::INFO, DeviceType::MAIN);
+            QStringList sdkPoolNamesBeforeCleanup;
+            for (const auto &id : g_sdkQhyCamIds)
+                appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
+
+            if (sdkGuiderExposureRole == "PoleCamera" && sdkGuiderExposureTimer)
+                sdkGuiderExposureTimer->stop();
+
+            if (sdkPoleScopeHandle != nullptr)
+            {
+                SdkCommand cancelCmd;
+                cancelCmd.type = SdkCommandType::Custom;
+                cancelCmd.name = "CancelExposure";
+                cancelCmd.payload = std::any();
+                SdkManager::instance().callByHandle(sdkPoleScopeHandle, cancelCmd);
+                SdkManager::instance().closeByHandle(sdkPoleScopeHandle);
+            }
+
+            if (g_sdkPoleCameraPoolIndex >= 0 && g_sdkPoleCameraPoolIndex < g_sdkQhyCamHandles.size())
+            {
+                g_sdkQhyCamHandles[g_sdkPoleCameraPoolIndex] = nullptr;
+            }
+
+            sdkPoleScopeHandle = nullptr;
+            g_sdkPoleCameraPoolIndex = -1;
+            if (sdkGuiderExposureRole == "PoleCamera")
+            {
+                polarGuiderSingleCapturePending = false;
+                guiderExposureInFlight = false;
+                sdkGuiderFrameTaskInFlight = false;
+                sdkGuiderExposureRole = "Guider";
+            }
+
+            if (systemdevicelist.system_devices.size() > 2)
+            {
+                systemdevicelist.system_devices[2].isConnect = false;
+                systemdevicelist.system_devices[2].isBind = false;
+            }
+
+            const bool shouldNotifyMainCameraDisconnected =
+                (systemdevicelist.system_devices.size() > 20 &&
+                 systemdevicelist.system_devices[20].isSDKConnect &&
+                 (systemdevicelist.system_devices[20].isConnect || sdkMainCameraHandle != nullptr));
+            const bool shouldNotifyGuiderDisconnected =
+                (systemdevicelist.system_devices.size() > 1 &&
+                 systemdevicelist.system_devices[1].isSDKConnect &&
+                 (systemdevicelist.system_devices[1].isConnect || sdkGuiderHandle != nullptr));
+
+            cleanupQhySdkPoolAndResource("DisconnectDevice: PoleCamera -> cleanup shared SDK camera pool", "CameraPool");
+
+            eraseConnectedDeviceByType("PoleCamera");
+            if (shouldNotifyMainCameraDisconnected)
+                eraseConnectedDeviceByType("MainCamera");
+            if (shouldNotifyGuiderDisconnected)
+                eraseConnectedDeviceByType("Guider");
+
+            QStringList removeNames;
+            appendDeleteCandidate(removeNames, DeviceName);
+            if (systemdevicelist.system_devices.size() > 2)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
+            if (shouldNotifyMainCameraDisconnected && systemdevicelist.system_devices.size() > 20)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
+            if (shouldNotifyGuiderDisconnected && systemdevicelist.system_devices.size() > 1)
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
+            for (const auto &name : sdkPoolNamesBeforeCleanup)
+                appendDeleteCandidate(removeNames, name);
+            emitDeleteDeviceAllocationListBatch(removeNames);
+
+            if (wsThread != nullptr)
+            {
+                emit wsThread->sendMessageToClient("DisconnectDriverSuccess:PoleCamera");
+                if (shouldNotifyMainCameraDisconnected)
+                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
+                if (shouldNotifyGuiderDisconnected)
+                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
+            }
+
+            Tools::saveSystemDeviceList(systemdevicelist);
+            Logger::Log("DisconnectDevice | PoleCamera (SDK) disconnected.", LogLevel::INFO, DeviceType::MAIN);
             return;
         }
     }
@@ -30874,6 +31782,14 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
         return false;
     }
 
+    if (role == PolarAlignmentCameraRole::PoleCamera && !isPoleCameraConnected())
+    {
+        Logger::Log("initPolarAlignment | pole camera is selected but not connected", LogLevel::ERROR, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient(
+            "StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,PoleCamera is not connected");
+        return false;
+    }
+
     if (isMountSDK() && dpMount == nullptr)
     {
         Logger::Log("initPolarAlignment | SDK模式赤道仪暂不支持，请使用INDI模式", LogLevel::ERROR, DeviceType::MAIN);
@@ -30898,7 +31814,7 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
             return false;
         }
     }
-    else
+    else if (role == PolarAlignmentCameraRole::Guider)
     {
         double guiderFocal = guiderFocalLengthMm;
         if (guiderFocal <= 0.0)
@@ -30922,6 +31838,27 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
         }
         guiderFocalLengthMm = guiderFocal;
         selectedFocalLength = static_cast<int>(std::lround(guiderFocal));
+    }
+    else
+    {
+        double poleFocal = 0.0;
+        std::unordered_map<std::string, std::string> config;
+        Tools::readClientSettings("config/config.ini", config);
+        auto it = config.find("PoleCameraFocalLength");
+        if (it != config.end())
+        {
+            bool ok = false;
+            const double v = QString::fromStdString(it->second).trimmed().toDouble(&ok);
+            if (ok && v > 0.0)
+                poleFocal = v;
+        }
+        if (poleFocal <= 0.0)
+        {
+            Logger::Log("initPolarAlignment | PoleCameraFocalLength is not set", LogLevel::WARNING, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start polar alignment,pole camera focal length is not set");
+            return false;
+        }
+        selectedFocalLength = static_cast<int>(std::lround(poleFocal));
     }
 
     if (!isValidObservatoryLocation(observatorylatitude, observatorylongitude))
@@ -31010,7 +31947,7 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
             }
         }
     }
-    else
+    else if (role == PolarAlignmentCameraRole::Guider)
     {
         captureDevice = dpGuider;
         useSdkCaptureSource = isGuiderCameraSDK();
@@ -31055,6 +31992,51 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
             }
         }
     }
+    else
+    {
+        captureDevice = dpPoleScope;
+        useSdkCaptureSource = isPoleCameraSDK();
+        captureRoleName = "PoleCamera";
+
+        if (!isPoleCameraSDK() && dpPoleScope != nullptr)
+        {
+            double pixelsize, pixelsizX, pixelsizY;
+            int maxX, maxY, bitDepth;
+            indi_Client->getCCDBasicInfo(dpPoleScope, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
+            cameraWidthMm = maxX * pixelsize / 1000.0;
+            cameraHeightMm = maxY * pixelsize / 1000.0;
+            cameraWidthMm = std::round(cameraWidthMm * 10.0) / 10.0;
+            cameraHeightMm = std::round(cameraHeightMm * 10.0) / 10.0;
+        }
+        else if (isPoleCameraSDK() && sdkPoleScopeHandle != nullptr)
+        {
+            SdkCommand chipInfoCmd;
+            chipInfoCmd.type = SdkCommandType::Custom;
+            chipInfoCmd.name = "GetChipInfo";
+            chipInfoCmd.payload = std::any();
+            SdkResult chipInfoRes = SdkManager::instance().callByHandle(sdkPoleScopeHandle, chipInfoCmd);
+
+            if (chipInfoRes.success)
+            {
+                try
+                {
+                    SdkChipInfo chipInfo = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
+                    cameraWidthMm = chipInfo.chipWidthMM;
+                    cameraHeightMm = chipInfo.chipHeightMM;
+                }
+                catch (const std::bad_any_cast &e)
+                {
+                    Logger::Log("initPolarAlignment | SDK GetChipInfo bad_any_cast: " + std::string(e.what()),
+                                LogLevel::ERROR, DeviceType::MAIN);
+                }
+            }
+            else
+            {
+                Logger::Log("initPolarAlignment | SDK GetChipInfo failed: " + chipInfoRes.message,
+                            LogLevel::WARNING, DeviceType::MAIN);
+            }
+        }
+    }
 
     if (cameraWidthMm <= 0 || cameraHeightMm <= 0)
     {
@@ -31077,9 +32059,14 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
     QObject::connect(polarAlignment, &PolarAlignment::requestCaptureForRole,
                      this, [this](const QString &cameraRole, int exposureMs)
                      {
-                         if (parsePolarAlignmentCameraRole(cameraRole) == PolarAlignmentCameraRole::Guider)
+                         const PolarAlignmentCameraRole requestedRole = parsePolarAlignmentCameraRole(cameraRole);
+                         if (requestedRole == PolarAlignmentCameraRole::Guider)
                          {
                              this->startGuiderSingleCapture(exposureMs);
+                         }
+                         else if (requestedRole == PolarAlignmentCameraRole::PoleCamera)
+                         {
+                             this->startPoleCameraSingleCapture(exposureMs);
                          }
                          else
                          {
@@ -31194,7 +32181,7 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
                 });
 
     Logger::Log("initPolarAlignment | PolarAlignment initialized successfully, role=" +
-                    std::string(role == PolarAlignmentCameraRole::Guider ? "Guider" : "MainCamera") +
+                    std::string(polarRoleName(role)) +
                     ", focal=" + std::to_string(selectedFocalLength) +
                     ", size(mm)=" + std::to_string(cameraWidthMm) + "x" + std::to_string(cameraHeightMm),
                 LogLevel::INFO, DeviceType::MAIN);
