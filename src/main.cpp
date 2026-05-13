@@ -1,5 +1,7 @@
 #include <QCoreApplication>
 #include <QDebug>
+#include <QPointF>
+#include <QVector>
 #include <QNetworkProxy>
 #include <QNetworkProxyFactory>
 #include <sys/prctl.h>
@@ -18,6 +20,8 @@ int main(int argc, char *argv[])
 
     // 修复：允许 queued connection 传递 guiding::State，避免刷 Qt 警告
     qRegisterMetaType<guiding::State>("guiding::State");
+    qRegisterMetaType<QPointF>("QPointF");
+    qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
 
     qDebug("main start...");
 
@@ -29,4 +33,3 @@ int main(int argc, char *argv[])
     MainWindow mainWindow;
     return a.exec();
 }
-

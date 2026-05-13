@@ -18,6 +18,7 @@
 #include <QThread>
 #include <atomic>
 #include <limits>
+#include <cmath>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -5819,6 +5820,34 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
 
     QString MinFOV = QString::number(FOV.minFOV);
     QString MaxFOV = QString::number(FOV.maxFOV);
+    auto envDouble = [](const char *name, double fallback) -> double {
+        const QByteArray raw = qgetenv(name);
+        if (raw.isEmpty()) return fallback;
+        bool ok = false;
+        const double value = QString::fromLatin1(raw).trimmed().toDouble(&ok);
+        return ok ? value : fallback;
+    };
+    const bool fixedPolarSolve = qEnvironmentVariableIsSet("QUARCS_POLAR_SOLVE_FIXED") &&
+                                 qgetenv("QUARCS_POLAR_SOLVE_FIXED") != "0";
+    double fixedPolarSolveRadiusDeg = 2.0;
+    QString fixedPolarSolveDepth;
+    if (fixedPolarSolve)
+    {
+        lastRA = envDouble("QUARCS_POLAR_SOLVE_RA_DEG", 0.0);
+        lastDEC = envDouble("QUARCS_POLAR_SOLVE_DEC_DEG", 89.5);
+        fixedPolarSolveRadiusDeg = envDouble("QUARCS_POLAR_SOLVE_RADIUS_DEG", 8.0);
+        MinFOV = QString::number(envDouble("QUARCS_POLAR_SOLVE_SCALE_LOW_DEG", 10.0), 'f', 6);
+        MaxFOV = QString::number(envDouble("QUARCS_POLAR_SOLVE_SCALE_HIGH_DEG", 12.0), 'f', 6);
+        fixedPolarSolveDepth = QString::fromLatin1(qgetenv("QUARCS_POLAR_SOLVE_DEPTH")).trimmed();
+        mode = 2;
+        Logger::Log("PlateSolve: automatic polar alignment fixed near-pole solve params RA=" +
+                        std::to_string(lastRA) +
+                        " DEC=" + std::to_string(lastDEC) +
+                        " radius=" + std::to_string(fixedPolarSolveRadiusDeg) +
+                        " scale=[" + MinFOV.toStdString() + "," + MaxFOV.toStdString() + "]" +
+                        (fixedPolarSolveDepth.isEmpty() ? "" : " depth=" + fixedPolarSolveDepth.toStdString()),
+                    LogLevel::INFO, DeviceType::MAIN);
+    }
 
     QProcess* cmd_test = new QProcess();
     // 设置父对象为 instance_，确保在 instance_ 销毁时自动释放
@@ -5874,8 +5903,13 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
             }
         } else if (mode == 2) {
             // 模式2：智能回退逻辑
-            bool hasValidFOV = (FocalLength > 0 && CameraSize_width > 0 && CameraSize_height > 0 && FOV.minFOV > 0 && FOV.maxFOV > 0);
-            bool hasValidPosition = (lastRA != 0.0 && lastDEC != 0.0);
+            bool hasValidFOV = fixedPolarSolve || (FocalLength > 0 && CameraSize_width > 0 && CameraSize_height > 0 && FOV.minFOV > 0 && FOV.maxFOV > 0);
+            bool hasValidPosition = std::isfinite(lastRA) &&
+                                    std::isfinite(lastDEC) &&
+                                    lastRA >= 0.0 &&
+                                    lastRA < 360.0 &&
+                                    lastDEC >= -90.0 &&
+                                    lastDEC <= 90.0;
             
             if (!hasValidPosition && !hasValidFOV) {
                 // 位置参数和视场参数都无效，回退到模式0
@@ -5912,7 +5946,8 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --pixel-error 1.5"
                     " --cpulimit 20"
                     " --downsample 1"
-                    " --objs 0"
+                    " --objs 0" +
+                    (fixedPolarSolve && !fixedPolarSolveDepth.isEmpty() ? " --depth " + fixedPolarSolveDepth : "") +
                     " --scale-units degwidth"
                     " --scale-low " + MinFOV +
                     " --scale-high " + MaxFOV;
@@ -5931,13 +5966,14 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --pixel-error 1.5"
                     " --cpulimit 20"
                     " --downsample 1"
-                    " --objs 0"
+                    " --objs 0" +
+                    (fixedPolarSolve && !fixedPolarSolveDepth.isEmpty() ? " --depth " + fixedPolarSolveDepth : "") +
                     " --scale-units degwidth"
                     " --scale-low " + MinFOV +
                     " --scale-high " + MaxFOV +
                     " --ra " + QString::number(lastRA, 'f', 6) +
                     " --dec " + QString::number(lastDEC, 'f', 6) +
-                    " --radius 2";
+                    " --radius " + QString::number(fixedPolarSolve ? fixedPolarSolveRadiusDeg : 2.0, 'f', 6);
                 Logger::Log("使用模式2解析（包含视场和位置参数）", LogLevel::INFO, DeviceType::MAIN);
                 break;
             case 0:

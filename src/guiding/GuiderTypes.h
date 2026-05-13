@@ -87,7 +87,7 @@ struct CalibrationResult
 
 struct GuidingParams
 {
-    int exposureMs = 1500; // 0.5s--2s，默认 1.5s（室外起步更稳）
+    int exposureMs = 1000; // 0.5s--2s，默认 1s
 
     // ===== Multi-star guiding =====
     // 对齐 PHD2 语义：

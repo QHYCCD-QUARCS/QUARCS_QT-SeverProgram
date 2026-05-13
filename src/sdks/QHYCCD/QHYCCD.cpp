@@ -962,8 +962,9 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             frame.bpp      = bpp;
             frame.channels = channels;
 
-            // 当前示例只考虑 16 位单通道
-            if (bpp != 16 || channels != 1) {
+            // PoleMaster may return 8-bit mono frames from single exposure.
+            // Keep the raw bit depth and let downstream FITS/preview code handle it.
+            if (channels != 1 || (bpp != 16 && bpp != 8)) {
                 r.success = false;
                 r.message = "GetSingleFrame unsupported format: bpp=" + std::to_string(bpp) +
                             " channels=" + std::to_string(channels);
@@ -971,7 +972,7 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
             }
 
             const size_t pixelCount = static_cast<size_t>(roiSizeX) * static_cast<size_t>(roiSizeY);
-            const size_t bytesNeeded = pixelCount * sizeof(uint16_t);
+            const size_t bytesNeeded = pixelCount * (bpp == 16 ? sizeof(uint16_t) : sizeof(uint8_t));
             if (bytesNeeded > buffer->size()) {
                 r.success = false;
                 r.message = "GetSingleFrame buffer too small: need " + std::to_string(bytesNeeded) +

@@ -153,6 +153,7 @@ add_executable(client
   websocketthread.h websocketthread.cpp
   Logger.h Logger.cpp
   autopolaralignment.h autopolaralignment.cpp
+  polemasterpolaralignment.h polemasterpolaralignment.cpp
   autofocus.h autofocus.cpp
   starsimulator.h starsimulator.cpp
   mountstate.h

@@ -74,6 +74,7 @@ namespace fs = std::filesystem;
 #include <QQueue>
 #include "Logger.h"
 #include "autopolaralignment.h"
+#include "polemasterpolaralignment.h"
 #include "autofocus.h"
 #include "SerialDeviceDetector.h"
 #include "guiding/GuiderCore.h"
@@ -610,9 +611,12 @@ public:
     int sdkGuiderExposureExpectedDuration = 0;    // SDK 导星预期曝光时长（毫秒）
     QString sdkGuiderExposureRole = "Guider";     // 当前 SDK 导星定时器服务的角色：Guider/PoleCamera
 
-    // SDK 串行执行线程：避免在主线程执行阻塞式 SDK 调用
-    // 注意：相机与电调分开，避免相机读帧阻塞导致电调命令排队延迟
-    std::unique_ptr<SdkSerialExecutor> sdkCamExec;
+    // SDK 串行执行线程：避免在主线程执行阻塞式 SDK 调用。
+    // 每个相机设备使用独立通道，避免一个设备的阻塞读帧影响其它设备。
+    std::unique_ptr<SdkSerialExecutor> sdkCamExec; // legacy/generic camera setup path
+    std::unique_ptr<SdkSerialExecutor> sdkMainCamExec;
+    std::unique_ptr<SdkSerialExecutor> sdkGuiderCamExec;
+    std::unique_ptr<SdkSerialExecutor> sdkPoleCamExec;
     std::unique_ptr<SdkSerialExecutor> sdkFocuserExec;
     std::atomic_bool sdkFrameTaskInFlight{false};           // 相机读帧任务是否在执行
     std::atomic_bool sdkGuiderFrameTaskInFlight{false};     // 导星相机读帧任务是否在执行（SDK）
@@ -628,6 +632,9 @@ public:
     void requestSdkFocuserPositionUpdate(bool emitWs = false);
     // 请求一次“电调版本刷新”（异步）：避免在主线程触碰 QSerialPort（否则会触发 QSocketNotifier 跨线程警告）
     void requestSdkFocuserVersionUpdate(bool emitWs = true);
+    SdkSerialExecutor* sdkMainCameraExecutor() const;
+    SdkSerialExecutor* sdkGuiderCameraExecutor() const;
+    SdkSerialExecutor* sdkPoleCameraExecutor() const;
     
     /**
      * @brief SDK 曝光定时器回调：轮询获取图像
@@ -866,6 +873,8 @@ public:
         int tileSize = 512;
         int maxZoomLevel = 0;
         QString cfa;
+        uint16_t blackLevel = 0;
+        uint16_t whiteLevel = 65535;
     };
     mutable std::mutex tileFrameMutex;
     TileFrameState tileFrame;
@@ -889,6 +898,7 @@ public:
      * @param Image OpenCV 图像
      */
     void saveGuiderImageAsJPG(cv::Mat Image);
+    void savePoleMasterPreviewAsJPG(const QString &fitsPath);
 
     /**
      * @brief 伪彩/去马赛克
@@ -2066,8 +2076,10 @@ public:
      * @return 成功返回 true
      */
     bool initPolarAlignment(PolarAlignmentCameraRole role = PolarAlignmentCameraRole::MainCamera);
+    bool initPoleMasterPolarAlignment();
 
     PolarAlignment *polarAlignment = nullptr; // 极轴校准对象
+    PoleMasterPolarAlignment *poleMasterPolarAlignment = nullptr; // 电子极轴镜专用校准对象
 
 /**********************  与前端消息交互（槽）  **********************/
 private slots:
@@ -2096,6 +2108,7 @@ private:
     void startGuiderSingleCapture(int exposureMs);
     void startPoleCameraSingleCapture(int exposureMs);
     static PolarAlignmentCameraRole parsePolarAlignmentCameraRole(const QString &roleText);
+    SdkSerialExecutor* sdkExecutorForPolarRole(PolarAlignmentCameraRole role) const;
 
     // WebSocket消息防抖机制（只保留最后一条命令）
     QString lastCommandMessage; // 存储最后一条完整消息（命令+参数）
