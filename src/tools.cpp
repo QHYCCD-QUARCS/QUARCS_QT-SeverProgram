@@ -5801,12 +5801,14 @@ bool Tools::isSolveImageFinish() {
 bool Tools::isPlateSolveInProgress() {
   return PlateSolveInProgress;
 }
-bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK, int mode, double lastRA, double lastDEC)
+bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK, int mode, double lastRA, double lastDEC, double searchRadiusDeg, const QString &backendConfigPath)
 {
     // 参数说明：
     // mode: 0=基础模式, 1=包含视场参数, 2=包含视场和位置参数
     // lastRA: 上次解析的赤经，单位为度 (0-360°)，注意不是小时制
     // lastDEC: 上次解析的赤纬，单位为度 (-90° to +90°)
+    // searchRadiusDeg: 位置先验搜索半径（度），仅在模式2有效；<=0 时使用默认值
+    // backendConfigPath: solve-field 后端配置路径；非空时通过 --backend-config 限制索引
     // 
     // 智能回退策略：
     // - 模式2缺少位置参数但有视场参数 → 回退到模式1
@@ -5848,6 +5850,12 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                         (fixedPolarSolveDepth.isEmpty() ? "" : " depth=" + fixedPolarSolveDepth.toStdString()),
                     LogLevel::INFO, DeviceType::MAIN);
     }
+    const double solveSearchRadiusDeg = searchRadiusDeg > 0.0
+                                            ? searchRadiusDeg
+                                            : (fixedPolarSolve ? fixedPolarSolveRadiusDeg : 2.0);
+    const QString backendConfigArg = backendConfigPath.trimmed().isEmpty()
+                                         ? QString()
+                                         : (" --backend-config " + backendConfigPath.trimmed());
 
     QProcess* cmd_test = new QProcess();
     // 设置父对象为 instance_，确保在 instance_ 销毁时自动释放
@@ -5947,6 +5955,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --cpulimit 20"
                     " --downsample 1"
                     " --objs 0" +
+                    backendConfigArg +
                     (fixedPolarSolve && !fixedPolarSolveDepth.isEmpty() ? " --depth " + fixedPolarSolveDepth : "") +
                     " --scale-units degwidth"
                     " --scale-low " + MinFOV +
@@ -5967,13 +5976,14 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --cpulimit 20"
                     " --downsample 1"
                     " --objs 0" +
+                    backendConfigArg +
                     (fixedPolarSolve && !fixedPolarSolveDepth.isEmpty() ? " --depth " + fixedPolarSolveDepth : "") +
                     " --scale-units degwidth"
                     " --scale-low " + MinFOV +
                     " --scale-high " + MaxFOV +
                     " --ra " + QString::number(lastRA, 'f', 6) +
                     " --dec " + QString::number(lastDEC, 'f', 6) +
-                    " --radius " + QString::number(fixedPolarSolve ? fixedPolarSolveRadiusDeg : 2.0, 'f', 6);
+                    " --radius " + QString::number(solveSearchRadiusDeg, 'f', 6);
                 Logger::Log("使用模式2解析（包含视场和位置参数）", LogLevel::INFO, DeviceType::MAIN);
                 break;
             case 0:
@@ -5988,7 +5998,8 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
                     " --pixel-error 1.5"
                     " --cpulimit 20"
                     " --downsample 1"
-                    " --objs 0";
+                    " --objs 0" +
+                    backendConfigArg;
                 Logger::Log("使用模式0解析（默认模式）", LogLevel::INFO, DeviceType::MAIN);
                 break;
         }

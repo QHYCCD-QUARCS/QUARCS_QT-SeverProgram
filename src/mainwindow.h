@@ -2077,9 +2077,11 @@ public:
      */
     bool initPolarAlignment(PolarAlignmentCameraRole role = PolarAlignmentCameraRole::MainCamera);
     bool initPoleMasterPolarAlignment();
+    bool initPoleMasterAlignmentSimulation();
 
     PolarAlignment *polarAlignment = nullptr; // 极轴校准对象
     PoleMasterPolarAlignment *poleMasterPolarAlignment = nullptr; // 电子极轴镜专用校准对象
+    PoleMasterAlignmentSimulation *poleMasterAlignmentSimulation = nullptr; // 电子极轴镜模拟校准对象
 
 /**********************  与前端消息交互（槽）  **********************/
 private slots:

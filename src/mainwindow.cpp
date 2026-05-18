@@ -5233,7 +5233,14 @@ void MainWindow::onMessageReceived(const QString &message)
             poleMasterPolarAlignment = nullptr;
             Logger::Log("ResetAutoPolarAlignment: PoleMaster reset successfully", LogLevel::INFO, DeviceType::MAIN);
         }
-        if (polarAlignment == nullptr && poleMasterPolarAlignment == nullptr)
+        if (poleMasterAlignmentSimulation != nullptr)
+        {
+            poleMasterAlignmentSimulation->stop();
+            delete poleMasterAlignmentSimulation;
+            poleMasterAlignmentSimulation = nullptr;
+            Logger::Log("ResetAutoPolarAlignment: PoleMaster simulation reset successfully", LogLevel::INFO, DeviceType::MAIN);
+        }
+        if (polarAlignment == nullptr && poleMasterPolarAlignment == nullptr && poleMasterAlignmentSimulation == nullptr)
         {
             Logger::Log("ResetAutoPolarAlignment: alignment objects are nullptr", LogLevel::WARNING, DeviceType::MAIN);
         }
@@ -5345,6 +5352,47 @@ void MainWindow::onMessageReceived(const QString &message)
             qunsetenv("QUARCS_POLAR_SOLVE_DEPTH");
         }
     }
+    else if (parts[0].trimmed() == "StartPoleMasterAlignmentSimulation")
+    {
+        Logger::Log("StartPoleMasterAlignmentSimulation ...", LogLevel::DEBUG, DeviceType::MAIN);
+        if (polarAlignment != nullptr)
+        {
+            polarAlignment->stopPolarAlignment();
+            delete polarAlignment;
+            polarAlignment = nullptr;
+        }
+        if (poleMasterPolarAlignment != nullptr)
+        {
+            poleMasterPolarAlignment->stop();
+            delete poleMasterPolarAlignment;
+            poleMasterPolarAlignment = nullptr;
+        }
+        if (poleMasterAlignmentSimulation != nullptr)
+        {
+            poleMasterAlignmentSimulation->stop();
+            delete poleMasterAlignmentSimulation;
+            poleMasterAlignmentSimulation = nullptr;
+        }
+        qunsetenv("QUARCS_POLAR_SOLVE_FIXED");
+        qunsetenv("QUARCS_POLAR_SOLVE_RA_DEG");
+        qunsetenv("QUARCS_POLAR_SOLVE_DEC_DEG");
+        qunsetenv("QUARCS_POLAR_SOLVE_RADIUS_DEG");
+        qunsetenv("QUARCS_POLAR_SOLVE_SCALE_LOW_DEG");
+        qunsetenv("QUARCS_POLAR_SOLVE_SCALE_HIGH_DEG");
+        qunsetenv("QUARCS_POLAR_SOLVE_DEPTH");
+
+        if (initPoleMasterAlignmentSimulation() &&
+            poleMasterPolarAlignment != nullptr &&
+            poleMasterPolarAlignment->start())
+        {
+            Logger::Log("StartPoleMasterAlignmentSimulation: Started successfully", LogLevel::INFO, DeviceType::MAIN);
+        }
+        else
+        {
+            Logger::Log("StartPoleMasterAlignmentSimulation: Failed to start", LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start pole camera simulation");
+        }
+    }
     else if (parts[0].trimmed() == "StopAutoPolarAlignment")
     {
         Logger::Log("StopAutoPolarAlignment ...", LogLevel::DEBUG, DeviceType::MAIN);
@@ -5365,7 +5413,12 @@ void MainWindow::onMessageReceived(const QString &message)
             poleMasterPolarAlignment->stop();
             Logger::Log("StopAutoPolarAlignment: PoleMaster stopped successfully", LogLevel::INFO, DeviceType::MAIN);
         }
-        if (polarAlignment == nullptr && poleMasterPolarAlignment == nullptr)
+        if (poleMasterAlignmentSimulation != nullptr)
+        {
+            poleMasterAlignmentSimulation->stop();
+            Logger::Log("StopAutoPolarAlignment: PoleMaster simulation stopped successfully", LogLevel::INFO, DeviceType::MAIN);
+        }
+        if (polarAlignment == nullptr && poleMasterPolarAlignment == nullptr && poleMasterAlignmentSimulation == nullptr)
         {
             Logger::Log("StopAutoPolarAlignment: alignment objects are nullptr", LogLevel::WARNING, DeviceType::MAIN);
         }
@@ -10717,10 +10770,12 @@ void MainWindow::savePoleMasterPreviewAsJPG(const QString &fitsPath)
                 LogLevel::INFO,
                 DeviceType::MAIN);
 
-    emit wsThread->sendMessageToClient(QString("PoleMasterAlignmentFrameData:%1:%2:%3")
+    const QString frameId = QFileInfo(fitsPath).completeBaseName();
+    emit wsThread->sendMessageToClient(QString("PoleMasterAlignmentFrameData:%1:%2:%3:%4")
                                            .arg(QString::fromStdString(fileName))
                                            .arg(preview8.cols)
-                                           .arg(preview8.rows));
+                                           .arg(preview8.rows)
+                                           .arg(frameId));
 
     auto cleanupOldPoleMasterImages = [&](const QString &dirPath, bool includeSymlinks, const QString &protectedFileName) {
         try
@@ -32713,6 +32768,8 @@ bool MainWindow::initPoleMasterPolarAlignment()
                                                             dpMount,
                                                             dpPoleScope,
                                                             isPoleCameraSDK(),
+                                                            false,
+                                                            QString(),
                                                             this);
     if (poleMasterPolarAlignment == nullptr)
     {
@@ -32738,6 +32795,9 @@ bool MainWindow::initPoleMasterPolarAlignment()
     cfg.raRotationAngle = 35.0;
     cfg.doneThresholdArcsec = 30.0;
     cfg.stableFrameRequirement = 3;
+    cfg.latitude = observatorylatitude;
+    cfg.solveSearchRadiusDeg = 5.0;
+    cfg.solveIndexFilePath = "index-tycho2-09.littleendian.fits";
     poleMasterPolarAlignment->setConfig(cfg);
 
     connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::stateChanged,
@@ -32777,9 +32837,10 @@ bool MainWindow::initPoleMasterPolarAlignment()
                    double axisX, double axisY,
                    double poleX, double poleY,
                    double errorPx, double errorArcsec,
+                   const QString &frameId,
                    const QString &hint)
             {
-                const QString msg = QString("PoleMasterAlignmentGuideData:%1:%2:%3:%4:%5:%6:%7:%8:%9")
+                const QString msg = QString("PoleMasterAlignmentGuideData:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10")
                                         .arg(imageW)
                                         .arg(imageH)
                                         .arg(axisX, 0, 'f', 3)
@@ -32788,15 +32849,159 @@ bool MainWindow::initPoleMasterPolarAlignment()
                                         .arg(poleY, 0, 'f', 3)
                                         .arg(errorPx, 0, 'f', 3)
                                         .arg(errorArcsec, 0, 'f', 2)
+                                        .arg(frameId)
                                         .arg(hint);
                 Logger::Log(msg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
                 emit this->wsThread->sendMessageToClient(msg);
+            });
+
+    connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::frameData,
+            [this](const QString &fileName, int imageW, int imageH, const QString &frameId)
+            {
+                const QString sourcePath = QDir(QString::fromStdString(vueDirectoryPath)).filePath(fileName);
+                const QString targetPath = QDir(QString::fromStdString(vueImagePath)).filePath(fileName);
+                if (QFileInfo::exists(sourcePath) && sourcePath != targetPath && !QFileInfo::exists(targetPath))
+                {
+                    QFile::link(sourcePath, targetPath);
+                    if (!QFileInfo::exists(targetPath))
+                        QFile::copy(sourcePath, targetPath);
+                }
+                emit this->wsThread->sendMessageToClient(QString("PoleMasterAlignmentFrameData:%1:%2:%3:%4")
+                                                             .arg(fileName)
+                                                             .arg(imageW)
+                                                             .arg(imageH)
+                                                             .arg(frameId));
+            });
+
+    connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::overlayData,
+            [this](const QString &jsonPayload)
+            {
+                emit this->wsThread->sendMessageToClient("PoleMasterAlignmentOverlayData:" + jsonPayload);
             });
 
     Logger::Log("initPoleMasterPolarAlignment | initialized successfully, focal=" +
                     std::to_string(static_cast<int>(std::lround(poleFocal))) +
                     ", size(mm)=" + std::to_string(cameraWidthMm) + "x" + std::to_string(cameraHeightMm),
                 LogLevel::INFO, DeviceType::MAIN);
+    return true;
+}
+
+bool MainWindow::initPoleMasterAlignmentSimulation()
+{
+    currentPolarAlignmentCameraRole = PolarAlignmentCameraRole::PoleCamera;
+
+    QString imageRoot = QString::fromStdString(vueImagePath);
+    if (imageRoot.trimmed().isEmpty())
+        imageRoot = QString::fromStdString(vueDirectoryPath);
+    imageRoot = QDir::cleanPath(imageRoot);
+    QDir dir(imageRoot);
+    if (!dir.exists() && !dir.mkpath("."))
+    {
+        Logger::Log("initPoleMasterAlignmentSimulation | image root unavailable, stop simulation. root=" +
+                        imageRoot.toStdString(),
+                    LogLevel::ERROR,
+                    DeviceType::MAIN);
+        return false;
+    }
+
+    poleMasterPolarAlignment = new PoleMasterPolarAlignment(indi_Client,
+                                                            dpMount,
+                                                            dpPoleScope,
+                                                            isPoleCameraSDK(),
+                                                            true,
+                                                            imageRoot,
+                                                            this);
+    if (poleMasterPolarAlignment == nullptr)
+    {
+        emit wsThread->sendMessageToClient("StartAutoPolarAlignmentStatus:false:Failed to start pole camera simulation,Failed to create simulation object");
+        return false;
+    }
+
+    PoleMasterAlignmentConfig cfg;
+    cfg.defaultExposureTime = 1000;
+    cfg.guidanceExposureTime = 1000;
+    cfg.captureTimeoutMs = 15000;
+    cfg.movementTimeoutMs = 2000;
+    cfg.focalLength = 100;
+    cfg.cameraWidth = 21.0;
+    cfg.cameraHeight = 15.75;
+    cfg.raRotationAngle = 35.0;
+    cfg.doneThresholdArcsec = 30.0;
+    cfg.stableFrameRequirement = 3;
+    cfg.latitude = observatorylatitude;
+    cfg.solveSearchRadiusDeg = 5.0;
+    cfg.solveIndexFilePath = "index-tycho2-12.littleendian.fits,index-tycho2-13.littleendian.fits,index-tycho2-14.littleendian.fits,index-tycho2-15.littleendian.fits";
+    poleMasterPolarAlignment->setConfig(cfg);
+
+    connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::stateChanged,
+            [this](PoleMasterAlignmentState state, QString message, int progress, bool running)
+            {
+                const QString stateMsg = QString("PoleMasterAlignmentState:%1:%2:%3:%4")
+                                             .arg(running ? "true" : "false")
+                                             .arg(static_cast<int>(state))
+                                             .arg(message)
+                                             .arg(progress);
+                emit this->wsThread->sendMessageToClient(stateMsg);
+
+                if (state == PoleMasterAlignmentState::IDLE ||
+                    state == PoleMasterAlignmentState::COMPLETED ||
+                    state == PoleMasterAlignmentState::FAILED)
+                {
+                    emit this->wsThread->sendMessageToClient("PolarAlignmentState:false:0:电子极轴镜模拟校准已停止:0");
+                }
+            });
+
+    connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::guideData,
+            [this](int imageW, int imageH,
+                   double axisX, double axisY,
+                   double poleX, double poleY,
+                   double errorPx, double errorArcsec,
+                   const QString &frameId,
+                   const QString &hint)
+            {
+                const QString msg = QString("PoleMasterAlignmentGuideData:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10")
+                                        .arg(imageW)
+                                        .arg(imageH)
+                                        .arg(axisX, 0, 'f', 3)
+                                        .arg(axisY, 0, 'f', 3)
+                                        .arg(poleX, 0, 'f', 3)
+                                        .arg(poleY, 0, 'f', 3)
+                                        .arg(errorPx, 0, 'f', 3)
+                                        .arg(errorArcsec, 0, 'f', 2)
+                                        .arg(frameId)
+                                        .arg(hint);
+                Logger::Log(msg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                emit this->wsThread->sendMessageToClient(msg);
+            });
+
+    connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::frameData,
+            [this](const QString &fileName, int imageW, int imageH, const QString &frameId)
+            {
+                const QString sourcePath = QDir(QString::fromStdString(vueDirectoryPath)).filePath(fileName);
+                const QString targetPath = QDir(QString::fromStdString(vueImagePath)).filePath(fileName);
+                if (QFileInfo::exists(sourcePath) && sourcePath != targetPath && !QFileInfo::exists(targetPath))
+                {
+                    QFile::link(sourcePath, targetPath);
+                    if (!QFileInfo::exists(targetPath))
+                        QFile::copy(sourcePath, targetPath);
+                }
+                emit this->wsThread->sendMessageToClient(QString("PoleMasterAlignmentFrameData:%1:%2:%3:%4")
+                                                             .arg(fileName)
+                                                             .arg(imageW)
+                                                             .arg(imageH)
+                                                             .arg(frameId));
+            });
+
+    connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::overlayData,
+            [this](const QString &jsonPayload)
+            {
+                emit this->wsThread->sendMessageToClient("PoleMasterAlignmentOverlayData:" + jsonPayload);
+            });
+
+    Logger::Log("initPoleMasterAlignmentSimulation | initialized successfully, imageRoot=" +
+                    imageRoot.toStdString(),
+                LogLevel::INFO,
+                DeviceType::MAIN);
     return true;
 }
 

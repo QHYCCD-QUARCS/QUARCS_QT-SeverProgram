@@ -566,10 +566,12 @@ class Tools : public QObject {
   static bool WaitForPlateSolveToComplete();
   static bool isSolveImageFinish();
   static bool isPlateSolveInProgress();
-  static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK, int mode = 1, double lastRA = 0.0, double lastDEC = 0.0);
+  static bool PlateSolve(QString filename, int FocalLength,double CameraSize_width,double CameraSize_height, bool USEQHYCCDSDK, int mode = 1, double lastRA = 0.0, double lastDEC = 0.0, double searchRadiusDeg = -1.0, const QString &backendConfigPath = QString());
   // mode: 0=基础模式, 1=包含视场参数, 2=包含视场和位置参数
   // lastRA: 上次解析的赤经，单位为度 (0-360°)
   // lastDEC: 上次解析的赤纬，单位为度 (-90° to +90°)
+  // searchRadiusDeg: 模式2时的搜索半径（度），<=0 表示使用内部默认值
+  // backendConfigPath: solve-field --backend-config 文件路径（空表示不限制索引）
   // 智能回退: 模式2→1→0, 模式1→0, 根据参数可用性自动选择最优模式
   static SloveResults ReadSolveResult(QString filename, int imageWidth, int imageHeight);
   static WCSParams extractWCSParams(const QString& wcsInfo);
