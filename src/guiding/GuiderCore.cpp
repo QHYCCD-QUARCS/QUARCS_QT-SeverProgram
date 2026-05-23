@@ -791,6 +791,45 @@ void GuiderCore::clearPersistedCalibrationSnapshot() const
     }
 }
 
+// 统一选星入口：根据 m_useFlatfield 选择检测器
+std::optional<guiding::StarCandidate> GuiderCore::selectStarWithDetector(
+    const cv::Mat& img16,
+    const guiding::StarSelectionParams& params,
+    const QString& fitsPath,
+    std::vector<guiding::StarCandidate>* outCandidates,
+    std::vector<guiding::StarCandidate>* outRejected) const
+{
+    if (m_useFlatfield)
+    {
+        auto ffParams = guiding::flatfield::FlatFieldDetector::Params{};
+        ffParams.snrThreshold = params.minSNR > 0 ? params.minSNR : 5.0;
+        ffParams.minHFD = params.minHFD;
+        ffParams.maxHFD = params.maxHFD;
+        ffParams.minSeparation = params.searchRegionPx / 3;
+        ffParams.edgeMarginPx = params.edgeMarginPx;
+        ffParams.nearSaturationRatio = params.nearSaturationRatio;
+
+        auto t0 = std::chrono::steady_clock::now();
+        auto result = m_flatfieldDetector.detect(img16, ffParams, outCandidates, outRejected);
+        auto t1 = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        if (result.has_value())
+        {
+            logMessage(QString("[FlatField] 检测到 %1 颗星点，最佳SNR=%2，耗时 %3ms")
+                .arg(outCandidates ? outCandidates->size() : 0)
+                .arg(result->snr, 0, 'f', 1)
+                .arg(ms, 0, 'f', 1),
+                LogLevel::INFO, DeviceType::GUIDER);
+        }
+        return result;
+    }
+    else
+    {
+        return m_detector.selectGuideStar(img16, params, fitsPath, outCandidates, outRejected);
+    }
+}
+
 std::optional<guiding::StarCandidate> GuiderCore::evaluateManualLockCandidate(double xPx, double yPx) const
 {
     if (m_lastGuiderFrameFitsPath.isEmpty())
@@ -814,7 +853,7 @@ std::optional<guiding::StarCandidate> GuiderCore::evaluateManualLockCandidate(do
     p.detectMinSNR = 2.0;
 
     std::vector<guiding::StarCandidate> candidates;
-    (void)m_detector.selectGuideStar(img16, p, m_lastGuiderFrameFitsPath, &candidates);
+    (void)selectStarWithDetector(img16, p, m_lastGuiderFrameFitsPath, &candidates);
     if (candidates.empty())
         return std::nullopt;
 
@@ -1171,7 +1210,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             sp.autoSelDownsample = 0;
             std::vector<guiding::StarCandidate> candidates;
             std::vector<guiding::StarCandidate> rejectedCandidates;
-            auto best = m_detector.selectGuideStar(img16, sp, effectiveFitsPath, &candidates, &rejectedCandidates);
+            auto best = selectStarWithDetector(img16, sp, effectiveFitsPath, &candidates, &rejectedCandidates);
             bool usedRelaxedParams = false;
             if (!best.has_value())
             {
@@ -1183,7 +1222,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 relaxed.kSigma = 3.0;
                 relaxed.autoSelPixelScaleArcsecPerPixel = sp.autoSelPixelScaleArcsecPerPixel;
                 relaxed.autoSelDownsample = sp.autoSelDownsample;
-                best = m_detector.selectGuideStar(img16, relaxed, effectiveFitsPath, &candidates, &rejectedCandidates);
+                best = selectStarWithDetector(img16, relaxed, effectiveFitsPath, &candidates, &rejectedCandidates);
                 usedRelaxedParams = best.has_value();
             }
             if (best.has_value())
