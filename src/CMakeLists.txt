@@ -302,6 +302,22 @@ target_link_libraries(guiding_batch_analyzer PRIVATE
   ${StellarSolver_LIBS}
 )
 
+# flatfield_batch_test: 批量测试平场法 vs PHD2 星点检测
+add_executable(flatfield_batch_test
+  tests/flatfield_batch_test.cpp
+  guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
+  guiding/CentroidUtils.h guiding/CentroidUtils.cpp
+  guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
+  tools.h tools.cpp
+  Logger.h Logger.cpp
+)
+
+target_link_libraries(flatfield_batch_test PRIVATE
+  ${OpenCV_LIBS}
+  -lcfitsio
+  Qt5::Core
+)
+
 target_link_libraries(client PRIVATE
     indiclient ${ZLIB_LIBRARY} ${NOVA_LIBRARIES}
 )
