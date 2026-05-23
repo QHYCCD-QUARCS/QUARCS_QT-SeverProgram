@@ -816,10 +816,10 @@ std::optional<guiding::StarCandidate> GuiderCore::selectStarWithDetector(
 
         if (result.has_value())
         {
-            logMessage(QString("[FlatField] 检测到 %1 颗星点，最佳SNR=%2，耗时 %3ms")
+            Logger::Log((QString("[FlatField] 检测到 %1 颗星点，最佳SNR=%2，耗时 %3ms")
                 .arg(outCandidates ? outCandidates->size() : 0)
                 .arg(result->snr, 0, 'f', 1)
-                .arg(ms, 0, 'f', 1),
+                .arg(ms, 0, 'f', 1)).toStdString(),
                 LogLevel::INFO, DeviceType::GUIDER);
         }
         return result;
