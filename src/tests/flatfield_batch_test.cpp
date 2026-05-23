@@ -38,16 +38,19 @@ static cv::Mat readFits16(const std::string& path)
         return cv::Mat();
     }
     fits_get_img_type(fptr, &bittype, &status);
-    fits_get_img_dim(fptr, &naxes, &status);
+    int intNaxes = 0;
+    fits_get_img_dim(fptr, &intNaxes, &status);
+    naxes = intNaxes;
     fits_get_img_size(fptr, naxes, naxis, &status);
 
     cv::Mat img;
+    int anynull = 0;
     if (naxes >= 2 && (bittype == USHORT_IMG || bittype == SHORT_IMG))
     {
         img = cv::Mat(cv::Size(naxis[0], naxis[1]), CV_16UC1);
         long fpixel = 1;
         fits_read_img(fptr, TUSHORT, fpixel, naxis[0] * naxis[1],
-                      0, img.ptr<uint16_t>(), &status);
+                      0, img.ptr<uint16_t>(), &anynull, &status);
     }
     else if (naxes >= 2 && bittype == ULONG_IMG)
     {
@@ -55,7 +58,7 @@ static cv::Mat readFits16(const std::string& path)
         img = cv::Mat(cv::Size(naxis[0], naxis[1]), CV_32SC1);
         long fpixel = 1;
         fits_read_img(fptr, TLONG, fpixel, naxis[0] * naxis[1],
-                      0, img.ptr<int32_t>(), &status);
+                      0, img.ptr<int32_t>(), &anynull, &status);
         img.convertTo(img, CV_16UC1, 1.0);
     }
     else
@@ -159,8 +162,8 @@ int main(int argc, char** argv)
         double ffMs = std::chrono::duration<double, std::milli>(t4 - t3).count();
         ffTotalMs += ffMs;
 
-        int phd2Count = phd2Candidates ? phd2Candidates->size() : 0;
-        int ffCount = ffCandidates ? ffCandidates->size() : 0;
+        int phd2Count = (int)phd2Candidates.size();
+        int ffCount = (int)ffCandidates.size();
 
         if (phd2Result.has_value()) phd2Found++;
         if (ffResult.has_value()) ffFound++;
