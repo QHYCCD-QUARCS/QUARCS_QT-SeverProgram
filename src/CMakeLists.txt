@@ -138,6 +138,7 @@ add_executable(client
   guiding/MultiStarTracker.h guiding/MultiStarTracker.cpp
   guiding/DecBacklashEstimator.h guiding/DecBacklashEstimator.cpp
   guiding/SimGuiderFrameSource.h guiding/SimGuiderFrameSource.cpp
+  guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
   tools.h tools.cpp
   sdks/SdkCommon.h
   sdks/SdkDriver.h
@@ -179,6 +180,7 @@ add_executable(guiding_offline_test
   guiding/CentroidUtils.h guiding/CentroidUtils.cpp
   guiding/MultiStarTracker.h guiding/MultiStarTracker.cpp
   guiding/DecBacklashEstimator.h guiding/DecBacklashEstimator.cpp
+  guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
   focused_star_detection.cpp
   tools.h tools.cpp
   Logger.h Logger.cpp
@@ -191,6 +193,7 @@ add_executable(guiding_batch_analyzer
   tests/guiding_batch_analyzer.cpp
   guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
   guiding/CentroidUtils.h guiding/CentroidUtils.cpp
+  guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
   focused_star_detection.cpp
   tools.h tools.cpp
   Logger.h Logger.cpp
