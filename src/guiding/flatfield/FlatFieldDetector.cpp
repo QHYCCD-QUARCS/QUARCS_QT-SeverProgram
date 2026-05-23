@@ -36,8 +36,16 @@ double madStdDev(const cv::Mat& img)
     // 用 MAD 更鲁棒
     cv::Mat absDiff;
     cv::absdiff(f, mean[0], absDiff);
-    double median;
-    cv::medianValue(absDiff, median);
+    // 手动计算中位数（cv::medianValue 在旧版OpenCV不可用）
+    std::vector<float> vals(absDiff.total());
+    for (int i = 0; i < absDiff.rows; ++i) {
+        const float* row = absDiff.ptr<float>(i);
+        for (int j = 0; j < absDiff.cols; ++j) {
+            vals[i * absDiff.cols + j] = row[j];
+        }
+    }
+    std::sort(vals.begin(), vals.end());
+    double median = vals[vals.size() / 2];
     return median * 1.4826; // MAD → σ 转换因子
 }
 
