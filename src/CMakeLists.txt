@@ -308,8 +308,6 @@ add_executable(flatfield_batch_test
   guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
   guiding/CentroidUtils.h guiding/CentroidUtils.cpp
   guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
-  tools.h tools.cpp
-  Logger.h Logger.cpp
 )
 
 target_link_libraries(flatfield_batch_test PRIVATE
