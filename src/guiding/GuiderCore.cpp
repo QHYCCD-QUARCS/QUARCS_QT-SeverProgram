@@ -797,7 +797,8 @@ std::optional<guiding::StarCandidate> GuiderCore::selectStarWithDetector(
     const guiding::StarSelectionParams& params,
     const QString& fitsPath,
     std::vector<guiding::StarCandidate>* outCandidates,
-    std::vector<guiding::StarCandidate>* outRejected) const
+    std::vector<guiding::StarCandidate>* outRejected,
+    cv::Mat* debugImage) const
 {
     if (m_useFlatfield)
     {
@@ -826,7 +827,7 @@ std::optional<guiding::StarCandidate> GuiderCore::selectStarWithDetector(
     }
     else
     {
-        return m_detector.selectGuideStar(img16, params, fitsPath, outCandidates, outRejected);
+        return m_detector.selectGuideStar(img16, params, fitsPath, outCandidates, outRejected, debugImage);
     }
 }
 
@@ -1210,7 +1211,8 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             sp.autoSelDownsample = 0;
             std::vector<guiding::StarCandidate> candidates;
             std::vector<guiding::StarCandidate> rejectedCandidates;
-            auto best = selectStarWithDetector(img16, sp, effectiveFitsPath, &candidates, &rejectedCandidates);
+            cv::Mat debugImg;
+            auto best = selectStarWithDetector(img16, sp, effectiveFitsPath, &candidates, &rejectedCandidates, &debugImg);
             bool usedRelaxedParams = false;
             if (!best.has_value())
             {
@@ -1222,9 +1224,24 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 relaxed.kSigma = 3.0;
                 relaxed.autoSelPixelScaleArcsecPerPixel = sp.autoSelPixelScaleArcsecPerPixel;
                 relaxed.autoSelDownsample = sp.autoSelDownsample;
-                best = selectStarWithDetector(img16, relaxed, effectiveFitsPath, &candidates, &rejectedCandidates);
+                best = selectStarWithDetector(img16, relaxed, effectiveFitsPath, &candidates, &rejectedCandidates, &debugImg);
                 usedRelaxedParams = best.has_value();
             }
+
+            // DEBUG: save annotated image for visual verification
+            if (!debugImg.empty())
+            {
+                // Convert 16-bit to 8-bit for display
+                cv::Mat debug8;
+                debugImg.convertTo(debug8, CV_8U, 255.0 / 65535.0);
+                std::string debugPath = m_lastGuiderFrameJpgPath.toStdString();
+                if (debugPath.empty()) debugPath = "/home/quarcs/images/GuiderDiagnostics/debug_stars.jpg";
+                cv::imwrite(debugPath, debug8);
+                Logger::Log(std::string("[DEBUG] Saved annotated debug image: ") + debugPath
+                    + " candidates=" + std::to_string(candidates.size()),
+                    LogLevel::INFO, DeviceType::GUIDER);
+            }
+
             if (best.has_value())
             {
                 m_selectingNoStarFrameCount = 0;

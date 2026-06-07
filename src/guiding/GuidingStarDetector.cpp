@@ -838,7 +838,8 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                                                                   const StarSelectionParams& p,
                                                                   const QString& fitsPath,
                                                                   std::vector<StarCandidate>* outCandidates,
-                                                                  std::vector<StarCandidate>* outRejectedCandidates) const
+                                                                  std::vector<StarCandidate>* outRejectedCandidates,
+                                                                  cv::Mat* debugImage) const
 {
     const auto tSelectStart = std::chrono::steady_clock::now();
     Logger::Log(std::string("[starDetectFlat] selectGuideStar START image=")
@@ -1140,6 +1141,28 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
             Logger::Log(std::string(kLogPrefix) +
                             " selected pass=" + std::to_string(pass) + " " + formatCandidateBrief(c),
                         LogLevel::INFO, DeviceType::GUIDER);
+
+            // DEBUG: annotate stars on image for visual verification
+            if (debugImage && outCandidates)
+            {
+                *debugImage = image16.clone();
+                if (debugImage->depth() == CV_16U)
+                {
+                    // Draw on 16-bit image: use high values for visibility
+                    for (size_t i = 0; i < outCandidates->size(); ++i)
+                    {
+                        const auto& sc = (*outCandidates)[i];
+                        cv::Point center(static_cast<int>(sc.x), static_cast<int>(sc.y));
+                        cv::circle(*debugImage, center, 8, cv::Scalar(30000), 1);
+                    }
+                    // Draw selected star with larger circle
+                    cv::Point center(static_cast<int>(c.x), static_cast<int>(c.y));
+                    cv::circle(*debugImage, center, 15, cv::Scalar(60000), 2);
+                    cv::line(*debugImage, cv::Point(center.x - 15, center.y), cv::Point(center.x + 15, center.y), cv::Scalar(60000), 2);
+                    cv::line(*debugImage, cv::Point(center.x, center.y - 15), cv::Point(center.x, center.y + 15), cv::Scalar(60000), 2);
+                }
+            }
+
             return c;
             {
                 auto t = std::chrono::steady_clock::now();

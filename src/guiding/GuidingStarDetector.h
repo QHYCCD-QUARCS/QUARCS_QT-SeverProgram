@@ -51,7 +51,8 @@ public:
                                                  const StarSelectionParams& p,
                                                  const QString& fitsPath = QString(),
                                                  std::vector<StarCandidate>* outCandidates = nullptr,
-                                                 std::vector<StarCandidate>* outRejectedCandidates = nullptr) const;
+                                                 std::vector<StarCandidate>* outRejectedCandidates = nullptr,
+                                                 cv::Mat* debugImage = nullptr) const;
 
 private:
     static double maxADUForMat(const cv::Mat& img);

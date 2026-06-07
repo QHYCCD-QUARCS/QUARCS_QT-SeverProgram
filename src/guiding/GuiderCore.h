@@ -112,7 +112,8 @@ private:
         const guiding::StarSelectionParams& params,
         const QString& fitsPath,
         std::vector<guiding::StarCandidate>* outCandidates,
-        std::vector<guiding::StarCandidate>* outRejected = nullptr) const;
+        std::vector<guiding::StarCandidate>* outRejected = nullptr,
+        cv::Mat* debugImage = nullptr) const;
 
 private:
     guiding::State m_state = guiding::State::Idle;
