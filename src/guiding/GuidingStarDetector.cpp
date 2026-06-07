@@ -621,6 +621,170 @@ double GuidingStarDetector::localPeakADU(const cv::Mat& img, double x, double y,
     return peak;
 }
 
+
+// ============================================================
+// Flat-Field Star Detection
+// ============================================================
+
+std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
+                                                 const StarSelectionParams& p)
+{
+    std::vector<StarCandidate> candidates;
+    if (image16.empty()) return candidates;
+
+    const int rows = image16.rows;
+    const int cols = image16.cols;
+
+    // Step 1: Convert to float
+    cv::Mat image32f;
+    image16.convertTo(image32f, CV_32F);
+
+    // Step 2: Generate flat-field with boxFilter
+    int kernelSize = p.flatKernelSize;
+    if (kernelSize < 8) kernelSize = 64;
+    cv::Mat flat;
+    cv::boxFilter(image32f, flat, CV_32F, cv::Size(kernelSize, kernelSize));
+
+    // Step 3: Normalize flat-field
+    cv::Scalar flatMean = cv::mean(flat);
+    double flatMeanVal = flatMean[0];
+    if (flatMeanVal < 1.0) flatMeanVal = 1.0;
+    flat /= flatMeanVal;
+
+    // Step 4: Divide image by flat-field (correction)
+    cv::Mat corrected;
+    cv::divide(image32f, flat, corrected);
+
+    // Step 5: Clip negative values
+    cv::max(corrected, 0.0, corrected);
+
+    // Step 6: Compute background statistics from corrected image
+    cv::Mat bgFiltered;
+    cv::boxFilter(corrected, bgFiltered, CV_32F, cv::Size(kernelSize, kernelSize));
+
+    // Step 7: 3x3 local peak detection on corrected image
+    std::vector<std::tuple<double, int, int>> peaks; // (value, x, y)
+    for (int y = 1; y < rows - 1; ++y)
+    {
+        const float* ptr = corrected.ptr<float>(y);
+        const float* ptrUp = corrected.ptr<float>(y - 1);
+        const float* ptrDown = corrected.ptr<float>(y + 1);
+        for (int x = 1; x < cols - 1; ++x)
+        {
+            float v = ptr[x];
+            if (v >= ptrUp[x-1] && v >= ptrUp[x] && v >= ptrUp[x+1] &&
+                v >= ptr[x-1]   && v >= ptr[x+1] &&
+                v >= ptrDown[x-1] && v >= ptrDown[x] && v >= ptrDown[x+1])
+            {
+                peaks.emplace_back(v, x, y);
+            }
+        }
+    }
+
+    // Step 8: Sort by value descending
+    std::sort(peaks.begin(), peaks.end(),
+              [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
+
+    // Step 9: Deduplicate (5x5 window, keep strongest)
+    std::set<std::pair<int, int>> used;
+    const int dedupHalf = 2; // 5x5 window
+    for (const auto& peak : peaks)
+    {
+        int px = std::get<1>(peak);
+        int py = std::get<2>(peak);
+        bool skip = false;
+        for (int dy = -dedupHalf; dy <= dedupHalf && !skip; ++dy)
+        {
+            for (int dx = -dedupHalf; dx <= dedupHalf && !skip; ++dx)
+            {
+                if (used.count({px + dx, py + dy}))
+                {
+                    skip = true;
+                }
+            }
+        }
+        if (!skip)
+        {
+            used.insert({px, py});
+
+            // Compute SNR using local background statistics
+            double val = std::get<0>(peak);
+            double bgMean = bgFiltered.at<float>(py, px);
+
+            // Compute local std from a 15x15 window
+            double sum = 0.0, sumSq = 0.0, count = 0;
+            int halfWin = 7;
+            for (int dy = -halfWin; dy <= halfWin; ++dy)
+            {
+                int yy = py + dy;
+                if (yy < 1 || yy >= rows - 1) continue;
+                const float* rPtr = corrected.ptr<float>(yy);
+                for (int dx = -halfWin; dx <= halfWin; ++dx)
+                {
+                    int xx = px + dx;
+                    if (xx < 1 || xx >= cols - 1) continue;
+                    // Skip the peak itself
+                    if (xx == px && yy == py) continue;
+                    double v = rPtr[xx];
+                    sum += v;
+                    sumSq += v * v;
+                    count++;
+                }
+            }
+            if (count < 4) continue;
+            double localMean = sum / count;
+            double localVar = sumSq / count - localMean * localMean;
+            if (localVar < 0.0) localVar = 0.0;
+            double localStd = std::sqrt(localVar);
+            if (localStd < 1.0) localStd = 1.0;
+
+            double snr = (val - localMean) / localStd;
+
+            // SNR filter
+            if (snr < p.minSNR) continue;
+
+            // Compute FWHM for HFD estimation
+            // Use 3x3 window around peak
+            double totalFlux = 0.0, halfFluxR2 = 0.0;
+            int fluxCount = 0;
+            int fwhmHalf = 4;
+            for (int dy = -fwhmHalf; dy <= fwhmHalf; ++dy)
+            {
+                int yy = py + dy;
+                if (yy < 0 || yy >= rows) continue;
+                const float* rPtr = corrected.ptr<float>(yy);
+                for (int dx = -fwhmHalf; dx <= fwhmHalf; ++dx)
+                {
+                    int xx = px + dx;
+                    if (xx < 0 || xx >= cols) continue;
+                    double v = rPtr[xx];
+                    totalFlux += v;
+                    double r2 = dx * dx + dy * dy;
+                    halfFluxR2 += v * r2;
+                    fluxCount++;
+                }
+            }
+            double hfd = (totalFlux > 0) ? std::sqrt(halfFluxR2 / totalFlux) : 0.0;
+
+            // HFD filter
+            if (hfd < p.minHFD || hfd > p.maxHFD) continue;
+
+            StarCandidate c;
+            c.x = px;
+            c.y = py;
+            c.snr = snr;
+            c.hfd = hfd;
+            c.peakADU = val;
+            c.edgeDistPx = std::min({(double)px, (double)py,
+                                     (double)(cols - 1 - px), (double)(rows - 1 - py)});
+            candidates.push_back(c);
+        }
+    }
+
+    return candidates;
+}
+
+
 std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat& image16,
                                                                   const StarSelectionParams& p,
                                                                   const QString& fitsPath,
@@ -635,21 +799,33 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
     const int resolvedDownsample = resolveAutoSelDownsample(p);
 
     std::vector<StarCandidate> candidates;
-    const auto peaks = detectPHD2StylePeaks(image16, p.searchRegionPx, resolvedDownsample);
-    const auto tDetectDone = std::chrono::steady_clock::now();
-    candidates.reserve(peaks.size());
-    for (const auto& peak : peaks)
+    const auto tDetectStart = std::chrono::steady_clock::now();
+
+    if (p.useFlatField)
     {
-        StarCandidate c;
-        if (measureStarCandidate(image16, QPointF(peak.x, peak.y), p.searchRegionPx, c))
-            candidates.push_back(c);
+        // Flat-field method
+        candidates = detectFlatFieldPeaks(image16, p);
     }
-    const auto tMeasureDone = std::chrono::steady_clock::now();
+    else
+    {
+        // PHD2Style method (original)
+        const auto peaks = detectPHD2StylePeaks(image16, p.searchRegionPx, resolvedDownsample);
+        candidates.reserve(peaks.size());
+        for (const auto& peak : peaks)
+        {
+            StarCandidate c;
+            if (measureStarCandidate(image16, QPointF(peak.x, peak.y), p.searchRegionPx, c))
+                candidates.push_back(c);
+        }
+    }
+
+    const auto tDetectDone = std::chrono::steady_clock::now();
+    const auto tMeasureDone = tDetectDone;
 
     const auto detectMs = std::chrono::duration_cast<std::chrono::milliseconds>(tDetectDone - t0).count();
     const auto measureMs = std::chrono::duration_cast<std::chrono::milliseconds>(tMeasureDone - tDetectDone).count();
     Logger::Log(std::string(kLogPrefix) +
-                    " base_detect engine=PHD2Style peaks=" + std::to_string(peaks.size()) +
+                    " base_detect engine=" + std::string(p.useFlatField ? "FlatField" : "PHD2Style") + " candidates=" + std::to_string(candidates.size()) +
                     " measured=" + std::to_string(candidates.size()) +
                     " downsample=" + std::to_string(resolvedDownsample) +
                     " pixelScale=" + std::to_string(p.autoSelPixelScaleArcsecPerPixel) +
@@ -893,3 +1069,5 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
 }
 
 } // namespace guiding
+
+
