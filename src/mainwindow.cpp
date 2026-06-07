@@ -1376,6 +1376,11 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
                 .arg(snr, 0, 'f', 2)
                 .arg(hfd, 0, 'f', 2));
     });
+    // DEBUG: annotate star candidates on guider image before sending to frontend
+    connect(guiderCore, &GuiderCore::debugStarCandidatesChanged, this, [this](const QVector<QPointF>& candidates, const QPointF& selected) {
+        m_debugStarCandidates = candidates;
+        m_debugStarSelected = selected;
+    });
     connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
         guiderGuideStarCentroidPx = centroidPx;
         guiderGuideStarCentroidValid = true;
@@ -5912,6 +5917,26 @@ void MainWindow::initINDIClient()
                                                     LogLevel::INFO, DeviceType::GUIDER);
                                     }
                                     saveGuiderImageAsJPG(img8);
+
+                                    // DEBUG: annotate star candidates on img8 before sending
+                                    if (!m_debugStarCandidates.isEmpty())
+                                    {
+                                        cv::Mat img8Annotated = img8.clone();
+                                        for (const auto& pt : m_debugStarCandidates)
+                                        {
+                                            cv::circle(img8Annotated, cv::Point(static_cast<int>(pt.x()), static_cast<int>(pt.y())), 6, cv::Scalar(100), 1);
+                                        }
+                                        if (m_debugStarSelected.x() != 0 || m_debugStarSelected.y() != 0)
+                                        {
+                                            cv::Point center(static_cast<int>(m_debugStarSelected.x()), static_cast<int>(m_debugStarSelected.y()));
+                                            cv::circle(img8Annotated, center, 12, cv::Scalar(255), 2);
+                                            cv::line(img8Annotated, cv::Point(center.x - 12, center.y), cv::Point(center.x + 12, center.y), cv::Scalar(255), 2);
+                                            cv::line(img8Annotated, cv::Point(center.x, center.y - 12), cv::Point(center.x, center.y + 12), cv::Scalar(255), 2);
+                                        }
+                                        saveGuiderImageAsJPG(img8Annotated);
+                                        m_debugStarCandidates.clear();
+                                        m_debugStarSelected = QPointF(0, 0);
+                                    }
                                 }
                             }
                             fits_close_file(fptr, &status);

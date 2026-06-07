@@ -1228,18 +1228,16 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 usedRelaxedParams = best.has_value();
             }
 
-            // DEBUG: save annotated image for visual verification
-            if (!debugImg.empty())
+            // DEBUG: emit star candidates for image annotation
+            if (!candidates.empty())
             {
-                // Convert 16-bit to 8-bit for display
-                cv::Mat debug8;
-                debugImg.convertTo(debug8, CV_8U, 255.0 / 65535.0);
-                std::string debugPath = m_lastGuiderFrameJpgPath.toStdString();
-                if (debugPath.empty()) debugPath = "/home/quarcs/images/GuiderDiagnostics/debug_stars.jpg";
-                cv::imwrite(debugPath, debug8);
-                Logger::Log(std::string("[DEBUG] Saved annotated debug image: ") + debugPath
-                    + " candidates=" + std::to_string(candidates.size()),
-                    LogLevel::INFO, DeviceType::GUIDER);
+                QVector<QPointF> candVec;
+                for (const auto& c : candidates)
+                    candVec.append(QPointF(c.x, c.y));
+                QPointF selPt(0, 0);
+                if (best.has_value())
+                    selPt = QPointF(best->x, best->y);
+                emit debugStarCandidatesChanged(candVec, selPt);
             }
 
             if (best.has_value())

@@ -955,6 +955,10 @@ public:
     // 导星相机曝光时间（ms）
     int guiderExpMs = 1000;
 
+    // DEBUG: star candidates for image annotation
+    QVector<QPointF> m_debugStarCandidates;
+    QPointF m_debugStarSelected = QPointF(0, 0);
+
 private:
     // 内置导星核心；未初始化时保持为空，相关逻辑自动降级为仅取图/显示。
     GuiderCore *guiderCore = nullptr;

@@ -818,8 +818,6 @@ std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
         }
     }
 
-    return candidates;
-
     {
         auto t = std::chrono::steady_clock::now();
         auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
@@ -831,6 +829,8 @@ std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
         }
         Logger::Log(std::string("[starDetectFlat] detectFlatFieldPeaks DONE total=") + std::to_string(totalMs) + "ms candidates=" + std::to_string(candidates.size()) + " top5=[" + top5 + "]", LogLevel::INFO, DeviceType::GUIDER);
     }
+
+    return candidates;
 }
 
 

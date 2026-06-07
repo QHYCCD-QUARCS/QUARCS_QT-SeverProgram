@@ -87,6 +87,9 @@ signals:
     void infoMessage(const QString& msg);
     void paramsChanged();
 
+    // DEBUG: emit star candidates for image annotation on frontend
+    void debugStarCandidatesChanged(const QVector<QPointF>& candidates, const QPointF& selected);
+
 private:
     void setState(guiding::State s);
     guiding::GuidingParams sanitizeParams(const guiding::GuidingParams& in) const;
