@@ -647,73 +647,81 @@ std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
     cv::Mat image32f;
     image16.convertTo(image32f, CV_32F);
 
-    // Step 2: Generate flat-field with boxFilter
+    // Step 2: 3x3 median blur to reduce noise before flat-field
+    cv::Mat smoothed;
+    cv::medianBlur(image16, smoothed, 3);
+    cv::Mat smoothed32f;
+    smoothed.convertTo(smoothed32f, CV_32F);
+
+    // Step 3: Generate flat-field with boxFilter (on smoothed image)
     int kernelSize = p.flatKernelSize;
     if (kernelSize < 8) kernelSize = 64;
     cv::Mat flat;
-    cv::boxFilter(image32f, flat, CV_32F, cv::Size(kernelSize, kernelSize));
+    cv::boxFilter(smoothed32f, flat, CV_32F, cv::Size(kernelSize, kernelSize));
     {
         auto t = std::chrono::steady_clock::now();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
         Logger::Log(std::string("[starDetectFlat] boxFilter done=") + std::to_string(ms) + "ms", LogLevel::INFO, DeviceType::GUIDER);
     }
 
-    // Step 3: Normalize flat-field
-    cv::Scalar flatMean = cv::mean(flat);
-    double flatMeanVal = flatMean[0];
-    if (flatMeanVal < 1.0) flatMeanVal = 1.0;
-    flat /= flatMeanVal;
-    {
-        auto t = std::chrono::steady_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
-        Logger::Log(std::string("[starDetectFlat] flatNormalize done=") + std::to_string(ms) + "ms mean=" + std::to_string(flatMeanVal), LogLevel::INFO, DeviceType::GUIDER);
-    }
-
-    // Step 4: Divide image by flat-field (correction)
+    // Step 4: Subtract flat-field from original image + offset (faster than division)
+    // corrected = image - flat + offset; background ~ offset, stars > offset
+    const double offset = 5000.0;
     cv::Mat corrected;
-    cv::divide(image32f, flat, corrected);
-
-    // Step 5: Clip negative values
-    cv::max(corrected, 0.0, corrected);
-
-    // Step 6: Compute background statistics from corrected image
-    cv::Mat bgFiltered;
-    cv::boxFilter(corrected, bgFiltered, CV_32F, cv::Size(kernelSize, kernelSize));
+    corrected = image32f - flat + offset;
     {
         auto t = std::chrono::steady_clock::now();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
-        Logger::Log(std::string("[starDetectFlat] bgFilter done=") + std::to_string(ms) + "ms", LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log(std::string("[starDetectFlat] subtractFlat done=") + std::to_string(ms) + "ms offset=" + std::to_string(offset), LogLevel::INFO, DeviceType::GUIDER);
     }
 
-    // Step 7: 3x3 local peak detection on corrected image
-    std::vector<std::tuple<double, int, int>> peaks; // (value, x, y)
-    for (int y = 1; y < rows - 1; ++y)
+    // Step 5: Collect all pixels above offset, partial_sort to get top 2000
+    // This replaces the 3x3 peak detection that produced 910K false peaks
+    std::vector<std::tuple<double, int, int>> allPixels; // (value, x, y)
+    allPixels.reserve(rows * cols / 50);
+    for (int y = 0; y < rows; ++y)
     {
         const float* ptr = corrected.ptr<float>(y);
-        const float* ptrUp = corrected.ptr<float>(y - 1);
-        const float* ptrDown = corrected.ptr<float>(y + 1);
-        for (int x = 1; x < cols - 1; ++x)
+        for (int x = 0; x < cols; ++x)
         {
-            float v = ptr[x];
-            if (v >= ptrUp[x-1] && v >= ptrUp[x] && v >= ptrUp[x+1] &&
-                v >= ptr[x-1]   && v >= ptr[x+1] &&
-                v >= ptrDown[x-1] && v >= ptrDown[x] && v >= ptrDown[x+1])
+            if (ptr[x] > static_cast<float>(offset))
             {
-                peaks.emplace_back(v, x, y);
+                allPixels.emplace_back(static_cast<double>(ptr[x]), x, y);
             }
         }
     }
-
-    // Step 8: Sort by value descending
     {
         auto t = std::chrono::steady_clock::now();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
-        Logger::Log(std::string("[starDetectFlat] peakDetection done=") + std::to_string(ms) + "ms rawPeaks=" + std::to_string(peaks.size()), LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log(std::string("[starDetectFlat] pixelCollection done=") + std::to_string(ms) + "ms aboveOffset=" + std::to_string(allPixels.size()), LogLevel::INFO, DeviceType::GUIDER);
     }
-    std::sort(peaks.begin(), peaks.end(),
-              [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
 
-    // Step 9: Deduplicate (5x5 window, keep strongest)
+    // Step 6: Partial sort to get top 2000 brightest pixels
+    const size_t maxPeaksForDedup = 2000;
+    std::vector<std::tuple<double, int, int>> peaks;
+    if (allPixels.empty())
+    {
+        Logger::Log(std::string("[starDetectFlat] no pixels above offset=") + std::to_string(offset), LogLevel::WARNING, DeviceType::GUIDER);
+    }
+    else if (allPixels.size() <= maxPeaksForDedup)
+    {
+        peaks = std::move(allPixels);
+    }
+    else
+    {
+        peaks.resize(maxPeaksForDedup);
+        std::partial_sort(allPixels.begin(), allPixels.begin() + maxPeaksForDedup, allPixels.end(),
+                          [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
+        std::copy(allPixels.begin(), allPixels.begin() + maxPeaksForDedup, peaks.begin());
+        Logger::Log(std::string("[starDetectFlat] partialSort: ") + std::to_string(allPixels.size()) + " -> " + std::to_string(maxPeaksForDedup) + " topPeaks", LogLevel::INFO, DeviceType::GUIDER);
+    }
+    {
+        auto t = std::chrono::steady_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
+        Logger::Log(std::string("[starDetectFlat] peakSelection done=") + std::to_string(ms) + "ms peaks=" + std::to_string(peaks.size()), LogLevel::INFO, DeviceType::GUIDER);
+    }
+
+    // Step 7: Deduplicate by distance (5x5 window, keep strongest)
     std::set<std::pair<int, int>> used;
     const int dedupHalf = 2; // 5x5 window
     for (const auto& peak : peaks)
@@ -736,8 +744,9 @@ std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
             used.insert({px, py});
 
             // Compute SNR using local background statistics
+            // After subtraction correction, background ≈ offset (5000)
             double val = std::get<0>(peak);
-            double bgMean = bgFiltered.at<float>(py, px);
+            (void)offset; // offset is the background level after subtraction
 
             // Compute local std from a 15x15 window
             double sum = 0.0, sumSq = 0.0, count = 0;
