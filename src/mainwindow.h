@@ -709,6 +709,7 @@ public:
         QString sessionId;        // 会话ID (用于瓦片缓存)
         quint64 frameId = 0;      // 帧ID（与 tilePyramidEpoch/epoch 对齐，用于前后端丢弃旧帧/防错帧）
         QString buildMode = "pyramid"; // 瓦片构建模式：普通拍摄统一使用 pyramid
+        QString levelMode = "full";    // 瓦片层级模式：full=全层级，minmax=仅最小层+最大层
 
         // 直方图（用于前端拉伸/显示）
         int histogramBins = 0;                 // bin 数（建议 256）
@@ -852,6 +853,7 @@ public:
     int tilePyramidFastSyncMaxZ = 1;                  // 同步生成的最大层级（z=0 为最低精度）；其余后台生成
     bool tilePyramidFastEnableMedianBlur = false;     // 同步阶段是否做 medianBlur（大图可能超时）
     QString tileBuildMode = QStringLiteral("pyramid"); // 瓦片构建模式：普通拍摄统一使用金字塔
+    QString tileLevelMode = QStringLiteral("full");    // 瓦片层级模式：full|minmax
 
     // 前端视口参数（来自 Vue_Command: sendVisibleArea:x:y:scale:frameId:targetZ[:zCap]）
     std::atomic<double> tileViewportX{0.0};           // 视口中心 X（原图像素）

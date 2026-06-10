@@ -4392,6 +4392,13 @@ void MainWindow::onMessageReceived(const QString &message)
         Logger::Log("Set MainCamera Tile Build Mode to " + tileBuildMode.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
         Tools::saveParameter("MainCamera", "Tile Build Mode", tileBuildMode);
     }
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetMainCameraTileLevelMode")
+    {
+        const QString requestedMode = parts[1].trimmed().toLower();
+        tileLevelMode = (requestedMode == QStringLiteral("minmax")) ? QStringLiteral("minmax") : QStringLiteral("full");
+        Logger::Log("Set MainCamera Tile Level Mode to " + tileLevelMode.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
+        Tools::saveParameter("MainCamera", "Tile Level Mode", tileLevelMode);
+    }
 
 
     else if (parts.size() == 5 && parts[0].trimmed() == "GuiderCanvasClick")
@@ -8418,6 +8425,9 @@ MainWindow::TileGPM MainWindow::calculateGPM(const cv::Mat& image16, const QStri
     gpm.gainR = ImageGainR;
     gpm.gainB = ImageGainB;
     gpm.buildMode = QStringLiteral("pyramid");
+    gpm.levelMode = (tileLevelMode.trimmed().toLower() == QStringLiteral("minmax"))
+        ? QStringLiteral("minmax")
+        : QStringLiteral("full");
 
     // 计算最大缩放层级（基于最低精度层的合并倍数 maxMergeFactor=2^N）
     // 例：maxMergeFactor=16 => level 0=16x16 ... level 4=1x1（共5层）
@@ -8957,8 +8967,11 @@ void MainWindow::generateViewportTiles_Once(quint64 epoch, quint64 requestSeq, i
 
     // 普通拍摄统一只围绕前端显式 targetZ 生成当前视口需要的层级；
     // z=0 整图预览已由 generateVisibleTilesSync() 提前准备。
+    const bool minMaxOnly = (tileLevelMode.trimmed().toLower() == QStringLiteral("minmax"));
     const int coarseZ = std::max(0, currentZ - 1);
-    std::vector<int> levelsToGenerate = {coarseZ, currentZ};
+    std::vector<int> levelsToGenerate = minMaxOnly
+        ? std::vector<int>{currentZ}
+        : std::vector<int>{coarseZ, currentZ};
     std::sort(levelsToGenerate.begin(), levelsToGenerate.end());
     levelsToGenerate.erase(std::unique(levelsToGenerate.begin(), levelsToGenerate.end()), levelsToGenerate.end());
     const bool allowIdlePrefetch = !forceFullImageForCappedMode && currentZ > 0;
@@ -9328,7 +9341,18 @@ void MainWindow::generateFullResTiles_Once(quint64 epoch, quint64 requestSeq, in
     readyTileKeys.reserve(READY_BATCH_SIZE);
     std::set<uint64_t> doneKeys;
 
-    for (int z = 0; z <= maxZ; ++z)
+    const bool minMaxOnly = (tileLevelMode.trimmed().toLower() == QStringLiteral("minmax"));
+    std::vector<int> fullResLevels;
+    if (minMaxOnly) {
+        fullResLevels = {0, maxZ};
+    } else {
+        fullResLevels.reserve(maxZ + 1);
+        for (int z = 0; z <= maxZ; ++z) fullResLevels.push_back(z);
+    }
+    std::sort(fullResLevels.begin(), fullResLevels.end());
+    fullResLevels.erase(std::unique(fullResLevels.begin(), fullResLevels.end()), fullResLevels.end());
+
+    for (int z : fullResLevels)
     {
         if (shouldStop()) {
             completedAllTiles = false;
@@ -9509,9 +9533,12 @@ void MainWindow::generateVisibleTilesSync(quint64 epoch, bool includeViewportLev
     // 同步预生成阶段：
     // - 默认只准备 z=0 整图预览，优先保证 TileGPM + 首图尽快出现
     // - 若显式要求，再额外同步准备 targetZ-1 / targetZ 当前视口层
+    const bool minMaxOnly = (tileLevelMode.trimmed().toLower() == QStringLiteral("minmax"));
     std::vector<int> levelsToSync = {0};
     if (includeViewportLevels) {
-        levelsToSync.push_back(std::max(0, currentZ - 1));
+        if (!minMaxOnly) {
+            levelsToSync.push_back(std::max(0, currentZ - 1));
+        }
         levelsToSync.push_back(currentZ);
     }
     std::sort(levelsToSync.begin(), levelsToSync.end());
@@ -10001,6 +10028,7 @@ MainWindow::TileGPM MainWindow::generateTilePyramid(const cv::Mat& image16, cons
     // frameId 可能超过 JSON number 的安全整数范围（JS 2^53），这里按字符串写入更安全
     gpmJson["frameId"] = QString::number(static_cast<qulonglong>(gpm.frameId));
     gpmJson["buildMode"] = gpm.buildMode;
+    gpmJson["levelMode"] = gpm.levelMode;
 
         // 直方图（可选）
         // 注意：完整 65536 bins 写入 JSON 会非常大；这里只写入基础信息，详细直方图走 WebSocket B64 通道
@@ -10072,8 +10100,9 @@ void MainWindow::sendGPMToClient(const TileGPM& gpm)
     // - v2(追加): ...:{previewWidth}:{previewHeight}:{previewBinningFactor}
     // - v3(追加): ...:{frameId}
     // - v4(追加): ...:{buildMode}
+    // - v5(追加): ...:{levelMode}
     // 说明：追加字段放在末尾，旧前端按前 11 段解析不会受影响。
-    QString gpmMessage = QString("TileGPM:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13:%14:%15")
+    QString gpmMessage = QString("TileGPM:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10:%11:%12:%13:%14:%15:%16")
         .arg(gpm.sessionId)
         .arg(gpm.imageWidth)
         .arg(gpm.imageHeight)
@@ -10088,7 +10117,8 @@ void MainWindow::sendGPMToClient(const TileGPM& gpm)
         .arg(gpm.previewHeight)
         .arg(gpm.previewBinningFactor)
         .arg(QString::number(static_cast<qulonglong>(gpm.frameId)))
-        .arg(gpm.buildMode);
+        .arg(gpm.buildMode)
+        .arg(gpm.levelMode);
 
     emit wsThread->sendMessageToClient(gpmMessage);
     Logger::Log("GPM sent to client: " + gpmMessage.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
@@ -31999,6 +32029,7 @@ void MainWindow::getMainCameraParameters()
     QMap<QString, QString> parameters = Tools::readParameters("MainCamera");
     QString order = "setMainCameraParameters";
     bool hasTileBuildMode = false;
+    bool hasTileLevelMode = false;
     bool hasImageCfa = false;
     bool hasRoiCalcMode = false;
     for (auto it = parameters.begin(); it != parameters.end(); ++it)
@@ -32047,6 +32078,12 @@ void MainWindow::getMainCameraParameters()
             it.value() = tileBuildMode;
             hasTileBuildMode = true;
         }
+        if (it.key() == "Tile Level Mode") {
+            const QString requested = it.value().trimmed().toLower();
+            tileLevelMode = (requested == QStringLiteral("minmax")) ? QStringLiteral("minmax") : QStringLiteral("full");
+            it.value() = tileLevelMode;
+            hasTileLevelMode = true;
+        }
         order += ":" + it.key() + ":" + it.value();
         if (it.key() == "RedBoxSize") {
             BoxSideLength = it.value().toInt();
@@ -32077,6 +32114,10 @@ void MainWindow::getMainCameraParameters()
     if (!hasTileBuildMode) {
         tileBuildMode = QStringLiteral("pyramid");
         order += ":Tile Build Mode:" + tileBuildMode;
+    }
+    if (!hasTileLevelMode) {
+        tileLevelMode = QStringLiteral("full");
+        order += ":Tile Level Mode:" + tileLevelMode;
     }
     if (!hasRoiCalcMode) {
         roiUseSelfCalcParams = false;
