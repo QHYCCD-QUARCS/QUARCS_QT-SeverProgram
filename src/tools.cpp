@@ -5801,7 +5801,7 @@ bool Tools::isSolveImageFinish() {
 bool Tools::isPlateSolveInProgress() {
   return PlateSolveInProgress;
 }
-bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK, int mode, double lastRA, double lastDEC, double searchRadiusDeg, const QString &backendConfigPath)
+bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_width, double CameraSize_height, bool USEQHYCCDSDK, int mode, double lastRA, double lastDEC, double searchRadiusDeg, const QString &backendConfigPath, int solveTimeoutMs)
 {
     // 参数说明：
     // mode: 0=基础模式, 1=包含视场参数, 2=包含视场和位置参数
@@ -6020,10 +6020,14 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
         return false;
     }
     
-    // 设置更长的超时时间，适应树莓派的性能
-    if (!cmd_test->waitForFinished(300000)) { // 5分钟超时
-        Logger::Log("解析命令执行超时，强制终止", LogLevel::WARNING, DeviceType::MAIN);
+    const int effectiveSolveTimeoutMs = solveTimeoutMs > 0 ? solveTimeoutMs : 10000;
+    if (!cmd_test->waitForFinished(effectiveSolveTimeoutMs)) {
+        Logger::Log("解析命令执行超时，强制终止 timeoutMs=" +
+                        std::to_string(effectiveSolveTimeoutMs),
+                    LogLevel::WARNING,
+                    DeviceType::MAIN);
         cmd_test->kill(); // 强制终止进程
+        cmd_test->waitForFinished(1000);
         PlateSolveInProgress = false;
         isSolveImageFinished = false;
         return false;

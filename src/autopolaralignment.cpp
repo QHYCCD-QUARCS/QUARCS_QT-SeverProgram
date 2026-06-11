@@ -2330,6 +2330,21 @@ void PolarAlignment::updateSolveModeStatistics(bool solveSucceeded)
 
 bool PolarAlignment::solveImage(const QString& imageFile)
 {
+    constexpr int kPolarSolveTimeoutMs = 2000;
+    constexpr int kInitialThreePointSolveTimeoutMs = 20000;
+    const bool isInitialThreePointSolve =
+        currentState == PolarAlignmentState::FIRST_CAPTURE ||
+        currentState == PolarAlignmentState::FIRST_CAPTURE_LONG_EXPOSURE ||
+        currentState == PolarAlignmentState::FIRST_CAPTURE_DEC_AVOIDANCE ||
+        currentState == PolarAlignmentState::SECOND_CAPTURE ||
+        currentState == PolarAlignmentState::SECOND_CAPTURE_LONG_EXPOSURE ||
+        currentState == PolarAlignmentState::SECOND_CAPTURE_RA_AVOIDANCE ||
+        currentState == PolarAlignmentState::THIRD_CAPTURE ||
+        currentState == PolarAlignmentState::THIRD_CAPTURE_LONG_EXPOSURE ||
+        currentState == PolarAlignmentState::THIRD_CAPTURE_RA_AVOIDANCE;
+    const int solveTimeoutMs = isInitialThreePointSolve
+                                   ? kInitialThreePointSolveTimeoutMs
+                                   : kPolarSolveTimeoutMs;
     Logger::Log("PolarAlignment: 解析图像 " + imageFile.toStdString(), LogLevel::INFO, DeviceType::MAIN);
     
     int focalLength = config.focalLength; // 焦距（毫米）
@@ -2348,7 +2363,17 @@ bool PolarAlignment::solveImage(const QString& imageFile)
     }
     
     // 调用图像解析功能
-    bool ret = Tools::PlateSolve(imageFile, focalLength, cameraWidth, cameraHeight, false, solveMode, lastRA, lastDEC);
+    bool ret = Tools::PlateSolve(imageFile,
+                                 focalLength,
+                                 cameraWidth,
+                                 cameraHeight,
+                                 false,
+                                 solveMode,
+                                 lastRA,
+                                 lastDEC,
+                                 -1.0,
+                                 QString(),
+                                 solveTimeoutMs);
     if(!ret)
     {
         Logger::Log("PolarAlignment: 图像解析命令执行失败", LogLevel::WARNING, DeviceType::MAIN);

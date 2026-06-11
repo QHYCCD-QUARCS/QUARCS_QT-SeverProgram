@@ -29,6 +29,8 @@
 #include "Logger.h"
 
 namespace {
+constexpr int kPoleMasterSolveTimeoutMs = 2000;
+constexpr int kPoleMasterInitialCalibrationSolveTimeoutMs = 20000;
 constexpr double kTruePoleRaDeg = 0.0;
 constexpr double kNorthPoleDecDeg = 89.9999;
 constexpr double kSouthPoleDecDeg = -89.9999;
@@ -971,6 +973,13 @@ bool PoleMasterPolarAlignment::waitForCaptureComplete()
 
 bool PoleMasterPolarAlignment::solveImage(const QString &fitsPath)
 {
+    const bool isInitialThreePointSolve =
+        currentState == PoleMasterAlignmentState::FIRST_CAPTURE ||
+        currentState == PoleMasterAlignmentState::SECOND_CAPTURE ||
+        currentState == PoleMasterAlignmentState::THIRD_CAPTURE;
+    const int solveTimeoutMs = isInitialThreePointSolve
+                                   ? kPoleMasterInitialCalibrationSolveTimeoutMs
+                                   : kPoleMasterSolveTimeoutMs;
     const double priorRaDeg = kTruePoleRaDeg;
     const double priorDecDeg = truePoleDecDeg();
     const double solveSearchRadiusDeg = config.solveSearchRadiusDeg > 0.0 ? config.solveSearchRadiusDeg : 5.0;
@@ -1017,7 +1026,8 @@ bool PoleMasterPolarAlignment::solveImage(const QString &fitsPath)
                                       priorRaDeg,
                                       priorDecDeg,
                                       solveSearchRadiusDeg,
-                                      backendConfigPath);
+                                      backendConfigPath,
+                                      solveTimeoutMs);
     if (!ok) return false;
     QCoreApplication::processEvents();
     return Tools::isSolveImageFinish();
@@ -2614,6 +2624,13 @@ bool PoleMasterAlignmentSimulation::solveGeneratedFits(const QString &fitsPath, 
 {
     frame = SimSolvedFrame();
     if (!QFileInfo::exists(fitsPath)) return false;
+    const bool isInitialThreePointSolve =
+        currentState == PoleMasterAlignmentState::FIRST_CAPTURE ||
+        currentState == PoleMasterAlignmentState::SECOND_CAPTURE ||
+        currentState == PoleMasterAlignmentState::THIRD_CAPTURE;
+    const int solveTimeoutMs = isInitialThreePointSolve
+                                   ? kPoleMasterInitialCalibrationSolveTimeoutMs
+                                   : kPoleMasterSolveTimeoutMs;
 
     // Simulated PoleMaster frames use a 12 deg square FoV. Keep simulation
     // solver parameters aligned with the real PoleMaster path (mode2 + prior).
@@ -2645,7 +2662,8 @@ bool PoleMasterAlignmentSimulation::solveGeneratedFits(const QString &fitsPath, 
                                                      lastSolvedRaDeg,
                                                      lastSolvedDecDeg,
                                                      5.0,
-                                                     backendConfigPath);
+                                                     backendConfigPath,
+                                                     solveTimeoutMs);
     bool plateSolved = false;
     if (plateSolveStarted)
     {
