@@ -1310,6 +1310,9 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(guiderLoopTimer, &QTimer::timeout, this, &MainWindow::onGuiderLoopTimeout);
     guiderCoreThread = new QThread(this);
     guiderCoreThread->setObjectName(QStringLiteral("GuiderCoreThread"));
+    qRegisterMetaType<cv::Mat>("cv::Mat");
+    qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
+    qRegisterMetaType<QPointF>("QPointF");
     guiderCore = new GuiderCore();
     guiderParamsCache = guiderCore->params();
     guiderCoreStateCache = guiderCore->state();
@@ -1333,6 +1336,25 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             guiderLoopTimer->start(0);
     });
     connect(guiderCore, &GuiderCore::requestPersistGuidingFits, this, &MainWindow::PersistGuidingFits);
+    connect(guiderCore, &GuiderCore::requestPersistGuidingFitsAnnotated, this,
+            [this](const QString& sourceFitsPath, const cv::Mat& image16, int imageW, int imageH,
+                   const QVector<QPointF>& dedupCandidates,
+                   const QVector<QPointF>& snrCandidates,
+                   const QVector<QPointF>& candidates,
+                   const QPointF& selected) {
+        m_debugStarDedupCandidates = dedupCandidates;
+        m_debugStarSnrCandidates = snrCandidates;
+        m_debugStarCandidates = candidates;
+        m_debugStarSelected = selected;
+        Logger::Log("BuiltInGuider | requestPersistGuidingFitsAnnotated received in MainWindow: image=" +
+                        std::to_string(imageW) + "x" + std::to_string(imageH) +
+                        " dedupCandidates=" + std::to_string(dedupCandidates.size()) +
+                        " snrCandidates=" + std::to_string(snrCandidates.size()) +
+                        " candidates=" + std::to_string(candidates.size()) +
+                        " selected=" + std::to_string((selected.x() != 0.0 || selected.y() != 0.0) ? 1 : 0),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        PersistGuidingPreviewFromFrame(sourceFitsPath, image16);
+    }, Qt::BlockingQueuedConnection);
     connect(guiderCore, &GuiderCore::requestPulse, this, [this](const guiding::PulseCommand& cmd) {
         ControlGuideEx(static_cast<int>(cmd.dir), cmd.durationMs, QStringLiteral("BuiltInGuider"));
     });
@@ -1376,10 +1398,47 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
                 .arg(snr, 0, 'f', 2)
                 .arg(hfd, 0, 'f', 2));
     });
-    // DEBUG: annotate star candidates on guider image before sending to frontend
-    connect(guiderCore, &GuiderCore::debugStarCandidatesChanged, this, [this](const QVector<QPointF>& candidates, const QPointF& selected) {
+    // DEBUG: publish current frame's star candidates so the frontend can draw
+    // color overlays on top of the guider preview.
+    connect(guiderCore, &GuiderCore::debugStarCandidatesChanged, this,
+            [this](int imageW, int imageH, const QVector<QPointF>& dedupCandidates,
+                   const QVector<QPointF>& snrCandidates,
+                   const QVector<QPointF>& candidates, const QPointF& selected) {
+        m_debugStarDedupCandidates = dedupCandidates;
+        m_debugStarSnrCandidates = snrCandidates;
         m_debugStarCandidates = candidates;
         m_debugStarSelected = selected;
+        Logger::Log("BuiltInGuider | debugStarCandidatesChanged received in MainWindow: image=" +
+                        std::to_string(imageW) + "x" + std::to_string(imageH) +
+                        " dedupCandidates=" + std::to_string(dedupCandidates.size()) +
+                        " snrCandidates=" + std::to_string(snrCandidates.size()) +
+                        " candidates=" + std::to_string(candidates.size()) +
+                        " selected=" + std::to_string((selected.x() != 0.0 || selected.y() != 0.0) ? 1 : 0),
+                    LogLevel::INFO, DeviceType::GUIDER);
+
+        emit wsThread->sendMessageToClient("ClearGuiderDebugCandidates");
+
+        const int safeImageW = std::max(1, imageW);
+        const int safeImageH = std::max(1, imageH);
+        const int maxCandidatesToSend = 48;
+        for (int i = 0; i < candidates.size() && i < maxCandidatesToSend; ++i)
+        {
+            const auto& pt = candidates[i];
+            emit wsThread->sendMessageToClient(
+                "GuiderDebugCandidatePosition:" + QString::number(safeImageW) + ":" +
+                QString::number(safeImageH) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.y()))));
+        }
+
+        if (selected.x() != 0.0 || selected.y() != 0.0)
+        {
+            emit wsThread->sendMessageToClient(
+                "GuiderDebugSelectedCandidatePosition:" + QString::number(safeImageW) + ":" +
+                QString::number(safeImageH) + ":" +
+                QString::number(static_cast<int>(std::lround(selected.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(selected.y()))));
+        }
     });
     connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
         guiderGuideStarCentroidPx = centroidPx;
@@ -1480,6 +1539,8 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             emit wsThread->sendMessageToClient("PHD2StarBoxView:false");
             emit wsThread->sendMessageToClient("PHD2StarCrossView:false");
             emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+            stopGuiderAutoBatchCapture();
+            clearGuiderDebugAnnotations(state == guiding::State::Stopped);
         }
         emit wsThread->sendMessageToClient(QString("GuiderCoreState:%1").arg(static_cast<int>(state)));
         switch (state)
@@ -5917,26 +5978,6 @@ void MainWindow::initINDIClient()
                                                     LogLevel::INFO, DeviceType::GUIDER);
                                     }
                                     saveGuiderImageAsJPG(img8);
-
-                                    // DEBUG: annotate star candidates on img8 before sending
-                                    if (!m_debugStarCandidates.isEmpty())
-                                    {
-                                        cv::Mat img8Annotated = img8.clone();
-                                        for (const auto& pt : m_debugStarCandidates)
-                                        {
-                                            cv::circle(img8Annotated, cv::Point(static_cast<int>(pt.x()), static_cast<int>(pt.y())), 6, cv::Scalar(100), 1);
-                                        }
-                                        if (m_debugStarSelected.x() != 0 || m_debugStarSelected.y() != 0)
-                                        {
-                                            cv::Point center(static_cast<int>(m_debugStarSelected.x()), static_cast<int>(m_debugStarSelected.y()));
-                                            cv::circle(img8Annotated, center, 12, cv::Scalar(255), 2);
-                                            cv::line(img8Annotated, cv::Point(center.x - 12, center.y), cv::Point(center.x + 12, center.y), cv::Scalar(255), 2);
-                                            cv::line(img8Annotated, cv::Point(center.x, center.y - 12), cv::Point(center.x, center.y + 12), cv::Scalar(255), 2);
-                                        }
-                                        saveGuiderImageAsJPG(img8Annotated);
-                                        m_debugStarCandidates.clear();
-                                        m_debugStarSelected = QPointF(0, 0);
-                                    }
                                 }
                             }
                             fits_close_file(fptr, &status);
@@ -23380,7 +23421,197 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
             }
         }
 
-        saveGuiderImageAsJPG(img8);
+        cv::Mat guiderPreviewBgr;
+        cv::cvtColor(img8, guiderPreviewBgr, cv::COLOR_GRAY2BGR);
+
+        // 暂时关闭“直接烧录到原图 JPG”的导星调试框，保留前端单独叠加框，
+        // 这样更方便继续验证前端映射与后端坐标是否一致。
+        Logger::Log("PersistGuidingFits | guider preview burn-in debug overlays disabled; frontend overlay remains active",
+                    LogLevel::INFO, DeviceType::GUIDER);
+
+        saveGuiderImageAsJPG(guiderPreviewBgr);
+    }
+}
+
+void MainWindow::PersistGuidingPreviewFromFrame(const QString& sourceFitsPath, const cv::Mat& image16)
+{
+    if (sourceFitsPath.isEmpty() || image16.empty())
+        return;
+
+    const QString guidingShmPath = QStringLiteral("/dev/shm/guiding.fits");
+    if (sourceFitsPath != guidingShmPath && QFile::exists(sourceFitsPath))
+    {
+        QFile dst(guidingShmPath);
+        if (dst.exists())
+            dst.remove();
+        if (!QFile::copy(sourceFitsPath, guidingShmPath))
+        {
+            Logger::Log("PersistGuidingPreviewFromFrame | copy to /dev/shm/guiding.fits failed",
+                        LogLevel::WARNING, DeviceType::GUIDER);
+        }
+    }
+
+    const cv::Mat img = image16;
+    glPHD_CurrentImageSizeX = img.cols;
+    glPHD_CurrentImageSizeY = img.rows;
+
+    if (guiderMultiStarSecondaryPtsPending && wsThread
+        && guiderPhaseGuiding && !guiderDirectionDetectActive)
+    {
+        emit wsThread->sendMessageToClient("ClearPHD2MultiStars");
+        for (int i = 0; i < guiderMultiStarSecondaryPtsPx.size(); ++i)
+        {
+            if (i >= 8) break;
+            const auto& p = guiderMultiStarSecondaryPtsPx[i];
+            emit wsThread->sendMessageToClient(
+                "PHD2MultiStarsPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
+                QString::number(glPHD_CurrentImageSizeY) + ":" +
+                QString::number(static_cast<int>(std::lround(p.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(p.y()))));
+        }
+        guiderMultiStarSecondaryPtsPending = false;
+    }
+
+    double minV = 0.0, maxV = 0.0;
+    cv::minMaxLoc(img, &minV, &maxV);
+
+    const uint16_t depthMax = (img.depth() == CV_8U) ? 255 : 65535;
+    uint16_t B = 0;
+    uint16_t W = depthMax;
+
+    if (AutoStretch)
+        Tools::GetAutoStretch(img, 0, B, W);
+
+    if (W <= B)
+        W = std::min<uint16_t>(depthMax, static_cast<uint16_t>(B + 1));
+
+    Logger::Log("PersistGuidingPreviewFromFrame | frameDepth=" + std::to_string(img.depth()) +
+                    " min=" + std::to_string(minV) + " max=" + std::to_string(maxV) +
+                    " B=" + std::to_string(B) + " W=" + std::to_string(W),
+                LogLevel::DEBUG, DeviceType::GUIDER);
+
+    cv::Mat img8(img.rows, img.cols, CV_8UC1, cv::Scalar(0));
+    if (maxV <= minV + 1.0)
+    {
+        const double normalized = std::clamp(maxV / std::max<double>(1.0, depthMax), 0.0, 1.0);
+        const int gray = static_cast<int>(std::lround(normalized * 255.0));
+        img8.setTo(cv::Scalar(gray));
+        Logger::Log("PersistGuidingPreviewFromFrame | flat-frame fallback applied, gray=" + std::to_string(gray),
+                    LogLevel::INFO, DeviceType::GUIDER);
+    }
+    else
+    {
+        Tools::Bit16To8_Stretch(img, img8, B, W);
+
+        double min8 = 0.0, max8 = 0.0;
+        cv::minMaxLoc(img8, &min8, &max8);
+        if (max8 <= 0.0 && maxV > 0.0)
+        {
+            B = 0;
+            W = static_cast<uint16_t>(std::clamp(maxV, 1.0, static_cast<double>(depthMax)));
+            Tools::Bit16To8_Stretch(img, img8, B, W);
+            Logger::Log("PersistGuidingPreviewFromFrame | fallback restretch applied, B=" +
+                            std::to_string(B) + " W=" + std::to_string(W),
+                        LogLevel::INFO, DeviceType::GUIDER);
+        }
+    }
+
+    cv::Mat guiderPreviewBgr;
+    cv::cvtColor(img8, guiderPreviewBgr, cv::COLOR_GRAY2BGR);
+
+    // 暂时关闭“直接烧录到原图 JPG”的导星调试框，保留前端单独叠加框，
+    // 这样更方便继续验证前端映射与后端坐标是否一致。
+
+    saveGuiderImageAsJPG(guiderPreviewBgr);
+}
+
+void MainWindow::clearGuiderDebugAnnotations(bool refreshPreview)
+{
+    m_debugStarDedupCandidates.clear();
+    m_debugStarSnrCandidates.clear();
+    m_debugStarCandidates.clear();
+    m_debugStarSelected = QPointF(0, 0);
+    emit wsThread->sendMessageToClient("ClearGuiderDebugCandidates");
+
+    if (!refreshPreview)
+        return;
+
+    const QString guidingShmPath = QStringLiteral("/dev/shm/guiding.fits");
+    if (QFile::exists(guidingShmPath))
+        PersistGuidingFits(guidingShmPath);
+}
+
+void MainWindow::startGuiderAutoBatchCapture()
+{
+    const QString baseRoot = !ImageSaveBaseDirectory.isEmpty()
+        ? ImageSaveBaseDirectory
+        : QString::fromStdString(ImageSaveBasePath);
+    const QString diagnosticsRoot = QDir(baseRoot).filePath(QStringLiteral("GuiderDiagnostics"));
+    const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_hhmmss_zzz"));
+    const QString batchName = QStringLiteral("batch_%1").arg(stamp);
+    const QString batchDir = QDir(diagnosticsRoot).filePath(batchName);
+
+    if (!QDir().mkpath(batchDir))
+    {
+        Logger::Log("GuiderDiagnostics | failed to create batch dir: " + batchDir.toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        m_guiderAutoBatchActive = false;
+        m_guiderAutoBatchSavedFrames = 0;
+        m_guiderAutoBatchDir.clear();
+        return;
+    }
+
+    m_guiderAutoBatchActive = true;
+    m_guiderAutoBatchSavedFrames = 0;
+    m_guiderAutoBatchDir = batchDir;
+    Logger::Log("GuiderDiagnostics | auto batch capture started: " + batchDir.toStdString(),
+                LogLevel::INFO, DeviceType::GUIDER);
+}
+
+void MainWindow::stopGuiderAutoBatchCapture()
+{
+    if (!m_guiderAutoBatchActive && m_guiderAutoBatchDir.isEmpty())
+        return;
+
+    Logger::Log("GuiderDiagnostics | auto batch capture stopped: dir=" +
+                    m_guiderAutoBatchDir.toStdString() +
+                    " savedFrames=" + std::to_string(m_guiderAutoBatchSavedFrames),
+                LogLevel::INFO, DeviceType::GUIDER);
+    m_guiderAutoBatchActive = false;
+    m_guiderAutoBatchSavedFrames = 0;
+    m_guiderAutoBatchDir.clear();
+}
+
+void MainWindow::persistGuiderAutoBatchFrame(const QString& fitsPath)
+{
+    if (!m_guiderAutoBatchActive || m_guiderAutoBatchSavedFrames >= 20)
+        return;
+    if (fitsPath.isEmpty() || !QFile::exists(fitsPath) || m_guiderAutoBatchDir.isEmpty())
+        return;
+
+    const int nextIndex = m_guiderAutoBatchSavedFrames + 1;
+    const QString fileName = QStringLiteral("frame_%1.fits").arg(nextIndex, 2, 10, QLatin1Char('0'));
+    const QString destinationPath = QDir(m_guiderAutoBatchDir).filePath(fileName);
+
+    QFile::remove(destinationPath);
+    if (!QFile::copy(fitsPath, destinationPath))
+    {
+        Logger::Log("GuiderDiagnostics | failed to save frame to batch: " + destinationPath.toStdString(),
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        return;
+    }
+
+    m_guiderAutoBatchSavedFrames = nextIndex;
+    Logger::Log("GuiderDiagnostics | saved frame " + std::to_string(nextIndex) +
+                    "/20 to " + destinationPath.toStdString(),
+                LogLevel::INFO, DeviceType::GUIDER);
+
+    if (m_guiderAutoBatchSavedFrames >= 20)
+    {
+        Logger::Log("GuiderDiagnostics | batch reached 20 frames, stop collecting: " +
+                        m_guiderAutoBatchDir.toStdString(),
+                    LogLevel::INFO, DeviceType::GUIDER);
+        m_guiderAutoBatchActive = false;
     }
 }
 
@@ -26118,6 +26349,23 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
                         emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+
+                        // 改进：当候选主相机数量大于 1 时，即使历史回绑/自动选择已经命中，
+                        // 仍然弹出设备分配窗口，允许用户改选其它相机，避免被“历史相机”长期锁死。
+                        if (cameraCount > 1)
+                        {
+                            for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                            {
+                                if (!sdkPoolIndexValid(i))
+                                    continue;
+                                const int uiIdx = sdkUiIndexFromPoolIndex(i);
+                                emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + g_sdkQhyCamIds[i]);
+                            }
+                            emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                            Logger::Log("ConnectDriver | MainCamera auto-bound, but multiple SDK cameras exist. "
+                                        "Show allocation window to allow re-selection.",
+                                        LogLevel::INFO, DeviceType::MAIN);
+                        }
                     }
                     else if (needAllocation)
                     {
@@ -26378,6 +26626,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 // 对齐 INDI：通知前端驱动连接成功
                 emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
                 emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+
+                // 改进：多于 1 台候选主相机时，即使已命中历史回绑/自动选择，
+                // 也继续弹出分配窗口，允许用户显式改选其它相机。
+                if (cameraCount > 1)
+                {
+                    emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                    Logger::Log("ConnectDriver | MainCamera auto-bound with multiple SDK cameras available. "
+                                "Show allocation window for manual override.",
+                                LogLevel::INFO, DeviceType::MAIN);
+                }
             }
             else if (needAllocation)
             {
@@ -26657,6 +26915,23 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
                     emit wsThread->sendMessageToClient("AddDeviceType:Guider");
                     emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+
+                    // 改进：当候选导星相机数量大于 1 时，即使已经命中历史回绑/自动选择，
+                    // 仍然弹出设备分配窗口，允许用户改选其它相机，避免被“历史导星相机”长期锁死。
+                    if (cameraCount > 1)
+                    {
+                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                        {
+                            if (!sdkPoolIndexValid(i))
+                                continue;
+                            const int uiIdx = sdkUiIndexFromPoolIndex(i);
+                            emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + g_sdkQhyCamIds[i]);
+                        }
+                        emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                        Logger::Log("ConnectDriver | Guider auto-bound, but multiple SDK cameras exist. "
+                                    "Show allocation window to allow re-selection.",
+                                    LogLevel::INFO, DeviceType::GUIDER);
+                    }
                     return;
                 }
 
@@ -26863,7 +27138,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 }
 
                 AfterDeviceConnect(nullptr);
-                Logger::Log("ConnectDriver | SDK Guider auto-bound (single camera).", LogLevel::INFO, DeviceType::GUIDER);
+                Logger::Log("ConnectDriver | SDK Guider auto-bound: " + guiderId.toStdString(),
+                            LogLevel::INFO, DeviceType::GUIDER);
             }
             else
             {
@@ -26881,6 +27157,16 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 // 对齐 INDI：通知前端驱动连接成功
                 emit wsThread->sendMessageToClient("AddDeviceType:Guider");
                 emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+
+                // 改进：多于 1 台候选导星相机时，即使已命中历史回绑/自动选择，
+                // 也继续弹出分配窗口，允许用户显式改选其它相机。
+                if (cameraCount > 1)
+                {
+                    emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+                    Logger::Log("ConnectDriver | Guider auto-bound with multiple SDK cameras available. "
+                                "Show allocation window for manual override.",
+                                LogLevel::INFO, DeviceType::GUIDER);
+                }
             }
             else if (needAllocation)
             {

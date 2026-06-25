@@ -55,6 +55,8 @@ public:
     std::optional<StarCandidate> detect(
         const cv::Mat& image16,
         const Params& p,
+        std::vector<StarCandidate>* outDedupCandidates = nullptr,
+        std::vector<StarCandidate>* outSnrCandidates = nullptr,
         std::vector<StarCandidate>* outCandidates = nullptr,
         std::vector<StarCandidate>* outRejected = nullptr) const;
 
@@ -75,7 +77,7 @@ private:
     cv::Mat _generateFlatField(const cv::Mat& imageF, int kernelSize,
                                const std::string& method, double sigma) const;
     cv::Mat _subtractFlat(const cv::Mat& imageF, const cv::Mat& flat) const;
-    std::vector<StarCandidate> _findPeaks(const cv::Mat& imageF, const cv::Mat& flatSub,
+    std::vector<StarCandidate> _findPeaks(const cv::Mat& flatSub16,
                                           const Params& p) const;
     double _estimateBackground(const cv::Mat& imageF, int x, int y, int halfSize) const;
     double _computeHFD(const cv::Mat& imageF, double x, double y) const;

@@ -956,8 +956,13 @@ public:
     int guiderExpMs = 1000;
 
     // DEBUG: star candidates for image annotation
+    QVector<QPointF> m_debugStarDedupCandidates;
+    QVector<QPointF> m_debugStarSnrCandidates;
     QVector<QPointF> m_debugStarCandidates;
     QPointF m_debugStarSelected = QPointF(0, 0);
+    bool m_guiderAutoBatchActive = false;
+    int m_guiderAutoBatchSavedFrames = 0;
+    QString m_guiderAutoBatchDir;
 
 private:
     // 内置导星核心；未初始化时保持为空，相关逻辑自动降级为仅取图/显示。
@@ -968,6 +973,9 @@ private:
     bool guiderUsesArcsecUnit() const;
     void publishGuiderErrorUnit(bool force = false, bool emitInfo = false);
     void syncGuiderScaleParams(bool forcePublishUnit = false, bool emitInfo = false);
+    void startGuiderAutoBatchCapture();
+    void stopGuiderAutoBatchCapture();
+    void persistGuiderAutoBatchFrame(const QString& fitsPath);
     // 导星循环曝光定时器（singleShot：收到一帧后再触发下一帧，避免重入）
     QTimer *guiderLoopTimer = nullptr;
     bool guiderExposureInFlight = false;
@@ -996,6 +1004,8 @@ private:
 private Q_SLOTS:
     void onGuiderLoopTimeout();
     void PersistGuidingFits(const QString& sourceFitsPath);
+    void PersistGuidingPreviewFromFrame(const QString& sourceFitsPath, const cv::Mat& image16);
+    void clearGuiderDebugAnnotations(bool refreshPreview = false);
 
 public:
     void ControlGuide(int Direction, int Duration);

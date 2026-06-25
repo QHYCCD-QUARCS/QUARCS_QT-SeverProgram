@@ -50,6 +50,8 @@ public:
     std::optional<StarCandidate> selectGuideStar(const cv::Mat& image16,
                                                  const StarSelectionParams& p,
                                                  const QString& fitsPath = QString(),
+                                                 std::vector<StarCandidate>* outDedupCandidates = nullptr,
+                                                 std::vector<StarCandidate>* outSnrCandidates = nullptr,
                                                  std::vector<StarCandidate>* outCandidates = nullptr,
                                                  std::vector<StarCandidate>* outRejectedCandidates = nullptr,
                                                  cv::Mat* debugImage = nullptr) const;
@@ -60,6 +62,3 @@ private:
 };
 
 } // namespace guiding
-
-
-

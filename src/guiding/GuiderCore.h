@@ -77,6 +77,14 @@ signals:
 
     // 让外部保存导星 FITS 到主相机同规则目录（固定 guiding.fits）
     void requestPersistGuidingFits(const QString& sourceFitsPath);
+    void requestPersistGuidingFitsAnnotated(const QString& sourceFitsPath,
+                                            const cv::Mat& image16,
+                                            int imageW,
+                                            int imageH,
+                                            const QVector<QPointF>& dedupCandidates,
+                                            const QVector<QPointF>& snrCandidates,
+                                            const QVector<QPointF>& candidates,
+                                            const QPointF& selected);
 
     // 发出导星脉冲指令（后续导星闭环会 emit）
     void requestPulse(const guiding::PulseCommand& cmd);
@@ -88,7 +96,11 @@ signals:
     void paramsChanged();
 
     // DEBUG: emit star candidates for image annotation on frontend
-    void debugStarCandidatesChanged(const QVector<QPointF>& candidates, const QPointF& selected);
+    void debugStarCandidatesChanged(int imageW, int imageH,
+                                    const QVector<QPointF>& dedupCandidates,
+                                    const QVector<QPointF>& snrCandidates,
+                                    const QVector<QPointF>& candidates,
+                                    const QPointF& selected);
 
 private:
     void setState(guiding::State s);
@@ -114,6 +126,8 @@ private:
         const cv::Mat& img16,
         const guiding::StarSelectionParams& params,
         const QString& fitsPath,
+        std::vector<guiding::StarCandidate>* outDedupCandidates,
+        std::vector<guiding::StarCandidate>* outSnrCandidates,
         std::vector<guiding::StarCandidate>* outCandidates,
         std::vector<guiding::StarCandidate>* outRejected = nullptr,
         cv::Mat* debugImage = nullptr) const;
@@ -130,7 +144,7 @@ private:
     QPointF m_lockPosPx{0.0, 0.0};
     guiding::GuidingStarDetector m_detector{};
     guiding::flatfield::FlatFieldDetector m_flatfieldDetector{};
-    bool m_useFlatfield = false;  // 是否使用平场法检测
+    bool m_useFlatfield = false;  // 默认回到已验证过紫框语义正常的 GuidingStarDetector 路径
 
     // 校准
     guiding::phd2::MountCalibration m_phd2Calib{};

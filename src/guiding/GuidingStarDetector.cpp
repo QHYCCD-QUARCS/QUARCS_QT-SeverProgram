@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <opencv2/imgproc.hpp>
 #include <set>
 #include <sstream>
@@ -30,6 +31,12 @@ struct R2M
     double m = 0.0;
 };
 
+struct PixelCoord
+{
+    int x = 0;
+    int y = 0;
+};
+
 std::string formatCandidateBrief(const StarCandidate& c)
 {
     std::ostringstream oss;
@@ -42,6 +49,64 @@ std::string formatCandidateBrief(const StarCandidate& c)
         << " edge=" << c.edgeDistPx
         << " peak=" << c.peakADU;
     return oss.str();
+}
+
+long long makeTimingTraceId()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+std::pair<double, double> estimateBackgroundRing(const cv::Mat& img,
+                                                 int cx,
+                                                 int cy,
+                                                 int innerRadius,
+                                                 int outerRadius)
+{
+    if (img.empty())
+        return {0.0, 1.0};
+
+    const int rows = img.rows;
+    const int cols = img.cols;
+    const int innerR2 = innerRadius * innerRadius;
+    const int outerR2 = outerRadius * outerRadius;
+
+    double sum = 0.0;
+    double sumSq = 0.0;
+    int count = 0;
+
+    const int y0 = std::max(0, cy - outerRadius);
+    const int y1 = std::min(rows - 1, cy + outerRadius);
+    const int x0 = std::max(0, cx - outerRadius);
+    const int x1 = std::min(cols - 1, cx + outerRadius);
+
+    for (int y = y0; y <= y1; ++y)
+    {
+        const ushort* row = img.ptr<ushort>(y);
+        for (int x = x0; x <= x1; ++x)
+        {
+            const int dx = x - cx;
+            const int dy = y - cy;
+            const int r2 = dx * dx + dy * dy;
+            if (r2 < innerR2 || r2 > outerR2)
+                continue;
+
+            const double v = static_cast<double>(row[x]);
+            sum += v;
+            sumSq += v * v;
+            ++count;
+        }
+    }
+
+    if (count <= 0)
+        return {0.0, 1.0};
+
+    const double mean = sum / static_cast<double>(count);
+    double variance = sumSq / static_cast<double>(count) - mean * mean;
+    if (variance < 1.0)
+        variance = 1.0;
+    return {mean, std::sqrt(variance)};
 }
 
 QPointF refineCandidateCentroid(const cv::Mat& image16, const StarCandidate& c, bool* ok)
@@ -627,103 +692,166 @@ double GuidingStarDetector::localPeakADU(const cv::Mat& img, double x, double y,
 // ============================================================
 
 std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
-                                                 const StarSelectionParams& p)
+                                                 const StarSelectionParams& p,
+                                                 std::vector<StarCandidate>* outDedupCandidates = nullptr,
+                                                 std::vector<StarCandidate>* outSnrCandidates = nullptr)
 {
     std::vector<StarCandidate> candidates;
+    if (outDedupCandidates)
+        outDedupCandidates->clear();
+    if (outSnrCandidates)
+        outSnrCandidates->clear();
     if (image16.empty()) return candidates;
 
     const int rows = image16.rows;
     const int cols = image16.cols;
 
     const auto tFlatStart = std::chrono::steady_clock::now();
-    Logger::Log(std::string("[starDetectFlat] detectFlatFieldPeaks START image=")
+    const long long traceId = makeTimingTraceId();
+    auto logTimingStage = [&](const char* stage,
+                              const std::chrono::steady_clock::time_point& stageStart,
+                              const std::string& extra = std::string()) {
+        const auto stageMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - stageStart).count();
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tFlatStart).count();
+        Logger::Log(std::string("[starDetectFlat][trace=") + std::to_string(traceId) +
+                        "] stage=" + stage +
+                        " stageMs=" + std::to_string(stageMs) +
+                        " totalMs=" + std::to_string(totalMs) +
+                        (extra.empty() ? std::string() : " " + extra),
+                    LogLevel::INFO, DeviceType::GUIDER);
+    };
+    Logger::Log(std::string("[starDetectFlat][trace=") + std::to_string(traceId) + "] detectFlatFieldPeaks START image="
         + std::to_string(cols) + "x" + std::to_string(rows)
         + " kernel=" + std::to_string(p.flatKernelSize)
         + " minSNR=" + std::to_string(p.minSNR)
         + " minHFD=" + std::to_string(p.minHFD)
         + " maxHFD=" + std::to_string(p.maxHFD), LogLevel::INFO, DeviceType::GUIDER);
 
-    // Step 1: Convert to float
-    cv::Mat image32f;
-    image16.convertTo(image32f, CV_32F);
-
-    // Step 2: 3x3 median blur to reduce noise before flat-field
+    // Step 1: 3x3 median blur to reduce noise before flat-field
+    const auto tMedianStart = std::chrono::steady_clock::now();
     cv::Mat smoothed;
     cv::medianBlur(image16, smoothed, 3);
     cv::Mat smoothed32f;
     smoothed.convertTo(smoothed32f, CV_32F);
+    logTimingStage("medianBlur+convertTo32f", tMedianStart);
 
-    // Step 3: Generate flat-field with boxFilter (on smoothed image)
+    // Step 2: Generate flat-field with boxFilter (on smoothed image)
     int kernelSize = p.flatKernelSize;
     if (kernelSize < 8) kernelSize = 64;
+    const auto tBoxFilterStart = std::chrono::steady_clock::now();
     cv::Mat flat;
     cv::boxFilter(smoothed32f, flat, CV_32F, cv::Size(kernelSize, kernelSize));
-    {
-        auto t = std::chrono::steady_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
-        Logger::Log(std::string("[starDetectFlat] boxFilter done=") + std::to_string(ms) + "ms", LogLevel::INFO, DeviceType::GUIDER);
-    }
+    logTimingStage("boxFilter", tBoxFilterStart, "kernel=" + std::to_string(kernelSize));
 
-    // Step 4: Subtract flat-field from original image + offset (faster than division)
-    // corrected = image - flat + offset; background ~ offset, stars > offset
+    // Step 3: Subtract flat-field from the median-filtered image + offset.
+    // Using the smoothed image here prevents raw hot pixels / impulse noise
+    // from re-entering the ranking stage after flat estimation.
+    // corrected = smoothed - flat + offset; background ~ offset, stars > offset
     const double offset = 5000.0;
+    const auto tSubtractStart = std::chrono::steady_clock::now();
     cv::Mat corrected;
-    corrected = image32f - flat + offset;
-    {
-        auto t = std::chrono::steady_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
-        Logger::Log(std::string("[starDetectFlat] subtractFlat done=") + std::to_string(ms) + "ms offset=" + std::to_string(offset), LogLevel::INFO, DeviceType::GUIDER);
-    }
+    corrected = smoothed32f - flat + offset;
+    logTimingStage("subtractFlat", tSubtractStart,
+                   "offset=" + std::to_string(offset) + " source=median3x3");
 
-    // Step 5: Collect all pixels above offset, partial_sort to get top 2000
-    // This replaces the 3x3 peak detection that produced 910K false peaks
-    std::vector<std::tuple<double, int, int>> allPixels; // (value, x, y)
-    allPixels.reserve(rows * cols / 50);
+    // Convert the corrected image to uint16 for SNR statistics, matching the
+    // validated batch-test script's "clip -> uint16" behavior.
+    const auto tClipStart = std::chrono::steady_clock::now();
+    cv::Mat corrected16;
+    corrected.convertTo(corrected16, CV_16U);
+    logTimingStage("clip+convertTo16u", tClipStart);
+
+    constexpr size_t kMaxBrightnessCandidates = 2000;
+    constexpr double kPerBinCandidateRatio = 0.5;
+    const size_t perBinCandidateLimit =
+        std::max<size_t>(1, static_cast<size_t>(std::llround(
+                                static_cast<double>(kMaxBrightnessCandidates) *
+                                kPerBinCandidateRatio)));
+
+    // Step 4: Single-pass 16-bit histogram buckets.
+    // Each ADU bin keeps only a bounded number of coordinates to avoid
+    // background or saturated plateaus dominating the candidate set.
+    const auto tCollectStart = std::chrono::steady_clock::now();
+    std::vector<std::vector<PixelCoord>> buckets(65536);
+    size_t aboveOffsetCount = 0;
+    size_t retainedCount = 0;
+    size_t cappedDropCount = 0;
+    size_t nonEmptyBins = 0;
     for (int y = 0; y < rows; ++y)
     {
-        const float* ptr = corrected.ptr<float>(y);
+        const ushort* ptr = corrected16.ptr<ushort>(y);
         for (int x = 0; x < cols; ++x)
         {
-            if (ptr[x] > static_cast<float>(offset))
+            const ushort value = ptr[x];
+            if (value <= static_cast<ushort>(offset))
+                continue;
+
+            ++aboveOffsetCount;
+            auto& bucket = buckets[value];
+            if (bucket.empty())
+                ++nonEmptyBins;
+
+            if (bucket.size() < perBinCandidateLimit)
             {
-                allPixels.emplace_back(static_cast<double>(ptr[x]), x, y);
+                bucket.push_back({x, y});
+                ++retainedCount;
+            }
+            else
+            {
+                ++cappedDropCount;
             }
         }
     }
-    {
-        auto t = std::chrono::steady_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
-        Logger::Log(std::string("[starDetectFlat] pixelCollection done=") + std::to_string(ms) + "ms aboveOffset=" + std::to_string(allPixels.size()), LogLevel::INFO, DeviceType::GUIDER);
-    }
+    logTimingStage("pixelCollection", tCollectStart,
+                   "aboveOffset=" + std::to_string(aboveOffsetCount) +
+                   " retained=" + std::to_string(retainedCount) +
+                   " cappedDrops=" + std::to_string(cappedDropCount) +
+                   " nonEmptyBins=" + std::to_string(nonEmptyBins) +
+                   " perBinLimit=" + std::to_string(perBinCandidateLimit));
 
-    // Step 6: Partial sort to get top 2000 brightest pixels
-    const size_t maxPeaksForDedup = 2000;
+    // Step 5: Walk buckets from bright to dark until we have enough candidates.
+    const auto tPeakSelectStart = std::chrono::steady_clock::now();
     std::vector<std::tuple<double, int, int>> peaks;
-    if (allPixels.empty())
+    peaks.reserve(kMaxBrightnessCandidates);
+    size_t brightestBinsUsed = 0;
+    if (retainedCount == 0)
     {
-        Logger::Log(std::string("[starDetectFlat] no pixels above offset=") + std::to_string(offset), LogLevel::WARNING, DeviceType::GUIDER);
-    }
-    else if (allPixels.size() <= maxPeaksForDedup)
-    {
-        peaks = std::move(allPixels);
+        Logger::Log(std::string("[starDetectFlat][trace=") + std::to_string(traceId) +
+                        "] no pixels above offset=" + std::to_string(offset),
+                    LogLevel::WARNING, DeviceType::GUIDER);
     }
     else
     {
-        peaks.resize(maxPeaksForDedup);
-        std::partial_sort(allPixels.begin(), allPixels.begin() + maxPeaksForDedup, allPixels.end(),
-                          [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
-        std::copy(allPixels.begin(), allPixels.begin() + maxPeaksForDedup, peaks.begin());
-        Logger::Log(std::string("[starDetectFlat] partialSort: ") + std::to_string(allPixels.size()) + " -> " + std::to_string(maxPeaksForDedup) + " topPeaks", LogLevel::INFO, DeviceType::GUIDER);
-    }
-    {
-        auto t = std::chrono::steady_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
-        Logger::Log(std::string("[starDetectFlat] peakSelection done=") + std::to_string(ms) + "ms peaks=" + std::to_string(peaks.size()), LogLevel::INFO, DeviceType::GUIDER);
-    }
+        const int offsetBin = std::clamp(static_cast<int>(std::floor(offset)) + 1, 0, 65535);
+        for (int value = 65535; value >= offsetBin && peaks.size() < kMaxBrightnessCandidates; --value)
+        {
+            const auto& bucket = buckets[static_cast<size_t>(value)];
+            if (bucket.empty())
+                continue;
 
-    // Step 7: Deduplicate by distance (5x5 window, keep strongest)
+            ++brightestBinsUsed;
+            for (const auto& coord : bucket)
+            {
+                peaks.emplace_back(static_cast<double>(value), coord.x, coord.y);
+                if (peaks.size() >= kMaxBrightnessCandidates)
+                    break;
+            }
+        }
+    }
+    logTimingStage("peakSelection", tPeakSelectStart,
+                   "peaks=" + std::to_string(peaks.size()) +
+                   " brightestBinsUsed=" + std::to_string(brightestBinsUsed) +
+                   " candidateBudget=" + std::to_string(kMaxBrightnessCandidates));
+
+    // Step 6: Deduplicate by distance (5x5 window, keep strongest),
+    // and use local ring background/std for each candidate's SNR.
+    const auto tFilterStart = std::chrono::steady_clock::now();
     std::set<std::pair<int, int>> used;
     const int dedupHalf = 2; // 5x5 window
+    constexpr int kSnrRingInnerRadius = 5;
+    constexpr int kSnrRingOuterRadius = 15;
     for (const auto& peak : peaks)
     {
         int px = std::get<1>(peak);
@@ -743,42 +871,7 @@ std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
         {
             used.insert({px, py});
 
-            // Compute SNR using local background statistics
-            // After subtraction correction, background ≈ offset (5000)
             double val = std::get<0>(peak);
-            (void)offset; // offset is the background level after subtraction
-
-            // Compute local std from a 15x15 window
-            double sum = 0.0, sumSq = 0.0, count = 0;
-            int halfWin = 7;
-            for (int dy = -halfWin; dy <= halfWin; ++dy)
-            {
-                int yy = py + dy;
-                if (yy < 1 || yy >= rows - 1) continue;
-                const float* rPtr = corrected.ptr<float>(yy);
-                for (int dx = -halfWin; dx <= halfWin; ++dx)
-                {
-                    int xx = px + dx;
-                    if (xx < 1 || xx >= cols - 1) continue;
-                    // Skip the peak itself
-                    if (xx == px && yy == py) continue;
-                    double v = rPtr[xx];
-                    sum += v;
-                    sumSq += v * v;
-                    count++;
-                }
-            }
-            if (count < 4) continue;
-            double localMean = sum / count;
-            double localVar = sumSq / count - localMean * localMean;
-            if (localVar < 0.0) localVar = 0.0;
-            double localStd = std::sqrt(localVar);
-            if (localStd < 1.0) localStd = 1.0;
-
-            double snr = (val - localMean) / localStd;
-
-            // SNR filter
-            if (snr < p.minSNR) continue;
 
             // Compute FWHM for HFD estimation
             // Use 3x3 window around peak
@@ -803,31 +896,54 @@ std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
             }
             double hfd = (totalFlux > 0) ? std::sqrt(halfFluxR2 / totalFlux) : 0.0;
 
-            // HFD filter
-            if (hfd < p.minHFD || hfd > p.maxHFD) continue;
-
             StarCandidate c;
             c.x = px;
             c.y = py;
-            c.snr = snr;
+            c.snr = 0.0;
             c.hfd = hfd;
             c.peakADU = val;
             c.edgeDistPx = std::min({(double)px, (double)py,
                                      (double)(cols - 1 - px), (double)(rows - 1 - py)});
+            if (outDedupCandidates)
+                outDedupCandidates->push_back(c);
+
+            const auto [localBg, localNoise] =
+                estimateBackgroundRing(corrected16, px, py, kSnrRingInnerRadius, kSnrRingOuterRadius);
+            double snr = (val - localBg) / std::max(1.0, localNoise);
+            c.snr = snr;
+
+            // SNR filter
+            if (snr < p.minSNR) continue;
+            if (outSnrCandidates)
+                outSnrCandidates->push_back(c);
+
+            // HFD filter
+            if (hfd < p.minHFD || hfd > p.maxHFD) continue;
+
             candidates.push_back(c);
         }
     }
+    logTimingStage("dedup+snr+hfd", tFilterStart,
+                   "dedup=" + std::to_string(outDedupCandidates ? outDedupCandidates->size() : 0) +
+                   " snrPass=" + std::to_string(outSnrCandidates ? outSnrCandidates->size() : 0) +
+                   " final=" + std::to_string(candidates.size()) +
+                   " snrRing=" + std::to_string(kSnrRingInnerRadius) + "-" +
+                   std::to_string(kSnrRingOuterRadius));
 
     {
-        auto t = std::chrono::steady_clock::now();
-        auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(t - tFlatStart).count();
+        auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tFlatStart).count();
         std::string top5 = "";
         for (size_t j = 0; j < std::min(candidates.size(), size_t(5)); ++j) {
             if (!top5.empty()) top5 += "; ";
             top5 += "(" + std::to_string((int)candidates[j].x) + "," + std::to_string((int)candidates[j].y)
                   + ")SNR=" + std::to_string(candidates[j].snr) + "HFD=" + std::to_string(candidates[j].hfd);
         }
-        Logger::Log(std::string("[starDetectFlat] detectFlatFieldPeaks DONE total=") + std::to_string(totalMs) + "ms candidates=" + std::to_string(candidates.size()) + " top5=[" + top5 + "]", LogLevel::INFO, DeviceType::GUIDER);
+        Logger::Log(std::string("[starDetectFlat][trace=") + std::to_string(traceId) +
+                        "] detectFlatFieldPeaks DONE totalMs=" + std::to_string(totalMs) +
+                        " candidates=" + std::to_string(candidates.size()) +
+                        " top5=[" + top5 + "]",
+                    LogLevel::INFO, DeviceType::GUIDER);
     }
 
     return candidates;
@@ -837,12 +953,29 @@ std::vector<StarCandidate> detectFlatFieldPeaks(const cv::Mat& image16,
 std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat& image16,
                                                                   const StarSelectionParams& p,
                                                                   const QString& fitsPath,
+                                                                  std::vector<StarCandidate>* outDedupCandidates,
+                                                                  std::vector<StarCandidate>* outSnrCandidates,
                                                                   std::vector<StarCandidate>* outCandidates,
                                                                   std::vector<StarCandidate>* outRejectedCandidates,
                                                                   cv::Mat* debugImage) const
 {
     const auto tSelectStart = std::chrono::steady_clock::now();
-    Logger::Log(std::string("[starDetectFlat] selectGuideStar START image=")
+    const long long traceId = makeTimingTraceId();
+    auto logSelectStage = [&](const char* stage,
+                              const std::chrono::steady_clock::time_point& stageStart,
+                              const std::string& extra = std::string()) {
+        const auto stageMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - stageStart).count();
+        const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tSelectStart).count();
+        Logger::Log(std::string("[starSelectTrace][trace=") + std::to_string(traceId) +
+                        "] stage=" + stage +
+                        " stageMs=" + std::to_string(stageMs) +
+                        " totalMs=" + std::to_string(totalMs) +
+                        (extra.empty() ? std::string() : " " + extra),
+                    LogLevel::INFO, DeviceType::GUIDER);
+    };
+    Logger::Log(std::string("[starSelectTrace][trace=") + std::to_string(traceId) + "] selectGuideStar START image="
         + std::to_string(image16.cols) + "x" + std::to_string(image16.rows)
         + " type=" + std::to_string(image16.type())
         + " useFlatField=" + std::to_string(p.useFlatField)
@@ -854,7 +987,7 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
     if (image16.empty() || image16.cols <= 0 || image16.rows <= 0)
         return std::nullopt;
 
-    constexpr const char* kLogPrefix = "[AutoGuideSelect]";
+    const std::string logPrefix = std::string("[AutoGuideSelect][trace=") + std::to_string(traceId) + "]";
     const auto t0 = std::chrono::steady_clock::now();
     const int resolvedDownsample = resolveAutoSelDownsample(p);
 
@@ -864,24 +997,28 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
     if (p.useFlatField)
     {
         // Flat-field method
-        candidates = detectFlatFieldPeaks(image16, p);
+        candidates = detectFlatFieldPeaks(image16, p, outDedupCandidates, outSnrCandidates);
     }
     else
     {
         // PHD2Style method (original)
         const auto peaks = detectPHD2StylePeaks(image16, p.searchRegionPx, resolvedDownsample);
-        {
-            auto t = std::chrono::steady_clock::now();
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tSelectStart).count();
-            Logger::Log(std::string("[starDetectFlat] detectPHD2StylePeaks returned=") + std::to_string(peaks.size()) + " in " + std::to_string(ms) + "ms", LogLevel::INFO, DeviceType::GUIDER);
-        }
+        logSelectStage("detectPHD2StylePeaks", tDetectStart,
+                       "peaks=" + std::to_string(peaks.size()));
         candidates.reserve(peaks.size());
+        const auto tMeasureStart = std::chrono::steady_clock::now();
         for (const auto& peak : peaks)
         {
             StarCandidate c;
             if (measureStarCandidate(image16, QPointF(peak.x, peak.y), p.searchRegionPx, c))
                 candidates.push_back(c);
         }
+        logSelectStage("measureStarCandidate", tMeasureStart,
+                       "measured=" + std::to_string(candidates.size()));
+        if (outDedupCandidates)
+            *outDedupCandidates = candidates;
+        if (outSnrCandidates)
+            *outSnrCandidates = candidates;
     }
 
     const auto tDetectDone = std::chrono::steady_clock::now();
@@ -889,7 +1026,7 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
 
     const auto detectMs = std::chrono::duration_cast<std::chrono::milliseconds>(tDetectDone - t0).count();
     const auto measureMs = std::chrono::duration_cast<std::chrono::milliseconds>(tMeasureDone - tDetectDone).count();
-    Logger::Log(std::string(kLogPrefix) +
+    Logger::Log(logPrefix +
                     " base_detect engine=" + std::string(p.useFlatField ? "FlatField" : "PHD2Style") + " candidates=" + std::to_string(candidates.size()) +
                     " measured=" + std::to_string(candidates.size()) +
                     " downsample=" + std::to_string(resolvedDownsample) +
@@ -899,11 +1036,8 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                     " measureMs=" + std::to_string(measureMs) +
                     (!fitsPath.isEmpty() ? " fits=" + fitsPath.toStdString() : std::string()),
                 LogLevel::INFO, DeviceType::GUIDER);
-    {
-        auto t = std::chrono::steady_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tSelectStart).count();
-        Logger::Log(std::string("[starDetectFlat] after detect+measure: candidates=") + std::to_string(candidates.size()) + " total=" + std::to_string(ms) + "ms", LogLevel::INFO, DeviceType::GUIDER);
-    }
+    logSelectStage("detect+measure complete", tDetectStart,
+                   "candidates=" + std::to_string(candidates.size()));
 
     if (candidates.empty())
     {
@@ -911,15 +1045,11 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
             outCandidates->clear();
         if (outRejectedCandidates)
             outRejectedCandidates->clear();
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " fail_at=base_detect reason=no_candidates_from_phd2_style_autofind"
                         " | possible_steps=exposure_gain_or_focus",
                     LogLevel::INFO, DeviceType::GUIDER);
-    {
-        auto t = std::chrono::steady_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tSelectStart).count();
-        Logger::Log(std::string("[starDetectFlat] after detect+measure: candidates=") + std::to_string(candidates.size()) + " total=" + std::to_string(ms) + "ms", LogLevel::INFO, DeviceType::GUIDER);
-    }
+        logSelectStage("selectGuideStar empty", tSelectStart);
         return std::nullopt;
     }
 
@@ -950,6 +1080,7 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
     int rejectedDuplicateCount = 0;
     int nearSaturatedCount = 0;
 
+    const auto tFilterStart = std::chrono::steady_clock::now();
     for (auto c : candidates)
     {
         if (c.hfd < p.minHFD || c.hfd > p.maxHFD)
@@ -1014,14 +1145,15 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
         }
     }
     const auto tFilterDone = std::chrono::steady_clock::now();
-    Logger::Log(std::string("[starDetectFlat] filter done: viable=") + std::to_string(viable.size())
-        + " validated=" + std::to_string(validated.size())
-        + " rejHFD=" + std::to_string(rejectedHFDCount)
-        + " rejEdge=" + std::to_string(rejectedEdgeCount)
-        + " rejCentroid=" + std::to_string(rejectedCentroidCount)
-        + " rejDup=" + std::to_string(rejectedDuplicateCount)
-        + " rejSNR=" + std::to_string(rejectedSNRCount)
-        + " nearSat=" + std::to_string(nearSaturatedCount), LogLevel::INFO, DeviceType::GUIDER);
+    logSelectStage("filter+refine+dedup", tFilterStart,
+                   "viable=" + std::to_string(viable.size()) +
+                   " validated=" + std::to_string(validated.size()) +
+                   " rejHFD=" + std::to_string(rejectedHFDCount) +
+                   " rejEdge=" + std::to_string(rejectedEdgeCount) +
+                   " rejCentroid=" + std::to_string(rejectedCentroidCount) +
+                   " rejDup=" + std::to_string(rejectedDuplicateCount) +
+                   " rejSNR=" + std::to_string(rejectedSNRCount) +
+                   " nearSat=" + std::to_string(nearSaturatedCount));
 
     auto brightnessOrder = [](const StarCandidate& a, const StarCandidate& b) {
         if (a.peakADU == b.peakADU)
@@ -1046,7 +1178,7 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
         outRejectedCandidates->insert(outRejectedCandidates->end(), rejectedDuplicate.begin(), rejectedDuplicate.end());
     }
 
-    Logger::Log(std::string(kLogPrefix) +
+    Logger::Log(logPrefix +
                     " summary base=" + std::to_string(candidates.size()) +
                     " viable=" + std::to_string(viable.size()) +
                     " validated=" + std::to_string(validated.size()) +
@@ -1072,14 +1204,14 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
 
     for (const auto& c : rejectedSNR)
     {
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " fail_at=SNR " + formatCandidateBrief(c) +
                         " threshold.minSNR=" + std::to_string(p.minSNR),
                     LogLevel::INFO, DeviceType::GUIDER);
     }
     for (const auto& c : rejectedHFD)
     {
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " fail_at=HFD " + formatCandidateBrief(c) +
                         " threshold.range=[" + std::to_string(p.minHFD) +
                         "," + std::to_string(p.maxHFD) + "]",
@@ -1087,26 +1219,26 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
     }
     for (const auto& c : rejectedEdge)
     {
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " fail_at=edge " + formatCandidateBrief(c) +
                         " threshold.edgeMarginPx=" + std::to_string(p.edgeMarginPx),
                     LogLevel::INFO, DeviceType::GUIDER);
     }
     for (const auto& c : rejectedCentroid)
     {
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " reject_at=centroid " + formatCandidateBrief(c),
                     LogLevel::INFO, DeviceType::GUIDER);
     }
     for (const auto& c : rejectedDuplicate)
     {
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " fail_at=duplicate " + formatCandidateBrief(c),
                     LogLevel::INFO, DeviceType::GUIDER);
     }
     for (const auto& c : rejectedNearSaturation)
     {
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " note_at=near_saturation " + formatCandidateBrief(c) +
                         " threshold.nearSatADU=" + std::to_string(nearSat),
                     LogLevel::INFO, DeviceType::GUIDER);
@@ -1114,12 +1246,14 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
 
     if (viable.empty())
     {
-        Logger::Log(std::string(kLogPrefix) +
+        Logger::Log(logPrefix +
                         " fail_at=final reason=no candidates after HFD/edge/centroid filtering",
                     LogLevel::INFO, DeviceType::GUIDER);
+        logSelectStage("selectGuideStar no-viable", tSelectStart);
         return std::nullopt;
     }
 
+    const auto tFinalSelectStart = std::chrono::steady_clock::now();
     for (int pass = 1; pass <= 3; ++pass)
     {
         for (const auto& c : viable)
@@ -1138,7 +1272,10 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                     continue;
             }
 
-            Logger::Log(std::string(kLogPrefix) +
+            logSelectStage("finalSelect", tFinalSelectStart,
+                           "pass=" + std::to_string(pass) +
+                           " best=" + formatCandidateBrief(c));
+            Logger::Log(logPrefix +
                             " selected pass=" + std::to_string(pass) + " " + formatCandidateBrief(c),
                         LogLevel::INFO, DeviceType::GUIDER);
 
@@ -1163,21 +1300,25 @@ std::optional<StarCandidate> GuidingStarDetector::selectGuideStar(const cv::Mat&
                 }
             }
 
+            Logger::Log(std::string("[starSelectTrace][trace=") + std::to_string(traceId) +
+                            "] selectGuideStar SUCCESS totalMs=" +
+                            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                               std::chrono::steady_clock::now() - tSelectStart).count()) +
+                            " best=(" + std::to_string((int)c.x) + "," + std::to_string((int)c.y) +
+                            ") SNR=" + std::to_string(c.snr) +
+                            " HFD=" + std::to_string(c.hfd) +
+                            " ADU=" + std::to_string(c.peakADU),
+                        LogLevel::INFO, DeviceType::GUIDER);
             return c;
-            {
-                auto t = std::chrono::steady_clock::now();
-                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - tSelectStart).count();
-                Logger::Log(std::string("[starDetectFlat] selectGuideStar SUCCESS total=") + std::to_string(ms) + "ms best=(" + std::to_string((int)c.x) + "," + std::to_string((int)c.y) + ") SNR=" + std::to_string(c.snr) + " HFD=" + std::to_string(c.hfd) + " ADU=" + std::to_string(c.peakADU), LogLevel::INFO, DeviceType::GUIDER);
-            }
         }
     }
 
-    Logger::Log(std::string(kLogPrefix) +
+    Logger::Log(logPrefix +
                     " fail_at=final reason=no star selected after primary passes despite viable candidates",
                 LogLevel::WARNING, DeviceType::GUIDER);
+    logSelectStage("selectGuideStar no-selection", tFinalSelectStart,
+                   "viable=" + std::to_string(viable.size()));
     return std::nullopt;
 }
 
 } // namespace guiding
-
-
