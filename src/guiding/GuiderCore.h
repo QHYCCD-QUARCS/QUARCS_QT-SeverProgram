@@ -13,6 +13,7 @@
 #include <deque>
 
 #include "GuidingStarDetector.h"
+#include "flatfield/FlatFieldDetector.h"
 #include "MultiStarTracker.h"
 #include "phd2/Phd2MountCalibration.h"
 #include "phd2/Phd2MountGuiding.h"
@@ -40,6 +41,10 @@ public:
     guiding::GuidingParams params() const { return m_params; }
     void setParams(const guiding::GuidingParams& p);
     bool isQuickDirectionDetecting() const { return m_quickDirectionDetectActive; }
+
+    // 平场法星点检测开关
+    Q_INVOKABLE void setUseFlatfield(bool use) { m_useFlatfield = use; }
+    bool useFlatfield() const { return m_useFlatfield; }
 
     // 由 MainWindow 调用：开始/停止循环曝光
     // 注意：真正的 takeExposure 由外部通过 requestExposure 信号完成
@@ -72,6 +77,14 @@ signals:
 
     // 让外部保存导星 FITS 到主相机同规则目录（固定 guiding.fits）
     void requestPersistGuidingFits(const QString& sourceFitsPath);
+    void requestPersistGuidingFitsAnnotated(const QString& sourceFitsPath,
+                                            const cv::Mat& image16,
+                                            int imageW,
+                                            int imageH,
+                                            const QVector<QPointF>& dedupCandidates,
+                                            const QVector<QPointF>& snrCandidates,
+                                            const QVector<QPointF>& candidates,
+                                            const QPointF& selected);
 
     // 发出导星脉冲指令（后续导星闭环会 emit）
     void requestPulse(const guiding::PulseCommand& cmd);
@@ -81,6 +94,13 @@ signals:
     void errorOccurred(const QString& msg);
     void infoMessage(const QString& msg);
     void paramsChanged();
+
+    // DEBUG: emit star candidates for image annotation on frontend
+    void debugStarCandidatesChanged(int imageW, int imageH,
+                                    const QVector<QPointF>& dedupCandidates,
+                                    const QVector<QPointF>& snrCandidates,
+                                    const QVector<QPointF>& candidates,
+                                    const QPointF& selected);
 
 private:
     void setState(guiding::State s);
@@ -101,6 +121,17 @@ private:
     void persistCalibrationSnapshot() const;
     void clearPersistedCalibrationSnapshot() const;
 
+    // 统一选星入口：根据 m_useFlatfield 选择检测器
+    std::optional<guiding::StarCandidate> selectStarWithDetector(
+        const cv::Mat& img16,
+        const guiding::StarSelectionParams& params,
+        const QString& fitsPath,
+        std::vector<guiding::StarCandidate>* outDedupCandidates,
+        std::vector<guiding::StarCandidate>* outSnrCandidates,
+        std::vector<guiding::StarCandidate>* outCandidates,
+        std::vector<guiding::StarCandidate>* outRejected = nullptr,
+        cv::Mat* debugImage = nullptr) const;
+
 private:
     guiding::State m_state = guiding::State::Idle;
     guiding::GuidingParams m_params{};
@@ -112,6 +143,8 @@ private:
     bool m_hasLock = false;
     QPointF m_lockPosPx{0.0, 0.0};
     guiding::GuidingStarDetector m_detector{};
+    guiding::flatfield::FlatFieldDetector m_flatfieldDetector{};
+    bool m_useFlatfield = false;  // 默认回到已验证过紫框语义正常的 GuidingStarDetector 路径
 
     // 校准
     guiding::phd2::MountCalibration m_phd2Calib{};

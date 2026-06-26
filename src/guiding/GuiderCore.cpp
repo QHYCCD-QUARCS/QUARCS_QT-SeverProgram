@@ -791,6 +791,55 @@ void GuiderCore::clearPersistedCalibrationSnapshot() const
     }
 }
 
+// 统一选星入口：根据 m_useFlatfield 选择检测器
+std::optional<guiding::StarCandidate> GuiderCore::selectStarWithDetector(
+    const cv::Mat& img16,
+    const guiding::StarSelectionParams& params,
+    const QString& fitsPath,
+    std::vector<guiding::StarCandidate>* outDedupCandidates,
+    std::vector<guiding::StarCandidate>* outSnrCandidates,
+    std::vector<guiding::StarCandidate>* outCandidates,
+    std::vector<guiding::StarCandidate>* outRejected,
+    cv::Mat* debugImage) const
+{
+    if (m_useFlatfield)
+    {
+        cv::Mat imgFiltered;
+        cv::medianBlur(img16, imgFiltered, 3);
+
+        auto ffParams = guiding::flatfield::FlatFieldDetector::Params{};
+        ffParams.kernelSize = 64;
+        ffParams.method = "uniform";
+        ffParams.snrThreshold = params.minSNR > 0 ? params.minSNR : 5.0;
+        ffParams.minHFD = params.minHFD;
+        ffParams.maxHFD = params.maxHFD;
+        ffParams.minSeparation = 5;
+        ffParams.edgeMarginPx = params.edgeMarginPx;
+        ffParams.nearSaturationRatio = params.nearSaturationRatio;
+
+        auto t0 = std::chrono::steady_clock::now();
+        auto result = m_flatfieldDetector.detect(imgFiltered, ffParams,
+                                                 outDedupCandidates, outSnrCandidates,
+                                                 outCandidates, outRejected);
+        auto t1 = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        if (result.has_value())
+        {
+            Logger::Log((QString("[FlatField] 检测到 %1 颗星点，最佳SNR=%2，耗时 %3ms")
+                .arg(outCandidates ? outCandidates->size() : 0)
+                .arg(result->snr, 0, 'f', 1)
+                .arg(ms, 0, 'f', 1)).toStdString(),
+                LogLevel::INFO, DeviceType::GUIDER);
+        }
+        return result;
+    }
+    else
+    {
+        return m_detector.selectGuideStar(img16, params, fitsPath, outDedupCandidates, outSnrCandidates, outCandidates, outRejected, debugImage);
+    }
+}
+
 std::optional<guiding::StarCandidate> GuiderCore::evaluateManualLockCandidate(double xPx, double yPx) const
 {
     if (m_lastGuiderFrameFitsPath.isEmpty())
@@ -813,8 +862,10 @@ std::optional<guiding::StarCandidate> GuiderCore::evaluateManualLockCandidate(do
     p.maxArea = 400;
     p.detectMinSNR = 2.0;
 
+    std::vector<guiding::StarCandidate> dedupCandidates;
+    std::vector<guiding::StarCandidate> snrCandidates;
     std::vector<guiding::StarCandidate> candidates;
-    (void)m_detector.selectGuideStar(img16, p, m_lastGuiderFrameFitsPath, &candidates);
+    (void)selectStarWithDetector(img16, p, m_lastGuiderFrameFitsPath, &dedupCandidates, &snrCandidates, &candidates);
     if (candidates.empty())
         return std::nullopt;
 
@@ -1127,8 +1178,19 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     const QString effectiveFitsPath = resolveGuiderFrameFitsForTest(fitsPath);
     m_lastGuiderFrameFitsPath = effectiveFitsPath;
 
-    // 先按你的要求：每帧都固定命名并落盘（MainWindow 实现）
-    emit requestPersistGuidingFits(effectiveFitsPath);
+    const bool shouldRefreshAnnotatedPreview =
+        m_loopActive &&
+        ((m_state == guiding::State::Looping && m_hasLock) ||
+         (m_state == guiding::State::Selecting && !m_hasLock) ||
+         (m_state == guiding::State::Calibrating && (m_phd2Calib.isActive() || m_decBacklashMeasureActive)) ||
+         (m_state == guiding::State::Guiding && m_calibResult.valid));
+
+    // 一般帧维持原行为：先更新固定命名 FITS 与预览图。
+    // 但带调试框的阶段需要先完成本帧候选计算，再生成 JPG，
+    // 否则烙图拿到的是上一帧的候选框，显示上会“错一帧”，
+    // 并且候选框不会跟随后续帧实时刷新。
+    if (!shouldRefreshAnnotatedPreview)
+        emit requestPersistGuidingFits(effectiveFitsPath);
 
     if (!m_loopActive)
         return;
@@ -1136,6 +1198,58 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
     // New frame cancels any pending pulse/exposure scheduling from the previous frame
     m_schedSeq++;
     int nextExposureDelayMs = 0;
+
+    auto publishDynamicDebugOverlay = [&](const cv::Mat& frame16, const QPointF& selectedPt) {
+        if (frame16.empty())
+            return;
+
+        guiding::StarSelectionParams sp;
+        sp.autoSelPixelScaleArcsecPerPixel = computeImageScaleArcsecPerPixel(m_params);
+        sp.autoSelDownsample = 0;
+
+        std::vector<guiding::StarCandidate> dedupCandidates;
+        std::vector<guiding::StarCandidate> snrCandidates;
+        std::vector<guiding::StarCandidate> candidates;
+        std::vector<guiding::StarCandidate> rejectedCandidates;
+        cv::Mat debugImg;
+
+        auto best = selectStarWithDetector(frame16, sp, effectiveFitsPath,
+                                           &dedupCandidates, &snrCandidates, &candidates, &rejectedCandidates, &debugImg);
+        if (!best.has_value())
+        {
+            auto relaxed = sp;
+            relaxed.minSNR = 5.0;
+            relaxed.detectMinSNR = 2.5;
+            relaxed.minHFD = 1.0;
+            relaxed.edgeMarginPx = 20.0;
+            relaxed.kSigma = 3.0;
+            relaxed.autoSelPixelScaleArcsecPerPixel = sp.autoSelPixelScaleArcsecPerPixel;
+            relaxed.autoSelDownsample = sp.autoSelDownsample;
+            best = selectStarWithDetector(frame16, relaxed, effectiveFitsPath,
+                                          &dedupCandidates, &snrCandidates, &candidates, &rejectedCandidates, &debugImg);
+        }
+
+        QVector<QPointF> dedupCandVec;
+        QVector<QPointF> snrCandVec;
+        QVector<QPointF> candVec;
+        dedupCandVec.reserve(static_cast<int>(dedupCandidates.size()));
+        snrCandVec.reserve(static_cast<int>(snrCandidates.size()));
+        candVec.reserve(static_cast<int>(candidates.size()));
+        for (const auto& c : dedupCandidates)
+            dedupCandVec.append(QPointF(c.x, c.y));
+        for (const auto& c : snrCandidates)
+            snrCandVec.append(QPointF(c.x, c.y));
+        for (const auto& c : candidates)
+            candVec.append(QPointF(c.x, c.y));
+
+        QPointF overlaySelected = selectedPt;
+        if (overlaySelected.isNull() && best.has_value())
+            overlaySelected = QPointF(best->x, best->y);
+
+        emit debugStarCandidatesChanged(frame16.cols, frame16.rows, dedupCandVec, snrCandVec, candVec, overlaySelected);
+        emit requestPersistGuidingFitsAnnotated(effectiveFitsPath, frame16.clone(), frame16.cols, frame16.rows,
+                                                dedupCandVec, snrCandVec, candVec, overlaySelected);
+    };
 
     if (m_state == guiding::State::Looping && m_hasLock)
     {
@@ -1159,6 +1273,8 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_lastGuideCentroid = centroid;
                 emit guideStarCentroidChanged(centroid);
             }
+
+            publishDynamicDebugOverlay(img16, gotCentroid ? centroid : m_lockPosPx);
         }
     }
     else if (m_state == guiding::State::Selecting && !m_hasLock)
@@ -1169,9 +1285,16 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             guiding::StarSelectionParams sp;
             sp.autoSelPixelScaleArcsecPerPixel = computeImageScaleArcsecPerPixel(m_params);
             sp.autoSelDownsample = 0;
+            std::vector<guiding::StarCandidate> dedupCandidates;
+            std::vector<guiding::StarCandidate> snrCandidates;
             std::vector<guiding::StarCandidate> candidates;
             std::vector<guiding::StarCandidate> rejectedCandidates;
-            auto best = m_detector.selectGuideStar(img16, sp, effectiveFitsPath, &candidates, &rejectedCandidates);
+            cv::Mat debugImg;
+            QVector<QPointF> dedupCandVec;
+            QVector<QPointF> snrCandVec;
+            QVector<QPointF> candVec;
+            QPointF selPt(0, 0);
+            auto best = selectStarWithDetector(img16, sp, effectiveFitsPath, &dedupCandidates, &snrCandidates, &candidates, &rejectedCandidates, &debugImg);
             bool usedRelaxedParams = false;
             if (!best.has_value())
             {
@@ -1183,9 +1306,27 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 relaxed.kSigma = 3.0;
                 relaxed.autoSelPixelScaleArcsecPerPixel = sp.autoSelPixelScaleArcsecPerPixel;
                 relaxed.autoSelDownsample = sp.autoSelDownsample;
-                best = m_detector.selectGuideStar(img16, relaxed, effectiveFitsPath, &candidates, &rejectedCandidates);
+                best = selectStarWithDetector(img16, relaxed, effectiveFitsPath, &dedupCandidates, &snrCandidates, &candidates, &rejectedCandidates, &debugImg);
                 usedRelaxedParams = best.has_value();
             }
+
+            // DEBUG: always publish the current frame's candidate set so the frontend
+            // can clear stale overlays when this frame has no valid detections.
+            {
+                dedupCandVec.reserve(static_cast<int>(dedupCandidates.size()));
+                for (const auto& c : dedupCandidates)
+                    dedupCandVec.append(QPointF(c.x, c.y));
+                snrCandVec.reserve(static_cast<int>(snrCandidates.size()));
+                for (const auto& c : snrCandidates)
+                    snrCandVec.append(QPointF(c.x, c.y));
+                candVec.reserve(static_cast<int>(candidates.size()));
+                for (const auto& c : candidates)
+                    candVec.append(QPointF(c.x, c.y));
+                if (best.has_value())
+                    selPt = QPointF(best->x, best->y);
+                emit debugStarCandidatesChanged(img16.cols, img16.rows, dedupCandVec, snrCandVec, candVec, selPt);
+            }
+
             if (best.has_value())
             {
                 m_selectingNoStarFrameCount = 0;
@@ -1211,15 +1352,26 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 ++m_selectingNoStarFrameCount;
                 if (!candidates.empty())
                 {
+                    Logger::Log("BuiltInGuider | auto-select detected " + std::to_string(candidates.size()) +
+                                    " candidates, but none passed filtering on frame=" +
+                                    std::to_string(m_selectingNoStarFrameCount),
+                                LogLevel::INFO, DeviceType::GUIDER);
                     emit infoMessage(QStringLiteral("自动选星：检测到 %1 个候选星点，但未通过筛选，等待下一帧。")
                                          .arg(static_cast<int>(candidates.size())));
                 }
                 else
                 {
+                    Logger::Log("BuiltInGuider | auto-select found 0 candidates on frame=" +
+                                    std::to_string(m_selectingNoStarFrameCount),
+                                LogLevel::INFO, DeviceType::GUIDER);
                     emit infoMessage(QStringLiteral("自动选星进行中：第 %1 帧未识别到可用星点，继续等待。")
                                          .arg(m_selectingNoStarFrameCount));
                 }
             }
+            // 选星帧延后到这里再生成预览，并把这一帧的调试候选一起带过去，
+            // 避免 MainWindow 侧拿到“别的帧”的缓存候选而出现固定偏差。
+            emit requestPersistGuidingFitsAnnotated(effectiveFitsPath, img16.clone(), img16.cols, img16.rows,
+                                                    dedupCandVec, snrCandVec, candVec, selPt);
         }
     }
     else if (m_state == guiding::State::Calibrating && m_phd2Calib.isActive())
@@ -1386,6 +1538,8 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
 
                 enterGuidingState();
             }
+
+            publishDynamicDebugOverlay(img16, m_lastGuideCentroid.isNull() ? m_lockPosPx : m_lastGuideCentroid);
         }
     }
     else if (m_state == guiding::State::Calibrating && m_decBacklashMeasureActive && m_calibResult.valid)
@@ -1463,6 +1617,8 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 emit infoMessage(QStringLiteral("DEC 回差测量：质心跟踪失败（可能丢星/过曝/云层）。将继续尝试。"));
                 m_lastGuideCentroid = m_lockPosPx;
             }
+
+            publishDynamicDebugOverlay(img16, m_lastGuideCentroid.isNull() ? m_lockPosPx : m_lastGuideCentroid);
         }
     }
     else if (m_state == guiding::State::Guiding && m_calibResult.valid)
@@ -1765,6 +1921,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                     }
 
                     scheduleNextExposure(delayMs);
+                    publishDynamicDebugOverlay(img16, effectiveCentroid);
                     return;
                 }
 

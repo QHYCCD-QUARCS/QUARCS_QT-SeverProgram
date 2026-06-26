@@ -1,7 +1,7 @@
 #pragma once
 
-#include <opencv2/core/core.hpp>
 #include <QString>
+#include <opencv2/core/core.hpp>
 #include <optional>
 #include <vector>
 
@@ -19,10 +19,7 @@ struct StarCandidate
 
 struct StarSelectionParams
 {
-    int searchRegionPx = 15;      // PHD2 DEFAULT_SEARCH_REGION
-    int autoSelDownsample = 0;    // 0=Auto（PHD2 默认语义），1=disabled，2/3=固定 downsample
-    double autoSelPixelScaleArcsecPerPixel = 0.0; // 用于 Auto downsample；<=0 时回退为 1x
-    double minSNR = 10.0;
+    double minSNR = 5.0;
     double minHFD = 1.5;
     double maxHFD = 12.0;
     double nearSaturationRatio = 0.9; // 90% 饱和
@@ -34,18 +31,30 @@ struct StarSelectionParams
     int minArea = 3;
     int maxArea = 200;
     double detectMinSNR = 3.0;
+
+    // Flat-field correction parameters
+    bool useFlatField = true;
+    int flatKernelSize = 64;   // Gaussian blur kernel size (will be made odd)
+    double flatSigma = 16.0;   // Gaussian sigma for self-flat-field
+
+    // Auto-selection parameters
+    double autoSelPixelScaleArcsecPerPixel = 0.0;
+    int autoSelDownsample = 0;
+    double searchRegionPx = 128.0;
 };
 
 class GuidingStarDetector
 {
 public:
-    // 返回主星；outCandidates 若提供，则返回接近 PHD2 foundStars 语义的“已验证可用候选星”：
-    // 已通过 HFD / 边缘 / 质心复核，且满足最小 SNR。多星副星应只从这批候选星里选。
+    // 三遍扫描：SNR → HFD → 饱和 + 边缘，最后按评分选最佳星
     std::optional<StarCandidate> selectGuideStar(const cv::Mat& image16,
                                                  const StarSelectionParams& p,
                                                  const QString& fitsPath = QString(),
+                                                 std::vector<StarCandidate>* outDedupCandidates = nullptr,
+                                                 std::vector<StarCandidate>* outSnrCandidates = nullptr,
                                                  std::vector<StarCandidate>* outCandidates = nullptr,
-                                                 std::vector<StarCandidate>* outRejectedCandidates = nullptr) const;
+                                                 std::vector<StarCandidate>* outRejectedCandidates = nullptr,
+                                                 cv::Mat* debugImage = nullptr) const;
 
 private:
     static double maxADUForMat(const cv::Mat& img);
