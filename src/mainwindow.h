@@ -2130,6 +2130,15 @@ private:
     QString lastCommandMessage; // 存储最后一条完整消息（命令+参数）
     qint64 lastCommandTime = 0; // 存储最后一条消息的执行时间（毫秒时间戳）
     static const int COMMAND_DEBOUNCE_MS = 100; // 防抖时间窗口（500毫秒），短时间内重复的完整消息（命令和参数都相同）只执行一次
+    bool handleDriverSelectionCommand(const QString &message, const QStringList &parts);
+    bool handleBindingCommand(const QString &message, const QStringList &parts);
+    bool handleCaptureCommand(const QString &message, const QStringList &parts);
+    bool handleFocuserCommand(const QString &message, const QStringList &parts);
+    bool handleGuiderCommand(const QString &message, const QStringList &parts);
+    bool handleMountCommand(const QString &message, const QStringList &parts);
+    bool handleScheduleCommand(const QString &message, const QStringList &parts);
+    bool handleFileAndStorageCommand(const QString &message, const QStringList &parts);
+    bool handleSystemCommand(const QString &message, const QStringList &parts);
 
 /**********************  线程/定时器（通用）  **********************/
 public:

@@ -148,6 +148,9 @@ add_executable(client
   main.cpp
   websocketclient.h websocketclient.cpp
   mainwindow.h mainwindow.cpp
+  mainwindow_commands_capture.cpp
+  mainwindow_commands_control.cpp
+  mainwindow_commands_device.cpp
   guiding/GuiderTypes.h
   guiding/GuiderCore.h guiding/GuiderCore.cpp
   guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
