@@ -87,11 +87,6 @@ namespace fs = std::filesystem;
 class QThread;
 
 /**********************  宏与常量定义  **********************/
-#ifndef QUARCS_QT_CLIENT_VERSION
-#define QUARCS_QT_CLIENT_VERSION "000000000000"
-#endif
-#define QT_Client_Version QUARCS_QT_CLIENT_VERSION
-
 #define GPIO_PATH "/sys/class/gpio"
 #define GPIO_EXPORT "/sys/class/gpio/export"
 #define GPIO_UNEXPORT "/sys/class/gpio/unexport"
@@ -971,6 +966,7 @@ public:
     QVector<QPointF> m_debugStarDedupCandidates;
     QVector<QPointF> m_debugStarSnrCandidates;
     QVector<QPointF> m_debugStarCandidates;
+    QVector<QString> m_debugStarCandidateLabels;
     QPointF m_debugStarSelected = QPointF(0, 0);
     bool m_guiderAutoBatchActive = false;
     int m_guiderAutoBatchSavedFrames = 0;
@@ -985,6 +981,7 @@ private:
     bool guiderUsesArcsecUnit() const;
     void publishGuiderErrorUnit(bool force = false, bool emitInfo = false);
     void syncGuiderScaleParams(bool forcePublishUnit = false, bool emitInfo = false);
+    void publishGuiderSearchBoxMode(bool emitInfo = false);
     void startGuiderAutoBatchCapture();
     void stopGuiderAutoBatchCapture();
     void persistGuiderAutoBatchFrame(const QString& fitsPath);
@@ -996,6 +993,7 @@ private:
     double guiderFocalLengthMm = 0.0;
     guiding::State guiderCoreStateCache = guiding::State::Idle;
     guiding::GuidingParams guiderParamsCache{};
+    QString guiderSearchBoxMode = QStringLiteral("AUTO");
     bool guiderScaleHintSent = false;
     QString guiderLastPublishedErrorUnit{};
     double guiderLastPublishedArcsecPerPixel = 0.0;

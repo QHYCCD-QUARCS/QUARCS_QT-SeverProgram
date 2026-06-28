@@ -1,0 +1,6 @@
+#include "quarcs_build_version.h"
+
+const char* quarcsQtClientVersion()
+{
+    return "@QUARCS_QT_CLIENT_VERSION_VALUE@";
+}

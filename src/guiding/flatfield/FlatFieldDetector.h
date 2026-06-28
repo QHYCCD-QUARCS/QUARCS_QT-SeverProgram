@@ -34,7 +34,7 @@ public:
         // 峰值检测参数
         double snrThreshold = 5.0;     // 最小SNR阈值
         double minHFD = 1.5;           // 最小HFD（像素）
-        double maxHFD = 12.0;          // 最大HFD（像素）
+        double maxHFD = 6.0;           // 最大HFD（像素）
         int minSeparation = 5;         // 最小星点间距（像素）
         double edgeMarginPx = 40.0;    // 边缘剔除距离（像素）
         double nearSaturationRatio = 0.9; // 饱和阈值比例

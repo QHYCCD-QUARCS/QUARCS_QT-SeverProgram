@@ -84,6 +84,7 @@ signals:
                                             const QVector<QPointF>& dedupCandidates,
                                             const QVector<QPointF>& snrCandidates,
                                             const QVector<QPointF>& candidates,
+                                            const QVector<QString>& candidateLabels,
                                             const QPointF& selected);
 
     // 发出导星脉冲指令（后续导星闭环会 emit）
@@ -100,6 +101,7 @@ signals:
                                     const QVector<QPointF>& dedupCandidates,
                                     const QVector<QPointF>& snrCandidates,
                                     const QVector<QPointF>& candidates,
+                                    const QVector<QString>& candidateLabels,
                                     const QPointF& selected);
 
 private:

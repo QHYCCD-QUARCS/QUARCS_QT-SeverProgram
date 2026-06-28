@@ -81,6 +81,19 @@ set(QT_COMPONENTS
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(QUARCS_ENABLE_CCACHE "Use ccache as compiler launcher when available" ON)
+
+if(QUARCS_ENABLE_CCACHE)
+  find_program(QUARCS_CCACHE_PROGRAM ccache)
+  if(QUARCS_CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER "${QUARCS_CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${QUARCS_CCACHE_PROGRAM}")
+    message(STATUS "Using ccache launcher: ${QUARCS_CCACHE_PROGRAM}")
+  else()
+    message(STATUS "ccache not found; compiler launcher disabled")
+  endif()
+endif()
+
 if(DEFINED ENV{QUARCS_QT_CLIENT_VERSION} AND NOT "$ENV{QUARCS_QT_CLIENT_VERSION}" STREQUAL "")
   set(QUARCS_QT_CLIENT_VERSION_VALUE "$ENV{QUARCS_QT_CLIENT_VERSION}")
 else()
@@ -88,6 +101,12 @@ else()
 endif()
 
 message(STATUS "QUARCS Qt client build version: ${QUARCS_QT_CLIENT_VERSION_VALUE}")
+
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/quarcs_build_version.cpp.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/quarcs_build_version.cpp"
+  @ONLY
+)
 
 if(CMAKE_SYSROOT)
   # Ubuntu 24.04 的 aarch64 交叉编译器会默认优先使用宿主机自带的 libstdc++ 头，
@@ -125,6 +144,7 @@ find_package(OpenCV REQUIRED)
 find_package(StellarSolver REQUIRED)
 
 add_executable(client
+  "${CMAKE_CURRENT_BINARY_DIR}/quarcs_build_version.cpp"
   main.cpp
   websocketclient.h websocketclient.cpp
   mainwindow.h mainwindow.cpp
@@ -161,13 +181,16 @@ add_executable(client
   SerialDeviceDetector.h SerialDeviceDetector.cpp
 )
 
+target_include_directories(client PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${CMAKE_CURRENT_BINARY_DIR}"
+)
+
 if(QUARCS_SIM_GUIDER)
   target_compile_definitions(client PRIVATE QUARCS_SIM_GUIDER=1)
 else()
   target_compile_definitions(client PRIVATE QUARCS_SIM_GUIDER=0)
 endif()
-
-target_compile_definitions(client PRIVATE QUARCS_QT_CLIENT_VERSION="${QUARCS_QT_CLIENT_VERSION_VALUE}")
 
 # 离线导星算法测试（不依赖相机/赤道仪）
 add_executable(guiding_offline_test
@@ -335,6 +358,7 @@ target_include_directories(client PUBLIC
   "${QUARCS_INDI_INCLUDE}"
   "${QUARCS_STELLARSOLVER_INCLUDE}"
 )
+target_include_directories(client PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
 # 原生 x86_64：保留项目内自带的 INDI 相关库路径（交叉编译时改用 sysroot）
 if(CMAKE_SYSROOT)

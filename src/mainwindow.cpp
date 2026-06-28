@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "quarcs_build_version.h"
 
 #include <functional>
 
@@ -1348,6 +1349,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     guiderCoreThread->setObjectName(QStringLiteral("GuiderCoreThread"));
     qRegisterMetaType<cv::Mat>("cv::Mat");
     qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
+    qRegisterMetaType<QVector<QString>>("QVector<QString>");
     qRegisterMetaType<QPointF>("QPointF");
     guiderCore = new GuiderCore();
     guiderParamsCache = guiderCore->params();
@@ -1377,6 +1379,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     Logger::Log("BuiltInGuider | GuiderCore moved to GuiderCoreThread",
                 LogLevel::INFO, DeviceType::GUIDER);
     syncGuiderScaleParams(true, false);
+    publishGuiderSearchBoxMode(false);
 #if QUARCS_SIM_GUIDER
     simGuiderFrameSource = std::make_unique<guiding::SimGuiderFrameSource>();
     Logger::Log("BuiltInGuider | simulated frame source enabled", LogLevel::INFO, DeviceType::GUIDER);
@@ -1396,10 +1399,12 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
                    const QVector<QPointF>& dedupCandidates,
                    const QVector<QPointF>& snrCandidates,
                    const QVector<QPointF>& candidates,
+                   const QVector<QString>& candidateLabels,
                    const QPointF& selected) {
         m_debugStarDedupCandidates = dedupCandidates;
         m_debugStarSnrCandidates = snrCandidates;
         m_debugStarCandidates = candidates;
+        m_debugStarCandidateLabels = candidateLabels;
         m_debugStarSelected = selected;
         Logger::Log("BuiltInGuider | requestPersistGuidingFitsAnnotated received in MainWindow: image=" +
                         std::to_string(imageW) + "x" + std::to_string(imageH) +
@@ -1426,6 +1431,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             QString::number(static_cast<int>(std::lround(lockPosPx.y()))));
     });
     connect(guiderCore, &GuiderCore::lockStarSelected, this, [this](double x, double y, double snr, double hfd) {
+        const int searchHalfSizePx = std::max(4, guiderParamsCache.guideSearchHalfSizePx);
         glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
         glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
         emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
@@ -1433,7 +1439,8 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
             QString::number(static_cast<int>(std::lround(x))) + ":" +
-            QString::number(static_cast<int>(std::lround(y))));
+            QString::number(static_cast<int>(std::lround(y))) + ":" +
+            QString::number(searchHalfSizePx));
         emit wsThread->sendMessageToClient(
             "GuiderSelectedStar:" +
             QString::number(x, 'f', 2) + ":" +
@@ -1458,10 +1465,13 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
     connect(guiderCore, &GuiderCore::debugStarCandidatesChanged, this,
             [this](int imageW, int imageH, const QVector<QPointF>& dedupCandidates,
                    const QVector<QPointF>& snrCandidates,
-                   const QVector<QPointF>& candidates, const QPointF& selected) {
+                   const QVector<QPointF>& candidates,
+                   const QVector<QString>& candidateLabels,
+                   const QPointF& selected) {
         m_debugStarDedupCandidates = dedupCandidates;
         m_debugStarSnrCandidates = snrCandidates;
         m_debugStarCandidates = candidates;
+        m_debugStarCandidateLabels = candidateLabels;
         m_debugStarSelected = selected;
         Logger::Log("BuiltInGuider | debugStarCandidatesChanged received in MainWindow: image=" +
                         std::to_string(imageW) + "x" + std::to_string(imageH) +
@@ -1476,14 +1486,41 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
         const int safeImageW = std::max(1, imageW);
         const int safeImageH = std::max(1, imageH);
         const int maxCandidatesToSend = 48;
+        for (int i = 0; i < dedupCandidates.size() && i < maxCandidatesToSend; ++i)
+        {
+            const auto& pt = dedupCandidates[i];
+            emit wsThread->sendMessageToClient(
+                "GuiderDebugDedupCandidatePosition:" + QString::number(safeImageW) + ":" +
+                QString::number(safeImageH) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.y()))));
+        }
+
+        for (int i = 0; i < snrCandidates.size() && i < maxCandidatesToSend; ++i)
+        {
+            const auto& pt = snrCandidates[i];
+            emit wsThread->sendMessageToClient(
+                "GuiderDebugSnrCandidatePosition:" + QString::number(safeImageW) + ":" +
+                QString::number(safeImageH) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.y()))));
+        }
+
         for (int i = 0; i < candidates.size() && i < maxCandidatesToSend; ++i)
         {
             const auto& pt = candidates[i];
+            const QString label = (i < candidateLabels.size()) ? candidateLabels[i] : QString();
             emit wsThread->sendMessageToClient(
                 "GuiderDebugCandidatePosition:" + QString::number(safeImageW) + ":" +
                 QString::number(safeImageH) + ":" +
                 QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
                 QString::number(static_cast<int>(std::lround(pt.y()))));
+            emit wsThread->sendMessageToClient(
+                "GuiderDebugFinalCandidatePosition:" + QString::number(safeImageW) + ":" +
+                QString::number(safeImageH) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
+                QString::number(static_cast<int>(std::lround(pt.y()))) + ":" +
+                label);
         }
 
         if (selected.x() != 0.0 || selected.y() != 0.0)
@@ -1496,6 +1533,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
         }
     });
     connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
+        const int searchHalfSizePx = std::max(4, guiderParamsCache.guideSearchHalfSizePx);
         guiderGuideStarCentroidPx = centroidPx;
         guiderGuideStarCentroidValid = true;
         glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
@@ -1505,7 +1543,8 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
             "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
             QString::number(static_cast<int>(std::lround(centroidPx.x()))) + ":" +
-            QString::number(static_cast<int>(std::lround(centroidPx.y()))));
+            QString::number(static_cast<int>(std::lround(centroidPx.y()))) + ":" +
+            QString::number(searchHalfSizePx));
     });
     connect(guiderCore, &GuiderCore::multiStarSecondaryPointsChanged, this, [this](const QVector<QPointF>& ptsPx) {
         guiderMultiStarSecondaryPtsPx = ptsPx;
@@ -3709,6 +3748,7 @@ void MainWindow::onMessageReceived(const QString &message)
         if (!guiderStatus.isEmpty())
             emit wsThread->sendMessageToClient("GuiderStatus:" + guiderStatus);
         publishGuiderErrorUnit(true, false);
+        publishGuiderSearchBoxMode(false);
         
         Logger::Log("getGuiderStatus finish!", LogLevel::DEBUG, DeviceType::GUIDER);
     }
@@ -4501,7 +4541,7 @@ void MainWindow::onMessageReceived(const QString &message)
     else if (message == "getQTClientVersion")
     {
         Logger::Log("getQTClientVersion ...", LogLevel::DEBUG, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("QTClientVersion:" + QString::fromStdString(QT_Client_Version));
+        emit wsThread->sendMessageToClient("QTClientVersion:" + QString::fromLatin1(quarcsQtClientVersion()));
     }
 
     // 获取总版本号（来自环境变量 QUARCS_TOTAL_VERSION，格式 x.x.x）
@@ -4728,6 +4768,45 @@ void MainWindow::onMessageReceived(const QString &message)
                                                    .arg(enabled
                                                             ? QStringLiteral("多星导星已开启：自动选星时将参考副星修正偏移")
                                                             : QStringLiteral("多星导星已关闭：当前使用单星导星")));
+        }
+    }
+    else if (parts.size() == 2 && parts[0].trimmed() == "GuiderSearchBoxMode")
+    {
+        if (!guiderCore)
+        {
+            Logger::Log("GuiderSearchBoxMode ignored: guiderCore not initialized",
+                        LogLevel::WARNING, DeviceType::GUIDER);
+        }
+        else
+        {
+            const QString rawMode = parts[1].trimmed().toUpper();
+            QString appliedMode = QStringLiteral("AUTO");
+            int searchHalfSizePx = 24;
+            if (rawMode == "S")
+            {
+                appliedMode = QStringLiteral("S");
+                searchHalfSizePx = 16;
+            }
+            else if (rawMode == "M")
+            {
+                appliedMode = QStringLiteral("M");
+                searchHalfSizePx = 24;
+            }
+            else if (rawMode == "L")
+            {
+                appliedMode = QStringLiteral("L");
+                searchHalfSizePx = 36;
+            }
+
+            auto p = guiderParamsCache;
+            p.guideSearchHalfSizePx = searchHalfSizePx;
+            guiderParamsCache = p;
+            guiderSearchBoxMode = appliedMode;
+            postGuiderCore(guiderCore, [p](GuiderCore *core) { core->setParams(p); });
+            Logger::Log(("BuiltInGuider | GuiderSearchBoxMode set to " + appliedMode +
+                         " (halfSizePx=" + QString::number(searchHalfSizePx) + ")").toStdString(),
+                        LogLevel::INFO, DeviceType::GUIDER);
+            publishGuiderSearchBoxMode(true);
         }
     }
     else if (parts.size() == 2 &&
@@ -16790,6 +16869,27 @@ void MainWindow::syncGuiderScaleParams(bool forcePublishUnit, bool emitInfo)
     publishGuiderErrorUnit(forcePublishUnit, emitInfo);
 }
 
+void MainWindow::publishGuiderSearchBoxMode(bool emitInfo)
+{
+    const QString mode = guiderSearchBoxMode.isEmpty() ? QStringLiteral("AUTO") : guiderSearchBoxMode;
+    const int halfSizePx = std::max(4, guiderParamsCache.guideSearchHalfSizePx);
+    if (wsThread)
+    {
+        emit wsThread->sendMessageToClient(
+            QStringLiteral("GuiderSearchBoxMode:%1:%2")
+                .arg(mode)
+                .arg(QString::number(halfSizePx)));
+    }
+
+    if (!emitInfo || !wsThread)
+        return;
+
+    emit wsThread->sendMessageToClient(
+        QStringLiteral("GuiderCoreInfo:导星搜索框已设置为 %1（半径 %2 px）")
+            .arg(mode)
+            .arg(QString::number(halfSizePx)));
+}
+
 void MainWindow::onSdkMainLiveTimerTimeout()
 {
     // 节流：避免 33ms 频率刷屏
@@ -23874,11 +23974,6 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
         cv::Mat guiderPreviewBgr;
         cv::cvtColor(img8, guiderPreviewBgr, cv::COLOR_GRAY2BGR);
 
-        // 暂时关闭“直接烧录到原图 JPG”的导星调试框，保留前端单独叠加框，
-        // 这样更方便继续验证前端映射与后端坐标是否一致。
-        Logger::Log("PersistGuidingFits | guider preview burn-in debug overlays disabled; frontend overlay remains active",
-                    LogLevel::INFO, DeviceType::GUIDER);
-
         saveGuiderImageAsJPG(guiderPreviewBgr);
     }
 }
@@ -23969,9 +24064,6 @@ void MainWindow::PersistGuidingPreviewFromFrame(const QString& sourceFitsPath, c
     cv::Mat guiderPreviewBgr;
     cv::cvtColor(img8, guiderPreviewBgr, cv::COLOR_GRAY2BGR);
 
-    // 暂时关闭“直接烧录到原图 JPG”的导星调试框，保留前端单独叠加框，
-    // 这样更方便继续验证前端映射与后端坐标是否一致。
-
     saveGuiderImageAsJPG(guiderPreviewBgr);
 }
 
@@ -23980,6 +24072,7 @@ void MainWindow::clearGuiderDebugAnnotations(bool refreshPreview)
     m_debugStarDedupCandidates.clear();
     m_debugStarSnrCandidates.clear();
     m_debugStarCandidates.clear();
+    m_debugStarCandidateLabels.clear();
     m_debugStarSelected = QPointF(0, 0);
     emit wsThread->sendMessageToClient("ClearGuiderDebugCandidates");
 

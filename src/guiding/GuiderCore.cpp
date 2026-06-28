@@ -217,6 +217,8 @@ guiding::GuidingParams GuiderCore::sanitizeParams(const guiding::GuidingParams& 
     if (out.exposureMs < 50) out.exposureMs = 50;
     if (out.minPulseMs < 0) out.minPulseMs = 0;
     if (out.maxPulseMs < out.minPulseMs) out.maxPulseMs = out.minPulseMs;
+    if (out.guideSearchHalfSizePx < 4) out.guideSearchHalfSizePx = 4;
+    if (out.guideSearchHalfSizePx > 256) out.guideSearchHalfSizePx = 256;
 
     // EMA 参数
     if (out.errorEmaAlpha < 0.0) out.errorEmaAlpha = 0.0;
@@ -1232,23 +1234,30 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
         QVector<QPointF> dedupCandVec;
         QVector<QPointF> snrCandVec;
         QVector<QPointF> candVec;
+        QVector<QString> candLabels;
         dedupCandVec.reserve(static_cast<int>(dedupCandidates.size()));
         snrCandVec.reserve(static_cast<int>(snrCandidates.size()));
         candVec.reserve(static_cast<int>(candidates.size()));
+        candLabels.reserve(static_cast<int>(candidates.size()));
         for (const auto& c : dedupCandidates)
             dedupCandVec.append(QPointF(c.x, c.y));
         for (const auto& c : snrCandidates)
             snrCandVec.append(QPointF(c.x, c.y));
         for (const auto& c : candidates)
+        {
             candVec.append(QPointF(c.x, c.y));
+            candLabels.append(QStringLiteral("HFD=%1 SNR=%2")
+                                  .arg(c.hfd, 0, 'f', 2)
+                                  .arg(c.snr, 0, 'f', 1));
+        }
 
         QPointF overlaySelected = selectedPt;
         if (overlaySelected.isNull() && best.has_value())
             overlaySelected = QPointF(best->x, best->y);
 
-        emit debugStarCandidatesChanged(frame16.cols, frame16.rows, dedupCandVec, snrCandVec, candVec, overlaySelected);
+        emit debugStarCandidatesChanged(frame16.cols, frame16.rows, dedupCandVec, snrCandVec, candVec, candLabels, overlaySelected);
         emit requestPersistGuidingFitsAnnotated(effectiveFitsPath, frame16.clone(), frame16.cols, frame16.rows,
-                                                dedupCandVec, snrCandVec, candVec, overlaySelected);
+                                                dedupCandVec, snrCandVec, candVec, candLabels, overlaySelected);
     };
 
     if (m_state == guiding::State::Looping && m_hasLock)
@@ -1260,12 +1269,14 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_lastGuideCentroid = m_lockPosPx;
 
             QPointF centroid;
-            bool gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, 8, centroid, 2.0);
+            const int guideSearchHalf = std::max(4, m_params.guideSearchHalfSizePx);
+            const int recoverySearchHalf = std::max(48, guideSearchHalf);
+            bool gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, guideSearchHalf, centroid, 2.0);
             if (!gotCentroid)
             {
-                gotCentroid = guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, 16, centroid, 2.0) ||
-                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        16, centroid, 2.0) ||
-                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        24, centroid, 2.0);
+                gotCentroid = guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, guideSearchHalf, centroid, 2.0) ||
+                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        guideSearchHalf, centroid, 2.0) ||
+                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        recoverySearchHalf, centroid, 2.0);
             }
 
             if (gotCentroid)
@@ -1293,6 +1304,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             QVector<QPointF> dedupCandVec;
             QVector<QPointF> snrCandVec;
             QVector<QPointF> candVec;
+            QVector<QString> candLabels;
             QPointF selPt(0, 0);
             auto best = selectStarWithDetector(img16, sp, effectiveFitsPath, &dedupCandidates, &snrCandidates, &candidates, &rejectedCandidates, &debugImg);
             bool usedRelaxedParams = false;
@@ -1320,11 +1332,17 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 for (const auto& c : snrCandidates)
                     snrCandVec.append(QPointF(c.x, c.y));
                 candVec.reserve(static_cast<int>(candidates.size()));
+                candLabels.reserve(static_cast<int>(candidates.size()));
                 for (const auto& c : candidates)
+                {
                     candVec.append(QPointF(c.x, c.y));
+                    candLabels.append(QStringLiteral("HFD=%1 SNR=%2")
+                                          .arg(c.hfd, 0, 'f', 2)
+                                          .arg(c.snr, 0, 'f', 1));
+                }
                 if (best.has_value())
                     selPt = QPointF(best->x, best->y);
-                emit debugStarCandidatesChanged(img16.cols, img16.rows, dedupCandVec, snrCandVec, candVec, selPt);
+                emit debugStarCandidatesChanged(img16.cols, img16.rows, dedupCandVec, snrCandVec, candVec, candLabels, selPt);
             }
 
             if (best.has_value())
@@ -1371,7 +1389,7 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             // 选星帧延后到这里再生成预览，并把这一帧的调试候选一起带过去，
             // 避免 MainWindow 侧拿到“别的帧”的缓存候选而出现固定偏差。
             emit requestPersistGuidingFitsAnnotated(effectiveFitsPath, img16.clone(), img16.cols, img16.rows,
-                                                    dedupCandVec, snrCandVec, candVec, selPt);
+                                                    dedupCandVec, snrCandVec, candVec, candLabels, selPt);
         }
     }
     else if (m_state == guiding::State::Calibrating && m_phd2Calib.isActive())
@@ -1383,8 +1401,9 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             if (m_lastGuideCentroid.isNull())
                 m_lastGuideCentroid = m_lockPosPx;
             QPointF calibCentroid;
-            if (guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, 8, calibCentroid, 2.0)
-                || guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, 8, calibCentroid, 2.0))
+            const int guideSearchHalf = std::max(4, m_params.guideSearchHalfSizePx);
+            if (guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, guideSearchHalf, calibCentroid, 2.0)
+                || guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, guideSearchHalf, calibCentroid, 2.0))
             {
                 m_lastGuideCentroid = calibCentroid;
                 emit guideStarCentroidChanged(calibCentroid);
@@ -1552,12 +1571,14 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_lastGuideCentroid = m_lockPosPx;
 
             QPointF centroid;
-            bool gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, 8, centroid, 2.0);
+            const int guideSearchHalf = std::max(4, m_params.guideSearchHalfSizePx);
+            const int recoverySearchHalf = std::max(48, guideSearchHalf);
+            bool gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, guideSearchHalf, centroid, 2.0);
             if (!gotCentroid)
             {
-                gotCentroid = guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, 16, centroid, 2.0) ||
-                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        16, centroid, 2.0) ||
-                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        24, centroid, 2.0);
+                gotCentroid = guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, guideSearchHalf, centroid, 2.0) ||
+                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        guideSearchHalf, centroid, 2.0) ||
+                              guiding::FindCentroidWeighted(img16, m_lockPosPx,        recoverySearchHalf, centroid, 2.0);
             }
 
             if (gotCentroid)
@@ -1635,21 +1656,22 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                 m_lastGuideCentroid = m_lockPosPx;
 
             QPointF centroid;
-            bool gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, 8, centroid, 2.0);
+            const int guideSearchHalf = std::max(4, m_params.guideSearchHalfSizePx);
+            const int recoverySearchHalf = std::max(48, guideSearchHalf);
+            bool gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, guideSearchHalf, centroid, 2.0);
             if (!gotCentroid)
             {
                 // Guiding stage: keep strict behavior so \"lost star\" can be detected reliably.
                 // If we fall back to the peak pixel on a blank/noisy frame, we would wrongly think we still have a star.
-                gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lastGuideCentroid, 16, centroid, 2.0) ||
-                              guiding::FindCentroidWeightedStrict(img16, m_lockPosPx,        16, centroid, 2.0) ||
-                              guiding::FindCentroidWeightedStrict(img16, m_lockPosPx,        24, centroid, 2.0);
+                gotCentroid = guiding::FindCentroidWeightedStrict(img16, m_lockPosPx, guideSearchHalf, centroid, 2.0) ||
+                              guiding::FindCentroidWeightedStrict(img16, m_lockPosPx, recoverySearchHalf, centroid, 2.0);
                 // If strict failed but we still have a strong peak near lock position, allow non-strict fallback.
                 // This avoids rare false-negative thresholding while still failing on blank frames (peak ~ 0).
                 if (!gotCentroid)
                 {
                     const int cx = static_cast<int>(std::llround(m_lockPosPx.x()));
                     const int cy = static_cast<int>(std::llround(m_lockPosPx.y()));
-                    const int half = 24;
+                    const int half = recoverySearchHalf;
                     const int x0 = std::max(0, cx - half);
                     const int y0 = std::max(0, cy - half);
                     const int x1 = std::min(img16.cols - 1, cx + half);
@@ -1661,9 +1683,9 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
                         cv::minMaxLoc(roi, &minV, &maxV);
                         if (maxV >= 1000.0)
                         {
-                            gotCentroid = guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, 16, centroid, 2.0) ||
-                                          guiding::FindCentroidWeighted(img16, m_lockPosPx,        16, centroid, 2.0) ||
-                                          guiding::FindCentroidWeighted(img16, m_lockPosPx,        24, centroid, 2.0);
+                            gotCentroid = guiding::FindCentroidWeighted(img16, m_lastGuideCentroid, guideSearchHalf, centroid, 2.0) ||
+                                          guiding::FindCentroidWeighted(img16, m_lockPosPx,        guideSearchHalf, centroid, 2.0) ||
+                                          guiding::FindCentroidWeighted(img16, m_lockPosPx,        recoverySearchHalf, centroid, 2.0);
                         }
                     }
                 }

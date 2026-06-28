@@ -197,6 +197,10 @@ struct GuidingParams
     int minPulseMs = 20;
     int maxPulseMs = 1200;
 
+    // 导星星框/重捕获搜索半径（像素，半径）
+    // 前端绘制的锁星框与这里保持一致，便于调试观察。
+    int guideSearchHalfSizePx = 24;
+
     // ===== 丢星恢复 =====
     int maxConsecutiveCentroidFails = 10; // 连续多少帧质心失败就判定丢星并回退到 Selecting
 
