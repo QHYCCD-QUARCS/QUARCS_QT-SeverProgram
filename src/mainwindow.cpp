@@ -884,14 +884,14 @@ static bool sdkGetCfwSlotsNum(SdkDeviceHandle handle, int& slotsNum, std::string
     cmd.type = SdkCommandType::Custom;
     cmd.name = "GetCFWSlotsNum";
     cmd.payload = std::any();
-    
+
     // 直接通过设备句柄调用，无需指定驱动名称（类似INDI的调用方式）
     SdkResult res = SdkManager::instance().callByHandle(handle, cmd);
     if (!res.success || !res.payload.has_value()) {
         if (errMsg) *errMsg = res.message;
         return false;
     }
-    
+
     try {
         slotsNum = std::any_cast<int>(res.payload);
         return true;
@@ -914,14 +914,14 @@ static bool sdkGetCfwPosition0(SdkDeviceHandle handle, int& pos0, std::string* e
     cmd.type = SdkCommandType::Custom;
     cmd.name = "GetCFWPosition";
     cmd.payload = std::any();
-    
+
     // 直接通过设备句柄调用，无需指定驱动名称
     SdkResult res = SdkManager::instance().callByHandle(handle, cmd);
     if (!res.success || !res.payload.has_value()) {
         if (errMsg) *errMsg = res.message;
         return false;
     }
-    
+
     try {
         pos0 = std::any_cast<int>(res.payload);
         return true;
@@ -948,7 +948,7 @@ static bool sdkSetCfwPosition0AndWait(SdkDeviceHandle handle, int targetPos0, in
         cmd.type = SdkCommandType::Custom;
         cmd.name = "SetCFWPosition";
         cmd.payload = targetPos0;
-        
+
         // 直接通过设备句柄调用，无需指定驱动名称
         SdkResult res = SdkManager::instance().callByHandle(handle, cmd);
         if (!res.success) {
@@ -966,7 +966,7 @@ static bool sdkSetCfwPosition0AndWait(SdkDeviceHandle handle, int targetPos0, in
             return true;
         QThread::msleep(200);
     }
-    
+
     if (errMsg) *errMsg = "SetCFWPosition timeout";
     return false;
 }
@@ -1825,7 +1825,7 @@ bool MainWindow::isMainCameraConnected()
     {
         return sdkMainCameraHandle != nullptr;
     }
-    
+
     // INDI 模式：检查 INDI 设备指针是否有效
     return dpMainCamera != nullptr;
 }
@@ -2004,7 +2004,7 @@ bool MainWindow::isMountSDK()
     // return (systemdevicelist.system_devices.size() > 19 &&
     //         systemdevicelist.system_devices[19].isSDKConnect &&
     //         sdkMountHandle != nullptr);
-    
+
     // 暂时返回false，等待实现
     return false;
 }
@@ -2562,7 +2562,7 @@ void MainWindow::initINDIClient()
                         int status = 0;
                         long naxes[2] = {0, 0};
                         int naxis = 0;
-                        
+
                         if (fits_open_file(&fptr, filename.c_str(), READONLY, &status) == 0)
                         {
                             fits_get_img_dim(fptr, &naxis, &status);
@@ -2572,7 +2572,7 @@ void MainWindow::initINDIClient()
                             }
                             fits_close_file(fptr, &status);
                         }
-                        
+
                         // 如果图像尺寸远小于全分辨率（例如 < 80%），判定为 ROI 残留帧
                         bool isRoiFrame = false;
                         if (naxes[0] > 0 && naxes[1] > 0 && glMainCCDSizeX > 0 && glMainCCDSizeY > 0)
@@ -2588,7 +2588,7 @@ void MainWindow::initINDIClient()
                                            "), discarding...", LogLevel::WARNING, DeviceType::CAMERA);
                             }
                         }
-                        
+
                         // 如果是 ROI 残留帧，直接丢弃
                         if (isRoiFrame)
                         {
@@ -2596,7 +2596,7 @@ void MainWindow::initINDIClient()
                             Logger::Log("ROI residual frame discarded", LogLevel::INFO, DeviceType::CAMERA);
                             return;
                         }
-                        
+
                         // 否则按正常拍摄处理
                         emit wsThread->sendMessageToClient("ExposureCompleted");
                         emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
@@ -2614,7 +2614,7 @@ void MainWindow::initINDIClient()
                         saveFitsAsPNG(QString::fromStdString(filename), true); // "/dev/shm/ccd_simulator.fits"
                         // saveFitsAsPNG("/home/quarcs/2025_06_26T08_24_13_544.fits", true);
                         // saveFitsAsPNG("/dev/shm/SOLVETEST.fits", true);
-                        
+
                         // 如果自动保存开启，自动保存图像
                         if (mainCameraAutoSave && isScheduleRunning == false)
                         {
@@ -3256,14 +3256,14 @@ void MainWindow::onTimeout()
         {
             if (mountDisplayCounter >= 5)
             {
-                
+
                 double RA_HOURS, DEC_DEGREE;
                 indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
                 double CurrentRA_Degree = Tools::HourToDegree(RA_HOURS);
                 double CurrentDEC_Degree = DEC_DEGREE;
 
-                emit wsThread->sendMessageToClient("TelescopeRADEC:" 
-                    + QString::number(CurrentRA_Degree) 
+                emit wsThread->sendMessageToClient("TelescopeRADEC:"
+                    + QString::number(CurrentRA_Degree)
                     + ":" + QString::number(CurrentDEC_Degree));
 
                 // Logger::Log("当前指向:RA:" + std::to_string(RA_HOURS) + " 小时,DEC:" + std::to_string(CurrentDEC_Degree) + " 度", LogLevel::INFO, DeviceType::MAIN);
@@ -3273,7 +3273,7 @@ void MainWindow::onTimeout()
                 indi_Client->getTelescopePark(dpMount, isParked);
                 emit wsThread->sendMessageToClient(
                     isParked ? "TelescopePark:ON" : "TelescopePark:OFF");
-                
+
                 QString NewTelescopePierSide;
                 indi_Client->getTelescopePierSide(dpMount, NewTelescopePierSide);
                 if (NewTelescopePierSide != TelescopePierSide)
@@ -3314,9 +3314,9 @@ void MainWindow::onTimeout()
                     indi_Client->setTelescopeTrackEnable(dpMount, false);
                     sleep(1);
                     indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
-                }               
+                }
 
-                emit wsThread->sendMessageToClient(isTrack ? "TelescopeTrack:ON" 
+                emit wsThread->sendMessageToClient(isTrack ? "TelescopeTrack:ON"
                                                            : "TelescopeTrack:OFF");
 
                 if (!FirstRecordTelescopePierSide)
@@ -3380,15 +3380,15 @@ void MainWindow::onTimeout()
             // Logger::Log("11111", LogLevel::INFO, DeviceType::MAIN);
         }
     }
-    
+
 
     MainCameraStatusCounter++;
-    
+
     // 判断是 SDK 模式还是 INDI 模式
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
                             systemdevicelist.system_devices[20].isSDKConnect &&
                             sdkMainCameraHandle != nullptr);
-    
+
     if (isMainCameraSDK || dpMainCamera != NULL)
     {
         if (MainCameraStatusCounter >= 5)
@@ -3397,7 +3397,7 @@ void MainWindow::onTimeout()
             MainCameraStatusCounter = 0;
             double CameraTemp = 0.0;
             uint32_t ret = QHYCCD_ERROR;
-            
+
             if (isMainCameraSDK)
             {
                 // SDK 模式：在 SDK 线程异步获取温度，避免阻塞主线程（与 GetSingleFrame 可能竞争设备锁）
@@ -3412,7 +3412,7 @@ void MainWindow::onTimeout()
                         getTempCmd.payload = std::any();
                         // 直接通过设备句柄调用，无需指定驱动名称
                         SdkResult tempRes = SdkManager::instance().callByHandle(handleSnap, getTempCmd);
-                        
+
                         // 回到主线程更新UI
                         if (tempRes.success && tempRes.payload.has_value()) {
                             double temp = std::any_cast<double>(tempRes.payload);
@@ -3435,16 +3435,16 @@ void MainWindow::onTimeout()
                 // INDI 模式：使用 indi_Client 获取温度
                 ret = indi_Client->getTemperature(dpMainCamera, CameraTemp);
             }
-            
+
             if (ret == QHYCCD_SUCCESS)
             {
                 emit wsThread->sendMessageToClient("MainCameraTemperature:" + QString::number(CameraTemp));
             }
-            
+
 
         }
     }
-    
+
 }
 
 MeridianStatus MainWindow::checkMeridianStatus()
@@ -3838,886 +3838,20 @@ void MainWindow::savePoleMasterPreviewAsJPG(const QString &fitsPath)
     cleanupOldPoleMasterImages(QString::fromStdString(vueImagePath), true, protectedName);
 }
 
-void MainWindow::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
-                                          std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from)
-{
-    Logger::Log("Opening XML file: " + filename, LogLevel::INFO, DeviceType::GUIDER);
-    QFile file(QString::fromStdString(filename));
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-    {
-        Logger::Log("Failed to open file: " + filename, LogLevel::ERROR, DeviceType::GUIDER);
-        return;
-    }
-    QXmlStreamReader xml(&file);
-    while (!xml.atEnd() && !xml.hasError())
-    {
-        xml.readNext();
-        if (xml.isStartElement() && xml.name() == "devGroup")
-        {
-            DevGroup dev_group;
-            dev_group.group = xml.attributes().value("group").toString().toUtf8().constData();
-            drivers_list_from.dev_groups.push_back(dev_group);
-            Logger::Log("Added device group: " + dev_group.group.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
-        }
-    }
-    DIR *dir = opendir("/usr/share/indi");
-    std::string DirPath = "/usr/share/indi/";
-    std::string xmlpath;
-
-    int index;
-
-    DriversList drivers_list_get;
-    std::vector<DevGroup> dev_groups_get;
-    std::vector<Device> devices_get;
-
-    DriversList drivers_list_xmls;
-    DriversList drivers_list_xmls_null;
-    std::vector<DevGroup> dev_groups_xmls;
-    std::vector<Device> devices_xmls;
-
-    std::vector<DevGroup> dev_groups;
-    std::vector<Device> devices;
-
-    if (dir == nullptr)
-    {
-        Logger::Log("Unable to find INDI drivers directory at /usr/share/indi", LogLevel::ERROR, DeviceType::GUIDER);
-        return;
-    }
-
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != nullptr)
-    {
-        if (strcmp(entry->d_name + strlen(entry->d_name) - 4, ".xml") == 0)
-        {
-            if (strcmp(entry->d_name + strlen(entry->d_name) - 6, "sk.xml") == 0)
-            {
-                continue; // Skip sky charts
-            }
-            else
-            {
-                xmlpath = DirPath + entry->d_name;
-                QFile file(QString::fromStdString(xmlpath));
-                if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-                {
-                    Logger::Log("Failed to open file: " + xmlpath, LogLevel::ERROR, DeviceType::GUIDER);
-                }
-
-                QXmlStreamReader xml(&file);
-
-                while (!xml.atEnd() && !xml.hasError())
-                {
-                    xml.readNext();
-                    if (xml.isStartElement() && xml.name() == "devGroup")
-                    {
-                        DevGroup dev_group;
-                        dev_group.group = xml.attributes().value("group").toString().toUtf8().constData();
-                        dev_groups.push_back(dev_group);
-                        while (!(xml.isEndElement() && xml.name() == "devGroup"))
-                        {
-                            xml.readNext();
-                            if (xml.isStartElement() && xml.name() == "device")
-                            {
-                                Device device;
-                                device.label = xml.attributes().value("label").toString().toStdString();
-
-                                device.manufacturer = xml.attributes().value("manufacturer").toString().toStdString();
-                                devices.push_back(device);
-                                while (!(xml.isEndElement() && xml.name() == "device"))
-                                {
-                                    xml.readNext();
-                                    if (xml.isStartElement() && xml.name() == "driver")
-                                    {
-                                        device.driver_name = xml.readElementText().toStdString();
-                                    }
-                                    else if (xml.isStartElement() && xml.name() == "version")
-                                    {
-                                        device.version = xml.readElementText().toStdString();
-                                    }
-                                }
-                                dev_group.devices.push_back(device);
-                            }
-                        }
-                        drivers_list_xmls.dev_groups.push_back(dev_group);
-                    }
-                }
-            }
-        }
-        for (int i = 0; i < drivers_list_xmls.dev_groups.size(); i++)
-        {
-            for (int j = 0; j < drivers_list_from.dev_groups.size(); j++)
-            {
-                if (drivers_list_xmls.dev_groups[i].group == drivers_list_from.dev_groups[j].group)
-                {
-                    for (int k = 0; k < drivers_list_xmls.dev_groups[i].devices.size(); k++)
-                    {
-                        Device dev;
-                        dev.driver_name = drivers_list_xmls.dev_groups[i].devices[k].driver_name;
-                        dev.label = drivers_list_xmls.dev_groups[i].devices[k].label;
-                        dev.version = drivers_list_xmls.dev_groups[i].devices[k].version;
-                        drivers_list_from.dev_groups[j].devices.push_back(dev);
-                    }
-                }
-            }
-        }
-        drivers_list_xmls = drivers_list_xmls_null;
-    }
-    closedir(dir);
-    Logger::Log("Completed reading and processing INDI driver files.", LogLevel::INFO, DeviceType::GUIDER);
-}
 
 //"Telescopes"|"Focusers"|"CCDs"|"Spectrographs"|"Filter Wheels"|"Auxiliary"|"Domes"|"Weather"|"Agent"
-void MainWindow::printDevGroups2(const DriversList drivers_list, int ListNum, QString group)
-{
-    Logger::Log("Printing device groups for group: " + group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("=============================== Print DevGroups ===============================", LogLevel::INFO, DeviceType::MAIN);
-    bool foundGroup = false;
-    for (int i = 0; i < drivers_list.dev_groups.size(); i++)
-    {
-        if (drivers_list.dev_groups[i].group == group)
-        {
-            foundGroup = true;
-            Logger::Log("Processing device group: " + drivers_list.dev_groups[i].group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-            // Uncomment and modify the following lines if you want to log device details and send messages
-            // for (int j = 0; j < drivers_list.dev_groups[i].devices.size(); j++)
-            // {
-            //     qDebug() << QString::fromStdString(drivers_list.dev_groups[i].devices[j].driver_name) << QString::fromStdString(drivers_list.dev_groups[i].devices[j].version) << QString::fromStdString(drivers_list.dev_groups[i].devices[j].label);
-            //     Logger::Log("Device details: " + drivers_list.dev_groups[i].devices[j].label + ", " + drivers_list.dev_groups[i].devices[j].driver_name + ", " + drivers_list.dev_groups[i].devices[j].version, LogLevel::INFO, DeviceType::MAIN);
-            //     websocket->messageSend("AddDriver:"+QString::fromStdString(drivers_list.dev_groups[i].devices[j].label)+":"+QString::fromStdString(drivers_list.dev_groups[i].devices[j].driver_name));
-            // }
-            DeviceSelect(ListNum, i);
-        }
-    }
-    if (!foundGroup)
-    {
-        systemdevicelist.currentDeviceCode = -1;
-        ::drivers_list.selectedGrounp = -1;
-        Logger::Log("printDevGroups2 | Device group not found: " + group.toStdString() +
-                        ", currentDeviceCode reset to -1",
-                    LogLevel::ERROR, DeviceType::MAIN);
-    }
-    Logger::Log("Completed printing device groups.", LogLevel::INFO, DeviceType::MAIN);
-}
 
-void MainWindow::DeviceSelect(int systemNumber, int grounpNumber)
-{
-    // Tools::clearSystemDeviceListItem(systemdevicelist, systemNumber);
-    SelectIndiDevice(systemNumber, grounpNumber);
-}
 
-void MainWindow::SelectIndiDevice(int systemNumber, int grounpNumber)
-{
-    if (!isValidSystemDeviceIndex(systemdevicelist, systemNumber))
-    {
-        systemdevicelist.currentDeviceCode = -1;
-        drivers_list.selectedGrounp = -1;
-        Logger::Log("SelectIndiDevice | Invalid systemNumber: " + std::to_string(systemNumber),
-                    LogLevel::ERROR, DeviceType::MAIN);
-        return;
-    }
 
-    if (grounpNumber < 0 || grounpNumber >= drivers_list.dev_groups.size())
-    {
-        systemdevicelist.currentDeviceCode = -1;
-        drivers_list.selectedGrounp = -1;
-        Logger::Log("SelectIndiDevice | Invalid grounpNumber: " + std::to_string(grounpNumber),
-                    LogLevel::ERROR, DeviceType::MAIN);
-        return;
-    }
 
-    systemdevicelist.currentDeviceCode = systemNumber;
-    drivers_list.selectedGrounp = grounpNumber;
 
-    // switch (systemNumber)
-    // {
-    // case 0:
-    //     systemdevicelist.system_devices[systemNumber].Description = "Mount";
-    //     break;
-    // case 1:
-    //     systemdevicelist.system_devices[systemNumber].Description = "Guider";
-    //     break;
-    // case 2:
-    //     systemdevicelist.system_devices[systemNumber].Description = "PoleCamera";
-    //     break;
-    // case 20:
-    //     systemdevicelist.system_devices[systemNumber].Description = "Main Camera #1";
-    //     break;
-    // case 21:
-    //     systemdevicelist.system_devices[systemNumber].Description = "CFW #1";
-    //     break;
-    // case 22:
-    //     systemdevicelist.system_devices[systemNumber].Description = "Focuser #1";
-    //     break;
 
-    // default:
-    //     break;
-    // }
 
-    // qDebug() << "SelectIndiDevice:" << systemdevicelist.currentDeviceCode << "," << drivers_list.selectedGrounp;
 
-    for (int i = 0; i < drivers_list.dev_groups[grounpNumber].devices.size(); i++)
-    {
-        if (grounpNumber == 1 && (QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) == "QHY CCD" || QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) == "indi_qhy_ccd"))
-        {
-            continue;
-        }
-        if (grounpNumber == 20 && (QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) == "QHY CCD2" || QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) == "indi_qhy_ccd2"))
-        {
-            continue;
-        }
-        // qDebug() << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].version) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) << QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].manufacturer);
-        emit wsThread->sendMessageToClient("AddDriver:" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) + ":" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name));
-        // qDebug() << "AddDriver:" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].label) + ":" + QString::fromStdString(drivers_list.dev_groups[grounpNumber].devices[i].driver_name);
-    }
-}
 
-bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
-{
-    if (!isValidSystemDeviceIndex(systemdevicelist, systemdevicelist.currentDeviceCode))
-    {
-        Logger::Log("indi_Driver_Confirm | currentDeviceCode out of bounds: " + std::to_string(systemdevicelist.currentDeviceCode),
-                    LogLevel::ERROR, DeviceType::MAIN);
-        return false;
-    }
 
-    switch (systemdevicelist.currentDeviceCode)
-    {
-    case 0:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Mount";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-        Logger::Log("indi_Driver_Confirm | Mount | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        break;
-    case 1:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Guider";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-        Logger::Log("indi_Driver_Confirm | Guider | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        break;
-    case 2:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "PoleCamera";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-        Logger::Log("indi_Driver_Confirm | PoleCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        break;
-    case 20:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "MainCamera";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-        Logger::Log("indi_Driver_Confirm | MainCamera | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        break;
-    case 21:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "CFW";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-        Logger::Log("indi_Driver_Confirm | CFW | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        break;
-    case 22:
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Focuser";
-        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
-        Logger::Log("indi_Driver_Confirm | Focuser | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
-        break;
 
-    default:
-        Logger::Log("indi_Driver_Confirm | Invalid currentDeviceCode: " + std::to_string(systemdevicelist.currentDeviceCode), LogLevel::ERROR, DeviceType::MAIN);
-        break;
-    }
 
-    auto &slot = systemdevicelist.system_devices[systemdevicelist.currentDeviceCode];
-    slot.DriverIndiName = DriverName;
-    slot.isConnect = false;
-    slot.isBind = false;
-
-    // 🔥 自动从 SdkDriverRegistry 查询是否支持 SDK 模式
-    bool supportsSDK = SdkDriverRegistry::instance().supportsSDK(DriverName.toStdString());
-    
-    if (supportsSDK)
-    {
-        // 获取 SDK 首选名称
-        std::string sdkDriverName = SdkDriverRegistry::instance().getSDKDriverName(
-            DriverName.toStdString()
-        );
-        
-        // 标记支持 SDK（用于前端显示"连接模式"切换选项）
-        if (!slot.DriverFrom.contains("SDK", Qt::CaseInsensitive))
-        {
-            slot.DriverFrom = DriverName + "SDK";  // 例如 "indi_qhy_ccdSDK"
-        }
-
-        // 🆕 保存 SDK 驱动名（用于后续切换到 SDK 模式时自动选择正确的驱动）
-        slot.SDKDriverName = QString::fromStdString(sdkDriverName);
-        
-        Logger::Log("indi_Driver_Confirm | Driver supports SDK: " +
-                   DriverName.toStdString() + " -> " + sdkDriverName,
-                   LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        // 纯 INDI 驱动，不支持 SDK
-        slot.DriverFrom = "INDI";
-        slot.SDKDriverName = "";
-        // 若驱动不支持 SDK，则强制切回 INDI 模式，避免沿用上次的 isSDKConnect=true 导致后续 ConnectDriver 误走 SDK 流程
-        slot.isSDKConnect = false;
-        
-        Logger::Log("indi_Driver_Confirm | Driver is INDI-only (no SDK support): " +
-                   DriverName.toStdString(),
-                   LogLevel::INFO, DeviceType::MAIN);
-    }
-
-    // 持久化：否则重启/重连后 DriverFrom 会丢失，前端收到 SelectedDriverList(...:false:...)
-    Tools::saveSystemDeviceList(systemdevicelist);
-
-    // 立即刷新前端缓存：让 supportSDK/connectionMode 立刻生效，UI 及时显示"连接模式"下拉框
-    loadSelectedDriverList();
-
-    return true;
-}
-
-QString MainWindow::getSDKDriverName(const QString& deviceType)
-{
-    // 根据设备类型找到对应的槽位索引
-    int index = -1;
-    if (deviceType == "MainCamera") index = 20;
-    // Guider（导星相机）在 system_devices[1]
-    else if (deviceType == "Guider" || deviceType == "GuideCamera") index = 1;
-    // PoleCamera（电子极轴镜）在 system_devices[2]
-    else if (deviceType == "PoleCamera") index = 2;
-    // CFW（外置滤镜轮）在 system_devices[21]
-    else if (deviceType == "CFW") index = 21;
-    else if (deviceType == "Focuser") index = 22;
-    // ... 可以继续添加其他设备类型的映射
-    
-    if (index < 0 || index >= systemdevicelist.system_devices.size())
-        return "";
-    
-    const auto& device = systemdevicelist.system_devices[index];
-    
-    // 🔥 关键：直接从 SdkDriverRegistry 查询
-    if (!device.DriverIndiName.isEmpty())
-    {
-        std::string sdkDriver = SdkDriverRegistry::instance().getSDKDriverName(
-            device.DriverIndiName.toStdString()
-        );
-        
-        if (!sdkDriver.empty())
-            return QString::fromStdString(sdkDriver);
-    }
-    
-
-    
-    return "";
-}
-
-bool MainWindow::indi_Driver_Clear(int deviceCode)
-{
-    if (!isValidSystemDeviceIndex(systemdevicelist, deviceCode)) {
-        Logger::Log("indi_Driver_Clear | deviceCode out of bounds: " + std::to_string(deviceCode), LogLevel::ERROR, DeviceType::MAIN);
-        return false;
-    }
-
-    systemdevicelist.system_devices[deviceCode].Description = "";
-    systemdevicelist.system_devices[deviceCode].DriverIndiName = "";
-    systemdevicelist.system_devices[deviceCode].SDKDriverName = "";
-    systemdevicelist.system_devices[deviceCode].BaudRate = 9600;
-    systemdevicelist.system_devices[deviceCode].DeviceIndiName = "";
-    systemdevicelist.system_devices[deviceCode].DeviceIndiGroup = -1;
-    systemdevicelist.system_devices[deviceCode].isConnect = false;
-    systemdevicelist.system_devices[deviceCode].isBind = false;
-    systemdevicelist.system_devices[deviceCode].isSDKConnect = false;
-    systemdevicelist.system_devices[deviceCode].dp = nullptr;
-
-    if (systemdevicelist.currentDeviceCode == deviceCode)
-        systemdevicelist.currentDeviceCode = -1;
-    if (drivers_list.selectedGrounp >= 0)
-        drivers_list.selectedGrounp = -1;
-
-    // 保存配置到文件，确保清除操作持久化
-    Tools::saveSystemDeviceList(systemdevicelist);
-
-    // 发送更新后的驱动列表给前端，确保前端UI同步更新
-    loadSelectedDriverList();
-
-    Logger::Log("indi_Driver_Clear | Driver cleared for deviceCode=" + std::to_string(deviceCode) +
-                    " and configuration saved",
-                LogLevel::INFO, DeviceType::MAIN);
-    return true;
-}
-
-void MainWindow::indi_Device_Confirm(QString DeviceName, QString DriverName)
-{
-    //   qApp->processEvents();
-
-    int deviceCode;
-    deviceCode = systemdevicelist.currentDeviceCode;
-
-    if (!isValidSystemDeviceIndex(systemdevicelist, deviceCode))
-    {
-        Logger::Log("indi_Device_Confirm | currentDeviceCode out of bounds: " + std::to_string(deviceCode),
-                    LogLevel::ERROR, DeviceType::MAIN);
-        return;
-    }
-
-    systemdevicelist.system_devices[deviceCode].DriverIndiName = DriverName;
-    systemdevicelist.system_devices[deviceCode].DeviceIndiGroup = drivers_list.selectedGrounp;
-    systemdevicelist.system_devices[deviceCode].DeviceIndiName = DeviceName;
-
-    Logger::Log("system device(" + DeviceName.toStdString() + ") successfully selected", LogLevel::INFO, DeviceType::MAIN);
-
-    Tools::printSystemDeviceList(systemdevicelist);
-
-    Tools::saveSystemDeviceList(systemdevicelist);
-}
-
-uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
-{
-    Logger::Log("Stopping all INDI drivers.", LogLevel::INFO, DeviceType::MAIN);
-    Tools::stopIndiDriverAll(drivers_list);
-    Logger::Log("Starting INDI driver: " + drivername.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    Tools::startIndiDriver(drivername);
-
-    sleep(1); // must wait some time here
-
-    MyClient *searchClient;
-    searchClient = new MyClient();
-    Logger::Log("Initialized new MyClient for device search.", LogLevel::INFO, DeviceType::MAIN);
-    searchClient->PrintDevices();
-
-    searchClient->setServer("localhost", 7624);
-    searchClient->setConnectionTimeout(3, 0);
-    searchClient->ClearDevices(); // clear device list
-
-    Logger::Log("Attempting to connect to INDI server at localhost:7624", LogLevel::INFO, DeviceType::MAIN);
-    bool connected = searchClient->connectServer();
-
-    if (connected == false)
-    {
-        Logger::Log("Failed to connect to INDI server, can not find server", LogLevel::ERROR, DeviceType::MAIN);
-        return QHYCCD_ERROR;
-    }
-
-    sleep(1); // connect server will generate the callback of newDevice and then put the device into list. this need take some time and it is non-block
-    searchClient->PrintDevices();
-
-    if (searchClient->GetDeviceCount() == 0)
-    {
-        Logger::Log("No devices found on INDI server.", LogLevel::INFO, DeviceType::MAIN);
-        searchClient->disconnectServer();
-        isExist = false;
-        emit wsThread->sendMessageToClient("ScanFailed:No device found.");
-        return QHYCCD_SUCCESS;
-    }
-
-    Logger::Log("Devices found: " + std::to_string(searchClient->GetDeviceCount()), LogLevel::INFO, DeviceType::MAIN);
-    for (int i = 0; i < searchClient->GetDeviceCount(); i++)
-    {
-        emit wsThread->sendMessageToClient("AddDevice:" + QString::fromStdString(searchClient->GetDeviceNameFromList(i)));
-    }
-
-    searchClient->disconnectServer();
-    searchClient->ClearDevices();
-
-    Tools::stopIndiDriver(drivername);
-    Logger::Log("INDI driver stopped: " + drivername.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
-    return QHYCCD_SUCCESS;
-}
-
-void MainWindow::disconnectIndiServer(MyClient *client)
-{
-    Logger::Log("disconnectIndiServer start ...", LogLevel::INFO, DeviceType::MAIN);
-    // 防御性检查：客户端指针为空则直接返回，避免段错误
-    if (client == nullptr)
-    {
-        Logger::Log("disconnectIndiServer | client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
-        Tools::stopIndiDriverAll(drivers_list);
-        ConnectDriverList.clear();
-        return;
-    }
-
-    int deviceCount = client->GetDeviceCount();
-    if (deviceCount > 0)
-    {
-        for (int i = 0; i < deviceCount; i++)
-        {
-            INDI::BaseDevice *device = client->GetDeviceFromList(i);
-            if (device == nullptr)
-            {
-                Logger::Log("disconnectAllDevice | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
-                continue;
-            }
-
-            if (device->isConnected())
-            {
-                const char *devName = device->getDeviceName();
-                QString qName = devName ? QString::fromUtf8(devName) : QString("UnknownDevice");
-
-                client->disconnectDevice(devName ? devName : "");
-                int num = 0;
-                while (device->isConnected())
-                {
-                    Logger::Log("disconnectAllDevice | Waiting for disconnect device (" + qName.toStdString() + ") finish...", LogLevel::INFO, DeviceType::MAIN);
-                    sleep(1);
-                    num++;
-
-                    if (num > 10)
-                    {
-                        Logger::Log("disconnectAllDevice | device (" + qName.toStdString() + ") disconnect failed.", LogLevel::WARNING, DeviceType::MAIN);
-                        break;
-                    }
-                }
-                Logger::Log("disconnectAllDevice | device (" + qName.toStdString() + ") disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
-            }
-        }
-    }
-    else
-    {
-        Logger::Log("disconnectIndiServer | no devices to disconnect (device count = 0)", LogLevel::INFO, DeviceType::MAIN);
-    }
-
-    Tools::stopIndiDriverAll(drivers_list);
-    ConnectDriverList.clear();
-
-    client->ClearDevices();
-    client->disconnectServer();
-    int k = 10;
-    while (k--)
-    {
-        if (!client->isServerConnected())
-        {
-            Logger::Log("Server disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
-            break;
-        }
-        sleep(1);
-        // qApp->processEvents();
-        Logger::Log("Waiting for server to disconnect...", LogLevel::INFO, DeviceType::MAIN);
-    }
-    Logger::Log("disconnectServer finished.", LogLevel::INFO, DeviceType::MAIN);
-    if (indi_Client != nullptr)
-    {
-        indi_Client->PrintDevices();
-    }
-}
-
-void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QString& deviceType)
-{
-    // -----------------------------
-    // 约定：system_devices 中的槽位索引（避免魔法数字）
-    // -----------------------------
-    constexpr int kIdxMainCamera = 20;
-    constexpr int kIdxFocuser    = 22;
-
-    // -----------------------------
-    // 1) 解析清理范围（Plan）
-    // -----------------------------
-    const bool cleanupAll        = (deviceType == "All");
-    const bool cleanupMainCamera = cleanupAll || (deviceType == "MainCamera");
-    const bool cleanupPoleCamera = cleanupAll || (deviceType == "PoleCamera");
-    const bool cleanupFocuser    = cleanupAll || (deviceType == "Focuser");
-    const bool cleanupCameraPool = cleanupAll || (deviceType == "CameraPool");
-
-    // 注释（与实际行为一致）：
-    // - MainCamera：仅清理主相机（句柄+绑定/运行态），不触碰其他相机句柄
-    // - PoleCamera：SDK 极轴镜与主相机/导星相机共享同一相机池，因此按 CameraPool 清理
-    // - CameraPool：清理整个相机池（关闭所有句柄 + ReleaseSdkResource），池清空后主相机绑定必然无效，因此也会复位主相机绑定/运行态
-
-    const bool hasAnyCameraHandle =
-        (sdkMainCameraHandle != nullptr) || (sdkGuiderHandle != nullptr) ||
-        (sdkPoleScopeHandle != nullptr) || (!g_sdkQhyCamHandles.isEmpty());
-    const bool hasFocuserHandle   = (sdkFocuserHandle != nullptr);
-
-    const bool shouldCleanupCamera =
-        (cleanupMainCamera || cleanupPoleCamera || cleanupCameraPool) && hasAnyCameraHandle;
-    const bool shouldCleanupFocuser =
-        cleanupFocuser && hasFocuserHandle;
-
-    // 如果既没有相机也没有电调需要清理，直接返回
-    if (!shouldCleanupCamera && !shouldCleanupFocuser)
-        return;
-
-    Logger::Log("cleanupQhySdkPoolAndResource | reason=" + reason.toStdString() +
-                ", deviceType=" + deviceType.toStdString(),
-                LogLevel::INFO, DeviceType::MAIN);
-
-    // -----------------------------
-    // 2) 小工具：统一线程投递（可读性 + 去重）
-    // -----------------------------
-    auto runOnCamThreadSync = [&](std::function<void()> fn) {
-        if (sdkCamExec && sdkCamExec->isRunning())
-            sdkCamExec->postAndWait(std::move(fn));
-        else
-            fn();
-    };
-
-    auto runOnFocuserThreadSync = [&](std::function<void()> fn) {
-        if (sdkFocuserExec && sdkFocuserExec->isRunning())
-            sdkFocuserExec->postAndWait(std::move(fn));
-        else
-            fn();
-    };
-
-    auto resetDeviceEntry = [&](int index) {
-        if (index < 0 || index >= systemdevicelist.system_devices.size())
-            return;
-        auto &d = systemdevicelist.system_devices[index];
-        d.isConnect = false;
-        d.isBind = false;
-        d.DeviceIndiName.clear();
-        d.dp = NULL;
-    };
-
-    auto resetMainCameraRuntimeState = [&]() {
-        // 运行态/前后端状态统一回到空闲，避免残留“曝光中”
-        glMainCameraStatu = "IDLE";
-        ShootStatus = "IDLE";
-        glIsFocusingLooping = false;
-        isFocusLoopShooting = false;
-    };
-
-    auto makeCancelExposureCmd = [&]() {
-        SdkCommand cmd;
-        cmd.type = SdkCommandType::Custom;
-        cmd.name = "CancelExposure";
-        cmd.payload = std::any();
-        return cmd;
-    };
-
-    auto cancelAndCloseCamera = [&](SdkDeviceHandle h) {
-        if (h == nullptr) return;
-        // 直接通过设备句柄调用，无需指定驱动名称
-        SdkManager::instance().callByHandle(h, makeCancelExposureCmd());
-        SdkManager::instance().closeByHandle(h);
-    };
-
-    // 释放 SDK 全局资源需要“驱动名”；优先 MainCamera，其次 Guider，最后兜底 QHYCCD（若已注册）
-    const std::string releaseDriverNameStd = [&]() -> std::string {
-        QString dn = getSDKDriverName("MainCamera");
-        if (dn.isEmpty())
-            dn = getSDKDriverName("Guider");
-        if (dn.isEmpty())
-            dn = getSDKDriverName("PoleCamera");
-        if (!dn.isEmpty())
-            return dn.toStdString();
-
-        // 兜底：若驱动映射缺失（比如只配置了导星/未配置主相机），仍尽量释放
-        auto regs = SdkManager::instance().listRegisteredDrivers();
-        for (const auto &n : regs)
-        {
-            if (n == "QHYCCD")
-                return n;
-        }
-        if (!regs.empty())
-            return regs.front();
-        return {};
-    }();
-
-    // -----------------------------
-    // 3) 先清理电调（与相机资源独立）
-    // -----------------------------
-    if (shouldCleanupFocuser)
-    {
-        const SdkDeviceHandle h = sdkFocuserHandle;
-
-        runOnFocuserThreadSync([h]() {
-            // 直接通过设备句柄关闭，无需指定驱动名称
-            SdkManager::instance().closeByHandle(h);
-        });
-
-        // 本地状态复位
-        sdkFocuserHandle = nullptr;
-        sdkFocuserPort.clear();
-
-        // 设备表复位（电调）
-        resetDeviceEntry(kIdxFocuser);
-    }
-
-    // -----------------------------
-    // 4) 清理相机（仅主相机 / 整池）
-    // -----------------------------
-    if (shouldCleanupCamera)
-    {
-        const bool cleanupFullPool = cleanupCameraPool || cleanupPoleCamera; // CameraPool / PoleCamera / All
-
-        if (!cleanupFullPool && deviceType == "MainCamera")
-        {
-            // 4A) 仅清理主相机：cancel + close 主句柄，并从池中摘除（不触碰其他相机）
-            if (sdkMainCameraHandle != nullptr)
-            {
-                const SdkDeviceHandle mainHandle = sdkMainCameraHandle;
-                const int poolIndex = g_sdkMainCameraPoolIndex;
-
-                runOnCamThreadSync([=]() {
-                    // 直接通过设备句柄调用，无需指定驱动名称
-                    SdkManager::instance().callByHandle(mainHandle, makeCancelExposureCmd());
-                    SdkManager::instance().closeByHandle(mainHandle);
-                });
-
-                // 从池中摘除主相机（如果它在池中）
-                if (poolIndex >= 0 && poolIndex < g_sdkQhyCamHandles.size())
-                {
-                    g_sdkQhyCamHandles[poolIndex] = nullptr;
-                    if (poolIndex < g_sdkQhyCamIds.size())
-                        g_sdkQhyCamIds[poolIndex].clear();
-                }
-            }
-
-            // 主相机绑定/运行态复位
-            sdkMainCameraHandle = nullptr;
-            sdkGuiderHandle = nullptr;
-            sdkPoleScopeHandle = nullptr;
-            g_sdkMainCameraPoolIndex = -1;
-            g_sdkGuiderPoolIndex = -1;
-            g_sdkPoleCameraPoolIndex = -1;
-            sdkMainCameraId.clear();
-            resetMainCameraRuntimeState();
-
-            // 设备表复位（主相机）
-            resetDeviceEntry(kIdxMainCamera);
-        }
-        else
-        {
-            // 4B) 清理整个相机池：停止轮询 -> 关闭所有句柄 -> ReleaseSdkResource -> 清空池 -> 复位状态
-            //
-            // 注意：池被清理后主相机绑定也必然失效，因此会一并复位主相机绑定/运行态。
-            if (sdkExposureTimer)
-            {
-                // 若 sdkExposureTimer 的线程归属不明确，建议用 invokeMethod 投递到其线程
-                sdkExposureTimer->stop();
-            }
-            sdkExposureIsROI = false;
-
-            std::vector<SdkDeviceHandle> handles;
-            handles.reserve(static_cast<size_t>(g_sdkQhyCamHandles.size()));
-
-            for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
-            {
-                if (g_sdkQhyCamHandles[i] != nullptr)
-                    handles.push_back(g_sdkQhyCamHandles[i]);
-                g_sdkQhyCamHandles[i] = nullptr;
-            }
-
-            runOnCamThreadSync([=]() mutable {
-                // 关闭所有句柄（尽量先取消曝光）
-                for (auto h : handles)
-                {
-                    if (h == nullptr) continue;
-                    // 直接通过设备句柄调用，无需指定驱动名称
-                    SdkManager::instance().callByHandle(h, makeCancelExposureCmd());
-                    SdkManager::instance().closeByHandle(h);
-                }
-                // 释放 SDK 全局资源（必须在全部 close 之后）
-                if (!releaseDriverNameStd.empty())
-                {
-                    SdkCommand relCmd;
-                    relCmd.type = SdkCommandType::Custom;
-                    relCmd.name = "ReleaseSdkResource";
-                    relCmd.payload = std::any();
-
-                    SdkResult relRes = SdkManager::instance().call(releaseDriverNameStd, nullptr, relCmd);
-                    if (!relRes.success)
-                    {
-                        Logger::Log("cleanupQhySdkPoolAndResource | ReleaseSdkResource failed: " + relRes.message,
-                                    LogLevel::WARNING, DeviceType::MAIN);
-                    }
-                    else
-                    {
-                        Logger::Log("cleanupQhySdkPoolAndResource | ReleaseSdkResource success",
-                                    LogLevel::INFO, DeviceType::MAIN);
-                    }
-                }
-                else
-                {
-                    Logger::Log("cleanupQhySdkPoolAndResource | ReleaseSdkResource skipped: no valid SDK driver name",
-                                LogLevel::WARNING, DeviceType::MAIN);
-                }
-            });
-
-            // 清空池与 ID 列表
-            g_sdkQhyCamHandles.clear();
-            g_sdkQhyCamIds.clear();
-
-            // 主相机绑定/运行态复位
-            sdkMainCameraHandle = nullptr;
-            sdkGuiderHandle = nullptr;
-            sdkPoleScopeHandle = nullptr;
-            g_sdkMainCameraPoolIndex = -1;
-            g_sdkGuiderPoolIndex = -1;
-            g_sdkPoleCameraPoolIndex = -1;
-            sdkMainCameraId.clear();
-            resetMainCameraRuntimeState();
-
-            // 设备表复位：
-            // CameraPool/All 都应清理“相机角色”绑定状态，避免仅清主相机导致 Guider/PoleCamera 残留“已连接”。
-            for (int i = 0; i < systemdevicelist.system_devices.size(); ++i)
-            {
-                if (!systemdevicelist.system_devices[i].isSDKConnect)
-                    continue;
-                if (i == kIdxFocuser)
-                    continue;
-                const QString desc = systemdevicelist.system_devices[i].Description;
-                if (desc == "MainCamera" || desc == "Guider" || desc == "PoleCamera")
-                    resetDeviceEntry(i);
-            }
-        }
-    }
-    else if (cleanupMainCamera)
-    {
-        // 4C) 没有可关闭的相机句柄，但仍要求“解绑主相机”（用于异常状态/句柄已丢失）
-        sdkMainCameraHandle = nullptr;
-        sdkGuiderHandle = nullptr;
-        sdkPoleScopeHandle = nullptr;
-        g_sdkMainCameraPoolIndex = -1;
-        g_sdkGuiderPoolIndex = -1;
-        g_sdkPoleCameraPoolIndex = -1;
-        sdkMainCameraId.clear();
-        resetMainCameraRuntimeState();
-        resetDeviceEntry(kIdxMainCamera);
-    }
-
-    // ReleaseSdkResource 已在“整池清理”路径中由相机线程任务负责执行
-}
-
-
-bool MainWindow::connectIndiServer(MyClient *client)
-{
-    Logger::Log("connectIndiServer start ...", LogLevel::INFO, DeviceType::MAIN);
-    client->setConnectionTimeout(3, 0);
-    Logger::Log("connectIndiServer | clear device list ...", LogLevel::INFO, DeviceType::MAIN);
-    client->ClearDevices(); // clear device list
-    Logger::Log("connectIndiServer | connect server ...", LogLevel::INFO, DeviceType::MAIN);
-    client->connectServer();
-    int k = 10;
-    while (k--)
-    {
-        if (client->isServerConnected() == true)
-        {
-            break;
-        }
-        sleep(1);
-        // qApp->processEvents();
-        Logger::Log("connectIndiServer | waiting for client connected ...", LogLevel::INFO, DeviceType::MAIN);
-    }
-    if (client->isServerConnected() == false)
-    {
-        Logger::Log("connectIndiServer | failed: client is not connected after timeout.", LogLevel::ERROR, DeviceType::MAIN);
-        return false;
-    }
-    sleep(1);
-    client->PrintDevices();
-    Logger::Log("connectIndiServer finished.", LogLevel::INFO, DeviceType::MAIN);
-    return true;
-}
-
-void MainWindow::ClearSystemDeviceList()
-{
-    Logger::Log("ClearSystemDeviceList start ...", LogLevel::INFO, DeviceType::MAIN);
-    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-    {
-        systemdevicelist.system_devices[i].DeviceIndiGroup = -1;
-        systemdevicelist.system_devices[i].DeviceIndiName = "";
-        systemdevicelist.system_devices[i].DriverFrom = "";
-        // systemdevicelist.system_devices[i].DriverIndiName = "";
-        systemdevicelist.system_devices[i].isConnect = false;
-        systemdevicelist.system_devices[i].dp = NULL;
-        systemdevicelist.system_devices[i].isBind = false;
-        // systemdevicelist.system_devices[i].Description = "";
-    }
-    Logger::Log("ClearSystemDeviceList finished.", LogLevel::INFO, DeviceType::MAIN);
-    Tools::printSystemDeviceList(systemdevicelist);
-}
 
 void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
 {
@@ -5419,7 +4553,7 @@ void MainWindow::startMainCameraCapture(int exposureMs)
         emitCaptureTrace(QStringLiteral("backend_set_exposure_done"), setExposureStartMs,
                          QString("success=true,exposureUs=%1")
                              .arg(QString::number(expTime_sec * 1000000.0, 'f', 0)));
-        
+
         // 2. 启动单帧曝光
         const qint64 startExposureCmdStartMs = QDateTime::currentMSecsSinceEpoch();
         SdkCommand startExpCmd;
@@ -5456,13 +4590,13 @@ void MainWindow::startMainCameraCapture(int exposureMs)
                          QString("transport=sdk,exposureMs=%1").arg(static_cast<int>(expTime_sec * 1000)));
         Logger::Log("startMainCameraCapture | SDK StartSingleExposure success, expTime_sec:" + std::to_string(expTime_sec),
                    LogLevel::INFO, DeviceType::CAMERA);
-        
+
         // 3. 使用定时器轮询获取图像（避免阻塞）
         int expTime_ms = static_cast<int>(expTime_sec * 1000);
         sdkExposureStartTime = QDateTime::currentMSecsSinceEpoch();
         sdkExposureExpectedDuration = expTime_ms;
         sdkExposureIsROI = false; // 全分辨率模式
-        
+
         // 第一次等待时间 = 曝光时间（对于短曝光如 1ms，等待 1ms；长曝光如 1s，等待 1s）
         sdkExposureTimer->start(expTime_ms);
         Logger::Log("startMainCameraCapture | SDK exposure timer started, will check after " + std::to_string(expTime_ms) + "ms",
@@ -5533,17 +4667,17 @@ void MainWindow::abortMainCameraCapture()
     if (isMainCameraSDK)
     {
         // === SDK 模式 ===
-        
+
         // 🔧 修复：立即停止曝光轮询定时器，防止重复调用GetSingleFrame
         if (sdkExposureTimer && sdkExposureTimer->isActive()) {
             sdkExposureTimer->stop();
             Logger::Log("abortMainCameraCapture | Stopped sdkExposureTimer to prevent redundant GetSingleFrame calls",
                        LogLevel::DEBUG, DeviceType::CAMERA);
         }
-        
+
         // 重置防重入标志，允许新的曝光操作
         sdkFrameTaskInFlight = false;
-        
+
         // 重置曝光状态标志
         sdkExposureIsROI = false;
 
@@ -5567,7 +4701,7 @@ void MainWindow::abortMainCameraCapture()
                 });
             }
         }
-        
+
         SdkCommand abortCmd;
         abortCmd.type = SdkCommandType::Custom;
         // SDK 驱动中实现的取消命令为 CancelExposure（CancelQHYCCDExposingAndReadout）
@@ -5617,18 +4751,18 @@ void MainWindow::SaveQhyFrameDataToFits(const SdkFrameData& frame, const std::st
     int status = 0;
     long naxes[2] = {static_cast<long>(frame.width), static_cast<long>(frame.height)};
     const long fpixel[2] = {1, 1};
-    
+
     // 删除已存在的文件
     remove(filepath.c_str());
-    
+
     // 创建 FITS 文件
     fits_create_file(&fptr, filepath.c_str(), &status);
     if (status) {
-        Logger::Log("SaveQhyFrameDataToFits | fits_create_file failed, status=" + std::to_string(status), 
+        Logger::Log("SaveQhyFrameDataToFits | fits_create_file failed, status=" + std::to_string(status),
                    LogLevel::ERROR, DeviceType::CAMERA);
         return;
     }
-    
+
     // 选择写入源与像素类型（支持 8/16 位单通道）
     int bitpix = USHORT_IMG;
     int datatype = TUSHORT;
@@ -5674,27 +4808,27 @@ void MainWindow::SaveQhyFrameDataToFits(const SdkFrameData& frame, const std::st
     // 创建图像
     fits_create_img(fptr, bitpix, 2, naxes, &status);
     if (status) {
-        Logger::Log("SaveQhyFrameDataToFits | fits_create_img failed, status=" + std::to_string(status), 
+        Logger::Log("SaveQhyFrameDataToFits | fits_create_img failed, status=" + std::to_string(status),
                    LogLevel::ERROR, DeviceType::CAMERA);
         fits_close_file(fptr, &status);
         return;
     }
-    
+
     // 写入图像数据
     fits_write_pix(fptr, datatype, const_cast<long*>(fpixel), nelements,
                    const_cast<void*>(srcPtr), &status);
     if (status) {
-        Logger::Log("SaveQhyFrameDataToFits | fits_write_pix failed, status=" + std::to_string(status), 
+        Logger::Log("SaveQhyFrameDataToFits | fits_write_pix failed, status=" + std::to_string(status),
                    LogLevel::ERROR, DeviceType::CAMERA);
     }
-    
+
     // 关闭文件
     fits_close_file(fptr, &status);
     if (status) {
-        Logger::Log("SaveQhyFrameDataToFits | fits_close_file failed, status=" + std::to_string(status), 
+        Logger::Log("SaveQhyFrameDataToFits | fits_close_file failed, status=" + std::to_string(status),
                    LogLevel::ERROR, DeviceType::CAMERA);
     } else {
-        Logger::Log("SaveQhyFrameDataToFits | FITS saved successfully: " + filepath, 
+        Logger::Log("SaveQhyFrameDataToFits | FITS saved successfully: " + filepath,
                    LogLevel::INFO, DeviceType::CAMERA);
     }
 }
@@ -6396,7 +5530,7 @@ void MainWindow::onPhd2Exited(int exitCode, QProcess::ExitStatus exitStatus)
     {
         // 进程异常结束时，尝试发送一次“停止循环拍摄”命令以收敛前端状态
         call_phd_StopLooping();
-        
+
         // TODO(PHD2): 相关前端信号发送已暂停（切换到 INDI 导星直出图逻辑后不再维护 PHD2 UI）
         // emit wsThread->sendMessageToClient("GuiderLoopExpStatus:false");
         phd2ExpectedRunning = false;
@@ -6474,7 +5608,7 @@ bool MainWindow::call_phd_GetVersion(QString &versionName)
         versionName = "";
         return false;
     }
-    
+
     unsigned int baseAddress;
     unsigned int vendcommand;
     bzero(sharedmemory_phd, 1024); // 共享内存清空
@@ -6542,7 +5676,7 @@ uint32_t MainWindow::call_phd_StartLooping(void)
         Logger::Log("call_phd_StartLooping | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return false;
     }
-    
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -6585,7 +5719,7 @@ uint32_t MainWindow::call_phd_StopLooping(void)
         Logger::Log("call_phd_StopLooping | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return false;
     }
-    
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -6628,7 +5762,7 @@ uint32_t MainWindow::call_phd_AutoFindStar(void)
         Logger::Log("call_phd_AutoFindStar | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return false;
     }
-    
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -6670,7 +5804,7 @@ uint32_t MainWindow::call_phd_StartGuiding(void)
         Logger::Log("call_phd_StartGuiding | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return false;
     }
-    
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -6808,7 +5942,7 @@ uint32_t MainWindow::call_phd_checkStatus(unsigned char &status)
         status = 0;
         return false;
     }
-    
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -6856,7 +5990,7 @@ uint32_t MainWindow::call_phd_setExposureTime(unsigned int expTime)
         Logger::Log("call_phd_setExposureTime | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return false;
     }
-    
+
     unsigned int vendcommand;
     unsigned int baseAddress;
     Logger::Log("call_phd_setExposureTime | expTime:" + std::to_string(expTime), LogLevel::INFO, DeviceType::GUIDER);
@@ -7007,7 +6141,7 @@ uint32_t MainWindow::call_phd_ClearCalibration(void)
         Logger::Log("call_phd_ClearCalibration | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return false;
     }
-    
+
     unsigned int vendcommand;
     unsigned int baseAddress;
 
@@ -7470,14 +6604,14 @@ void MainWindow::ShowPHDdata()
         Logger::Log("ShowPHDdata | shared memory not ready", LogLevel::ERROR, DeviceType::GUIDER);
         return;
     }
-    
+
     // 修复：验证共享内存大小，确保kFlagOff在有效范围内
     const size_t total_size = (size_t)BUFSZ;
     if (kFlagOff >= total_size) {
         Logger::Log("ShowPHDdata | kFlagOff out of bounds", LogLevel::ERROR, DeviceType::GUIDER);
         return;
     }
-    
+
     if (sharedmemory_phd[kFlagOff] != 0x02) {
         // 没有新帧
         return;
@@ -7514,7 +6648,7 @@ void MainWindow::ShowPHDdata()
     }
 
     /* ------------------------------  新增：先读 V2 头，决定本帧尺寸  ------------------------------ */
-    ShmHdrV2 v2{}; 
+    ShmHdrV2 v2{};
     bool hasV2 = false;
     if (total_size >= sizeof(ShmHdrV2)) {
         std::memcpy(&v2, sharedmemory_phd, sizeof(ShmHdrV2));
@@ -7917,686 +7051,13 @@ void MainWindow::GetPHD2ControlInstruct()
 }
 #endif
 
-void MainWindow::TelescopeControl_Goto(double Ra, double Dec)
-{
-    if (dpMount != NULL)
-    {
-        if (indi_Client->mountState.isTracking)
-        {
-            indi_Client->slewTelescopeJNowNonBlock(dpMount, Ra, Dec, true);
-        }
-        else
-        {
-            indi_Client->slewTelescopeJNowNonBlock(dpMount, Ra, Dec, false);
-        }
-    }
-}
 
-QString MainWindow::TelescopeControl_Status()
-{
-    if (dpMount != NULL)
-    {
-        QString Stat;
-        indi_Client->getTelescopeStatus(dpMount, Stat);
-        return Stat;
-    }
-}
 
-bool MainWindow::TelescopeControl_Park()
-{
-    bool isPark = false;
-    if (dpMount != NULL)
-    {
-        indi_Client->getTelescopePark(dpMount, isPark);
-        if (isPark == false)
-        {
-            indi_Client->setTelescopePark(dpMount, true);
-        }
-        else
-        {
-            indi_Client->setTelescopePark(dpMount, false);
-        }
-        indi_Client->getTelescopePark(dpMount, isPark);
-        // Logger::Log("TelescopeControl_Park | Telescope is Park ???:" + std::to_string(isPark), LogLevel::INFO, DeviceType::MAIN);
-    }
 
-    return isPark;
-}
 
-bool MainWindow::TelescopeControl_Track()
-{
-    bool isTrack = true;
-    if (dpMount != NULL)
-    {
-        indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
-        if (isTrack == false)
-        {
-            indi_Client->setTelescopeTrackEnable(dpMount, true);
-        }
-        else
-        {
-            indi_Client->setTelescopeTrackEnable(dpMount, false);
-        }
-        indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
-        Logger::Log("TelescopeControl_Track | Telescope is Track ???:" + std::to_string(isTrack), LogLevel::INFO, DeviceType::MAIN);
-    }
-    return isTrack;
-}
-int MainWindow::CaptureImageSave()
-{
-    Logger::Log("CaptureImageSave...", LogLevel::INFO, DeviceType::MAIN);
-    const QString sourcePath = latestMainCaptureFitsPath();
 
-    if (sourcePath.isEmpty())
-    {
-        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
-        return 1;
-    }
 
-    QString CaptureTime = Tools::getFitsCaptureTime(sourcePath.toUtf8().constData());
-    Logger::Log("CaptureImageSave | getFitsCaptureTime returned: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
-    // 如果无法从 FITS 文件获取时间，优先使用文件的修改时间
-    if (CaptureTime.isEmpty())
-    {
-        QFileInfo fileInfo(sourcePath);
-        if (fileInfo.exists())
-        {
-            // 使用文件的最后修改时间
-            QDateTime fileTime = fileInfo.lastModified();
-            CaptureTime = fileTime.toString("yyyy_MM_dd_HH_mm_ss");
-            Logger::Log("CaptureImageSave | Using file modification time as filename: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            // 如果文件不存在（理论上不应该发生），使用当前时间作为最后的fallback
-            std::time_t currentTime = std::time(nullptr);
-            std::tm *timeInfo = std::localtime(&currentTime);
-            char buffer[80];
-            std::strftime(buffer, 80, "%Y_%m_%dT%H_%M_%S", timeInfo);
-            CaptureTime = QString::fromStdString(buffer);
-            Logger::Log("CaptureImageSave | Using current timestamp as filename: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-    
-    CaptureTime.replace(QRegExp("[^a-zA-Z0-9]"), "_");
-    QString resultFileName = CaptureTime + ".fits";
-    Logger::Log("CaptureImageSave | Generated filename: " + resultFileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
-    std::time_t currentTime = std::time(nullptr);
-    std::tm *timeInfo = std::localtime(&currentTime);
-    char buffer[80];
-    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
-
-    // 直接使用 ImageSaveBaseDirectory（无论是默认路径还是U盘路径）
-    QString destinationDirectory = ImageSaveBaseDirectory + "/CaptureImage";
-    QString destinationPath = destinationDirectory + "/" + QString(buffer) + "/" + resultFileName;
-    
-    // 判断是否为U盘路径（使用saveMode参数）
-    bool isUSBSave = (saveMode != "local");
-    
-    // 使用通用函数检查存储空间并创建目录
-    QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer)) : QString();
-    int checkResult = checkStorageSpaceAndCreateDirectory(
-        sourcePath,
-        destinationDirectory,
-        dirPathToCreate,
-        "CaptureImageSave",
-        isUSBSave,
-        [this]() { createCaptureDirectory(); }
-    );
-    if (checkResult != 0)
-    {
-        return checkResult;
-    }
-
-    // 检查文件是否已存在
-    if (QFile::exists(destinationPath))
-    {
-        Logger::Log("The file already exists, there is no need to save it again:" + destinationPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
-        return 0;
-    }
-
-    // 使用通用函数保存文件
-    int saveResult = saveImageFile(sourcePath, destinationPath, "CaptureImageSave", isUSBSave);
-    if (saveResult != 0)
-    {
-        return saveResult;
-    }
-
-    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
-    Logger::Log("CaptureImageSave | File saved successfully: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    return 0;
-}
-int MainWindow::solveFailedImageSave(const QString& imagePath)
-{
-    // Logger::Log("solveFailedImageSave...", LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("solveFailedImageSave | Starting save process, imagePath: " + imagePath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
-    // 如果未提供路径，使用默认路径
-    QString sourcePathStr = imagePath.isEmpty() ? "/dev/shm/ccd_simulator.fits" : imagePath;
-    const char *sourcePath = sourcePathStr.toLocal8Bit().constData();
-
-    Logger::Log("solveFailedImageSave | Using source path: " + sourcePathStr.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    
-    if (!QFile::exists(sourcePathStr))
-    {
-        Logger::Log("solveFailedImageSave | 文件不存在: " + sourcePathStr.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
-        return 1;
-    }
-    
-    Logger::Log("solveFailedImageSave | Source file exists, file size: " + std::to_string(QFileInfo(sourcePathStr).size()) + " bytes", LogLevel::INFO, DeviceType::MAIN);
-
-    QString CaptureTime = Tools::getFitsCaptureTime(sourcePath);
-    Logger::Log("solveFailedImageSave | getFitsCaptureTime returned: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    
-    // 如果无法从 FITS 文件获取时间，优先使用文件的修改时间
-    if (CaptureTime.isEmpty())
-    {
-        QFileInfo fileInfo(sourcePathStr);
-        if (fileInfo.exists())
-        {
-            // 使用文件的最后修改时间
-            QDateTime fileTime = fileInfo.lastModified();
-            CaptureTime = fileTime.toString("yyyy_MM_dd_HH_mm_ss");
-            Logger::Log("solveFailedImageSave | Using file modification time as filename: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            // 如果文件不存在（理论上不应该发生），使用当前时间作为最后的fallback
-            std::time_t currentTime = std::time(nullptr);
-            std::tm *timeInfo = std::localtime(&currentTime);
-            char buffer[80];
-            std::strftime(buffer, 80, "%Y_%m_%dT%H_%M_%S", timeInfo);
-            CaptureTime = QString::fromStdString(buffer);
-            Logger::Log("solveFailedImageSave | Using current timestamp as filename: " + CaptureTime.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-    
-    CaptureTime.replace(QRegExp("[^a-zA-Z0-9]"), "_");
-    QString resultFileName = CaptureTime + ".fits";
-    Logger::Log("solveFailedImageSave | Generated filename: " + resultFileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
-    std::time_t currentTime = std::time(nullptr);
-    std::tm *timeInfo = std::localtime(&currentTime);
-    char buffer[80];
-    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
-
-    // 指定目标目录
-    QString destinationDirectory = ImageSaveBaseDirectory + "/solveFailedImage";
-
-    QString destinationPath = destinationDirectory + "/" + buffer + "/" + resultFileName;
-    
-    // 判断是否为U盘路径（使用saveMode参数）
-    bool isUSBSave = (saveMode != "local");
-    
-    // 使用通用函数检查存储空间并创建目录
-    // 注意：传入 QString 而不是 const char*，确保路径正确传递
-    QString dirPathToCreate = isUSBSave ? (destinationDirectory + "/" + QString(buffer)) : QString();
-    
-    // 在调用前再次确认文件存在（因为文件可能在检查后被删除）
-    if (!QFile::exists(sourcePathStr))
-    {
-        Logger::Log("solveFailedImageSave | Source file no longer exists before checkStorageSpaceAndCreateDirectory: " + sourcePathStr.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
-        return 1;
-    }
-    
-    int checkResult = checkStorageSpaceAndCreateDirectory(
-        sourcePathStr,  // 使用 QString 而不是 const char*
-        destinationDirectory,
-        dirPathToCreate,
-        "solveFailedImageSave",
-        isUSBSave,
-        [this]() { createsolveFailedImageDirectory(); }
-    );
-    if (checkResult != 0)
-    {
-        Logger::Log("solveFailedImageSave | checkStorageSpaceAndCreateDirectory failed with code: " + std::to_string(checkResult), LogLevel::ERROR, DeviceType::MAIN);
-        return checkResult;
-    }
-
-    // 检查文件是否已存在
-    // if (QFile::exists(destinationPath))
-    // {
-    //     qWarning() << "The file already exists, there is no need to save it again:" << destinationPath;
-    //     emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Repeat");
-    //     return 0;
-    // }
-
-    // 使用通用函数保存文件
-    // 在保存前再次确认源文件存在
-    if (!QFile::exists(sourcePathStr))
-    {
-        Logger::Log("solveFailedImageSave | Source file no longer exists before saveImageFile: " + sourcePathStr.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Null");
-        return 1;
-    }
-    
-    Logger::Log("solveFailedImageSave | Attempting to save to: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    int saveResult = saveImageFile(sourcePathStr, destinationPath, "solveFailedImageSave", isUSBSave);  // 使用 QString 而不是 const char*
-    if (saveResult != 0)
-    {
-        Logger::Log("solveFailedImageSave | saveImageFile failed with error code: " + std::to_string(saveResult), LogLevel::ERROR, DeviceType::MAIN);
-        return saveResult;
-    }
-
-    // 验证文件是否真的被保存了
-    if (QFile::exists(destinationPath))
-    {
-        Logger::Log("solveFailedImageSave | File saved successfully to: " + destinationPath.toStdString() + ", size: " + std::to_string(QFileInfo(destinationPath).size()) + " bytes", LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        Logger::Log("solveFailedImageSave | WARNING: saveImageFile returned success but destination file does not exist: " + destinationPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-    }
-
-    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Success");
-    qDebug() << "CaptureImageSaveStatus Goto Complete...";
-    return 0;
-}
-
-bool MainWindow::directoryExists(const std::string &path)
-{
-    struct stat info;
-    return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
-}
-
-bool MainWindow::createCaptureDirectory()
-{
-    Logger::Log("createCaptureDirectory start ...", LogLevel::INFO, DeviceType::MAIN);
-    std::string basePath = ImageSaveBasePath + "/CaptureImage/";
-
-    std::time_t currentTime = std::time(nullptr);
-    std::tm *timeInfo = std::localtime(&currentTime);
-    char buffer[80];
-    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
-    std::string folderName = basePath + buffer;
-
-    // 如果目录不存在，则创建
-    if (!std::filesystem::exists(folderName))
-    {
-        if (std::filesystem::create_directory(folderName))
-        {
-            Logger::Log("createCaptureDirectory | Folder created successfully: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            Logger::Log("createCaptureDirectory | An error occurred while creating the folder.", LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-    else
-    {
-        Logger::Log("createCaptureDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
-    }
-    return true;
-}
-bool MainWindow::createsolveFailedImageDirectory()
-{
-    Logger::Log("createCaptureDirectory start ...", LogLevel::INFO, DeviceType::MAIN);
-    std::string basePath = ImageSaveBasePath + "/solveFailedImage/";
-
-    std::time_t currentTime = std::time(nullptr);
-    std::tm *timeInfo = std::localtime(&currentTime);
-    char buffer[80];
-    std::strftime(buffer, 80, "%Y-%m-%d", timeInfo); // Format: YYYY-MM-DD
-    std::string folderName = basePath + buffer;
-
-    // 如果目录不存在，则创建
-    if (!std::filesystem::exists(folderName))
-    {
-        if (std::filesystem::create_directory(folderName))
-        {
-            Logger::Log("createCaptureDirectory | Folder created successfully: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            Logger::Log("createCaptureDirectory | An error occurred while creating the folder.", LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-    else
-    {
-        Logger::Log("createCaptureDirectory | The folder already exists: " + std::string(folderName), LogLevel::INFO, DeviceType::MAIN);
-    }
-    return true;
-}
-
-int MainWindow::checkStorageSpaceAndCreateDirectory(const QString &sourcePath, 
-                                                     const QString &destinationDirectory,
-                                                     const QString &dirPathToCreate,
-                                                     const QString &functionName,
-                                                     bool isUSBSave,
-                                                     std::function<void()> createLocalDirectoryFunc)
-{
-    Logger::Log(functionName.toStdString() + " | checkStorageSpaceAndCreateDirectory | saveMode: " + saveMode.toStdString() + 
-               ", isUSBSave: " + std::string(isUSBSave ? "true" : "false") + 
-               ", ImageSaveBaseDirectory: " + ImageSaveBaseDirectory.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    
-    // 先获取源文件大小（在空间检查之前）
-    QFileInfo sourceFileInfo(sourcePath);
-    if (!sourceFileInfo.exists())
-    {
-        Logger::Log(functionName.toStdString() + " | Source file does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-        return 1;
-    }
-    long long fileSize = sourceFileInfo.size();
-    
-    if (isUSBSave)
-    {
-        // 从ImageSaveBaseDirectory提取U盘挂载点（去掉/QUARCS_ImageSave）
-        QString usb_mount_point = ImageSaveBaseDirectory;
-        usb_mount_point.replace("/QUARCS_ImageSave", "");
-        
-        Logger::Log(functionName.toStdString() + " | USB save mode | ImageSaveBaseDirectory: " + ImageSaveBaseDirectory.toStdString() + 
-                   ", extracted USB mount point: " + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        
-        // 检查U盘空间和可写性
-        QStorageInfo storageInfo(usb_mount_point);
-        if (!storageInfo.isValid() || !storageInfo.isReady())
-        {
-            Logger::Log(functionName.toStdString() + " | USB drive is not valid or not ready: " + usb_mount_point.toStdString() + 
-                       " (isValid: " + std::string(storageInfo.isValid() ? "true" : "false") + 
-                       ", isReady: " + std::string(storageInfo.isReady() ? "true" : "false") + ")", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NotAvailable");
-            return 1;
-        }
-        
-        if (storageInfo.isReadOnly())
-        {
-            const QString password = "quarcs";
-            if (!remountReadWrite(usb_mount_point, password))
-            {
-                Logger::Log(functionName.toStdString() + " | Failed to remount USB as read-write.", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-ReadOnly");
-                return 1;
-            }
-        }
-        
-        // 检查U盘剩余空间（在创建目录之前）
-        long long remaining_space = getUSBSpace(usb_mount_point);
-        if (remaining_space == -1 || remaining_space <= 0)
-        {
-            Logger::Log(functionName.toStdString() + " | USB drive has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-            return 1;
-        }
-        
-        // 预留至少100MB的缓冲空间，避免写入时空间不足
-        const long long RESERVE_SPACE = 100 * 1024 * 1024; // 100MB
-        long long available_space = remaining_space - RESERVE_SPACE;
-        if (available_space < 0)
-        {
-            available_space = 0;
-        }
-        
-        // 检查空间是否足够（文件大小必须小于可用空间，已预留缓冲）
-        if (fileSize > available_space)
-        {
-            Logger::Log(functionName.toStdString() + " | Insufficient USB space. Required: " + QString::number(fileSize).toStdString() + 
-                       " bytes, Available: " + QString::number(remaining_space).toStdString() + 
-                       " bytes (reserved: " + QString::number(RESERVE_SPACE).toStdString() + " bytes)", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:USB-NoSpace");
-            return 1;
-        }
-        
-        // 创建目录（使用sudo）- 在空间检查通过后
-        // 安全检查：避免在 /media/quarcs 路径下创建任何文件夹，避免被错误识别为U盘
-        QString normalizedPath = QDir(dirPathToCreate).absolutePath();
-        
-        // 检查路径是否在 /media/quarcs 下
-        if (normalizedPath.startsWith("/media/quarcs/"))
-        {
-            // 提取 /media/quarcs/ 之后的部分
-            QString pathAfterMedia = normalizedPath.mid(14); // 去掉 "/media/quarcs/"
-            
-            // 检查路径格式：应该是 /media/quarcs/某个U盘名/...
-            int firstSlash = pathAfterMedia.indexOf('/');
-            if (firstSlash > 0)
-            {
-                QString usbName = pathAfterMedia.left(firstSlash);
-                // 检查这个U盘名是否在映射表中（有效的U盘挂载点）
-                if (!usbMountPointsMap.contains(usbName))
-                {
-                    Logger::Log(functionName.toStdString() + " | Security check failed: Attempting to create directory in /media/quarcs/ but USB name '" + usbName.toStdString() + "' not found in mount points map. Path: " + dirPathToCreate.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                    return 1;
-                }
-                // 验证路径确实在U盘挂载点下
-                QString expectedMountPoint = "/media/quarcs/" + usbName;
-                if (!normalizedPath.startsWith(expectedMountPoint))
-                {
-                    Logger::Log(functionName.toStdString() + " | Security check failed: Path does not match expected mount point. Path: " + dirPathToCreate.toStdString() + ", Expected mount point: " + expectedMountPoint.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                    return 1;
-                }
-            }
-            else
-            {
-                // 路径格式不正确，可能是直接在 /media/quarcs/ 下创建文件夹
-                Logger::Log(functionName.toStdString() + " | Security check failed: Invalid path format in /media/quarcs/. Path: " + dirPathToCreate.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                return 1;
-            }
-        }
-        // 额外检查：确保路径不是直接在 /media/quarcs 下（没有子目录）
-        else if (normalizedPath == "/media/quarcs")
-        {
-            Logger::Log(functionName.toStdString() + " | Security check failed: Attempting to create directory directly at /media/quarcs. Path: " + dirPathToCreate.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        
-        const QString password = "quarcs";
-        QProcess mkdirProcess;
-        mkdirProcess.start("sudo", {"-S", "mkdir", "-p", dirPathToCreate});
-        if (!mkdirProcess.waitForStarted() || !mkdirProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log(functionName.toStdString() + " | Failed to create directory: " + dirPathToCreate.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        mkdirProcess.closeWriteChannel();
-        mkdirProcess.waitForFinished(-1);
-    }
-    else
-    {
-        // 默认位置：先检查空间（在创建目录之前）
-        QString localPath = QString::fromStdString(ImageSaveBasePath);
-        Logger::Log(functionName.toStdString() + " | Local save mode | checking local path: " + localPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        long long remaining_space = getUSBSpace(localPath);
-        if (remaining_space == -1 || remaining_space <= 0)
-        {
-            Logger::Log(functionName.toStdString() + " | Local storage has no available space.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
-        
-        // 预留至少100MB的缓冲空间，避免写入时空间不足
-        const long long RESERVE_SPACE = 100 * 1024 * 1024; // 100MB
-        long long available_space = remaining_space - RESERVE_SPACE;
-        if (available_space < 0)
-        {
-            available_space = 0;
-        }
-        
-        // 检查空间是否足够（文件大小必须小于可用空间，已预留缓冲）
-        if (fileSize > available_space)
-        {
-            Logger::Log(functionName.toStdString() + " | Insufficient local storage space. Required: " + QString::number(fileSize).toStdString() + 
-                       " bytes, Available: " + QString::number(remaining_space).toStdString() + 
-                       " bytes (reserved: " + QString::number(RESERVE_SPACE).toStdString() + " bytes)", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:NoSpace");
-            return 1;
-        }
-        
-        // 创建目录 - 在空间检查通过后
-        if (createLocalDirectoryFunc)
-        {
-            createLocalDirectoryFunc();
-        }
-    }
-    
-    return 0;
-}
-
-int MainWindow::saveImageFile(const QString &sourcePath, 
-                              const QString &destinationPath,
-                              const QString &functionName,
-                              bool isUSBSave)
-{
-    if (isUSBSave)
-    {
-        // U盘保存使用sudo cp命令
-        const QString password = "quarcs";
-        QProcess cpProcess;
-        cpProcess.start("sudo", {"-S", "cp", sourcePath, destinationPath});
-        if (!cpProcess.waitForStarted() || !cpProcess.write((password + "\n").toUtf8()))
-        {
-            Logger::Log(functionName.toStdString() + " | Failed to execute sudo cp command.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        cpProcess.closeWriteChannel();
-        cpProcess.waitForFinished(-1);
-        
-        if (cpProcess.exitCode() != 0)
-        {
-            QByteArray stderrOutput = cpProcess.readAllStandardError();
-            Logger::Log(functionName.toStdString() + " | Failed to copy file to USB: " + QString::fromUtf8(stderrOutput).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        
-        Logger::Log(functionName.toStdString() + " | File saved to USB: " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        // 默认位置保存使用普通文件操作
-        // 将相对路径转换为绝对路径
-        QString absoluteDestinationPath = destinationPath;
-        if (!QDir::isAbsolutePath(destinationPath))
-        {
-            absoluteDestinationPath = QDir::currentPath() + "/" + destinationPath;
-            Logger::Log(functionName.toStdString() + " | Converted relative path to absolute: " + destinationPath.toStdString() + " -> " + absoluteDestinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-        const QByteArray destinationPathBytes = absoluteDestinationPath.toUtf8();
-        const char *destinationPathChar = destinationPathBytes.constData();
-        const QByteArray sourcePathBytes = sourcePath.toUtf8();
-        const char *sourcePathChar = sourcePathBytes.constData();
-
-        // 确保目标目录存在
-        std::filesystem::path destPath(destinationPathChar);
-        std::filesystem::path destDir = destPath.parent_path();
-        if (!destDir.empty())
-        {
-            if (!std::filesystem::exists(destDir))
-            {
-                try {
-                    if (!std::filesystem::create_directories(destDir))
-                    {
-                        Logger::Log(functionName.toStdString() + " | Failed to create destination directory: " + destDir.string(), LogLevel::ERROR, DeviceType::MAIN);
-                        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                        return 1;
-                    }
-                    Logger::Log(functionName.toStdString() + " | Created destination directory: " + destDir.string(), LogLevel::INFO, DeviceType::MAIN);
-                } catch (const std::filesystem::filesystem_error& e) {
-                    Logger::Log(functionName.toStdString() + " | Exception creating directory: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                    return 1;
-                }
-            }
-            else
-            {
-                // 检查目录是否可写
-                try {
-                    std::filesystem::perms dirPerms = std::filesystem::status(destDir).permissions();
-                    if ((dirPerms & std::filesystem::perms::owner_write) == std::filesystem::perms::none)
-                    {
-                        Logger::Log(functionName.toStdString() + " | Destination directory is not writable: " + destDir.string(), LogLevel::ERROR, DeviceType::MAIN);
-                        emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                        return 1;
-                    }
-                } catch (const std::filesystem::filesystem_error& e) {
-                    Logger::Log(functionName.toStdString() + " | Exception checking directory permissions: " + std::string(e.what()), LogLevel::WARNING, DeviceType::MAIN);
-                }
-            }
-        }
-
-        // 检查目标文件是否已存在（处理竞态条件）
-        if (std::filesystem::exists(destPath))
-        {
-            Logger::Log(functionName.toStdString() + " | Target file already exists, attempting to remove: " + std::string(destinationPathChar), LogLevel::WARNING, DeviceType::MAIN);
-            try {
-                if (!std::filesystem::remove(destPath))
-                {
-                    Logger::Log(functionName.toStdString() + " | Failed to remove existing file: " + std::string(destinationPathChar), LogLevel::ERROR, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                    return 1;
-                }
-                Logger::Log(functionName.toStdString() + " | Removed existing file: " + std::string(destinationPathChar), LogLevel::INFO, DeviceType::MAIN);
-            } catch (const std::filesystem::filesystem_error& e) {
-                Logger::Log(functionName.toStdString() + " | Exception removing existing file: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-                return 1;
-            }
-        }
-
-        std::ifstream sourceFile(sourcePathChar, std::ios::binary);
-        if (!sourceFile.is_open())
-        {
-            Logger::Log(functionName.toStdString() + " | Unable to open source file: " + sourcePath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-
-        std::ofstream destinationFile(destinationPathChar, std::ios::binary | std::ios::trunc);
-        if (!destinationFile.is_open())
-        {
-            std::string dirInfo = "unknown";
-            try {
-                if (std::filesystem::exists(destDir))
-                {
-                    bool writable = (std::filesystem::status(destDir).permissions() & std::filesystem::perms::owner_write) != std::filesystem::perms::none;
-                    dirInfo = "exists: yes, writable: " + std::string(writable ? "yes" : "no");
-                }
-                else
-                {
-                    dirInfo = "exists: no";
-                }
-            } catch (...) {
-                dirInfo = "exists: unknown (exception)";
-            }
-            Logger::Log(functionName.toStdString() + " | Unable to create or open target file: " + std::string(destinationPathChar) + 
-                       " | " + dirInfo, 
-                       LogLevel::ERROR, DeviceType::MAIN);
-            sourceFile.close();
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-
-        destinationFile << sourceFile.rdbuf();
-
-        sourceFile.close();
-        destinationFile.close();
-        
-        // 验证文件是否成功写入
-        if (!std::filesystem::exists(destPath))
-        {
-            Logger::Log(functionName.toStdString() + " | File write completed but file does not exist: " + std::string(destinationPathChar), LogLevel::ERROR, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("CaptureImageSaveStatus:Failed");
-            return 1;
-        }
-        
-        Logger::Log(functionName.toStdString() + " | File saved successfully to: " + std::string(destinationPathChar) + 
-                   " | File size: " + std::to_string(std::filesystem::file_size(destPath)) + " bytes", 
-                   LogLevel::INFO, DeviceType::MAIN);
-    }
-    
-    return 0;
-}
 void MainWindow::getClientSettings()
 {
 
@@ -8683,71 +7144,7 @@ void MainWindow::setClientSettings(QString ConfigName, QString ConfigValue)
     Logger::Log("setClientSettings finish!", LogLevel::INFO, DeviceType::MAIN);
 }
 
-void MainWindow::getConnectedDevices()
-{
-    Logger::Log("getConnectedDevices start ...", LogLevel::INFO, DeviceType::MAIN);
-    QString deviceType;
-    bool isConnect;
-    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-    {
-        deviceType = systemdevicelist.system_devices[i].Description;
-        isConnect = systemdevicelist.system_devices[i].isConnect;
-        if (deviceType != "" && isConnect)
-        {
-            emit wsThread->sendMessageToClient("AddDeviceType:" + deviceType);
-        }
-    }
 
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-    {
-        if (indi_Client->GetDeviceFromList(i)->isConnected())
-        {
-            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Device:" + QString::number(i) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(i)->getDeviceName()));
-        }
-    }
-
-    for (int i = 0; i < ConnectedDevices.size(); i++)
-    {
-        Logger::Log("getConnectedDevices | Device[" + std::to_string(i) + "]: " + ConnectedDevices[i].DeviceName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ConnectSuccess:" + ConnectedDevices[i].DeviceType + ":" + ConnectedDevices[i].DeviceName);
-
-        if (ConnectedDevices[i].DeviceType == "MainCamera" && isMainCameraConnected())
-        {
-            emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
-            emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax) + ":" + QString::number(glOffsetValue));
-            emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax) + ":" + QString::number(glGainValue));
-            if (glUsbTrafficMax > glUsbTrafficMin)
-            {
-                emit wsThread->sendMessageToClient("MainCameraUsbTrafficRange:" + QString::number(glUsbTrafficMin) + ":" + QString::number(glUsbTrafficMax) + ":" + QString::number(glUsbTrafficValue) + ":" + QString::number(glUsbTrafficStep));
-            }
-
-            QString CFWname;
-            indi_Client->getCFWSlotName(dpMainCamera, CFWname);
-            if (CFWname != "")
-            {
-                Logger::Log("getConnectedDevices | get CFW Slot Name: " + CFWname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + CFWname + " (on camera)");
-                isFilterOnCamera = true;
-
-                int min, max, pos;
-                indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-                Logger::Log("getConnectedDevices | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
-            }
-        }
-        else if (ConnectedDevices[i].DeviceType == "Guider" && (dpGuider != nullptr || sdkGuiderHandle != nullptr))
-        {
-            emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" + QString::number(glGuiderOffsetMax) + ":" + QString::number(glGuiderOffsetValue));
-            emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" + QString::number(glGuiderGainMax) + ":" + QString::number(glGuiderGainValue));
-        }
-    }
-    Logger::Log("getConnectedDevices finish!", LogLevel::INFO, DeviceType::MAIN);
-}
-
-void MainWindow::clearConnectedDevices()
-{
-    ConnectedDevices.clear();
-}
 
 
 
@@ -8765,1336 +7162,38 @@ bool MainWindow::isFileExists(const QString &filePath)
     return file.exists();
 }
 
-void MainWindow::getStagingScheduleData()
-{
-    if (isStagingScheduleData)
-    {
-        emit wsThread->sendMessageToClient(StagingScheduleData);
-    }
 
-    // 将当前调度列表中的进度同步给前端，便于页面刷新后恢复每一行的执行进度
-    for (int i = 0; i < m_scheduList.size(); ++i)
-    {
-        int progress = m_scheduList[i].progress;
-        if (progress < 0)
-        {
-            progress = 0;
-        }
-        else if (progress > 100)
-        {
-            progress = 100;
-        }
-
-        // 仅对已有进度的行进行同步，避免干扰尚未使用的默认行
-        if (progress > 0)
-        {
-            emit wsThread->sendMessageToClient(
-                "UpdateScheduleProcess:" +
-                QString::number(i) + ":" +
-                QString::number(progress));
-        }
-    }
-
-    // 无论是否有暂存数据，都向前端同步当前计划运行状态
-    emit wsThread->sendMessageToClient(
-        QString("ScheduleRunning:%1").arg(isScheduleRunning ? "true" : "false"));
-}
-
-void MainWindow::getStagingGuiderData()
-{
-    // TODO(PHD2): 前端导星曲线/散点数据同步已暂停；若恢复前端曲线显示，再按协议重发 glPHD_rmsdate
-#if 0
-    int dataSize = glPHD_rmsdate.size();
-    int startIdx = dataSize > 50 ? dataSize - 50 : 0;
-
-    for (int i = startIdx; i < dataSize; i++)
-    {
-        emit wsThread->sendMessageToClient("AddLineChartData:" + QString::number(i) + ":" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(glPHD_rmsdate[i].y()));
-        emit wsThread->sendMessageToClient("AddScatterChartData:" + QString::number(glPHD_rmsdate[i].x()) + ":" + QString::number(-glPHD_rmsdate[i].y()));
-        if (i > 50)
-        {
-            emit wsThread->sendMessageToClient("SetLineChartRange:" + QString::number(i - 50) + ":" + QString::number(i));
-        }
-    }
-#endif
-}
 
 int MainWindow::MoveFileToUSB()
 {
     qDebug("MoveFileToUSB");
 }
 
-void MainWindow::solveCurrentPosition()
-{
-    if (solveCurrentPositionTimer.isActive())
-    {
-        Logger::Log("solveCurrentPosition | SolveCurrentPosition is already running...", LogLevel::INFO, DeviceType::MAIN);
-        return;
-    }
-    // 停止之前的定时器
-    solveCurrentPositionTimer.stop();
-    disconnect(&solveCurrentPositionTimer, &QTimer::timeout, nullptr, nullptr);
-    // 判断解析图像路径下是否有图片
-    if (isFileExists(QString::fromStdString(SolveImageFileName.toStdString())))
-    {
-        // 设置定时器为单次触发
-        solveCurrentPositionTimer.setSingleShot(true);
-        // 开始解析图像
-        Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
-        // 连接解析完成信号到处理函数，处理解析完成后的逻辑
-        connect(&solveCurrentPositionTimer, &QTimer::timeout, [this]()
-        {
-            if (Tools::isSolveImageFinish())  // 检查图像解析是否完成
-            {
-                SloveResults result = Tools::ReadSolveResult(SolveImageFileName, glMainCCDSizeX, glMainCCDSizeY);  // 读取解析结果
-                if (result.RA_Degree == -1 && result.DEC_Degree == -1)
-                {
-                    Logger::Log("solveCurrentPosition | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("SolveCurrentPosition:failed");
-                    solveCurrentPositionTimer.stop();
-                    disconnect(&solveCurrentPositionTimer, &QTimer::timeout, nullptr, nullptr);
-                    return;
-                }
-                else
-                {
-                    emit wsThread->sendMessageToClient("SolveCurrentPosition:succeeded:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree)+":"+QString::number(result.RA_0)+":"+QString::number(result.DEC_0)+":"+QString::number(result.RA_1)+":"+QString::number(result.DEC_1)+":"+QString::number(result.RA_2)+":"+QString::number(result.DEC_2)+":"+QString::number(result.RA_3)+":"+QString::number(result.DEC_3));
-                    solveCurrentPositionTimer.stop();
-                    disconnect(&solveCurrentPositionTimer, &QTimer::timeout, nullptr, nullptr);
-                    return;
-                }
-            }
-            else
-            {
-                solveCurrentPositionTimer.start(1000);
-            }
-        });
-        solveCurrentPositionTimer.start(1000);
-    }
-    else
-    {
-        Logger::Log("solveCurrentPosition | SolveImageFileName: " + SolveImageFileName.toStdString() + " does not exist.", LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("SolveCurrentPosition:failed");
-        solveCurrentPositionTimer.stop();
-        return;
-    }
-}
 
-void MainWindow::TelescopeControl_SolveSYNC()
-{
-    // 在函数开始时断开之前的连接
-    disconnect(&captureTimer, &QTimer::timeout, nullptr, nullptr);
-    disconnect(&solveTimer, &QTimer::timeout, nullptr, nullptr);
 
-    // 停止之前的定时器
-    captureTimer.stop();
-    solveTimer.stop();
 
-    if (!isMainCameraConnected())
-    {
-        emit wsThread->sendMessageToClient("MainCameraNotConnect");
-        return;
-    }
-    Logger::Log("TelescopeControl_SolveSYNC start ...", LogLevel::INFO, DeviceType::MAIN);
-    if (glMainCameraStatu == "Exposuring" || isFocusLoopShooting == true)
-    {
-        Logger::Log("TelescopeControl_SolveSYNC | Camera is not idle.glMainCameraStatu:" + glMainCameraStatu.toStdString() + ", isFocusLoopShooting:" + std::to_string(isFocusLoopShooting), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("CameraNotIdle");
-        return;
-    }
 
-    double Ra_Hour;
-    double Dec_Degree;
 
-    if (dpMount != NULL)
-    {
-        indi_Client->getTelescopeRADECJNOW(dpMount, Ra_Hour, Dec_Degree); // 获取当前望远镜的赤经和赤纬
-    }
-    else
-    {
-        Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
-        return; // 如果望远镜未连接，记录日志并退出
-    }
-    isSolveSYNC = true;
-    double Ra_Degree = Tools::HourToDegree(Ra_Hour); // 将赤经从小时转换为度
 
-    Logger::Log("TelescopeControl_SolveSYNC | CurrentRa(Degree):" + std::to_string(Ra_Degree) + "," + "CurrentDec(Degree):" + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
-    isSavePngSuccess = false;
-    startMainCameraCapture(1000); // 拍摄1秒曝光进行解析同步
 
-    captureTimer.setSingleShot(true);
-
-    // 连接拍摄定时器的超时信号到处理函数，处理拍摄完成后的逻辑
-    connect(&captureTimer, &QTimer::timeout, [this](){
-        // 如果需要中止拍摄和解算，则执行中止操作并返回
-        if (EndCaptureAndSolve)
-        {
-            EndCaptureAndSolve = false;
-            abortMainCameraCapture();
-            Logger::Log("TelescopeControl_SolveSYNC | End Capture And Solve!!!", LogLevel::INFO, DeviceType::MAIN);
-            isSolveSYNC = false;
-            emit wsThread->sendMessageToClient("SolveImagefailed"); 
-            return;
-        }
-        Logger::Log("TelescopeControl_SolveSYNC | WaitForShootToComplete ..." , LogLevel::INFO, DeviceType::MAIN);
-  
-        // 检查拍摄是否完成
-        if (isSavePngSuccess) 
-        {
-            // 停止拍摄定时器，表示拍摄任务完成
-            captureTimer.stop();
-
-            // 开始进行图像解析
-            Tools::PlateSolve(SolveImageFileName, glFocalLength, glCameraSize_width, glCameraSize_height, false);
-
-            solveTimer.setSingleShot(true);  // 设置解析定时器为单次触发
-
-            connect(&solveTimer, &QTimer::timeout, [this]()
-            {
-                // 检查解析进程是否已结束
-                bool solveProcessFinished = !Tools::isPlateSolveInProgress();
-                
-                if (Tools::isSolveImageFinish())  // 检查图像解析是否成功完成
-                {
-                    SloveResults result = Tools::ReadSolveResult(SolveImageFileName, glMainCCDSizeX, glMainCCDSizeY);  // 读取解析结果
-                    Logger::Log("TelescopeControl_SolveSYNC | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-                    if (result.RA_Degree == -1 && result.DEC_Degree == -1)
-                    {
-                        Logger::Log("TelescopeControl_SolveSYNC | Solve image failed...", LogLevel::INFO, DeviceType::MAIN);
-                        Logger::Log("TelescopeControl_SolveSYNC | SolveImageFileName: " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                        Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse: " + std::string(mainCameraSaveFailedParse ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
-                        if (mainCameraSaveFailedParse)
-                        {
-                            int saveResult = solveFailedImageSave(SolveImageFileName);
-                            if (saveResult == 0)
-                            {
-                                Logger::Log("TelescopeControl_SolveSYNC | Failed solve image saved successfully", LogLevel::INFO, DeviceType::MAIN);
-                            }
-                            else
-                            {
-                                Logger::Log("TelescopeControl_SolveSYNC | Failed to save failed solve image, error code: " + std::to_string(saveResult), LogLevel::WARNING, DeviceType::MAIN);
-                            }
-                        }
-                        else
-                        {
-                            Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse is disabled, skipping save", LogLevel::INFO, DeviceType::MAIN);
-                        }
-                        emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
-                        isSolveSYNC = false;
-                        solveTimer.stop();  // 停止定时器
-                    }
-                    else
-                    {
-                        if (dpMount != NULL)
-                        {
-                            INDI::PropertyNumber property = NULL;
-                            Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::MAIN);
-                            QString action = "SYNC";
-                            bool isTrack = false;
-                            indi_Client->getTelescopeTrackEnable(dpMount, isTrack);
-                            if (!isTrack)
-                            {
-                                indi_Client->setTelescopeTrackEnable(dpMount, true);
-                            }
-                            emit wsThread->sendMessageToClient("TelescopeTrack:ON");
-
-                            // 解析结果 RA/DEC 为“度”，下发到 INDI 前需要转换为 RA 小时制
-                            double solvedRaHour = Tools::DegreeToHour(result.RA_Degree);
-                            double solvedDecDeg = result.DEC_Degree;
-
-                            // 同步望远镜的当前位置到目标位置（JNOW, RA:hour / DEC:deg）
-                            uint32_t syncResult = indi_Client->syncTelescopeJNow(dpMount, solvedRaHour, solvedDecDeg);
-                            if (syncResult != QHYCCD_SUCCESS)
-                            {
-                                Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow failed",
-                                            LogLevel::ERROR, DeviceType::MAIN);
-                                emit wsThread->sendMessageToClient("SolveImagefailed");
-                            }
-                            else
-                            {
-                                Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
-                                // Logger::Log("TelescopeControl_SolveSYNC | DegreeToHour:" + std::to_string(Tools::DegreeToHour(result.RA_Degree)) + "DEC_Degree:" + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-                                // indi_Client->setTelescopeRADECJNOW(dpMount, Tools::DegreeToHour(result.RA_Degree), result.DEC_Degree);  // 设置望远镜的目标位置
-                                // Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | end", LogLevel::INFO, DeviceType::MAIN);
-                                // double a, b;
-                                // indi_Client->getTelescopeRADECJNOW(dpMount, a, b);  // 获取望远镜的当前位置
-                                // Logger::Log("TelescopeControl_SolveSYNC | Get_RA_Hour:" + std::to_string(a) + "Get_DEC_Degree:" + std::to_string(b), LogLevel::INFO, DeviceType::MAIN);
-                                emit wsThread->sendMessageToClient("SolveImageSucceeded");
-                            }
-
-                            isSolveSYNC = false;
-                            solveTimer.stop();  // 停止定时器
-                        }
-                        else
-                        {
-                            Logger::Log("TelescopeControl_SolveSYNC | No Mount Connect.", LogLevel::INFO, DeviceType::MAIN);
-                            emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
-                            isSolveSYNC = false;
-                            solveTimer.stop();  // 停止定时器
-                            return;  // 如果望远镜未连接，记录日志并退出
-                        }
-                    }
-                }
-                else if (solveProcessFinished)
-                {
-                    // 解析进程已结束但未成功完成（退出码非0的情况）
-                    Logger::Log("TelescopeControl_SolveSYNC | Solve process finished but failed (exit code != 0)", LogLevel::ERROR, DeviceType::MAIN);
-                    Logger::Log("TelescopeControl_SolveSYNC | SolveImageFileName: " + SolveImageFileName.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                    Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse: " + std::string(mainCameraSaveFailedParse ? "true" : "false"), LogLevel::INFO, DeviceType::MAIN);
-                    if (mainCameraSaveFailedParse)
-                    {
-                        int saveResult = solveFailedImageSave(SolveImageFileName);
-                        if (saveResult == 0)
-                        {
-                            Logger::Log("TelescopeControl_SolveSYNC | Failed solve image saved successfully", LogLevel::INFO, DeviceType::MAIN);
-                        }
-                        else
-                        {
-                            Logger::Log("TelescopeControl_SolveSYNC | Failed to save failed solve image, error code: " + std::to_string(saveResult), LogLevel::WARNING, DeviceType::MAIN);
-                        }
-                    }
-                    else
-                    {
-                        Logger::Log("TelescopeControl_SolveSYNC | mainCameraSaveFailedParse is disabled, skipping save", LogLevel::INFO, DeviceType::MAIN);
-                    }
-                    emit wsThread->sendMessageToClient("SolveImagefailed");  // 发送解析失败的消息
-                    isSolveSYNC = false;
-                    solveTimer.stop();  // 停止定时器
-                }
-                else 
-                {
-                    solveTimer.start(1000);  // 如果解析未完成，重新启动定时器继续等待
-                } 
-            });
-
-            solveTimer.start(1000);  // 启动解析定时器
-
-        } 
-        else 
-        {
-            // 如果拍摄未完成，重新启动拍摄定时器，继续等待
-            captureTimer.start(1000);
-        } });
-    captureTimer.start(1000);
-}
-
-LocationResult MainWindow::TelescopeControl_GetLocation()
-{
-    LocationResult result;
-
-    if (dpMount != NULL && indi_Client != nullptr)
-    {
-        const uint32_t getLocationResult =
-            indi_Client->getLocation(dpMount, result.latitude_degree, result.longitude_degree, result.elevation);
-        if (getLocationResult == QHYCCD_SUCCESS &&
-            isValidObservatoryLocation(result.latitude_degree, result.longitude_degree))
-        {
-            observatorylatitude = result.latitude_degree;
-            observatorylongitude = result.longitude_degree;
-            if (indi_Client != nullptr)
-                indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
-            return result;
-        }
-
-        Logger::Log("TelescopeControl_GetLocation | INDI location unavailable or invalid, fallback to MainWindow cached location",
-                    LogLevel::WARNING, DeviceType::MAIN);
-    }
-
-    if (!isValidObservatoryLocation(observatorylatitude, observatorylongitude))
-    {
-        bool latOk = false;
-        bool lonOk = false;
-        const double cachedLat = localLat.trimmed().toDouble(&latOk);
-        const double cachedLon = localLon.trimmed().toDouble(&lonOk);
-        if (latOk && lonOk && isValidObservatoryLocation(cachedLat, cachedLon))
-        {
-            observatorylatitude = cachedLat;
-            observatorylongitude = cachedLon;
-            if (indi_Client != nullptr)
-                indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
-            Logger::Log("TelescopeControl_GetLocation | restored MainWindow cached location from localLat/localLon: Latitude: " +
-                            QString::number(observatorylatitude).toStdString() +
-                            ", Longitude: " + QString::number(observatorylongitude).toStdString(),
-                        LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-
-    if (isValidObservatoryLocation(observatorylatitude, observatorylongitude))
-    {
-        result.latitude_degree = observatorylatitude;
-        result.longitude_degree = observatorylongitude;
-        result.elevation = 50.0;
-        Logger::Log("TelescopeControl_GetLocation | using MainWindow cached location: Latitude: " +
-                        QString::number(result.latitude_degree).toStdString() +
-                        ", Longitude: " + QString::number(result.longitude_degree).toStdString(),
-                    LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        Logger::Log("TelescopeControl_GetLocation | no valid INDI or MainWindow cached location available",
-                    LogLevel::WARNING, DeviceType::MAIN);
-    }
-
-    return result;
-}
-
-QDateTime MainWindow::TelescopeControl_GetTimeUTC()
-{
-    if (dpMount != NULL)
-    {
-        QDateTime result;
-
-        indi_Client->getTimeUTC(dpMount, result);
-
-        return result;
-    }
-}
-
-SphericalCoordinates MainWindow::TelescopeControl_GetRaDec()
-{
-    if (dpMount != NULL)
-    {
-        SphericalCoordinates result;
-        double RA_HOURS, DEC_DEGREE;
-        indi_Client->getTelescopeRADECJNOW(dpMount, RA_HOURS, DEC_DEGREE);
-        result.ra = Tools::HourToDegree(RA_HOURS);
-        result.dec = DEC_DEGREE;
-
-        return result;
-    }
-}
-
-void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)
-{
-    Logger::Log("MountGoto start ...", LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("MountGoto | RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-    // 在执行 GOTO 之前，如当前处于导星状态，则暂时停止导星，待转动完成后再恢复
-    pauseGuidingBeforeMountMove();
-
-    // 停止和清理先前的计时器
-    telescopeTimer.stop();
-    telescopeTimer.disconnect();
-
-    TelescopeControl_Goto(Ra_Hour, Dec_Degree);
-
-    sleep(2); // 赤道仪的状态更新有一定延迟
-
-    // 启动等待赤道仪转动的定时器
-    telescopeTimer.setSingleShot(true);
-
-    connect(&telescopeTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
-            {
-        if (WaitForTelescopeToComplete()) 
-        {
-            telescopeTimer.stop();  // 转动完成时停止定时器
-            Logger::Log("MountGoto | Mount Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
-
-            // 如果本次 GOTO 之前处于导星状态，则在赤道仪转动完成后恢复导星
-            resumeGuidingAfterMountMove();
-            if (GotoThenSolve) // 判断是否进行解算
-            {
-                Logger::Log("MountGoto | Goto Then Solve!", LogLevel::INFO, DeviceType::MAIN);
-                // 启动一次解算同步流程
-                isSolveSYNC = true;
-                TelescopeControl_SolveSYNC(); // 开始拍摄解析
-                
-                if (GotoOlveTimer != nullptr)
-                {
-                    delete GotoOlveTimer;
-                    GotoOlveTimer = nullptr;
-                }
-                GotoOlveTimer = new QTimer();
-                GotoOlveTimer->setSingleShot(true);
-                connect(GotoOlveTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
-                {
-                    if (!isSolveSYNC)
-                    {
-                        GotoOlveTimer->stop();
-                        Logger::Log("MountGoto | Goto Then Solve Complete!", LogLevel::INFO, DeviceType::MAIN);
-                        // 解算同步完成后，仅再执行一次 Goto 回到目标坐标
-                        TelescopeControl_Goto(Ra_Hour, Dec_Degree);
-                    }else{
-                        GotoOlveTimer->start(1000);
-                    }
-                });
-                GotoOlveTimer->start(1000);
-            }
-        } 
-        else 
-        {
-            telescopeTimer.start(1000);  // 继续等待
-        } });
-
-    telescopeTimer.start(1000);
-
-    Logger::Log("MountGoto finish!", LogLevel::INFO, DeviceType::MAIN);
-}
-
-void MainWindow::MountOnlyGoto(double Ra_Hour, double Dec_Degree)
-{
-    if (dpMount == NULL)
-    {
-        Logger::Log("MountOnlyGoto | No Mount Connect.", LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("MountOnlyGotoFailed:No Mount Connect");  // 发送转到失败的消息
-        return;
-    }
-    if (Ra_Hour < 0 || Ra_Hour > 24 || Dec_Degree < -90 || Dec_Degree > 90)
-    {
-        Logger::Log("MountOnlyGoto | Invalid RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("MountOnlyGotoFailed:Invalid RaDec(Hour)");  // 发送转到失败的消息
-        return;
-    }
-    if (indi_Client->mountState.isMovingNow())
-    {
-        Logger::Log("MountOnlyGoto | Mount is Moving.", LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("MountOnlyGotoFailed:Mount is Moving");  // 发送转到失败的消息
-        return;
-    }
-    Logger::Log("MountOnlyGoto start ...", LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("MountOnlyGoto | RaDec(Hour):" + std::to_string(Ra_Hour) + "," + std::to_string(Dec_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-    // 在执行 Goto 之前，如当前处于导星状态，则暂时停止导星，待转动完成后再恢复
-    pauseGuidingBeforeMountMove();
-
-    // 停止和清理先前的计时器
-    telescopeTimer.stop();
-    telescopeTimer.disconnect();
-
-    TelescopeControl_Goto(Ra_Hour, Dec_Degree); // 转到目标位置
-
-    sleep(2); // 赤道仪的状态更新有一定延迟
-
-    // 启动等待赤道仪转动的定时器
-    telescopeTimer.setSingleShot(true);
-
-    connect(&telescopeTimer, &QTimer::timeout, [this, Ra_Hour, Dec_Degree]()
-    {
-        if (WaitForTelescopeToComplete())
-        {
-            telescopeTimer.stop();  // 转动完成时停止定时器
-            Logger::Log("MountOnlyGoto | Mount Only Goto Complete!", LogLevel::INFO, DeviceType::MAIN);
-            // 如果本次 Goto 之前处于导星状态，则在赤道仪转动完成后恢复导星
-            resumeGuidingAfterMountMove();
-            emit wsThread->sendMessageToClient("MountOnlyGotoSuccess");  // 发送转到成功消息
-        }
-        else
-        {
-            telescopeTimer.start(1000);  // 继续等待赤道仪转动
-        }
-    });
-    telescopeTimer.start(1000);
-
-    Logger::Log("MountOnlyGoto finish!", LogLevel::INFO, DeviceType::MAIN);
-
-}
-void MainWindow::DeleteImage(QStringList DelImgPath)
-{
-    std::string password = "quarcs"; // sudo 密码
-    for (int i = 0; i < DelImgPath.size(); i++)
-    {
-        if (i < DelImgPath.size())
-        {
-            QString path = DelImgPath[i].trimmed();
-            std::string pathForRm = path.toStdString();
-            if (!path.isEmpty() && !QDir::isAbsolutePath(path))
-                pathForRm = "./" + pathForRm;
-            std::ostringstream commandStream;
-            commandStream << "echo '" << password << "' | sudo -S rm -rf \"" << pathForRm << "\"";
-            std::string command = commandStream.str();
-
-            Logger::Log("DeleteImage | Deleted command:" + QString::fromStdString(command).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
-            // 执行系统命令删除文件
-            int result = system(command.c_str());
-
-            if (result == 0)
-            {
-                Logger::Log("DeleteImage | Deleted file:" + DelImgPath[i].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
-            {
-                Logger::Log("DeleteImage | Failed to delete file:" + DelImgPath[i].toStdString(), LogLevel::INFO, DeviceType::MAIN);
-            }
-        }
-        else
-        {
-            Logger::Log("DeleteImage | Index out of range: " + std::to_string(i), LogLevel::WARNING, DeviceType::MAIN);
-        }
-    }
-}
-
-std::string MainWindow::GetAllFile()
-{
-    Logger::Log("GetAllFile start ...", LogLevel::INFO, DeviceType::MAIN);
-    std::string capturePath = ImageSaveBasePath + "/CaptureImage/";
-    std::string planPath = ImageSaveBasePath + "/ScheduleImage/";
-    std::string solveFailedImagePath = ImageSaveBasePath + "/solveFailedImage/";
-    std::string resultString;
-    std::string captureString = "CaptureImage{";
-    std::string planString = "ScheduleImage{";
-    std::string solveFailedImageString = "SolveFailedImage{";
-
-    try
-    {
-        // 检查并处理 CaptureImage 目录
-        if (std::filesystem::exists(capturePath) && std::filesystem::is_directory(capturePath))
-        {
-            for (const auto &entry : std::filesystem::directory_iterator(capturePath))
-            {
-                std::string fileName = entry.path().filename().string(); // 获取文件名（包含扩展名）
-                captureString += fileName + ";";                         // 拼接为字符串
-            }
-        }
-        else
-        {
-            Logger::Log("GetAllFile | CaptureImage directory does not exist or is not a directory: " + capturePath, LogLevel::WARNING, DeviceType::MAIN);
-        }
-
-        // 检查并处理 ScheduleImage 目录
-        if (std::filesystem::exists(planPath) && std::filesystem::is_directory(planPath))
-        {
-            for (const auto &entry : std::filesystem::directory_iterator(planPath))
-            {
-                std::string folderName = entry.path().filename().string(); // 获取文件夹名
-                planString += folderName + ";";
-            }
-        }
-        else
-        {
-            Logger::Log("GetAllFile | ScheduleImage directory does not exist or is not a directory: " + planPath, LogLevel::WARNING, DeviceType::MAIN);
-        }
-        // 检查并处理 solveFailedImage 目录
-        if (std::filesystem::exists(solveFailedImagePath) && std::filesystem::is_directory(solveFailedImagePath))
-        {
-            for (const auto &entry : std::filesystem ::directory_iterator(solveFailedImagePath))
-            {
-                std::string fileName = entry.path().filename().string(); // 获取文件名（包含扩展名）
-                solveFailedImageString += fileName + ";";                // 拼接为字符串
-            }
-        }
-        else
-        {
-            Logger::Log("GetAllFile | SolveFailedImage directory does not exist or is not a directory: " + solveFailedImagePath, LogLevel::WARNING, DeviceType::MAIN);
-            // solveFailedImageString = "SolveFailedImage{}"; // 如果目录不存在，返回空字符串
-        }
-    }
-    catch (const std::filesystem::filesystem_error &e)
-    {
-        Logger::Log("GetAllFile | Filesystem error: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
-    }
-    catch (const std::exception &e)
-    {
-        Logger::Log("GetAllFile | General error: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
-    }
-
-    resultString = captureString + "}:" + planString + "}:" + solveFailedImageString + '}';
-    Logger::Log("GetAllFile finish!", LogLevel::INFO, DeviceType::MAIN);
-    return resultString;
-}
-void MainWindow::GetImageFiles(std::string ImageFolder)
-{
-    Logger::Log("GetImageFiles start ...", LogLevel::INFO, DeviceType::MAIN);
-    std::string basePath = ImageSaveBasePath + "/" + ImageFolder + "/";
-    std::string ImageFilesNameString = "";
-
-    try
-    {
-        // 检查目录是否存在
-        if (!std::filesystem::exists(basePath))
-        {
-            Logger::Log("GetImageFiles | Directory does not exist: " + basePath, LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("ImageFilesName:");
-            Logger::Log("GetImageFiles finish! (Directory not found)", LogLevel::INFO, DeviceType::MAIN);
-            return;
-        }
-
-        if (!std::filesystem::is_directory(basePath))
-        {
-            Logger::Log("GetImageFiles | Path is not a directory: " + basePath, LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("ImageFilesName:");
-            Logger::Log("GetImageFiles finish! (Not a directory)", LogLevel::INFO, DeviceType::MAIN);
-            return;
-        }
-
-        for (const auto &entry : std::filesystem::directory_iterator(basePath))
-        {
-            std::string fileName = entry.path().filename().string(); // 获取文件名（包含扩展名）
-            ImageFilesNameString += fileName + ";";                  // 拼接为字符串
-        }
-    }
-    catch (const std::filesystem::filesystem_error &e)
-    {
-        Logger::Log("GetImageFiles | Filesystem error: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ImageFilesName:");
-        Logger::Log("GetImageFiles finish! (Filesystem error)", LogLevel::INFO, DeviceType::MAIN);
-        return;
-    }
-    catch (const std::exception &e)
-    {
-        Logger::Log("GetImageFiles | General error: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("ImageFilesName:");
-        Logger::Log("GetImageFiles finish! (General error)", LogLevel::INFO, DeviceType::MAIN);
-        return;
-    }
-
-    Logger::Log("GetImageFiles | Image Files:" + QString::fromStdString(ImageFilesNameString).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    emit wsThread->sendMessageToClient("ImageFilesName:" + QString::fromStdString(ImageFilesNameString));
-    Logger::Log("GetImageFiles finish!", LogLevel::INFO, DeviceType::MAIN);
-}
 
 
 
 // 解析字符串
-QStringList MainWindow::parseString(const std::string &input, const std::string &imgFilePath)
-{
-    QStringList paths;
-    QString baseString;
-    size_t pos = input.find('{');
-    if (pos != std::string::npos)
-    {
-        baseString = QString::fromStdString(input.substr(0, pos));
-        std::string content = input.substr(pos + 1);
-        size_t endPos = content.find('}');
-        if (endPos != std::string::npos)
-        {
-            content = content.substr(0, endPos);
-
-            // 去掉末尾的分号（如果有的话）
-            if (!content.empty() && content.back() == ';')
-            {
-                content.pop_back();
-            }
-
-            QStringList parts = QString::fromStdString(content).split(';', Qt::SkipEmptyParts);
-            for (const QString &part : parts)
-            {
-                QString path = QDir::toNativeSeparators(QString::fromStdString(imgFilePath) + "/" + baseString + "/" + part);
-                paths.append(path);
-            }
-        }
-    }
-    return paths;
-}
 
 // 返回 U 盘剩余内存
-long long MainWindow::getUSBSpace(const QString &usb_mount_point)
-{
-    Logger::Log("getUSBSpace start ...", LogLevel::INFO, DeviceType::MAIN);
-    struct statvfs stat;
-    if (statvfs(usb_mount_point.toUtf8().constData(), &stat) == 0)
-    {
-        // 使用 f_bavail 而不是 f_bfree，因为 f_bavail 是普通用户实际可用的空间
-        // f_bfree 可能包含系统保留的空间，实际用户可能无法使用
-        long long free_space = static_cast<long long>(stat.f_bavail) * stat.f_frsize;
-        Logger::Log("getUSBSpace | USB Space (available): " + std::to_string(free_space) + " bytes", LogLevel::INFO, DeviceType::MAIN);
-        return free_space;
-    }
-    else
-    {
-        Logger::Log("getUSBSpace | Failed to obtain the space information of the USB flash drive.", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("getUSBFail:Failed to obtain the space information of the USB flash drive.");
-        return -1;
-    }
-}
-long long MainWindow::getTotalSize(const QStringList &filePaths)
-{
-    long long totalSize = 0;
-    foreach (QString filePath, filePaths)
-    {
-        QFileInfo fileInfo(filePath);
-        if (fileInfo.exists())
-        {
-            totalSize += fileInfo.size();
-        }
-    }
-    return totalSize;
-}
 
 // 获取文件系统挂载模式
-bool MainWindow::isMountReadOnly(const QString &mountPoint)
-{
-    struct statvfs fsinfo;
-    auto mountPointStr = mountPoint.toUtf8().constData();
-    Logger::Log("isMountReadOnly | Checking filesystem information for mount point:" + QString::fromUtf8(mountPointStr).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-
-    if (statvfs(mountPointStr, &fsinfo) != 0)
-    {
-        Logger::Log("isMountReadOnly | Failed to get filesystem information for" + mountPoint.toStdString() + ":" + strerror(errno), LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient(QString("getUSBFail:Failed to get filesystem information for %1, error: %2").arg(mountPoint).arg(strerror(errno)));
-        return false;
-    }
-
-    Logger::Log("isMountReadOnly | Filesystem flags for" + mountPoint.toStdString() + ":" + std::to_string(fsinfo.f_flag), LogLevel::INFO, DeviceType::MAIN);
-    return (fsinfo.f_flag & ST_RDONLY) != 0;
-}
 
 // 将文件系统挂载模式更改为读写模式
-bool MainWindow::remountReadWrite(const QString &mountPoint, const QString &password)
-{
-    QProcess process;
-    process.start("sudo", {"-S", "mount", "-o", "remount,rw", mountPoint});
-    if (!process.waitForStarted() || !process.write((password + "\n").toUtf8()))
-    {
-        Logger::Log("remountReadWrite | Failed to execute command: sudo mount", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("getUSBFail:Failed to execute command: sudo mount -o remount,rw usb.");
-        return false;
-    }
-    process.closeWriteChannel();
-    process.waitForFinished(-1);
-    return process.exitCode() == 0;
-}
 
-void MainWindow::CopyImagesToUsb(QStringList CopyImgPath, QString usbName)
-{
-    QString usb_mount_point = "";
-    
-    // 如果提供了U盘名，优先使用它从映射表中查找
-    if (!usbName.isEmpty() && usbMountPointsMap.contains(usbName))
-    {
-        usb_mount_point = usbMountPointsMap[usbName];
-        Logger::Log("CopyImagesToUsb | Using specified USB from map: " + usbName.toStdString() + " -> " + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    }
-    
-    // 如果上面没有获取到，优先使用 ImageSaveBaseDirectory 指定的U盘路径
-    if (usb_mount_point.isEmpty())
-    {
-        // 使用saveMode判断是否为U盘保存
-        bool isUSBSave = (saveMode != "local");
-        
-        if (isUSBSave && ImageSaveBaseDirectory.contains("/QUARCS_ImageSave"))
-        {
-            // 从 ImageSaveBaseDirectory 提取U盘挂载点
-            usb_mount_point = ImageSaveBaseDirectory;
-            usb_mount_point.replace("/QUARCS_ImageSave", "");
-            
-            // 验证该U盘是否仍然存在且有效
-            QStorageInfo storageInfo(usb_mount_point);
-            if (!storageInfo.isValid() || !storageInfo.isReady())
-            {
-                Logger::Log("CopyImagesToUsb | Specified USB path is no longer valid: " + usb_mount_point.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-                usb_mount_point = ""; // 重置，使用下面的逻辑重新获取
-            }
-            else
-            {
-                Logger::Log("CopyImagesToUsb | Using USB from ImageSaveBaseDirectory: " + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-            }
-        }
-    }
-    
-    // 如果上面没有获取到，尝试从映射表获取
-    if (usb_mount_point.isEmpty())
-    {
-        if (usbMountPointsMap.size() == 1)
-        {
-            // 单个U盘，直接使用
-            usb_mount_point = usbMountPointsMap.first();
-            Logger::Log("CopyImagesToUsb | Using single USB from map: " + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-        else if (usbMountPointsMap.size() > 1)
-        {
-            // 多个U盘，如果 ImageSaveBaseDirectory 是U盘路径但提取失败，或者没有指定，需要用户选择
-            emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Multiple");
-            Logger::Log("CopyImagesToUsb | Multiple USB drives detected, please specify which one to use.", LogLevel::WARNING, DeviceType::MAIN);
-            return;
-        }
-        else
-        {
-            // 映射表为空，尝试使用统一的U盘挂载点获取函数（作为后备）
-            if (!getUSBMountPoint(usb_mount_point))
-            {
-                // 获取U盘名称用于错误消息
-                QString base = "/media/";
-                QString username = QDir::home().dirName();
-                QString basePath = base + username;
-                QDir baseDir(basePath);
-                
-                if (!baseDir.exists())
-                {
-                    emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Null");
-                    Logger::Log("CopyImagesToUsb | Base directory does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-                }
-                else
-                {
-                    QStringList filters;
-                    filters << "*";
-                    QStringList folderList = baseDir.entryList(filters, QDir::Dirs | QDir::NoDotAndDotDot);
-                    folderList.removeAll("CDROM");
-                    
-                    if (folderList.size() == 0)
-                    {
-                        emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Null");
-                        Logger::Log("CopyImagesToUsb | No USB drive found.", LogLevel::WARNING, DeviceType::MAIN);
-                    }
-                    else
-                    {
-                        emit wsThread->sendMessageToClient("ImageSaveErroe:USB-Multiple");
-                        Logger::Log("CopyImagesToUsb | Multiple USB drives detected.", LogLevel::WARNING, DeviceType::MAIN);
-                    }
-                }
-                return;
-            }
-        }
-    }
 
-    const QString password = "quarcs"; // sudo 密码
-
-    QStorageInfo storageInfo(usb_mount_point);
-    if (storageInfo.isValid() && storageInfo.isReady())
-    {
-        if (storageInfo.isReadOnly())
-        {
-            // 处理1: 该路径为只读设备
-            if (!remountReadWrite(usb_mount_point, password))
-            {
-                Logger::Log("CopyImagesToUsb | Failed to remount filesystem as read-write.", LogLevel::WARNING, DeviceType::MAIN);
-                return;
-            }
-            Logger::Log("CopyImagesToUsb | Filesystem remounted as read-write successfully.", LogLevel::INFO, DeviceType::MAIN);
-        }
-        Logger::Log("CopyImagesToUsb | This path is for writable devices.", LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        Logger::Log("CopyImagesToUsb | The specified path is not a valid file system or is not ready.", LogLevel::WARNING, DeviceType::MAIN);
-    }
-    // 先统计需要移动的所有文件的总大小
-    long long totalSize = getTotalSize(CopyImgPath);
-    if (totalSize <= 0)
-    {
-        Logger::Log("CopyImagesToUsb | No valid files to move or total size is 0.", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("getUSBFail:No valid files to move!");
-        return;
-    }
-    
-    // 检查U盘剩余空间
-    long long remaining_space = getUSBSpace(usb_mount_point);
-    if (remaining_space == -1 || remaining_space <= 0)
-    {
-        Logger::Log("CopyImagesToUsb | USB drive has no available space or is not accessible.", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("getUSBFail:USB drive has no available space!");
-        return;
-    }
-    
-    // 检查空间是否足够（总文件大小必须小于剩余空间）
-    if (totalSize > remaining_space)
-    {
-        Logger::Log("CopyImagesToUsb | Insufficient storage space. Required: " + QString::number(totalSize).toStdString() + 
-                   " bytes, Available: " + QString::number(remaining_space).toStdString() + " bytes", LogLevel::WARNING, DeviceType::MAIN);
-        QString errorMsg = QString("Not enough storage space! Required: %1 MB, Available: %2 MB")
-                          .arg(QString::number(totalSize / (1024.0 * 1024.0), 'f', 2))
-                          .arg(QString::number(remaining_space / (1024.0 * 1024.0), 'f', 2));
-        emit wsThread->sendMessageToClient("getUSBFail:" + errorMsg);
-        return;
-    }
-    QString folderName = "QUARCS_ImageSave";
-    QString folderPath = usb_mount_point + "/" + folderName;
-    QString basePath = QString::fromStdString(ImageSaveBasePath).trimmed();
-    if (basePath.endsWith('/'))
-        basePath.chop(1);
-
-    int sumMoveImage = 0;
-    for (const auto &imgPath : CopyImgPath)
-    {
-        if (!imgPath.startsWith(basePath))
-        {
-            Logger::Log("CopyImagesToUsb | path is error! (not under ImageSaveBasePath): " + imgPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            continue;
-        }
-        QString relativePath = imgPath.mid(basePath.length()).trimmed();
-        if (relativePath.startsWith('/'))
-            relativePath = relativePath.mid(1);
-        int lastSlash = relativePath.lastIndexOf('/');
-        if (lastSlash == -1)
-        {
-            Logger::Log("CopyImagesToUsb | path is error! (no directory part): " + imgPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            continue;
-        }
-        QString relativeDir = relativePath.left(lastSlash + 1);
-        QString destinationPath = folderPath + "/" + relativeDir;
-        
-        // 安全检查：避免在 /media/quarcs 路径下创建任何文件夹，避免被错误识别为U盘
-        QString normalizedDestPath = QDir(destinationPath).absolutePath();
-        if (normalizedDestPath.startsWith("/media/quarcs/"))
-        {
-            // 提取 /media/quarcs/ 之后的部分
-            QString pathAfterMedia = normalizedDestPath.mid(14); // 去掉 "/media/quarcs/"
-            
-            // 检查路径格式：应该是 /media/quarcs/某个U盘名/...
-            int firstSlash = pathAfterMedia.indexOf('/');
-            if (firstSlash > 0)
-            {
-                QString usbName = pathAfterMedia.left(firstSlash);
-                // 检查这个U盘名是否在映射表中（有效的U盘挂载点）
-                if (!usbMountPointsMap.contains(usbName))
-                {
-                    Logger::Log("CopyImagesToUsb | Security check failed: Attempting to create directory in /media/quarcs/ but USB name '" + usbName.toStdString() + "' not found in mount points map. Path: " + destinationPath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
-                    continue;
-                }
-                // 验证路径确实在U盘挂载点下
-                QString expectedMountPoint = "/media/quarcs/" + usbName;
-                if (!normalizedDestPath.startsWith(expectedMountPoint))
-                {
-                    Logger::Log("CopyImagesToUsb | Security check failed: Path does not match expected mount point. Path: " + destinationPath.toStdString() + ", Expected mount point: " + expectedMountPoint.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-                    emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
-                    continue;
-                }
-            }
-            else
-            {
-                // 路径格式不正确，可能是直接在 /media/quarcs/ 下创建文件夹
-                Logger::Log("CopyImagesToUsb | Security check failed: Invalid path format in /media/quarcs/. Path: " + destinationPath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
-                continue;
-            }
-        }
-        // 额外检查：确保路径不是直接在 /media/quarcs 下（没有子目录）
-        else if (normalizedDestPath == "/media/quarcs")
-        {
-            Logger::Log("CopyImagesToUsb | Security check failed: Attempting to create directory directly at /media/quarcs. Path: " + destinationPath.toStdString(), LogLevel::ERROR, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
-            continue;
-        }
-        
-        QProcess process;
-        process.start("sudo", {"-S", "mkdir", "-p", destinationPath});
-        if (!process.waitForStarted() || !process.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("CopyImagesToUsb | Failed to execute command: sudo mkdir.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
-            continue;
-        }
-        process.closeWriteChannel();
-        process.waitForFinished(-1);
-
-        process.start("sudo", {"-S", "cp", "-r", imgPath, destinationPath});
-        if (!process.waitForStarted() || !process.write((password + "\n").toUtf8()))
-        {
-            Logger::Log("CopyImagesToUsb | Failed to execute command: sudo cp.", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
-            continue;
-        }
-        process.closeWriteChannel();
-        process.waitForFinished(-1);
-
-        // Read the standard error output
-        QByteArray stderrOutput = process.readAllStandardError();
-
-        if (process.exitCode() == 0)
-        {
-            Logger::Log("CopyImagesToUsb | Copied file: " + imgPath.toStdString() + " to " + destinationPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-        else
-        {
-            Logger::Log("CopyImagesToUsb | Failed to copy file: " + imgPath.toStdString() + " to " + destinationPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            // Print the error reason
-            Logger::Log("CopyImagesToUsb | Error: " + QString::fromUtf8(stderrOutput).toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("HasMoveImgnNUmber:fail:" + QString::number(sumMoveImage));
-            continue;
-        }
-        sumMoveImage++;
-        emit wsThread->sendMessageToClient("HasMoveImgnNUmber:succeed:" + QString::number(sumMoveImage));
-    }
-}
-
-void MainWindow::USBCheck()
-{
-    // 清空之前的U盘映射表
-    usbMountPointsMap.clear();
-    
-    QString base = "/media/";
-    QString username = QDir::home().dirName();
-    QString basePath = base + username;
-    QDir baseDir(basePath);
-    
-    if (!baseDir.exists())
-    {
-        Logger::Log("USBCheck | Base directory does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("USBCheck:Null, Null");
-        return;
-    }
-
-    // 获取所有文件夹，排除"."和".."，并且排除"CDROM"
-    QStringList filters;
-    filters << "*";
-    QStringList folderList = baseDir.entryList(filters, QDir::Dirs | QDir::NoDotAndDotDot);
-    folderList.removeAll("CDROM");
-
-    if (folderList.size() == 0)
-    {
-        emit wsThread->sendMessageToClient("USBCheck:Null, Null");
-        Logger::Log("USBCheck | No USB drive found.", LogLevel::INFO, DeviceType::MAIN);
-        return;
-    }
-    
-    // 遍历所有U盘，验证并存储到映射表
-    QStringList validUsbList;
-    for (const QString &folderName : folderList)
-    {
-        QString usb_mount_point = basePath + "/" + folderName;
-        QStorageInfo storageInfo(usb_mount_point);
-        
-        // 验证这是否是一个真正挂载的存储设备
-        if (storageInfo.isValid() && storageInfo.isReady())
-        {
-            // 存储U盘信息：U盘名 -> U盘路径
-            usbMountPointsMap[folderName] = usb_mount_point;
-            validUsbList.append(folderName);
-            
-            Logger::Log("USBCheck | Found USB: " + folderName.toStdString() + " -> " + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-    
-    if (validUsbList.size() == 0)
-    {
-        emit wsThread->sendMessageToClient("USBCheck:Null, Null");
-        Logger::Log("USBCheck | No valid USB drive found.", LogLevel::WARNING, DeviceType::MAIN);
-        return;
-    }
-    else if (validUsbList.size() == 1)
-    {
-        // 单个U盘：发送U盘名和剩余空间
-        QString usbName = validUsbList.at(0);
-        QString usb_mount_point = usbMountPointsMap[usbName];
-        long long remaining_space = getUSBSpace(usb_mount_point);
-        if (remaining_space == -1)
-        {
-            Logger::Log("USBCheck | Check whether a USB flash drive or portable hard drive is inserted!", LogLevel::WARNING, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("USBCheck:Null, Null");
-            return;
-        }
-        QString message = "USBCheck:" + usbName + "," + QString::number(remaining_space);
-        Logger::Log("USBCheck | " + message.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient(message);
-    }
-    else
-    {
-        // 多个U盘：发送所有U盘信息
-        QString message = "USBCheck:Multiple";
-        QStringList usbInfoList;
-        for (const QString &usbName : validUsbList)
-        {
-            QString usb_mount_point = usbMountPointsMap[usbName];
-            long long remaining_space = getUSBSpace(usb_mount_point);
-            if (remaining_space != -1)
-            {
-                usbInfoList.append(usbName + "," + QString::number(remaining_space));
-            }
-        }
-        if (usbInfoList.size() > 0)
-        {
-            message = message + ":" + usbInfoList.join(":");
-        }
-        Logger::Log("USBCheck | Multiple USB drives: " + message.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient(message);
-    }
-}
 
 // 获取U盘挂载点（统一函数，供其他函数复用）
-bool MainWindow::getUSBMountPoint(QString &usb_mount_point)
-{
-    QString base = "/media/";
-    QString username = QDir::home().dirName();
-    QString basePath = base + username;
-    QDir baseDir(basePath);
-    
-    if (!baseDir.exists())
-    {
-        Logger::Log("getUSBMountPoint | Base directory does not exist.", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
 
-    // 获取所有文件夹，排除"."和".."，并且排除"CDROM"
-    QStringList filters;
-    filters << "*";
-    QStringList folderList = baseDir.entryList(filters, QDir::Dirs | QDir::NoDotAndDotDot);
-    folderList.removeAll("CDROM");
 
-    // 检查剩余文件夹数量是否为1
-    if (folderList.size() == 1)
-    {
-        usb_mount_point = basePath + "/" + folderList.at(0);
-        
-        // 验证这是否是一个真正挂载的存储设备
-        QStorageInfo storageInfo(usb_mount_point);
-        if (!storageInfo.isValid() || !storageInfo.isReady())
-        {
-            Logger::Log("getUSBMountPoint | The directory exists but is not a valid mounted storage device.", LogLevel::WARNING, DeviceType::MAIN);
-            return false;
-        }
-        
-        Logger::Log("getUSBMountPoint | USB mount point:" + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        return true;
-    }
-    else if (folderList.size() == 0)
-    {
-        Logger::Log("getUSBMountPoint | No USB drive found.", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
-    else
-    {
-        Logger::Log("getUSBMountPoint | Multiple USB drives detected.", LogLevel::WARNING, DeviceType::MAIN);
-        return false;
-    }
-}
 
-void MainWindow::GetUSBFiles(const QString &usbName, const QString &relativePath)
-{
-    Logger::Log("GetUSBFiles start ...", LogLevel::INFO, DeviceType::MAIN);
-    
-    // 必须传入U盘名
-    if (usbName.isEmpty())
-    {
-        Logger::Log("GetUSBFiles | USB name is required.", LogLevel::WARNING, DeviceType::MAIN);
-        QJsonObject errorObj;
-        errorObj["error"] = "USB name is required";
-        errorObj["path"] = "";
-        errorObj["files"] = QJsonArray();
-        QJsonDocument errorDoc(errorObj);
-        emit wsThread->sendMessageToClient("USBFilesList:" + errorDoc.toJson(QJsonDocument::Compact));
-        return;
-    }
-    
-    // 根据U盘名从映射表获取挂载点路径
-    if (!usbMountPointsMap.contains(usbName))
-    {
-        Logger::Log("GetUSBFiles | Specified USB name not found: " + usbName.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-        QJsonObject errorObj;
-        errorObj["error"] = QString("USB drive not found: %1").arg(usbName);
-        errorObj["path"] = "";
-        errorObj["files"] = QJsonArray();
-        QJsonDocument errorDoc(errorObj);
-        emit wsThread->sendMessageToClient("USBFilesList:" + errorDoc.toJson(QJsonDocument::Compact));
-        return;
-    }
-    
-    QString usb_mount_point = usbMountPointsMap[usbName];
-    Logger::Log("GetUSBFiles | Using USB: " + usbName.toStdString() + " -> " + usb_mount_point.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    
-    // 构建完整路径
-    QString fullPath = usb_mount_point;
-    
-    // 清理路径，防止路径遍历攻击
-    QString cleanPath = relativePath;
-    cleanPath.replace("..", ""); // 移除路径遍历
-    cleanPath.replace("//", "/"); // 移除双斜杠
-    if (cleanPath.startsWith("/"))
-    {
-        cleanPath = cleanPath.mid(1); // 移除开头的斜杠
-    }
-    if (!cleanPath.isEmpty())
-    {
-        fullPath = usb_mount_point + "/" + cleanPath;
-    }
 
-    // 验证目录是否存在
-    QDir targetDir(fullPath);
-    if (!targetDir.exists())
-    {
-        Logger::Log("GetUSBFiles | Target directory does not exist: " + fullPath.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-        QJsonObject errorObj;
-        errorObj["error"] = "Directory not found";
-        errorObj["path"] = "/" + relativePath;
-        errorObj["files"] = QJsonArray();
-        QJsonDocument errorDoc(errorObj);
-        emit wsThread->sendMessageToClient("USBFilesList:" + errorDoc.toJson(QJsonDocument::Compact));
-        return;
-    }
-
-    // 获取文件列表
-    QJsonArray filesArray;
-    QFileInfoList entries = targetDir.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot, QDir::Name | QDir::DirsFirst);
-    
-    for (const QFileInfo &entry : entries)
-    {
-        QJsonObject fileObj;
-        fileObj["name"] = entry.fileName();
-        fileObj["isDirectory"] = entry.isDir();
-        if (!entry.isDir())
-        {
-            fileObj["size"] = static_cast<qint64>(entry.size());
-        }
-        filesArray.append(fileObj);
-    }
-
-    // 构建返回结果
-    QJsonObject result;
-    QString displayPath = relativePath.isEmpty() ? "/" : ("/" + relativePath);
-    result["path"] = displayPath;
-    result["files"] = filesArray;
-
-    QJsonDocument doc(result);
-    QString jsonString = doc.toJson(QJsonDocument::Compact);
-    
-    Logger::Log("GetUSBFiles | Found " + QString::number(filesArray.size()).toStdString() + " items in " + fullPath.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    emit wsThread->sendMessageToClient("USBFilesList:" + jsonString);
-    Logger::Log("GetUSBFiles finish!", LogLevel::INFO, DeviceType::MAIN);
-}
-
-void MainWindow::LoopSolveImage(QString Filename, int FocalLength, double CameraWidth, double CameraHeight)
-{
-    Logger::Log("LoopSolveImage(" + Filename.toStdString() + ") start ...", LogLevel::INFO, DeviceType::MAIN);
-
-    if (!isLoopSolveImage)
-    {
-        Logger::Log("LoopSolveImage | Loop Solve Image end.", LogLevel::INFO, DeviceType::MAIN);
-        return;
-    }
-
-    solveTimer.stop();
-    solveTimer.disconnect();
-
-    Tools::PlateSolve(Filename, FocalLength, CameraWidth, CameraHeight, false);
-
-    // 启动等待赤道仪转动的定时器
-    solveTimer.setSingleShot(true);
-
-    connect(&solveTimer, &QTimer::timeout, [this, Filename]()
-            {
-        // 检查赤道仪状态
-        if (Tools::isSolveImageFinish())
-        {
-            SloveResults result = Tools::ReadSolveResult(Filename, glMainCCDSizeX, glMainCCDSizeY);
-            Logger::Log("LoopSolveImage | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
-
-            if (result.RA_Degree == -1 && result.DEC_Degree == -1)
-            {
-                Logger::Log("LoopSolveImage | Solve image failed...", LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("SolveImagefailed");
-                emit wsThread->sendMessageToClient("LoopSolveImageFinished");
-            }
-            else
-            {
-                emit wsThread->sendMessageToClient("RealTimeSolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
-                emit wsThread->sendMessageToClient("LoopSolveImageFinished");
-            }
-
-            // CaptureAndSolve(glExpTime, true);
-        }
-        else 
-        {
-            solveTimer.start(1000);  // 继续等待
-        } });
-
-    solveTimer.start(1000);
-}
-
-void MainWindow::ClearSloveResultList()
-{
-    SloveResultList.clear();
-}
-
-void MainWindow::RecoverySloveResul()
-{
-    for (const auto &result : SloveResultList)
-    {
-        Logger::Log("RecoverySloveResul | Plate Solve Result(RA_Degree, DEC_Degree):" + std::to_string(result.RA_Degree) + ", " + std::to_string(result.DEC_Degree), LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("SolveImageResult:" + QString::number(result.RA_Degree) + ":" + QString::number(result.DEC_Degree) + ":" + QString::number(Tools::RadToDegree(0)) + ":" + QString::number(Tools::RadToDegree(0)));
-        emit wsThread->sendMessageToClient("SolveFovResult:" + QString::number(result.RA_0) + ":" + QString::number(result.DEC_0) + ":" + QString::number(result.RA_1) + ":" + QString::number(result.DEC_1) + ":" + QString::number(result.RA_2) + ":" + QString::number(result.DEC_2) + ":" + QString::number(result.RA_3) + ":" + QString::number(result.DEC_3));
-    }
-}
 
 void MainWindow::editHotspotName(QString newName)
 {
@@ -10339,615 +7438,14 @@ void MainWindow::customMessageHandler(QtMsgType type, const QMessageLogContext &
     // 发送到客户端的Vue应用，包括日志类型和消息
     instance->SendDebugToVueClient(typeStr + "|" + msg);
 }
-void MainWindow::loadSelectedDriverList()
-{
-    // 🔥 打印所有已注册的 SDK 驱动（包括主名称和别名）
-    std::vector<std::string> registeredDrivers = SdkManager::instance().listRegisteredDrivers();
-    Logger::Log("loadSelectedDriverList | ========== 已注册的 SDK 驱动列表 ==========", LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("loadSelectedDriverList | 已注册的驱动名称总数（包括别名）: " + std::to_string(registeredDrivers.size()), LogLevel::INFO, DeviceType::MAIN);
-    
-    // 使用集合去重，按驱动实例分组显示
-    // 使用排序后的别名列表作为唯一标识，避免因顺序不同导致重复
-    std::unordered_set<std::string> processedDriverKeys;
-    int uniqueDriverCount = 0;
-    
-    for (size_t i = 0; i < registeredDrivers.size(); i++)
-    {
-        std::string driverName = registeredDrivers[i];
-        
-        // 获取该驱动的所有别名（包括主名称）
-        std::vector<std::string> allNames = SdkManager::instance().getDriverAliases(driverName);
-        
-        if (allNames.empty())
-        {
-            continue;
-        }
-        
-        // 对别名列表进行排序，生成唯一标识键
-        std::vector<std::string> sortedNames = allNames;
-        std::sort(sortedNames.begin(), sortedNames.end());
-        std::string driverKey = "";
-        for (size_t j = 0; j < sortedNames.size(); j++)
-        {
-            if (j > 0) driverKey += "|";
-            driverKey += sortedNames[j];
-        }
-        
-        // 检查是否已经处理过这个驱动实例
-        if (processedDriverKeys.find(driverKey) == processedDriverKeys.end())
-        {
-            uniqueDriverCount++;
-            processedDriverKeys.insert(driverKey);
-            
-            // 构建显示字符串（使用原始顺序，不排序）
-            std::string allNamesStr = "";
-            for (size_t j = 0; j < allNames.size(); j++)
-            {
-                if (j > 0) allNamesStr += ", ";
-                allNamesStr += allNames[j];
-            }
-            
-            // 🔥 获取驱动支持的设备类型
-            std::string deviceTypesStr = "";
-            try {
-                // 通过驱动名称获取驱动指针并尝试获取设备类型
-                // 由于 ISdkDriver 接口中没有 supportedDeviceTypes() 方法，
-                // 我们需要通过类型转换来调用具体驱动的方法
-                std::string firstDriverName = allNames[0];
-                
-                // 尝试通过 SdkManager 获取驱动指针（需要访问内部，这里使用已知的驱动名称判断）
-                // 检查是否为 QHYCCD 相机驱动
-                bool isQhyCamera = false;
-                bool isQhyFocuser = false;
-                for (const auto& name : allNames)
-                {
-                    if (name == "indi_qhy_ccd" || name == "indi_qhy_ccd")
-                    {
-                        isQhyCamera = true;
-                        break;
-                    }
-                    if (name == "indi_qhy_focuser" || name == "indi_qhy_focuser")
-                    {
-                        isQhyFocuser = true;
-                        break;
-                    }
-                }
-                
-                if (isQhyCamera)
-                {
-                    deviceTypesStr = "设备类型: MainCamera, GuideCamera";
-                }
-                else if (isQhyFocuser)
-                {
-                    deviceTypesStr = "设备类型: Focuser";
-                }
-                else
-                {
-                    deviceTypesStr = "设备类型: 未知";
-                }
-            } catch (...) {
-                deviceTypesStr = "设备类型: 获取失败";
-            }
-            
-            Logger::Log("loadSelectedDriverList | 驱动 #" + std::to_string(uniqueDriverCount) + ": " + allNamesStr + " | " + deviceTypesStr, LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-    
-    Logger::Log("loadSelectedDriverList | 唯一驱动实例数: " + std::to_string(uniqueDriverCount), LogLevel::INFO, DeviceType::MAIN);
-    Logger::Log("loadSelectedDriverList | ==========================================", LogLevel::INFO, DeviceType::MAIN);
 
-    // 1. 检查 systemdevicelist.system_devices 是否为空
-    if (systemdevicelist.system_devices.empty())
-    {
-        Logger::Log("loadSelectedDriverList | system_devices is empty", LogLevel::ERROR, DeviceType::MAIN);
-        return;
-    }
 
-    // 2. 检查 wsThread 是否为空
-    if (wsThread == nullptr)
-    {
-        Logger::Log("loadSelectedDriverList | wsThread is null", LogLevel::ERROR, DeviceType::MAIN);
-        return;
-    }
 
-    QString order = "SelectedDriverList";
-
-    // 3. 使用安全的范围检查
-    try
-    {
-        for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-        {
-            // 4. 检查索引是否有效
-            if (i >= systemdevicelist.system_devices.size())
-            {
-                Logger::Log("loadSelectedDriverList | Index out of bounds: " + std::to_string(i), LogLevel::ERROR, DeviceType::MAIN);
-                break;
-            }
-
-            // 5. 检查 Description 是否有效
-            if (!systemdevicelist.system_devices[i].Description.isEmpty())
-            {
-                QString description = systemdevicelist.system_devices[i].Description;
-                QString driverName = systemdevicelist.system_devices[i].DriverIndiName;
-
-                // 6. 即使 driverName 为空也发送，以便前端可以清除驱动显示
-                if (!description.isEmpty())
-                {
-                    // 判断该设备是否支持 SDK（如果 driverName 为空，则不支持）
-                    bool supportSDK = !driverName.isEmpty() && isDeviceTypeSupportSDK(description, driverName);
-                    
-                    // 获取当前连接模式
-                    QString connectionMode = systemdevicelist.system_devices[i].isSDKConnect ? "SDK" : "INDI";
-                    
-                    // 消息格式：SelectedDriverList:Description:DriverName:SDKSupport:ConnectionMode:...
-                    // SDKSupport: "true" 表示支持 SDK，"false" 表示不支持
-                    // ConnectionMode: "SDK" 或 "INDI"
-                    // 注意：即使 driverName 为空，也发送该条目，以便前端清除驱动显示
-                    order += ":" + description + ":" + driverName + ":" + 
-                             (supportSDK ? "true" : "false") + ":" + connectionMode;
-                    
-                    Logger::Log("loadSelectedDriverList | Added device: " + description.toStdString() + 
-                               " - " + (driverName.isEmpty() ? "(empty)" : driverName.toStdString()) + 
-                               " (SDK支持: " + (supportSDK ? "是" : "否") + 
-                               ", 连接模式: " + connectionMode.toStdString() + ")", 
-                               LogLevel::DEBUG, DeviceType::MAIN);
-                }
-            }
-        }
-
-        // 7. 确保 wsThread 和 sendMessageToClient 方法存在
-        if (wsThread != nullptr)
-        {
-            Logger::Log("loadSelectedDriverList | Sending message: " + order.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient(order);
-        }
-    }
-    catch (const std::exception &e)
-    {
-        Logger::Log("loadSelectedDriverList | Exception caught: " + std::string(e.what()), LogLevel::ERROR, DeviceType::MAIN);
-    }
-    catch (...)
-    {
-        Logger::Log("loadSelectedDriverList | Unknown exception caught", LogLevel::ERROR, DeviceType::MAIN);
-    }
-}
-
-void MainWindow::loadBindDeviceTypeList()
-{
-    QString order = "BindDeviceTypeList";
-    if (wsThread == nullptr)
-    {
-        Logger::Log("LoadBindDeviceTypeList | wsThread is nullptr, skip", LogLevel::WARNING, DeviceType::MAIN);
-        return;
-    }
-
-    for (int i = 0; i < systemdevicelist.system_devices.size(); i++)
-    {
-        if (systemdevicelist.system_devices[i].Description != "" && systemdevicelist.system_devices[i].isConnect == true)
-        {
-            order += ":" + systemdevicelist.system_devices[i].Description + ":" +
-                     systemdevicelist.system_devices[i].DeviceIndiName + ":" +
-                     systemdevicelist.system_devices[i].DriverIndiName + ":" + (systemdevicelist.system_devices[i].isBind ? "true" : "false");
-            if (systemdevicelist.system_devices[i].Description == "MainCamera" && systemdevicelist.system_devices[i].isBind)
-            {
-                emit wsThread->sendMessageToClient("MainCameraSize:" + QString::number(glMainCCDSizeX) + ":" + QString::number(glMainCCDSizeY));
-                emit wsThread->sendMessageToClient("MainCameraOffsetRange:" + QString::number(glOffsetMin) + ":" + QString::number(glOffsetMax) + ":" + QString::number(glOffsetValue));
-                emit wsThread->sendMessageToClient("MainCameraGainRange:" + QString::number(glGainMin) + ":" + QString::number(glGainMax) + ":" + QString::number(glGainValue));
-
-                // CFW 检测：INDI 模式下通过 dpMainCamera 查询；SDK 模式下 dpMainCamera 可能为空，必须跳过避免段错误
-                if (!isMainCameraSDK())
-                {
-                    if (indi_Client != nullptr && dpMainCamera != nullptr)
-                    {
-                        QString CFWname;
-                        indi_Client->getCFWSlotName(dpMainCamera, CFWname);
-                        if (CFWname != "")
-                        {
-                            Logger::Log("LoadBindDeviceTypeList | get CFW Slot Name: " + CFWname.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-                            isFilterOnCamera = true;
-                            order += ":CFW:" + CFWname + " (on camera)" + ":" + systemdevicelist.system_devices[i].DriverIndiName + ":" + (systemdevicelist.system_devices[i].isBind ? "true" : "false");
-                            int min, max, pos;
-                            indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
-                            Logger::Log("LoadBindDeviceTypeList | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
-                            emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
-                        }
-                    }
-                    else
-                    {
-                        Logger::Log("LoadBindDeviceTypeList | INDI main camera not ready (indi_Client or dpMainCamera is nullptr), skip CFW query", LogLevel::WARNING, DeviceType::MAIN);
-                    }
-                }
-                else
-                {
-                    // SDK 模式下不在此处重复调用 IsCFWPlugged（QHY SDK 该调用可能阻塞 10~30s）。
-                    // 这里改用连接阶段（AfterDeviceConnect）缓存结果，避免“加载绑定列表”链路长时间卡顿。
-                    if (sdkMainCameraHandle != nullptr)
-                    {
-                        if (isFilterOnCamera)
-                        {
-                            const QString cfwDisplayName = sdkMainCameraId.isEmpty()
-                                ? "CFW (on camera)"
-                                : ("CFW (on camera) - " + sdkMainCameraId);
-
-                            order += ":CFW:" + cfwDisplayName + ":" +
-                                     QString::fromLatin1("indi_qhy_ccd") + ":" +
-                                     (systemdevicelist.system_devices[i].isBind ? "true" : "false");
-
-                            if (sdkMainCfwSlotsCached > 0)
-                            {
-                                emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(sdkMainCfwSlotsCached));
-                            }
-
-                            // 若已有缓存名称列表，则直接推送一次，避免刷新后列表为空
-                            const QString key = sdkCfwStorageKey(sdkMainCameraId);
-                            const QString list = Tools::readCFWList(key);
-                            if (!list.isEmpty())
-                                emit wsThread->sendMessageToClient("getCFWList:" + list);
-                        }
-                        else
-                        {
-                            Logger::Log("LoadBindDeviceTypeList | MainCamera is in SDK mode, no cached CFW state",
-                                        LogLevel::DEBUG, DeviceType::MAIN);
-                        }
-                    }
-                    else
-                    {
-                        Logger::Log("LoadBindDeviceTypeList | MainCamera is in SDK mode but sdkMainCameraHandle is nullptr", LogLevel::WARNING, DeviceType::MAIN);
-                    }
-                }
-            }
-            else if (systemdevicelist.system_devices[i].Description == "Guider" && systemdevicelist.system_devices[i].isBind)
-            {
-                emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" + QString::number(glGuiderOffsetMax) + ":" + QString::number(glGuiderOffsetValue));
-                emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" + QString::number(glGuiderGainMax) + ":" + QString::number(glGuiderGainValue));
-            }
-        }
-    }
-    Logger::Log("LoadBindDeviceTypeList | Bind Device Type List:" + order.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    emit wsThread->sendMessageToClient(order);
-}
-
-void MainWindow::loadBindDeviceList(MyClient *client)
-{
-    QString order = "BindDeviceList";
-    QSet<QString> emittedKeys;
-    auto appendDeviceToOrder = [&](const QString &type, const QString &name, int index) {
-        const QString trimmedType = type.trimmed();
-        const QString trimmedName = name.trimmed();
-        if (trimmedType.isEmpty() || trimmedName.isEmpty())
-            return;
-        // 去重键必须包含 index，避免“同型号同名但不同设备”被误合并，
-        // 导致设备绑定界面看不到可交换设备。
-        const QString dedupKey = trimmedType + ":" + QString::number(index);
-        if (emittedKeys.contains(dedupKey))
-            return;
-        emittedKeys.insert(dedupKey);
-        order += ":" + trimmedType + ":" + trimmedName + ":" + QString::number(index);
-    };
-
-    // 先把“SDK 已打开设备”也同步给前端：
-    // - SDK 模式下，这些设备不在 INDI 设备列表里，旧逻辑会导致前端刷新后“待分配设备列表”为空。
-    // - 使用负 index（sdkUiIndexFromPoolIndex 返回 -(poolIndex+1)），避免与 INDI 的正 index 冲突。
-    if (wsThread == nullptr)
-    {
-        Logger::Log("LoadBindDeviceList | wsThread is nullptr, skip", LogLevel::WARNING, DeviceType::MAIN);
-        return;
-    }
-    if (!g_sdkQhyCamIds.isEmpty())
-    {
-        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-        {
-            if (g_sdkQhyCamHandles.size() <= i) break;
-            if (g_sdkQhyCamHandles[i] == nullptr) continue;
-            if (g_sdkQhyCamIds[i].isEmpty()) continue;
-            const int uiIdx = sdkUiIndexFromPoolIndex(i);
-            // 直接在 BindDeviceList 中带上 Type，格式升级为三元组：Type:Name:Index
-            appendDeviceToOrder("CCD", g_sdkQhyCamIds[i], uiIdx);
-        }
-    }
-
-    // SDK 电调（Focuser）也需要在刷新时出现在“待分配列表”：
-    // - SDK 电调不在 INDI 设备列表里，若不在此处同步，前端刷新后会看不到它
-    // - 使用固定负 index，避免与 INDI 的 index 以及相机池 index 冲突
-    if (systemdevicelist.system_devices.size() > 22 &&
-        systemdevicelist.system_devices[22].isSDKConnect)
-    {
-        // 名称必须与 BindDeviceTypeList/ConnectSuccess 中的 DeviceName 保持一致，
-        // 否则前端无法把该设备从“未分配列表”标记为已绑定，造成“已绑定但仍出现在未分配列表/命名变化”。
-        QString name;
-        const QString saved = systemdevicelist.system_devices[22].DeviceIndiName;
-        if (!saved.isEmpty())
-            name = saved;
-        else if (!sdkFocuserPort.isEmpty())
-            name = sdkFocuserPort;
-        // 只使用真实串口名，避免占位符导致前端出现“SDK_Focuser”
-        if (!name.isEmpty())
-        {
-            appendDeviceToOrder("Focuser", name, SDK_FOCUSER_UI_INDEX);
-        }
-        else
-        {
-            Logger::Log("LoadBindDeviceList | skip SDK Focuser: no valid port/name", LogLevel::WARNING, DeviceType::FOCUSER);
-        }
-    }
-
-    // 再追加 INDI 已连接设备（保持原有协议）
-    if (client == nullptr)
-    {
-        Logger::Log("LoadBindDeviceList | client is nullptr", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient(order);
-        return;
-    }
-
-    int deviceCount = client->GetDeviceCount();
-    if (deviceCount <= 0)
-    {
-        Logger::Log("LoadBindDeviceList | no devices in client list", LogLevel::INFO, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient(order);
-        return;
-    }
-
-    for (int i = 0; i < deviceCount; i++)
-    {
-        INDI::BaseDevice *device = client->GetDeviceFromList(i);
-        if (device == nullptr)
-        {
-            Logger::Log("LoadBindDeviceList | Device at index " + std::to_string(i) + " is nullptr", LogLevel::WARNING, DeviceType::MAIN);
-            continue;
-        }
-
-        const char *name = device->getDeviceName();
-        if (!name)
-        {
-            Logger::Log("LoadBindDeviceList | Device at index " + std::to_string(i) + " has null name pointer", LogLevel::WARNING, DeviceType::MAIN);
-            continue;
-        }
-
-        QString qName = QString::fromUtf8(name);
-        if (device->isConnected() && !qName.isEmpty())
-        {
-            // 类型推断：优先使用 INDI interface 位
-            QString type = "Device";
-            const uint32_t iface = device->getDriverInterface();
-            if (iface & INDI::BaseDevice::CCD_INTERFACE) type = "CCD";
-            else if (iface & INDI::BaseDevice::FILTER_INTERFACE) type = "CFW";
-            else if (iface & INDI::BaseDevice::TELESCOPE_INTERFACE) type = "Mount";
-            else if (iface & INDI::BaseDevice::FOCUSER_INTERFACE) type = "Focuser";
-            // 待分配设备列表中暂时不展示 Mount（望远镜）项
-            if (type == "Mount")
-                continue;
-            // BindDeviceList 升级为：Type:Name:Index
-            appendDeviceToOrder(type, qName, i);
-        }
-    }
-
-    Logger::Log("LoadBindDeviceList | Bind Device List:" + order.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    emit wsThread->sendMessageToClient(order);
-}
-
-void MainWindow::loadSDKVersionAndUSBSerialPath()
-{
-    QString order = "SDKVersionAndUSBSerialPath";
-    // 某些连接/重连时序下，wsThread/indi_Client 可能暂未就绪，避免空指针段错误
-    if (!wsThread)
-    {
-        Logger::Log("LoadSDKVersionAndUSBSerialPath | wsThread is nullptr, skip", LogLevel::WARNING, DeviceType::MAIN);
-        return;
-    }
-
-    // 主相机：支持 SDK / INDI 两种模式
-    if (isMainCameraConnected())
-    {
-        QString sdkVersion = "null";
-
-        // SDK 模式：不要走 INDI 的 dpMainCamera（很可能为空），直接通过 SDK Driver 获取
-        if (isMainCameraSDK() && sdkMainCameraHandle != nullptr)
-        {
-            SdkCommand verCmd;
-            verCmd.type = SdkCommandType::Custom;
-            verCmd.name = "GetSdkVersion";
-            verCmd.payload = std::any();
-            // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult verRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, verCmd);
-            if (verRes.success)
-            {
-                try
-                {
-                    std::string version = std::any_cast<std::string>(verRes.payload);
-                    sdkVersion = QString::fromStdString(version);
-                }
-                catch (const std::bad_any_cast &)
-                {
-                    Logger::Log("LoadSDKVersionAndUSBSerialPath | bad_any_cast for SDK version payload", LogLevel::WARNING, DeviceType::MAIN);
-                }
-            }
-        }
-        else
-        {
-            // INDI 模式
-            if (indi_Client != nullptr && dpMainCamera != nullptr)
-            {
-                indi_Client->getCCDSDKVersion(dpMainCamera, sdkVersion);
-            }
-        }
-
-        order += ":MainCamera:" + sdkVersion + ":null";
-    }
-
-    // 其余设备目前仅走 INDI：增加空指针保护
-    if (indi_Client != nullptr && dpGuider != NULL)
-    {
-        QString sdkVersion = "null";
-        indi_Client->getCCDSDKVersion(dpGuider, sdkVersion);
-        order += ":Guider:" + sdkVersion + ":null";
-    }
-    if (indi_Client != nullptr && dpFocuser != NULL)
-    {
-        QString sdkVersion = "null";
-        indi_Client->getFocuserSDKVersion(dpFocuser, sdkVersion);
-        QString DevicePort = "null";
-        indi_Client->getDevicePort(dpFocuser, DevicePort);
-        order += ":Focuser:" + sdkVersion + ":" + DevicePort;
-    }
-    // if (dpCFW != NULL)
-    // {
-    //     QString sdkVersion;
-    //     indi_Client->getSDKVersion(dpCFW, sdkVersion);
-    //     QString usbSerialPath;
-    //     indi_Client->getUSBSerialPath(dpCFW, usbSerialPath);
-    //     order += ":CFW:" + sdkVersion + ":" + usbSerialPath;
-    // }
-    if (indi_Client != nullptr && dpMount != NULL)
-    {
-        QString sdkVersion;
-        indi_Client->getMountInfo(dpMount, sdkVersion);
-        QString usbSerialPath;
-        indi_Client->getDevicePort(dpMount, usbSerialPath);
-        order += ":Mount:" + sdkVersion + ":" + usbSerialPath;
-    }
-    emit wsThread->sendMessageToClient(order);
-    Logger::Log("LoadSDKVersionAndUSBSerialPath | SDKVersionAndUSBSerialPath:" + order.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-}
 
 // 串口通信列表
-QStringList MainWindow::getConnectedSerialPorts()
-{
-    QStringList activeSerialPortNames;
-    const auto infos = QSerialPortInfo::availablePorts();
-    for (const QSerialPortInfo &info : infos)
-    {
-         QString portPath = info.systemLocation();
-        QFileInfo fi(portPath);
-        QString ttyName = fi.fileName(); // 例如 ttyUSB0, ttyACM0, ttyS0
-        
-        // 过滤掉传统的 /dev/ttyS* 串口（这些通常是虚拟的或未使用的串口）
-        // 只保留 USB 串口（ttyUSB*, ttyACM*）和真实连接的串口
-        if (ttyName.startsWith("ttyS"))
-        {
-            // 对于 ttyS* 串口，只有当它有 /dev/serial/by-id 链接时才保留
-            // 因为只有真实连接的 USB 串口设备才会有这个链接
-            QStringList byIdLinks = getByIdLinksForTty(ttyName);
-            if (byIdLinks.isEmpty())
-            {
-                // 没有 by-id 链接的 ttyS* 串口，很可能是虚拟的，跳过
-                continue;
-            }
-        }
-        
-        // 使用系统路径，便于直接设置到 INDI 设备端口，例如 /dev/ttyUSB0
-        // 不再强制尝试打开端口，以免过滤掉权限/占用导致暂时无法打开但仍可被用户选择的端口
-        activeSerialPortNames.append(portPath);
-    }
-    return activeSerialPortNames;
-}
 
-QString MainWindow::resolveSerialPort(const QString &symbolicLink)
-{
-    QFileInfo fileInfo(symbolicLink);
-    if (fileInfo.isSymLink())
-    {
-        QString target = fileInfo.symLinkTarget();
-        Logger::Log("ResolveSerialPort | real port path:" + target.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        return target;
-    }
-    else
-    {
-        Logger::Log("ResolveSerialPort | provided path is not a symbolic link", LogLevel::WARNING, DeviceType::MAIN);
-        return QString();
-    }
-}
 
-void MainWindow::sendSerialPortOptions(const QString &driverType)
-{
-    if (!wsThread)
-        return;
 
-    // 仅支持 Mount / Focuser 两类串口设备
-    if (driverType != "Mount" && driverType != "Focuser")
-        return;
-
-    // 当前可用串口路径列表（全部是真实存在的串口节点）
-    QStringList ports = getConnectedSerialPorts();
-
-    // 当前设备正在使用的串口（若已连接），或前端最近一次选择的覆盖串口
-    QString currentPort;
-    if (driverType == "Mount")
-    {
-        if (dpMount != nullptr)
-        {
-            indi_Client->getDevicePort(dpMount, currentPort);
-        }
-        if (currentPort.isEmpty())
-        {
-            currentPort = mountSerialPortOverride;
-        }
-    }
-    else if (driverType == "Focuser")
-    {
-        if (dpFocuser != nullptr)
-        {
-            indi_Client->getDevicePort(dpFocuser, currentPort);
-        }
-        if (currentPort.isEmpty())
-        {
-            currentPort = focuserSerialPortOverride;
-        }
-    }
-
-    // 组装带“真实路径 -> 友好名称(by-id)”的项：
-    // 每一项格式为：<portPath>-><displayName>，前端再解析
-    QString payload = "SerialPortOptions:" + driverType + ":" + currentPort;
-    for (const QString &p : ports)
-    {
-        QString displayName = p;
-        QFileInfo fi(p);
-        QString ttyName = fi.fileName(); // 例如 ttyUSB0
-
-        // 若能找到 /dev/serial/by-id 的符号链接，则使用其文件名作为显示名
-        QStringList byIdLinks = getByIdLinksForTty(ttyName);
-        if (!byIdLinks.isEmpty())
-        {
-            QFileInfo linkInfo(byIdLinks.first());
-            displayName = linkInfo.fileName(); // 只显示 by-id 的名字，更易识别设备
-        }
-
-        payload += ":" + p + "->" + displayName;
-    }
-
-    Logger::Log("sendSerialPortOptions | " + payload.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-    emit wsThread->sendMessageToClient(payload);
-}
-
-QStringList MainWindow::findLinkToTtyDevice(const QString &directoryPath, const QString &ttyDevice)
-{
-    QString targetDevice = "/dev/" + ttyDevice; // 构建完整的设备路径
-    QStringList foundLinks;
-
-    // 使用 QDirIterator 递归遍历目录和子目录
-    QDirIterator it(directoryPath, QDir::Files | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
-    while (it.hasNext())
-    {
-        it.next();
-        QFileInfo fileInfo = it.fileInfo();
-        if (fileInfo.isSymLink())
-        {
-            QString target = fileInfo.symLinkTarget();
-            // 如果符号链接是相对路径，需要将其转换为绝对路径
-            if (QDir::isRelativePath(target))
-            {
-                target = fileInfo.absoluteDir().absoluteFilePath(target);
-            }
-            // 检查符号链接的目标是否是指定的 tty 设备
-            if (target == targetDevice)
-            {
-                foundLinks.append(fileInfo.absoluteFilePath());
-                Logger::Log("FindLinkToTtyDevice | found link:" + fileInfo.absoluteFilePath().toStdString() + " -> " + target.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-            }
-        }
-    }
-    // 返回找到的所有符号链接
-    return foundLinks;
-}
 
 bool MainWindow::areFilesInSameDirectory(const QString &path1, const QString &path2)
 {
@@ -10962,39 +7460,6 @@ bool MainWindow::areFilesInSameDirectory(const QString &path1, const QString &pa
     return (dir1 == dir2);
 }
 
-QStringList MainWindow::getByIdLinksForTty(const QString &ttyDevice)
-{
-    QStringList results;
-    QString baseDir = "/dev/serial/by-id";
-    QDir dir(baseDir);
-    if (!dir.exists())
-    {
-        return results;
-    }
-
-    QFileInfoList entryList = dir.entryInfoList(QDir::Files | QDir::System | QDir::NoDotAndDotDot);
-    QString targetDevice = "/dev/" + ttyDevice;
-    for (const QFileInfo &entry : entryList)
-    {
-        if (!entry.isSymLink())
-        {
-            continue;
-        }
-        QString target = entry.symLinkTarget();
-        if (QDir::isRelativePath(target))
-        {
-            // 归一化相对路径为绝对路径
-            target = entry.absoluteDir().absoluteFilePath(target);
-        }
-        QString normalizedTarget = QDir::cleanPath(target);
-        if (normalizedTarget == targetDevice)
-        {
-            results.append(entry.absoluteFilePath());
-            Logger::Log("getByIdLinksForTty | found by-id link:" + entry.absoluteFilePath().toStdString() + " -> " + normalizedTarget.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-        }
-    }
-    return results;
-}
 
 static int scoreByIdLinkForType(const QString &fileNameLower, const QString &driverType)
 {
@@ -11018,151 +7483,10 @@ static int scoreByIdLinkForType(const QString &fileNameLower, const QString &dri
     return score;
 }
 
-bool MainWindow::isByIdLinkForDriverType(const QString &symlinkPath, const QString &driverType)
-{
-    QFileInfo fi(symlinkPath);
-    QString nameLower = fi.fileName().toLower();
-    return scoreByIdLinkForType(nameLower, driverType) > 0;
-}
 
-QString MainWindow::selectBestByIdLink(const QStringList &links, const QString &driverType)
-{
-    int bestScore = -1;
-    QString best;
-    for (const QString &link : links)
-    {
-        QFileInfo fi(link);
-        QString nameLower = fi.fileName().toLower();
-        int s = scoreByIdLinkForType(nameLower, driverType);
-        if (s > bestScore)
-        {
-            bestScore = s;
-            best = link;
-        }
-    }
-    return best;
-}
 
-void MainWindow::onParseInfoEmitted(const QString &message)
-{
-    emit wsThread->sendMessageToClient("ParseInfoEmitted:" + message);
-}
 
-void MainWindow::disconnectDevice(const QString &deviceName, const QString &description)
-{
-    for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
-    {
-        if (indi_Client->GetDeviceFromList(i)->getDeviceName() == deviceName)
-        {
-            indi_Client->disconnectDevice(deviceName.toStdString().c_str());
-            int num = 0;
-            bool disconnectSuccess = true;
-  
-            Logger::Log(deviceName.toStdString() + " disconnected successfully.", LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + description);
-            emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + deviceName);
 
-            // 若为赤道仪或电调，在断开后提示前端弹出串口选择 UI，方便下次连接前重新匹配
-            if (description == "Mount" || description == "Focuser")
-            {
-                sendSerialPortOptions(description);
-                emit wsThread->sendMessageToClient("RequestSerialPortSelection:" + description);
-            }
-            break;
-        }
-    }
-}
-
-void MainWindow::disconnectDriver(QString Driver)
-{
-    Logger::Log("Starting to disconnect driver: " + Driver.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    // 先收集要断开的设备（避免 DisconnectDevice 修改 systemdevicelist 导致迭代器/引用风险）
-    QVector<QPair<QString, QString>> toDisconnect;
-    for (const auto &dev : systemdevicelist.system_devices)
-    {
-        if (!dev.Description.isEmpty() && dev.DriverIndiName == Driver && dev.isConnect)
-        {
-            toDisconnect.push_back(qMakePair(dev.DeviceIndiName, dev.Description));
-        }
-    }
-
-    for (const auto &item : toDisconnect)
-    {
-        const QString &devName = item.first;
-        const QString &devType = item.second;
-
-        // 断开前中止主相机曝光，避免断开过程中卡住
-        if (devType == "MainCamera" && glMainCameraStatu == "Exposuring")
-        {
-            abortMainCameraCapture();
-        }
-
-        // 统一走 DisconnectDevice：它同时覆盖 INDI 与 SDK 模式清理
-        DisconnectDevice(indi_Client, devName, devType);
-
-        // 清理 ConnectedDevices 中对应项
-        for (auto it = ConnectedDevices.begin(); it != ConnectedDevices.end();)
-        {
-            if (it->DeviceType == devType)
-            {
-                it = ConnectedDevices.erase(it);
-            }
-            else
-            {
-                ++it;
-            }
-        }
-    }
-
-    // 若这是一个 SDK 相关驱动（systemdevicelist 中该驱动对应的槽位被标记为 isSDKConnect），
-    // 则需要同步清理 SDK 资源，避免“断开驱动后 SDK 仍占用/残留线程访问”。
-    //
-    // 注意：cleanupQhySdkPoolAndResource 的 deviceType 仅支持：
-    // - "CameraPool"（关闭所有相机句柄 + ReleaseSdkResource）
-    // - "MainCamera"（仅关闭主相机句柄，不释放全局资源）
-    // - "Focuser"（关闭电调句柄）
-    // - "All"
-    //
-    // 断开驱动场景应优先清理 CameraPool（因为同一驱动可能同时被 MainCamera/Guider 共用）。
-    bool needsCameraPool = false;
-    bool needsFocuser = false;
-    bool sdkRelated = false;
-    for (const auto &dev : systemdevicelist.system_devices)
-    {
-        if (!dev.isSDKConnect)
-            continue;
-        if (dev.DriverIndiName.isEmpty() || dev.DriverIndiName != Driver)
-            continue;
-
-        sdkRelated = true;
-        if (dev.Description == "Focuser")
-            needsFocuser = true;
-        else if (dev.Description == "MainCamera" || dev.Description == "Guider" || dev.Description == "PoleCamera")
-            needsCameraPool = true;
-    }
-
-    if (sdkRelated || Driver.contains("SDK", Qt::CaseInsensitive))
-    {
-        if (needsFocuser)
-            cleanupQhySdkPoolAndResource("disconnectDriver:" + Driver, "Focuser");
-        if (needsCameraPool)
-            cleanupQhySdkPoolAndResource("disconnectDriver:" + Driver, "CameraPool");
-    }
-
-    Tools::stopIndiDriver(Driver);
-    int index = ConnectDriverList.indexOf(Driver);
-    if (index != -1)
-    {                                      // 如果找到了
-        ConnectDriverList.removeAt(index); // 从列表中删除
-        Logger::Log("Driver removed successfully: " + Driver.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    }
-    else
-    {
-        Logger::Log("Driver not found in list: " + Driver.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
-    }
-
-    Logger::Log("Driver disconnected: " + Driver.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-}
 
 void MainWindow::bin_image(double *input, long width, long height, double *output, long *out_w, long *out_h)
 {
@@ -11375,7 +7699,7 @@ void MainWindow::getMainCameraParameters()
                 oldSaveFolder = "local";
                 it.value() = "local";
             }
-            
+
             if (oldSaveFolder == "local") {
                 ImageSaveBaseDirectory = QString::fromStdString(ImageSaveBasePath);
                 saveMode = "local";
@@ -11457,101 +7781,9 @@ void MainWindow::getMainCameraParameters()
     emit wsThread->sendMessageToClient("MainCameraCFASource:SAVED");
 }
 
-void MainWindow::getMountParameters()
-{
-    Logger::Log("getMountUiInfo ...", LogLevel::DEBUG, DeviceType::MAIN);
-    QMap<QString, QString> parameters = Tools::readParameters("Mount");
-    for (auto it = parameters.begin(); it != parameters.end(); ++it)
-    {
-        Logger::Log("getMountParameters | " + it.key().toStdString() + ":" + it.value().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-        if (it.key() == "AutoFlip"){
-            emit wsThread->sendMessageToClient("AutoFlip:" + it.value());
-            isAutoFlip = it.value() == "true";
-            continue;
-        }
-        if (it.key() == "GotoThenSolve"){
-            emit wsThread->sendMessageToClient("GotoThenSolve:" + it.value());
-            GotoThenSolve = it.value() == "true";
-            continue;
-        }
-        emit wsThread->sendMessageToClient(it.key() + ":" + it.value());
-    }
 
-    // 将当前 Mount 串口列表与已保存串口下发给前端（若无保存则 savedPort 为空）
-    sendSerialPortOptions("Mount");
 
-    Logger::Log("getMountParameters finish!", LogLevel::DEBUG, DeviceType::MAIN);
-}
 
-void MainWindow::synchronizeTime(QString time, QString date)
-{
-    Logger::Log("synchronizeTime start ...", LogLevel::DEBUG, DeviceType::MAIN);
-    Logger::Log("synchronizeTime time: " + time.toStdString() + ", date: " + date.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-
-    // 仅首次对时禁用自动时间同步，刷新/重复对时不再执行以缩短耗时（约 2s）
-    static bool automaticTimeSyncDisabled = false;
-    if (!automaticTimeSyncDisabled)
-    {
-        Logger::Log("Disabling automatic time synchronization...", LogLevel::DEBUG, DeviceType::MAIN);
-        int disableResult1 = system("sudo systemctl stop systemd-timesyncd");
-        int disableResult2 = system("sudo systemctl disable systemd-timesyncd");
-        int disableResult3 = system("sudo timedatectl set-ntp false");
-        if (disableResult1 != 0 || disableResult2 != 0 || disableResult3 != 0)
-            Logger::Log("Warning: Failed to disable some automatic time sync services", LogLevel::WARNING, DeviceType::MAIN);
-        else
-            Logger::Log("Automatic time synchronization disabled successfully", LogLevel::DEBUG, DeviceType::MAIN);
-        automaticTimeSyncDisabled = true;
-        QThread::msleep(300);   // 缩短等待，原 1000ms 易在刷新时拖慢
-    }
-
-    // Create the command string
-    QString command = "sudo date -s \"" + date + " " + time + "\"";
-
-    Logger::Log("synchronizeTime command: " + command.toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
-
-    // Execute the command
-    int result = system(command.toStdString().c_str());
-
-    if (result == 0)
-    {
-        Logger::Log("synchronizeTime finish!", LogLevel::DEBUG, DeviceType::MAIN);
-    }
-    else
-    {
-        Logger::Log("synchronizeTime failed!", LogLevel::ERROR, DeviceType::MAIN);
-    }
-}
-
-void MainWindow::setMountLocation(QString lat, QString lon)
-{
-    Logger::Log("setMountLocation start ...", LogLevel::DEBUG, DeviceType::MAIN);
-    observatorylatitude = lat.toDouble();
-    observatorylongitude = lon.toDouble();
-    if (indi_Client != nullptr)
-        indi_Client->mountState.updateHomeRAHours(observatorylatitude, observatorylongitude);
-    // 仅当 Mount 已连接时才下发 INDI setLocation，避免未连接时 3s 超时拖慢刷新
-    if (dpMount == nullptr || !dpMount->isConnected())
-    {
-        Logger::Log("setMountLocation | Mount not connected, skip INDI setLocation", LogLevel::DEBUG, DeviceType::MAIN);
-        return;
-    }
-    indi_Client->setLocation(dpMount, observatorylatitude, observatorylongitude, 50);
-}
-
-void MainWindow::setMountUTC(QString time, QString date)
-{
-    Logger::Log("setMountUTC start ...", LogLevel::DEBUG, DeviceType::MAIN);
-    if (dpMount == nullptr || !dpMount->isConnected())
-    {
-        Logger::Log("setMountUTC | Mount not connected, skip INDI time sync (avoid 3s timeout)", LogLevel::WARNING, DeviceType::MAIN);
-        return;
-    }
-    QDateTime datetime = QDateTime::fromString(date + "T" + time, Qt::ISODate);
-    indi_Client->setTimeUTC(dpMount, datetime);
-    Logger::Log("UTC Time set for Mount: " + datetime.toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    indi_Client->getTimeUTC(dpMount, datetime);
-    Logger::Log("UTC Time: " + datetime.currentDateTimeUtc().toString(Qt::ISODate).toStdString(), LogLevel::INFO, DeviceType::MAIN);
-}
 
 void MainWindow::getLastSelectDevice()
 {

@@ -158,6 +158,9 @@ add_executable(client
   mainwindow_image_pipeline.cpp
   mainwindow_guiding.cpp
   mainwindow_schedule.cpp
+  mainwindow_mount_control.cpp
+  mainwindow_device_config.cpp
+  mainwindow_storage.cpp
   guiding/GuiderTypes.h
   guiding/GuiderCore.h guiding/GuiderCore.cpp
   guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
