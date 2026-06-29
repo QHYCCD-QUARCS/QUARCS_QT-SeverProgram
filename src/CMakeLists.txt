@@ -156,9 +156,12 @@ add_executable(client
   mainwindow_focuser.cpp
   mainwindow_focus_loop.cpp
   mainwindow_image_pipeline.cpp
+  mainwindow_main_camera_capture.cpp
   mainwindow_guiding.cpp
   mainwindow_schedule.cpp
   mainwindow_mount_control.cpp
+  mainwindow_network.cpp
+  mainwindow_polar_alignment.cpp
   mainwindow_device_config.cpp
   mainwindow_storage.cpp
   guiding/GuiderTypes.h
