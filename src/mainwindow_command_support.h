@@ -49,6 +49,7 @@ inline int sdkUiIndexFromPoolIndex(int poolIndex)
 }
 
 inline constexpr int SDK_FOCUSER_UI_INDEX = -10001;
+inline constexpr int kIndiFocuserRelMoveChunkMax = 10000;
 
 inline int sdkPoolIndexFromUiIndex(int uiIndex)
 {
