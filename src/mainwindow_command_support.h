@@ -3,6 +3,9 @@
 
 #include "mainwindow.h"
 #include "quarcs_build_version.h"
+#include "sdks/SdkDriverRegistry.h"
+
+#include <sys/mman.h>
 
 extern INDI::BaseDevice *dpMount;
 extern INDI::BaseDevice *dpGuider;
@@ -18,7 +21,11 @@ extern SdkDeviceHandle sdkMainCameraHandle;
 extern SdkDeviceHandle sdkFocuserHandle;
 extern SdkDeviceHandle sdkCFWHandle;
 extern QString sdkFocuserPort;
+extern QVector<SdkDeviceHandle> g_sdkQhyCamHandles;
 extern QVector<QString> g_sdkQhyCamIds;
+extern int g_sdkMainCameraPoolIndex;
+extern int g_sdkGuiderPoolIndex;
+extern int g_sdkPoleCameraPoolIndex;
 
 extern DriversList drivers_list;
 extern std::vector<DevGroup> dev_groups;
@@ -30,6 +37,31 @@ extern QUrl websocketUrl;
 
 extern int LoopCaptureNum;
 extern int LoopCaptureBurstFrames;
+
+inline bool isPoleMasterName(const QString &name)
+{
+    return name.contains("POLEMASTER", Qt::CaseInsensitive);
+}
+
+inline int sdkUiIndexFromPoolIndex(int poolIndex)
+{
+    return -(poolIndex + 1);
+}
+
+inline constexpr int SDK_FOCUSER_UI_INDEX = -10001;
+
+inline int sdkPoolIndexFromUiIndex(int uiIndex)
+{
+    return -uiIndex - 1;
+}
+
+inline bool sdkPoolIndexValid(int poolIndex)
+{
+    return poolIndex >= 0 &&
+           poolIndex < g_sdkQhyCamHandles.size() &&
+           poolIndex < g_sdkQhyCamIds.size() &&
+           !g_sdkQhyCamIds[poolIndex].isEmpty();
+}
 
 template <typename Func>
 inline void postGuiderCore(GuiderCore *core, Func &&func)
