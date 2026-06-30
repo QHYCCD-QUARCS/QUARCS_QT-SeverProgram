@@ -159,6 +159,8 @@ add_executable(client
   mainwindow_main_camera_capture.cpp
   mainwindow_runtime_lifecycle.cpp
   mainwindow_startup_config.cpp
+  mainwindow_external_phd2.cpp
+  mainwindow_indi.cpp
   mainwindow_guiding.cpp
   mainwindow_schedule.cpp
   mainwindow_mount_control.cpp
