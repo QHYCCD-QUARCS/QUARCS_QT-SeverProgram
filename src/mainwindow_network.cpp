@@ -719,7 +719,7 @@ void MainWindow::switchNetMode(const QString &mode)
         }
 
         runSudoAsync("/usr/bin/systemctl", {"restart", QString::fromUtf8(kPreferredWpaService)},
-                     [finish](int codeWpa, const QString &outWpa, const QString &errWpa) {
+                     [this, finish](int codeWpa, const QString &outWpa, const QString &errWpa) {
                          if (codeWpa != 0) {
                              finish(codeWpa, (errWpa.isEmpty() ? outWpa : errWpa).trimmed());
                              return;
@@ -894,9 +894,9 @@ void MainWindow::wifiSaveFromB64Payload(const QString &b64Payload)
                      };
 
                      if (!exists) {
-                         runSudoAsync("/usr/bin/nmcli",
-                                      {"con", "add", "type", "wifi", "ifname", "wlan0", "con-name", name, "ssid", ssid},
-                                      [name, psk, finishOk, finishFail](int codeAdd, const QString &outAdd, const QString &errAdd) {
+                        runSudoAsync("/usr/bin/nmcli",
+                                     {"con", "add", "type", "wifi", "ifname", "wlan0", "con-name", name, "ssid", ssid},
+                                     [this, name, psk, finishOk, finishFail](int codeAdd, const QString &outAdd, const QString &errAdd) {
                                           if (codeAdd != 0) {
                                               finishFail(errAdd.isEmpty() ? outAdd : errAdd);
                                               return;

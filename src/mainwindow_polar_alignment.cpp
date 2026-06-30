@@ -1,5 +1,13 @@
 #include "mainwindow.h"
 
+extern INDI::BaseDevice *dpMount;
+extern INDI::BaseDevice *dpGuider;
+extern INDI::BaseDevice *dpPoleScope;
+extern INDI::BaseDevice *dpMainCamera;
+extern SdkDeviceHandle sdkGuiderHandle;
+extern SdkDeviceHandle sdkPoleScopeHandle;
+extern SdkDeviceHandle sdkMainCameraHandle;
+
 namespace {
 
 bool isValidObservatoryLocation(double latitude, double longitude)

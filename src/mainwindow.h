@@ -630,6 +630,10 @@ public:
     SdkSerialExecutor* sdkMainCameraExecutor() const;
     SdkSerialExecutor* sdkGuiderCameraExecutor() const;
     SdkSerialExecutor* sdkPoleCameraExecutor() const;
+    void initializeStorageAndWebPaths();
+    void initializeWebSocketBridge();
+    void initializeRuntimeWorkersAndTimers();
+    void shutdownRuntimeWorkersAndTimers();
     
     /**
      * @brief SDK 曝光定时器回调：轮询获取图像

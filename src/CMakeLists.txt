@@ -157,6 +157,8 @@ add_executable(client
   mainwindow_focus_loop.cpp
   mainwindow_image_pipeline.cpp
   mainwindow_main_camera_capture.cpp
+  mainwindow_runtime_lifecycle.cpp
+  mainwindow_startup_config.cpp
   mainwindow_guiding.cpp
   mainwindow_schedule.cpp
   mainwindow_mount_control.cpp

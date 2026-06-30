@@ -1,5 +1,9 @@
 #include "mainwindow.h"
 
+extern INDI::BaseDevice *dpMainCamera;
+extern SdkDeviceHandle sdkMainCameraHandle;
+extern SystemDeviceList systemdevicelist;
+
 QString MainWindow::latestMainCaptureFitsPath() const
 {
     if (!lastMainCaptureFitsPath.isEmpty() && QFile::exists(lastMainCaptureFitsPath))
