@@ -7,7 +7,11 @@
 #include <QtGui/QtGui>
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui.hpp>
+#if __has_include(<opencv2/imgcodecs.hpp>)
 #include <opencv2/imgcodecs.hpp>
+#else
+#include <opencv2/highgui/highgui.hpp>
+#endif
 #include <opencv2/imgproc.hpp>
 /* OpenCV 4：旧版 CV_BGR2GRAY 等宏在 types_c.h；交叉编译使用 apt 的 opencv4 时需显式包含 */
 #include <opencv2/imgproc/types_c.h>
@@ -25,6 +29,20 @@
 #include "Logger.h"
 
 #include <stellarsolver.h>
+
+namespace quarcs_cv_compat {
+#if defined(CV_AA)
+constexpr int kLineAA = CV_AA;
+#else
+constexpr int kLineAA = cv::LINE_AA;
+#endif
+
+#if defined(CV_MAJOR_VERSION) && CV_MAJOR_VERSION < 3
+constexpr int kLine8 = 8;
+#else
+constexpr int kLine8 = cv::LINE_8;
+#endif
+}
 
 #define Min2(a, b) ((a) < (b) ? (a) : (b))
 #define Max2(a, b) ((a) > (b) ? (a) : (b))

@@ -2575,7 +2575,7 @@ void Tools::ShowOpenCV_QLabel_withRotate(cv::Mat img,QLabel *label,int RotateTyp
     else if(RotateType==1)  nDegree = 180-cmdRotate_Degree;
     else if(RotateType==2)  nDegree = 180-cmdRotate_Degree -AzAltToRADEC_Degree;// cmdRotate_Degree-180;
 
-    QMatrix mat;
+    QTransform mat;
 
     mat.translate(center_x,center_y);
     mat.rotate((nDegree));
@@ -2583,7 +2583,7 @@ void Tools::ShowOpenCV_QLabel_withRotate(cv::Mat img,QLabel *label,int RotateTyp
 
 
     QPixmap new_pix;
-    new_pix=pix.transformed(mat,Qt::SmoothTransformation);
+    new_pix = pix.transformed(mat, Qt::SmoothTransformation);
     QPainter paint(&new_pix);
 
     unsigned int aleft= new_pix.width()/2-w/2;
@@ -6011,7 +6011,7 @@ bool Tools::PlateSolve(QString filename, int FocalLength, double CameraSize_widt
     }
     
     Logger::Log("当前解析命令:" + command_qstr.toStdString(), LogLevel::INFO, DeviceType::MAIN);
-    cmd_test->start(command_qstr);
+    cmd_test->start(QStringLiteral("/bin/sh"), {QStringLiteral("-c"), command_qstr});
     
     if (!cmd_test->waitForStarted()) {
         Logger::Log("解析命令启动失败", LogLevel::ERROR, DeviceType::MAIN);
@@ -6055,7 +6055,7 @@ SloveResults Tools::ReadSolveResult(QString filename, int imageWidth, int imageH
 
   QProcess* cmd_test = new QProcess();
   // cmd_test->start("wcsinfo /dev/shm/Capture_00003_bin.wcs");  // 启动外部程序来读取WCS信息
-  cmd_test->start("wcsinfo " + filename + ".wcs");
+  cmd_test->start(QStringLiteral("wcsinfo"), {filename + QStringLiteral(".wcs")});
   cmd_test->waitForFinished();  // 等待外部程序执行完成
 
   QString str = cmd_test->readAllStandardOutput();  // 读取程序输出的结果
@@ -6259,7 +6259,10 @@ SphericalCoordinates Tools::xy2rdByExternal(const QString& wcsFile, double x, do
     ok = false;
     QProcess proc;
     QString cmd = QString("wcs-xy2rd -w %1 -x %2 -y %3").arg(wcsFile).arg(x, 0, 'f', 6).arg(y, 0, 'f', 6);
-    proc.start(cmd);
+    proc.start(QStringLiteral("wcs-xy2rd"),
+               {QStringLiteral("-w"), wcsFile,
+                QStringLiteral("-x"), QString::number(x, 'f', 6),
+                QStringLiteral("-y"), QString::number(y, 'f', 6)});
     if (!proc.waitForFinished(5000)) {
         Logger::Log("wcs-xy2rd 执行超时: " + cmd.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
         return {0.0, 0.0};

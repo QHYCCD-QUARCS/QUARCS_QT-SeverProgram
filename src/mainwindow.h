@@ -634,6 +634,7 @@ public:
     void initializeWebSocketBridge();
     void initializeRuntimeWorkersAndTimers();
     void shutdownRuntimeWorkersAndTimers();
+    void initializeBuiltInGuiderRuntime();
     
     /**
      * @brief SDK 曝光定时器回调：轮询获取图像

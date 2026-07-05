@@ -2433,7 +2433,6 @@ bool PolarAlignment::moveTelescope(double ra, double dec)
         }
 
         // --- 下发非阻塞 GOTO（JNOW） ---
-        INDI::PropertyNumber property = NULL;
         indiServer->slewTelescopeJNowNonBlock(
             dpMount,
             Tools::DegreeToHour(newRA),

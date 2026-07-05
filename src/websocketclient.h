@@ -6,7 +6,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTimer>
-#include <QNetworkConfigurationManager>
 #include <QQueue>
 #include <QElapsedTimer>
 
@@ -17,7 +16,6 @@ public:
     explicit WebSocketClient(const QUrl &httpUrl, const QUrl &httpsUrl, QObject *parent = nullptr);
     void sendAcknowledgment(QString  messageObj);
     void reconnect();
-    void onNetworkStateChanged(bool isOnline);
 
 public slots:
     // 这些方法会被跨线程调用（WebSocketThread 通过 invokeMethod/QueuedConnection 转发），
@@ -52,7 +50,6 @@ private:
     bool isHttpConnected = false;
 
     QTimer reconnectTimer; // 自动重连定时器
-    QNetworkConfigurationManager networkManager; // 网络配置管理器
     bool isNetworkConnected = true; // 记录网络连接状态
 
     bool isReconnecting = false; // 添加一个标志来表示是否正在重连

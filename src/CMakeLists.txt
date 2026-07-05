@@ -55,8 +55,14 @@ if(CMAKE_SYSROOT)
   set(QUARCS_TARGET_CXX_INCLUDE_MULTIARCH "${CMAKE_SYSROOT}/usr/include/${QUARCS_DEB_MULTIARCH}/c++/${QUARCS_SYSROOT_GCC_VERSION}")
   set(QUARCS_TARGET_CXX_INCLUDE_BACKWARD "${CMAKE_SYSROOT}/usr/include/c++/${QUARCS_SYSROOT_GCC_VERSION}/backward")
 else()
-  set(QUARCS_INDI_INCLUDE "/usr/include/libindi")
-  set(QUARCS_STELLARSOLVER_INCLUDE "/usr/local/include/libstellarsolver")
+  set(QUARCS_INDI_PREFIX "" CACHE PATH "Optional custom INDI prefix for native builds")
+  if(QUARCS_INDI_PREFIX)
+    set(QUARCS_INDI_INCLUDE "${QUARCS_INDI_PREFIX}/include/libindi")
+    set(QUARCS_INDI_LIBDIR "${QUARCS_INDI_PREFIX}/lib")
+  else()
+    set(QUARCS_INDI_INCLUDE "/usr/include/libindi")
+    set(QUARCS_INDI_LIBDIR "")
+  endif()
   set(QUARCS_LOCAL_INCLUDE "/usr/local/include")
 endif()
 
@@ -143,6 +149,77 @@ endif()
 find_package(OpenCV REQUIRED)
 find_package(StellarSolver REQUIRED)
 
+if(DEFINED OpenCV_VERSION AND OpenCV_VERSION VERSION_LESS "3.4.0")
+  message(FATAL_ERROR
+    "OpenCV >= 3.4.0 is required. Detected OpenCV_VERSION=${OpenCV_VERSION} "
+    "(OpenCV_DIR=${OpenCV_DIR}). "
+    "This project uses APIs such as connectedComponentsWithStats and estimateAffinePartial2D "
+    "that are unavailable in older OpenCV releases.")
+endif()
+
+find_path(QUARCS_STELLARSOLVER_INCLUDE_DIR
+  NAMES stellarsolver.h
+  PATHS
+    "${QUARCS_STELLARSOLVER_INCLUDE}"
+    /usr/include/libstellarsolver
+    /usr/local/include/libstellarsolver
+)
+
+find_path(QHYCCD_INCLUDE_DIR
+  NAMES qhyccd.h
+  PATHS
+    /usr/include
+    /usr/local/include
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../QHYCCD_SDK_CrossPlatform/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../QUARCS_phd2/cameras"
+)
+
+if(CMAKE_SYSROOT AND TARGET StellarSolver::stellarsolver)
+  get_target_property(_quarcs_stellarsolver_imported_links StellarSolver::stellarsolver INTERFACE_LINK_LIBRARIES)
+  if(_quarcs_stellarsolver_imported_links)
+    set(_quarcs_stellarsolver_sysroot_links "")
+    foreach(_quarcs_link IN LISTS _quarcs_stellarsolver_imported_links)
+      if(_quarcs_link MATCHES "^/usr/")
+        list(APPEND _quarcs_stellarsolver_sysroot_links "${CMAKE_SYSROOT}${_quarcs_link}")
+      else()
+        list(APPEND _quarcs_stellarsolver_sysroot_links "${_quarcs_link}")
+      endif()
+    endforeach()
+    set_property(TARGET StellarSolver::stellarsolver PROPERTY
+      INTERFACE_LINK_LIBRARIES "${_quarcs_stellarsolver_sysroot_links}")
+    unset(_quarcs_stellarsolver_sysroot_links)
+  endif()
+  get_target_property(_quarcs_stellarsolver_imported_includes StellarSolver::stellarsolver INTERFACE_INCLUDE_DIRECTORIES)
+  if(_quarcs_stellarsolver_imported_includes)
+    set(_quarcs_stellarsolver_sysroot_includes "")
+    foreach(_quarcs_include IN LISTS _quarcs_stellarsolver_imported_includes)
+      if(_quarcs_include MATCHES "^/usr/")
+        list(APPEND _quarcs_stellarsolver_sysroot_includes "${CMAKE_SYSROOT}${_quarcs_include}")
+      else()
+        list(APPEND _quarcs_stellarsolver_sysroot_includes "${_quarcs_include}")
+      endif()
+    endforeach()
+    set_property(TARGET StellarSolver::stellarsolver PROPERTY
+      INTERFACE_INCLUDE_DIRECTORIES "${_quarcs_stellarsolver_sysroot_includes}")
+    unset(_quarcs_stellarsolver_sysroot_includes)
+  endif()
+  unset(_quarcs_stellarsolver_imported_links)
+  unset(_quarcs_stellarsolver_imported_includes)
+endif()
+
+set(QUARCS_COMMON_INCLUDE_DIRS
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${CMAKE_CURRENT_BINARY_DIR}"
+  "${QUARCS_INDI_INCLUDE}"
+  "${QUARCS_STELLARSOLVER_INCLUDE_DIR}"
+  "${QHYCCD_INCLUDE_DIR}"
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+if(NOT CMAKE_SYSROOT)
+  list(APPEND QUARCS_COMMON_INCLUDE_DIRS "${QUARCS_LOCAL_INCLUDE}")
+endif()
+
 add_executable(client
   "${CMAKE_CURRENT_BINARY_DIR}/quarcs_build_version.cpp"
   main.cpp
@@ -161,6 +238,9 @@ add_executable(client
   mainwindow_startup_config.cpp
   mainwindow_external_phd2.cpp
   mainwindow_indi.cpp
+  mainwindow_gpio.cpp
+  mainwindow_settings_maintenance.cpp
+  mainwindow_guiding_runtime.cpp
   mainwindow_guiding.cpp
   mainwindow_schedule.cpp
   mainwindow_mount_control.cpp
@@ -201,10 +281,7 @@ add_executable(client
   SerialDeviceDetector.h SerialDeviceDetector.cpp
 )
 
-target_include_directories(client PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}"
-  "${CMAKE_CURRENT_BINARY_DIR}"
-)
+target_include_directories(client PRIVATE ${QUARCS_COMMON_INCLUDE_DIRS})
 
 if(QUARCS_SIM_GUIDER)
   target_compile_definitions(client PRIVATE QUARCS_SIM_GUIDER=1)
@@ -303,11 +380,11 @@ endif()
 
 target_include_directories(guiding_offline_test PUBLIC
   "${QUARCS_INDI_INCLUDE}"
-  "${QUARCS_STELLARSOLVER_INCLUDE}"
+  "${QUARCS_STELLARSOLVER_INCLUDE_DIR}"
 )
 target_include_directories(guiding_batch_analyzer PUBLIC
   "${QUARCS_INDI_INCLUDE}"
-  "${QUARCS_STELLARSOLVER_INCLUDE}"
+  "${QUARCS_STELLARSOLVER_INCLUDE_DIR}"
 )
 if(NOT CMAKE_SYSROOT)
   target_include_directories(guiding_offline_test PUBLIC "${QUARCS_LOCAL_INCLUDE}")
@@ -326,7 +403,6 @@ target_link_libraries(guiding_offline_test PRIVATE
   ${ZLIB_LIBRARY}
   ${NOVA_LIBRARIES}
   qhyccd
-  stellarsolver
   ${StellarSolver_LIBS}
 )
 
@@ -342,7 +418,6 @@ target_link_libraries(guiding_batch_analyzer PRIVATE
   ${ZLIB_LIBRARY}
   ${NOVA_LIBRARIES}
   qhyccd
-  stellarsolver
   ${StellarSolver_LIBS}
 )
 
@@ -358,6 +433,10 @@ target_link_libraries(flatfield_batch_test PRIVATE
   ${OpenCV_LIBS}
   -lcfitsio
   Qt5::Core
+  Qt5::Gui
+  Qt5::Widgets
+  Qt5::Network
+  Qt5::WebSockets
 )
 
 target_link_libraries(client PRIVATE
@@ -376,7 +455,7 @@ install(TARGETS client
 
 target_include_directories(client PUBLIC
   "${QUARCS_INDI_INCLUDE}"
-  "${QUARCS_STELLARSOLVER_INCLUDE}"
+  "${QUARCS_STELLARSOLVER_INCLUDE_DIR}"
 )
 target_include_directories(client PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
@@ -388,6 +467,11 @@ if(CMAKE_SYSROOT)
     "${QUARCS_TARGET_LOCAL_LIBDIR}"
   )
 else()
+  if(QUARCS_INDI_LIBDIR)
+    link_directories("${QUARCS_INDI_LIBDIR}")
+    list(APPEND CMAKE_BUILD_RPATH "${QUARCS_INDI_LIBDIR}")
+    list(APPEND CMAKE_INSTALL_RPATH "${QUARCS_INDI_LIBDIR}")
+  endif()
   link_directories(${PROJECT_SOURCE_DIR}/usr/lib/x86_64-linux-gnu)
 endif()
 
@@ -404,7 +488,6 @@ endif()
 
 target_link_libraries(client PRIVATE
     qhyccd
-    stellarsolver
 )
 
 # 这里全部固定为 Qt5::
@@ -418,6 +501,24 @@ target_link_libraries(client PRIVATE
     Qt5::WebSockets
     Qt5::SerialPort
     ${StellarSolver_LIBS}
+)
+
+if(TARGET StellarSolver::stellarsolver)
+  target_link_libraries(client PRIVATE StellarSolver::stellarsolver)
+  target_link_libraries(guiding_offline_test PRIVATE StellarSolver::stellarsolver)
+  target_link_libraries(guiding_batch_analyzer PRIVATE StellarSolver::stellarsolver)
+endif()
+
+target_include_directories(guiding_offline_test PRIVATE ${QUARCS_COMMON_INCLUDE_DIRS})
+target_include_directories(guiding_batch_analyzer PRIVATE ${QUARCS_COMMON_INCLUDE_DIRS})
+target_include_directories(flatfield_batch_test PRIVATE ${QUARCS_COMMON_INCLUDE_DIRS})
+
+set_source_files_properties(
+  myclient.cpp
+  mainwindow_device_connection.cpp
+  mainwindow_mount_control.cpp
+  autopolaralignment.cpp
+  PROPERTIES COMPILE_OPTIONS "-Wno-deprecated-declarations"
 )
 
 # Debian sysroot：liblapack.so.3 / libblas.so.3 常经 alternatives 指到绝对路径，交叉 ld 用 rpath-link 仍可能解析失败。

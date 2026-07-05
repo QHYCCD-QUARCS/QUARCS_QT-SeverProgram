@@ -3,7 +3,11 @@
 #include "../tools.h"
 
 #include <opencv2/core/core.hpp>
+#if __has_include(<opencv2/imgcodecs.hpp>)
 #include <opencv2/imgcodecs.hpp>
+#else
+#include <opencv2/highgui/highgui.hpp>
+#endif
 #include <opencv2/imgproc.hpp>
 
 #include <QCoreApplication>
@@ -174,12 +178,12 @@ void drawCandidates(cv::Mat& overlay,
         const int half = std::max(6, static_cast<int>(std::lround(std::max(6.0, s.hfd) * 0.5)));
         const cv::Point c(static_cast<int>(std::lround(s.x)), static_cast<int>(std::lround(s.y)));
         const cv::Rect r(c.x - half, c.y - half, half * 2, half * 2);
-        cv::rectangle(overlay, r, color, 1, cv::LINE_AA);
+        cv::rectangle(overlay, r, color, 1, quarcs_cv_compat::kLineAA);
         if (drawLabel)
         {
             const std::string text = "SNR " + cv::format("%.1f", s.snr);
             cv::putText(overlay, text, cv::Point(c.x + half + 3, c.y - half - 3),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv::LINE_AA);
+                        cv::FONT_HERSHEY_SIMPLEX, 0.35, color, 1, quarcs_cv_compat::kLineAA);
         }
     }
 }
@@ -194,7 +198,7 @@ void drawAllMarkers(cv::Mat& overlay,
     {
         const cv::Point c(static_cast<int>(std::lround(brightPeaks[i].pos.x())),
                           static_cast<int>(std::lround(brightPeaks[i].pos.y())));
-        cv::circle(overlay, c, 8, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+        cv::circle(overlay, c, 8, cv::Scalar(0, 255, 255), 1, quarcs_cv_compat::kLineAA);
         cv::putText(overlay,
                     std::to_string(i + 1) + ":" + cv::format("%.0f", brightPeaks[i].peakAdu),
                     cv::Point(c.x + 10, c.y - 6),
@@ -202,7 +206,7 @@ void drawAllMarkers(cv::Mat& overlay,
                     0.35,
                     cv::Scalar(0, 255, 255),
                     1,
-                    cv::LINE_AA);
+                    quarcs_cv_compat::kLineAA);
     }
 
     drawCandidates(overlay, rejected, cv::Scalar(255, 120, 40), false);
@@ -211,9 +215,9 @@ void drawAllMarkers(cv::Mat& overlay,
     if (best.has_value())
     {
         const cv::Point c(static_cast<int>(std::lround(best->x)), static_cast<int>(std::lround(best->y)));
-        cv::rectangle(overlay, cv::Rect(c.x - 12, c.y - 12, 24, 24), cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
+        cv::rectangle(overlay, cv::Rect(c.x - 12, c.y - 12, 24, 24), cv::Scalar(0, 255, 0), 2, quarcs_cv_compat::kLineAA);
         cv::putText(overlay, "PRIMARY", cv::Point(c.x + 14, c.y + 14),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 255, 0), 1, cv::LINE_AA);
+                    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 255, 0), 1, quarcs_cv_compat::kLineAA);
     }
 }
 
@@ -427,9 +431,9 @@ int main(int argc, char** argv)
         drawAllMarkers(medianOverlay, brightPeaks, rejected, validated, best);
 
         cv::putText(overlay, "RAW", cv::Point(16, 28),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+                    cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2, quarcs_cv_compat::kLineAA);
         cv::putText(medianOverlay, "MEDIAN x3", cv::Point(16, 28),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+                    cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2, quarcs_cv_compat::kLineAA);
 
         const QString stem = QFileInfo(name).completeBaseName();
         const QString rawJpgPath = QDir(batchDir).filePath(stem + ".jpg");

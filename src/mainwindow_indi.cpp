@@ -9,6 +9,9 @@ extern INDI::BaseDevice *dpMainCamera;
 void MainWindow::initINDIServer()
 {
     Logger::Log("initINDIServer ...", LogLevel::INFO, DeviceType::MAIN);
+    // 先清理遗留的 QHY INDI 驱动子进程，避免它们继续占用 USB 设备，
+    // 导致新启动的 indiserver 只能发现部分相机。
+    system("pkill -f '^indi_qhy_ccd$'");
     system("pkill indiserver");
     system("rm -f /tmp/myFIFO");
     system("mkfifo /tmp/myFIFO");

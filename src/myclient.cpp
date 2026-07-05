@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <unistd.h>
 #include <QDebug>
 #include <QObject>
 // #include <qhyccd.h>
@@ -443,7 +444,7 @@ uint32_t MyClient::setBaudRate(INDI::BaseDevice *dp, int baudRate)
 
 uint32_t MyClient::setTemperature(INDI::BaseDevice *dp, double value)
 {
-    char *propertyName = "CCD_TEMPERATURE";
+    const char *propertyName = "CCD_TEMPERATURE";
     INDI::PropertyNumber ccdTemperature = dp->getProperty(propertyName);
 
     if (!ccdTemperature.isValid())
@@ -461,7 +462,7 @@ uint32_t MyClient::setTemperature(INDI::BaseDevice *dp, double value)
 uint32_t MyClient::getTemperature(INDI::BaseDevice *dp, double &value)
 {
 
-    char *propertyName = "CCD_TEMPERATURE";
+    const char *propertyName = "CCD_TEMPERATURE";
     INDI::PropertyNumber ccdTemperature = dp->getProperty(propertyName);
 
     if (!ccdTemperature.isValid())
@@ -861,8 +862,16 @@ uint32_t MyClient::getCCDCFA(INDI::BaseDevice *dp, int &offsetX, int &offsetY, Q
     b = ccdCFA[1].getText();
     c = ccdCFA[2].getText();
 
-    offsetX = std::stoi(a);
-    offsetY = std::stoi(b);
+    bool offsetXOk = false;
+    bool offsetYOk = false;
+    offsetX = QString::fromStdString(a).toInt(&offsetXOk);
+    offsetY = QString::fromStdString(b).toInt(&offsetYOk);
+    if (!offsetXOk || !offsetYOk)
+    {
+        Logger::Log("indi_client | getCCDCFA | invalid CFA offset text: " + a + ", " + b,
+                    LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
     CFATYPE = QString::fromStdString(c);
     Logger::Log("indi_client | getCCDCFA | " + std::to_string(offsetX) + ", " + std::to_string(offsetY) + ", " + CFATYPE.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
     return QHYCCD_SUCCESS;

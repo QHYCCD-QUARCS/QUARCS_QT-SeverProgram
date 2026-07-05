@@ -38,6 +38,8 @@ QString MainWindow::TelescopeControl_Status()
         indi_Client->getTelescopeStatus(dpMount, Stat);
         return Stat;
     }
+
+    return QString();
 }
 
 bool MainWindow::TelescopeControl_Park()
@@ -244,7 +246,6 @@ void MainWindow::TelescopeControl_SolveSYNC()
                     {
                         if (dpMount != NULL)
                         {
-                            INDI::PropertyNumber property = NULL;
                             Logger::Log("TelescopeControl_SolveSYNC | syncTelescopeJNow | start", LogLevel::INFO, DeviceType::MAIN);
                             QString action = "SYNC";
                             bool isTrack = false;
@@ -406,6 +407,8 @@ QDateTime MainWindow::TelescopeControl_GetTimeUTC()
 
         return result;
     }
+
+    return QDateTime();
 }
 
 SphericalCoordinates MainWindow::TelescopeControl_GetRaDec()
@@ -420,6 +423,8 @@ SphericalCoordinates MainWindow::TelescopeControl_GetRaDec()
 
         return result;
     }
+
+    return {};
 }
 
 void MainWindow::MountGoto(double Ra_Hour, double Dec_Degree)

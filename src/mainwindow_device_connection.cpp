@@ -1,5 +1,26 @@
 #include "mainwindow_command_support.h"
 
+namespace
+{
+bool indiDriverNamesEquivalent(const QString &lhs, const QString &rhs)
+{
+    const QString left = lhs.trimmed();
+    const QString right = rhs.trimmed();
+
+    if (left.compare(right, Qt::CaseInsensitive) == 0)
+        return true;
+
+    const bool leftIsQhy =
+        (left.compare(QStringLiteral("indi_qhy_ccd"), Qt::CaseInsensitive) == 0) ||
+        (left.compare(QStringLiteral("indi_qhy_ccd2"), Qt::CaseInsensitive) == 0);
+    const bool rightIsQhy =
+        (right.compare(QStringLiteral("indi_qhy_ccd"), Qt::CaseInsensitive) == 0) ||
+        (right.compare(QStringLiteral("indi_qhy_ccd2"), Qt::CaseInsensitive) == 0);
+
+    return leftIsQhy && rightIsQhy;
+}
+}
+
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
@@ -1201,7 +1222,7 @@ void MainWindow::continueConnectAllDeviceOnce()
         QString driverExec = QString::fromUtf8(device->getDriverExec());
         for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
         {
-            if (systemdevicelist.system_devices[idx].DriverIndiName == driverExec)
+            if (indiDriverNamesEquivalent(systemdevicelist.system_devices[idx].DriverIndiName, driverExec))
             {
                 return systemdevicelist.system_devices[idx].BaudRate;
             }
@@ -1248,7 +1269,7 @@ void MainWindow::continueConnectAllDeviceOnce()
         QString driverType;
         for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
         {
-            if (systemdevicelist.system_devices[idx].DriverIndiName == driverExec)
+            if (indiDriverNamesEquivalent(systemdevicelist.system_devices[idx].DriverIndiName, driverExec))
             {
                 driverType = systemdevicelist.system_devices[idx].Description;
                 break;
@@ -1353,7 +1374,8 @@ void MainWindow::continueConnectAllDeviceOnce()
                 if (device != nullptr) {
                     for(int j = 0; j < systemdevicelist.system_devices.size(); j++)
                     {
-                        if (systemdevicelist.system_devices[j].DriverIndiName == device->getDriverExec())
+                        if (indiDriverNamesEquivalent(systemdevicelist.system_devices[j].DriverIndiName,
+                                                      QString::fromUtf8(device->getDriverExec())))
                         {
                             DriverType = systemdevicelist.system_devices[j].Description;
                         }
@@ -1501,9 +1523,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             QString driverExecQString = QString::fromStdString(driverExec);
             for (int j = 0; j < systemdevicelist.system_devices.size(); j++)
             {
-                if (systemdevicelist.system_devices[j].DriverIndiName == driverExecQString || 
-                    (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd" && driverExec == "indi_qhy_ccd2") || 
-                    (systemdevicelist.system_devices[j].DriverIndiName == "indi_qhy_ccd2" && driverExec == "indi_qhy_ccd"))
+                if (indiDriverNamesEquivalent(systemdevicelist.system_devices[j].DriverIndiName, driverExecQString))
                 {
                     emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[j].Description);
                 }
@@ -5863,7 +5883,7 @@ void MainWindow::onSdkMainLiveProcessTimerTimeout()
 
 bool MainWindow::hasProp(INDI::BaseDevice *dev, const char *prop)
 {
-    return dev && dev->getProperty(prop) != nullptr;
+    return dev && static_cast<bool>(dev->getProperty(prop));
 }
 
 // 工具函数：检查多个属性是否存在其中之一
@@ -7659,7 +7679,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
         {
             INDI::BaseDevice *device = indi_Client->GetDeviceFromList(i);
-            if (device != nullptr && device->getDriverExec() == DriverName)
+            if (device != nullptr &&
+                indiDriverNamesEquivalent(QString::fromUtf8(device->getDriverExec()), DriverName))
                 return true;
         }
         return false;
@@ -7699,7 +7720,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
     {
 
-        if (indi_Client->GetDeviceFromList(i)->getDriverExec() == DriverName)
+        if (indiDriverNamesEquivalent(QString::fromUtf8(indi_Client->GetDeviceFromList(i)->getDriverExec()),
+                                      DriverName))
         {
             if (indi_Client->GetDeviceFromList(i)->isConnected())
             {
@@ -7714,6 +7736,24 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 }
                 if (!isDeviceBind)
                 {
+                    const bool isCameraRole =
+                        (DriverType == "MainCamera" || DriverType == "Guider" || DriverType == "PoleCamera");
+                    const bool isQhyDriver = DriverName.contains("qhy", Qt::CaseInsensitive);
+                    const bool isCcdDevice =
+                        (indi_Client->GetDeviceFromList(i)->getDriverInterface() & INDI::BaseDevice::CCD_INTERFACE);
+
+                    // 对于同一 QHY CCD 驱动下的多相机场景，已连接但尚未绑定角色的设备先保留为候选。
+                    // 否则这里先断开再重连，容易让后续的 Main/Guider 自动分配丢失本来已经在线的另一台相机。
+                    if (isCameraRole && isQhyDriver && isCcdDevice)
+                    {
+                        Logger::Log("ConnectDriver | Device(" +
+                                        std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) +
+                                        ") is connected but not bound, keep it as QHY CCD candidate for role allocation",
+                                    LogLevel::INFO, DeviceType::MAIN);
+                        connectedDeviceIdList.push_back(i);
+                        continue;
+                    }
+
                     Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is not bind, start to disconnect", LogLevel::INFO, DeviceType::MAIN);
                     indi_Client->disconnectDevice(indi_Client->GetDeviceFromList(i)->getDeviceName());
                     time = 0;
@@ -8243,9 +8283,22 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         const QString guiderDriverName = (systemdevicelist.system_devices.size() > 1)
                                              ? systemdevicelist.system_devices[1].DriverIndiName
                                              : QString();
-        const bool isQhyDualRole =
+        const bool requestUsesQhyDriver = DriverName.contains("qhy", Qt::CaseInsensitive);
+        const bool configuredQhyDualRole =
             mainDriverName.contains("qhy", Qt::CaseInsensitive) &&
             guiderDriverName.contains("qhy", Qt::CaseInsensitive);
+        const bool hasDualQhyCcdPool =
+            requestUsesQhyDriver &&
+            ConnectedCCDList.size() >= 2;
+        const bool isQhyDualRole = configuredQhyDualRole || hasDualQhyCcdPool;
+
+        if (hasDualQhyCcdPool)
+        {
+            Logger::Log("ConnectDriver | Detected dual QHY CCD pool for driver " +
+                            DriverName.toStdString() +
+                            ", configuredQhyDualRole=" + std::to_string(configuredQhyDualRole ? 1 : 0),
+                        LogLevel::INFO, DeviceType::MAIN);
+        }
 
         if ((mainNeedsFallback || guiderNeedsFallback) &&
             isQhyDualRole &&
@@ -8374,6 +8427,74 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     bindByIdx("MainCamera", fallbackMainIdx);
                 if (guiderNeedsFallback)
                     bindByIdx("Guider", fallbackGuiderIdx);
+            }
+        }
+
+        if (requestSingleCcdRole &&
+            ConnectedCCDList.size() == 1 &&
+            boundCcdIndexes.isEmpty())
+        {
+            const int onlyIdx = ConnectedCCDList.front();
+            if (onlyIdx >= 0 && onlyIdx < indi_Client->GetDeviceCount())
+            {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(onlyIdx);
+                if (device != nullptr)
+                {
+                    const QString onlyName = QString::fromUtf8(device->getDeviceName());
+                    const bool onlyIs5III = onlyName.contains("5III", Qt::CaseInsensitive);
+
+                    if (requestMainCameraOnly)
+                    {
+                        if (isQhyDualRole && onlyIs5III)
+                        {
+                            Logger::Log("ConnectDriver | Single CCD fallback skipped for MainCamera because only detected QHY CCD looks like guider: " +
+                                            onlyName.toStdString(),
+                                        LogLevel::WARNING, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            dpMainCamera = device;
+                            if (systemdevicelist.system_devices.size() > 20)
+                                systemdevicelist.system_devices[20].isConnect = true;
+                            AfterDeviceConnect(dpMainCamera);
+                            Logger::Log("ConnectDriver | Single CCD fallback auto-bind: MainCamera -> " +
+                                            QString::fromUtf8(device->getDeviceName()).toStdString(),
+                                        LogLevel::INFO, DeviceType::MAIN);
+                            boundCcdIndexes.insert(onlyIdx);
+                        }
+                    }
+                    else if (requestGuiderOnly)
+                    {
+                        if (isQhyDualRole && !onlyIs5III)
+                        {
+                            Logger::Log("ConnectDriver | Single CCD fallback skipped for Guider because only detected QHY CCD looks like main camera: " +
+                                            onlyName.toStdString(),
+                                        LogLevel::WARNING, DeviceType::MAIN);
+                        }
+                        else
+                        {
+                            dpGuider = device;
+                            if (systemdevicelist.system_devices.size() > 1)
+                                systemdevicelist.system_devices[1].isConnect = true;
+                            AfterDeviceConnect(dpGuider);
+                            Logger::Log("ConnectDriver | Single CCD fallback auto-bind: Guider -> " +
+                                            QString::fromUtf8(device->getDeviceName()).toStdString(),
+                                        LogLevel::INFO, DeviceType::MAIN);
+                            boundCcdIndexes.insert(onlyIdx);
+                        }
+                    }
+                    else if (requestPoleOnly)
+                    {
+                        dpPoleScope = device;
+                        if (systemdevicelist.system_devices.size() > 2)
+                            systemdevicelist.system_devices[2].isConnect = true;
+                        AfterDeviceConnect(dpPoleScope);
+                        Logger::Log("ConnectDriver | Single CCD fallback auto-bind: PoleCamera -> " +
+                                        QString::fromUtf8(device->getDeviceName()).toStdString(),
+                                    LogLevel::INFO, DeviceType::MAIN);
+                        boundCcdIndexes.insert(onlyIdx);
+                    }
+                }
             }
         }
 
@@ -9383,4 +9504,3 @@ bool MainWindow::isDeviceTypeSupportSDK(const QString &description, const QStrin
     
     return false;
 }
-
