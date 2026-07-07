@@ -2005,6 +2005,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         // 并在初始化完成后发送 ConnectSuccess 消息给前端
         systemdevicelist.system_devices[20].isConnect = true;
         systemdevicelist.system_devices[20].isBind = false;
+        systemdevicelist.system_devices[20].isSDKConnect = true;
         // 记录选择的相机 ID，便于下次自动重连/区分多相机
         systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
 
@@ -2073,6 +2074,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 
         systemdevicelist.system_devices[1].isConnect = true;
         systemdevicelist.system_devices[1].isBind = false;
+        systemdevicelist.system_devices[1].isSDKConnect = true;
         systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
         if (!systemdevicelist.system_devices[1].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[1].DriverFrom = "SDK";
