@@ -17,6 +17,41 @@
 #include <limits>
 
 namespace {
+
+guiding::StarCandidate toGuidingStar(const star_detect::DetectedStar& star)
+{
+    guiding::StarCandidate out;
+    out.x = star.x;
+    out.y = star.y;
+    out.snr = star.snr;
+    out.hfd = star.hfd;
+    out.peakADU = star.peakADU;
+    out.edgeDistPx = star.edgeDistPx;
+    return out;
+}
+
+void assignGuidingCandidates(const std::vector<star_detect::DetectedStar>& input,
+                             std::vector<guiding::StarCandidate>* output)
+{
+    if (!output)
+        return;
+    output->clear();
+    output->reserve(input.size());
+    for (const auto& star : input)
+        output->push_back(toGuidingStar(star));
+}
+
+void assignRejectedCandidates(const std::vector<star_detect::RejectedStar>& input,
+                              std::vector<guiding::StarCandidate>* output)
+{
+    if (!output)
+        return;
+    output->clear();
+    output->reserve(input.size());
+    for (const auto& rejected : input)
+        output->push_back(toGuidingStar(rejected.star));
+}
+
 // 最小二乘线性拟合 y = a*t + b，返回 a（斜率）。若不可拟合返回 NaN。
 // 线性回归拟合斜率（支持 RA 或 DEC）
 static double fitSlopeLeastSquares(const std::vector<GuiderCore::DriftSample>& samples, bool useRa)
@@ -809,32 +844,55 @@ std::optional<guiding::StarCandidate> GuiderCore::selectStarWithDetector(
         cv::Mat imgFiltered;
         cv::medianBlur(img16, imgFiltered, 3);
 
-        auto ffParams = guiding::flatfield::FlatFieldDetector::Params{};
+        star_detect::ImageContext imageContext;
+        imageContext.imageWidth = imgFiltered.cols;
+        imageContext.imageHeight = imgFiltered.rows;
+        imageContext.pixelScaleArcsecPerPixel = params.autoSelPixelScaleArcsecPerPixel;
+
+        star_detect::DetectParams ffParams;
         ffParams.kernelSize = 64;
-        ffParams.method = "uniform";
+        ffParams.flatMethod = "uniform";
         ffParams.snrThreshold = params.minSNR > 0 ? params.minSNR : 5.0;
         ffParams.minHFD = params.minHFD;
         ffParams.maxHFD = params.maxHFD;
-        ffParams.minSeparation = 5;
+        ffParams.minSeparationPx = 5;
         ffParams.edgeMarginPx = params.edgeMarginPx;
         ffParams.nearSaturationRatio = params.nearSaturationRatio;
 
         auto t0 = std::chrono::steady_clock::now();
-        auto result = m_flatfieldDetector.detect(imgFiltered, ffParams,
-                                                 outDedupCandidates, outSnrCandidates,
-                                                 outCandidates, outRejected);
+        const star_detect::DetectionResult detection =
+            m_flatfieldDetector.detect(imgFiltered, imageContext, ffParams);
         auto t1 = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        if (result.has_value())
+        assignGuidingCandidates(detection.dedupCandidates, outDedupCandidates);
+        assignGuidingCandidates(detection.snrCandidates, outSnrCandidates);
+        assignGuidingCandidates(detection.validCandidates, outCandidates);
+        assignRejectedCandidates(detection.rejectedCandidates, outRejected);
+
+        if (!detection.validCandidates.empty())
         {
+            const auto bestIt = std::max_element(detection.validCandidates.begin(),
+                                                 detection.validCandidates.end(),
+                                                 [](const star_detect::DetectedStar& a,
+                                                    const star_detect::DetectedStar& b) {
+                                                     return a.snr < b.snr;
+                                                 });
             Logger::Log((QString("[FlatField] 检测到 %1 颗星点，最佳SNR=%2，耗时 %3ms")
-                .arg(outCandidates ? outCandidates->size() : 0)
-                .arg(result->snr, 0, 'f', 1)
+                .arg(static_cast<int>(detection.validCandidates.size()))
+                .arg(bestIt->snr, 0, 'f', 1)
                 .arg(ms, 0, 'f', 1)).toStdString(),
                 LogLevel::INFO, DeviceType::GUIDER);
+            Logger::Log((QString("[FlatField] stageCounts %1")
+                .arg(QString::fromStdString(detection.debug.summary))).toStdString(),
+                LogLevel::INFO, DeviceType::GUIDER);
+            return toGuidingStar(*bestIt);
         }
-        return result;
+        Logger::Log((QString("[FlatField] 未检测到可用星点，耗时 %1ms，stageCounts %2")
+            .arg(ms, 0, 'f', 1)
+            .arg(QString::fromStdString(detection.debug.summary))).toStdString(),
+            LogLevel::INFO, DeviceType::GUIDER);
+        return std::nullopt;
     }
     else
     {

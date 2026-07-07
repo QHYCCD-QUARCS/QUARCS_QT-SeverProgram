@@ -144,6 +144,77 @@ struct MeridianStatus {
     bool needsFlip = false;
 };
 
+enum class QhyCameraBiasType
+{
+    MainPreferred,
+    GuiderPreferred,
+    Neutral,
+};
+
+enum class QhyAllocationSource
+{
+    None,
+    Auto,
+    Manual,
+    Mixed,
+};
+
+enum class QhyAllocationLockState
+{
+    Unassigned,
+    AutoAssigned,
+    ManualLocked,
+};
+
+struct QhyCameraPoolEntry
+{
+    int poolIndex = -1;
+    int uiIndex = 0;
+    QString cameraId;
+    QString displayName;
+    bool isOpened = false;
+    bool isDemo = false;
+    bool isPoleMaster = false;
+    bool is5III = false;
+    QhyCameraBiasType biasType = QhyCameraBiasType::Neutral;
+    long long pixelCount = -1;
+    QString assignedRole;
+};
+
+struct QhyRoleAllocation
+{
+    bool requested = false;
+    bool assigned = false;
+    bool manualLocked = false;
+    int poolIndex = -1;
+    QString cameraId;
+};
+
+struct QhyAllocationDraft
+{
+    bool scanComplete = false;
+    int cameraCount = 0;
+    QhyAllocationSource source = QhyAllocationSource::None;
+    QhyRoleAllocation mainCamera;
+    QhyRoleAllocation guider;
+    QhyRoleAllocation poleCamera;
+};
+
+struct QhyFinalRoleBinding
+{
+    int poolIndex = -1;
+    QString cameraId;
+    QhyAllocationLockState lockState = QhyAllocationLockState::Unassigned;
+};
+
+struct QhyAllocationFinal
+{
+    bool scanComplete = false;
+    QhyFinalRoleBinding mainCamera;
+    QhyFinalRoleBinding guider;
+    QhyFinalRoleBinding poleCamera;
+};
+
 
 
 /*
@@ -1711,6 +1782,9 @@ public:
     bool isFilterOnCamera = false; // 滤镜是否内置相机
     int sdkMainCfwSlotsCached = 0; // SDK 主相机内置 CFW 槽位缓存（>0 有效）
     QString sdkMainCameraId;       // SDK 主相机 cameraId（用于 CFWList 等稳定 key；避免依赖 INDI 的 FILTER_NAME）
+    QVector<QhyCameraPoolEntry> qhyCameraPoolSnapshot; // 统一的 QHY 相机池快照（第一阶段兼容层）
+    QhyAllocationDraft qhyAllocationDraft;             // 当前角色分配草案（第一阶段从旧状态同步）
+    QhyAllocationFinal qhyAllocationFinal;             // 当前最终绑定视图（第一阶段从旧状态同步）
 
     /**
      * @brief 清理 QHYCCD SDK 句柄池并释放 SDK 全局资源（适用于"断开全部/断开指定驱动"等场景）
@@ -1719,6 +1793,12 @@ public:
      * @note 不会修改 systemdevicelist 里的 isSDKConnect（保留用户模式选择），只会清理 isConnect/isBind/DeviceIndiName
      */
     void cleanupQhySdkPoolAndResource(const QString& reason, const QString& deviceType = "All");
+    QhyCameraBiasType classifyQhyCameraBias(const QString &cameraId) const;
+    long long readQhyPixelCountByHandle(SdkDeviceHandle handle) const;
+    QString qhyAssignedRoleForPoolIndex(int poolIndex) const;
+    void resetQhyAllocationState();
+    void syncQhyCameraPoolSnapshotFromGlobals();
+    void syncQhyAllocationStateFromLegacyBindings();
 
     /**
      * @brief 赤道仪转到坐标（别名）

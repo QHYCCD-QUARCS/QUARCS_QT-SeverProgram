@@ -859,6 +859,7 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
     }
 
     // ReleaseSdkResource 已在“整池清理”路径中由相机线程任务负责执行
+    syncQhyAllocationStateFromLegacyBindings();
 }
 
 bool MainWindow::connectIndiServer(MyClient *client)

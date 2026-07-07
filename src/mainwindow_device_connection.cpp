@@ -2506,15 +2506,17 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         Tools::saveSystemDeviceList(systemdevicelist);
         Logger::Log("UnBinding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
         if (DeviceIndex >= 0 && DeviceIndex < indi_Client->GetDeviceCount())
-        QString devName = QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
-        QString devName_cat;
-        if (devName.contains("5III", Qt::CaseInsensitive))
-            devName_cat = "5III";
-        else if (devName.contains("DEMO", Qt::CaseInsensitive))
-            devName_cat = "DEMO";
-        else
-            devName_cat = "OTHER";
+        {
+            QString devName = QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
+            QString devName_cat;
+            if (devName.contains("5III", Qt::CaseInsensitive))
+                devName_cat = "5III";
+            else if (devName.contains("DEMO", Qt::CaseInsensitive))
+                devName_cat = "DEMO";
+            else
+                devName_cat = "OTHER";
             emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + devName + ":" + devName_cat);
+        }
     }
     else if (DeviceType == "MainCamera")
     {
@@ -2714,15 +2716,17 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         Tools::saveSystemDeviceList(systemdevicelist);
 
         if (DeviceIndex >= 0 && DeviceIndex < indi_Client->GetDeviceCount())
-        QString devName = QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
-        QString devName_cat;
-        if (devName.contains("5III", Qt::CaseInsensitive))
-            devName_cat = "5III";
-        else if (devName.contains("DEMO", Qt::CaseInsensitive))
-            devName_cat = "DEMO";
-        else
-            devName_cat = "OTHER";
+        {
+            QString devName = QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName());
+            QString devName_cat;
+            if (devName.contains("5III", Qt::CaseInsensitive))
+                devName_cat = "5III";
+            else if (devName.contains("DEMO", Qt::CaseInsensitive))
+                devName_cat = "DEMO";
+            else
+                devName_cat = "OTHER";
             emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(DeviceIndex) + ":" + devName + ":" + devName_cat);
+        }
     }
     else if (DeviceType == "CFW")
     {

@@ -62,6 +62,11 @@ INDI::BaseDevice *dpCFW        = nullptr;  // 滤镜轮设备指针
 
 namespace {
 
+inline bool isPoleMasterNameLocal(const QString &name)
+{
+    return name.contains("POLEMASTER", Qt::CaseInsensitive);
+}
+
 template <typename Func>
 void postGuiderCore(GuiderCore *core, Func &&func)
 {
@@ -201,6 +206,194 @@ static inline bool sdkPoolIndexValid(int poolIndex)
            poolIndex < g_sdkQhyCamHandles.size() &&
            poolIndex < g_sdkQhyCamIds.size() &&
            !g_sdkQhyCamIds[poolIndex].isEmpty();
+}
+
+QhyCameraBiasType MainWindow::classifyQhyCameraBias(const QString &cameraId) const
+{
+    if (cameraId.isEmpty())
+        return QhyCameraBiasType::Neutral;
+    if (isPoleMasterNameLocal(cameraId))
+        return QhyCameraBiasType::Neutral;
+    if (cameraId.contains("DEMO", Qt::CaseInsensitive))
+        return QhyCameraBiasType::Neutral;
+    if (cameraId.contains("5III", Qt::CaseInsensitive))
+        return QhyCameraBiasType::GuiderPreferred;
+    return QhyCameraBiasType::MainPreferred;
+}
+
+long long MainWindow::readQhyPixelCountByHandle(SdkDeviceHandle handle) const
+{
+    if (handle == nullptr)
+        return -1;
+
+    SdkCommand chipInfoCmd;
+    chipInfoCmd.type = SdkCommandType::Custom;
+    chipInfoCmd.name = "GetChipInfo";
+    chipInfoCmd.payload = std::any();
+
+    SdkResult chipInfoRes = SdkManager::instance().callByHandle(handle, chipInfoCmd);
+    if (!chipInfoRes.success || !chipInfoRes.payload.has_value())
+        return -1;
+
+    try
+    {
+        const SdkChipInfo chipInfo = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
+        if (chipInfo.maxImageSizeX <= 0 || chipInfo.maxImageSizeY <= 0)
+            return -1;
+        return static_cast<long long>(chipInfo.maxImageSizeX) *
+               static_cast<long long>(chipInfo.maxImageSizeY);
+    }
+    catch (const std::bad_any_cast &)
+    {
+        return -1;
+    }
+}
+
+QString MainWindow::qhyAssignedRoleForPoolIndex(int poolIndex) const
+{
+    if (poolIndex == g_sdkPoleCameraPoolIndex)
+        return "PoleCamera";
+    if (poolIndex == g_sdkMainCameraPoolIndex)
+        return "MainCamera";
+    if (poolIndex == g_sdkGuiderPoolIndex)
+        return "Guider";
+    return QString();
+}
+
+void MainWindow::resetQhyAllocationState()
+{
+    qhyCameraPoolSnapshot.clear();
+    qhyAllocationDraft = QhyAllocationDraft{};
+    qhyAllocationFinal = QhyAllocationFinal{};
+}
+
+void MainWindow::syncQhyCameraPoolSnapshotFromGlobals()
+{
+    qhyCameraPoolSnapshot.clear();
+
+    const int poolSize = std::max(g_sdkQhyCamHandles.size(), g_sdkQhyCamIds.size());
+    qhyCameraPoolSnapshot.reserve(poolSize);
+
+    for (int i = 0; i < poolSize; ++i)
+    {
+        const SdkDeviceHandle handle = (i < g_sdkQhyCamHandles.size()) ? g_sdkQhyCamHandles[i] : nullptr;
+        const QString cameraId = (i < g_sdkQhyCamIds.size()) ? g_sdkQhyCamIds[i].trimmed() : QString();
+
+        if (handle == nullptr && cameraId.isEmpty())
+            continue;
+
+        QhyCameraPoolEntry entry;
+        entry.poolIndex = i;
+        entry.uiIndex = sdkUiIndexFromPoolIndex(i);
+        entry.cameraId = cameraId;
+        entry.displayName = cameraId;
+        entry.isOpened = (handle != nullptr);
+        entry.isDemo = cameraId.contains("DEMO", Qt::CaseInsensitive);
+        entry.isPoleMaster = isPoleMasterNameLocal(cameraId);
+        entry.is5III = cameraId.contains("5III", Qt::CaseInsensitive);
+        entry.biasType = classifyQhyCameraBias(cameraId);
+        entry.pixelCount = readQhyPixelCountByHandle(handle);
+        entry.assignedRole = qhyAssignedRoleForPoolIndex(i);
+
+        qhyCameraPoolSnapshot.push_back(entry);
+    }
+}
+
+void MainWindow::syncQhyAllocationStateFromLegacyBindings()
+{
+    syncQhyCameraPoolSnapshotFromGlobals();
+
+    qhyAllocationDraft = QhyAllocationDraft{};
+    qhyAllocationFinal = QhyAllocationFinal{};
+    const auto &deviceList = Tools::systemDeviceList();
+
+    auto markRequested = [&](QhyRoleAllocation &role, int deviceIndex) {
+        if (deviceIndex >= 0 && deviceIndex < deviceList.system_devices.size())
+            role.requested = deviceList.system_devices[deviceIndex].isSDKConnect;
+    };
+    markRequested(qhyAllocationDraft.mainCamera, 20);
+    markRequested(qhyAllocationDraft.guider, 1);
+    markRequested(qhyAllocationDraft.poleCamera, 2);
+
+    qhyAllocationDraft.scanComplete = true;
+    qhyAllocationDraft.cameraCount = qhyCameraPoolSnapshot.size();
+
+    auto assignRole = [&](QhyRoleAllocation &draftRole,
+                          QhyFinalRoleBinding &finalRole,
+                          int poolIndex,
+                          const QString &fallbackCameraId,
+                          bool manualLocked) {
+        draftRole.manualLocked = manualLocked;
+        draftRole.poolIndex = poolIndex;
+        draftRole.assigned = (poolIndex >= 0) || !fallbackCameraId.isEmpty();
+        draftRole.cameraId = fallbackCameraId;
+
+        finalRole.poolIndex = poolIndex;
+        finalRole.cameraId = fallbackCameraId;
+        finalRole.lockState = manualLocked
+            ? QhyAllocationLockState::ManualLocked
+            : (draftRole.assigned ? QhyAllocationLockState::AutoAssigned
+                                  : QhyAllocationLockState::Unassigned);
+
+        if (poolIndex >= 0)
+        {
+            for (const auto &entry : qhyCameraPoolSnapshot)
+            {
+                if (entry.poolIndex == poolIndex)
+                {
+                    draftRole.cameraId = entry.cameraId;
+                    finalRole.cameraId = entry.cameraId;
+                    draftRole.assigned = true;
+                    break;
+                }
+            }
+        }
+    };
+
+    const bool mainManualLocked = (g_sdkMainCameraPoolIndex >= 0) &&
+        (20 < deviceList.system_devices.size()) &&
+        !deviceList.system_devices[20].DeviceIndiName.trimmed().isEmpty();
+    const bool guiderManualLocked = (g_sdkGuiderPoolIndex >= 0) &&
+        (1 < deviceList.system_devices.size()) &&
+        !deviceList.system_devices[1].DeviceIndiName.trimmed().isEmpty();
+    const bool poleManualLocked = (g_sdkPoleCameraPoolIndex >= 0) &&
+        (2 < deviceList.system_devices.size()) &&
+        !deviceList.system_devices[2].DeviceIndiName.trimmed().isEmpty();
+
+    assignRole(qhyAllocationDraft.mainCamera,
+               qhyAllocationFinal.mainCamera,
+               g_sdkMainCameraPoolIndex,
+               sdkMainCameraId.trimmed(),
+               mainManualLocked);
+    assignRole(qhyAllocationDraft.guider,
+               qhyAllocationFinal.guider,
+               g_sdkGuiderPoolIndex,
+               (1 < deviceList.system_devices.size())
+                   ? deviceList.system_devices[1].DeviceIndiName.trimmed()
+                   : QString(),
+               guiderManualLocked);
+    assignRole(qhyAllocationDraft.poleCamera,
+               qhyAllocationFinal.poleCamera,
+               g_sdkPoleCameraPoolIndex,
+               (2 < deviceList.system_devices.size())
+                   ? deviceList.system_devices[2].DeviceIndiName.trimmed()
+                   : QString(),
+               poleManualLocked);
+
+    const bool anyManualLocked =
+        qhyAllocationDraft.mainCamera.manualLocked ||
+        qhyAllocationDraft.guider.manualLocked ||
+        qhyAllocationDraft.poleCamera.manualLocked;
+    const bool anyAssigned =
+        qhyAllocationDraft.mainCamera.assigned ||
+        qhyAllocationDraft.guider.assigned ||
+        qhyAllocationDraft.poleCamera.assigned;
+
+    qhyAllocationDraft.source = anyManualLocked
+        ? QhyAllocationSource::Manual
+        : (anyAssigned ? QhyAllocationSource::Auto
+                       : QhyAllocationSource::None);
+    qhyAllocationFinal.scanComplete = qhyAllocationDraft.scanComplete;
 }
 
 // ============================================================================

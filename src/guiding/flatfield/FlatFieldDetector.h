@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../GuidingStarDetector.h"
+#include "../../star_detect/FlatFieldStarDetector.h"
 #include <opencv2/core/core.hpp>
 #include <vector>
 #include <string>
@@ -19,6 +20,10 @@ namespace flatfield {
  *
  * 对应 starDetect 项目的 FlatFieldDetector Python 实现，
  * 但使用 OpenCV 替代 SciPy，适配 QUARCS 导星模块的 StarCandidate 格式。
+ *
+ * 当前该类已退化为兼容包装层：
+ * - 通用检测逻辑已迁到 star_detect::FlatFieldStarDetector
+ * - 本类仅负责兼容旧导星/测试代码的调用方式
  */
 
 class FlatFieldDetector
@@ -73,16 +78,7 @@ public:
                                    const std::string& method, double sigma) const;
 
 private:
-    // 内部步骤拆分
-    cv::Mat _generateFlatField(const cv::Mat& imageF, int kernelSize,
-                               const std::string& method, double sigma) const;
-    cv::Mat _subtractFlat(const cv::Mat& imageF, const cv::Mat& flat) const;
-    std::vector<StarCandidate> _findPeaks(const cv::Mat& flatSub16,
-                                          const Params& p) const;
-    double _estimateBackground(const cv::Mat& imageF, int x, int y, int halfSize) const;
-    double _computeHFD(const cv::Mat& imageF, double x, double y) const;
-    double _localPeakADU(const cv::Mat& imageF, double x, double y, int halfSize) const;
-    bool _refineCentroid(const cv::Mat& imageF, double& x, double& y, int halfSize) const;
+    star_detect::FlatFieldStarDetector m_detector{};
 };
 
 } // namespace flatfield

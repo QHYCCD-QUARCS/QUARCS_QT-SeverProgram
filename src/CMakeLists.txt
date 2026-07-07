@@ -259,6 +259,9 @@ add_executable(client
   guiding/DecBacklashEstimator.h guiding/DecBacklashEstimator.cpp
   guiding/SimGuiderFrameSource.h guiding/SimGuiderFrameSource.cpp
   guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
+  star_detect/StarTypes.h
+  star_detect/StarDetectParams.h
+  star_detect/FlatFieldStarDetector.h star_detect/FlatFieldStarDetector.cpp
   tools.h tools.cpp
   sdks/SdkCommon.h
   sdks/SdkDriver.h
@@ -302,6 +305,9 @@ add_executable(guiding_offline_test
   guiding/MultiStarTracker.h guiding/MultiStarTracker.cpp
   guiding/DecBacklashEstimator.h guiding/DecBacklashEstimator.cpp
   guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
+  star_detect/StarTypes.h
+  star_detect/StarDetectParams.h
+  star_detect/FlatFieldStarDetector.h star_detect/FlatFieldStarDetector.cpp
   focused_star_detection.cpp
   tools.h tools.cpp
   Logger.h Logger.cpp
@@ -315,6 +321,9 @@ add_executable(guiding_batch_analyzer
   guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
   guiding/CentroidUtils.h guiding/CentroidUtils.cpp
   guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
+  star_detect/StarTypes.h
+  star_detect/StarDetectParams.h
+  star_detect/FlatFieldStarDetector.h star_detect/FlatFieldStarDetector.cpp
   focused_star_detection.cpp
   tools.h tools.cpp
   Logger.h Logger.cpp
@@ -427,6 +436,9 @@ add_executable(flatfield_batch_test
   guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
   guiding/CentroidUtils.h guiding/CentroidUtils.cpp
   guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
+  star_detect/StarTypes.h
+  star_detect/StarDetectParams.h
+  star_detect/FlatFieldStarDetector.h star_detect/FlatFieldStarDetector.cpp
 )
 
 target_link_libraries(flatfield_batch_test PRIVATE

@@ -13,7 +13,7 @@
 #include <deque>
 
 #include "GuidingStarDetector.h"
-#include "flatfield/FlatFieldDetector.h"
+#include "../star_detect/FlatFieldStarDetector.h"
 #include "MultiStarTracker.h"
 #include "phd2/Phd2MountCalibration.h"
 #include "phd2/Phd2MountGuiding.h"
@@ -145,7 +145,7 @@ private:
     bool m_hasLock = false;
     QPointF m_lockPosPx{0.0, 0.0};
     guiding::GuidingStarDetector m_detector{};
-    guiding::flatfield::FlatFieldDetector m_flatfieldDetector{};
+    star_detect::FlatFieldStarDetector m_flatfieldDetector{};
     bool m_useFlatfield = false;  // 默认回到已验证过紫框语义正常的 GuidingStarDetector 路径
 
     // 校准
