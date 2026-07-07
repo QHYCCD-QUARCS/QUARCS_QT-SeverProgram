@@ -2008,6 +2008,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         systemdevicelist.system_devices[20].isSDKConnect = true;
         // 记录选择的相机 ID，便于下次自动重连/区分多相机
         systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
+        systemdevicelist.system_devices[20].DriverIndiName = getSDKDriverName("MainCamera");
 
         // 将设备注册到 SdkManager 的设备注册表，以便 callByHandle 和 closeByHandle 能够找到设备
         QString driverName = getSDKDriverName("MainCamera");
@@ -2076,6 +2077,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         systemdevicelist.system_devices[1].isBind = false;
         systemdevicelist.system_devices[1].isSDKConnect = true;
         systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
+        systemdevicelist.system_devices[1].DriverIndiName = getSDKDriverName("Guider");
         if (!systemdevicelist.system_devices[1].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[1].DriverFrom = "SDK";
         Tools::saveSystemDeviceList(systemdevicelist);
@@ -2137,7 +2139,9 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         const QString poleId = g_sdkQhyCamIds[poolIndex];
         systemdevicelist.system_devices[2].isConnect = true;
         systemdevicelist.system_devices[2].isBind = false;
+        systemdevicelist.system_devices[2].isSDKConnect = true;
         systemdevicelist.system_devices[2].DeviceIndiName = poleId;
+        systemdevicelist.system_devices[2].DriverIndiName = getSDKDriverName("PoleCamera");
         if (!systemdevicelist.system_devices[2].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[2].DriverFrom = "SDK";
         Tools::saveSystemDeviceList(systemdevicelist);
