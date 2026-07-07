@@ -6037,19 +6037,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     if (pickIndex == g_sdkGuiderPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
                         pickIndex = -1;
 
-                    if (pickIndex < 0)
-                    {
-                        for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
-                        {
-                            if (i == g_sdkGuiderPoolIndex || i == g_sdkPoleCameraPoolIndex)
-                                continue;
-                            if (g_sdkQhyCamHandles[i] != nullptr)
-                            {
-                                pickIndex = i;
-                                break;
-                            }
-                        }
-                    }
+                    // [修改] 移除自动选择逻辑，等待用户手动选择
+                    // 即使poolInUseByOtherRole，也不自动分配相机
 
                     if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
                     {
@@ -6270,48 +6259,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 }
             }
 
-            if (pickIndex < 0 && !g_sdkQhyCamHandles.isEmpty())
-            {
-                struct QhyCand { int idx = -1; bool is5iii = false; long long pixels = -1; };
-                std::vector<QhyCand> cands;
-                cands.reserve(static_cast<size_t>(g_sdkQhyCamHandles.size()));
-                for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
-                {
-                    if (!sdkPoolIndexValid(i))
-                        continue;
-                    QhyCand c;
-                    c.idx = i;
-                    c.is5iii = g_sdkQhyCamIds[i].contains("5III", Qt::CaseInsensitive);
-                    SdkCommand chipInfoCmd;
-                    chipInfoCmd.type = SdkCommandType::Custom;
-                    chipInfoCmd.name = "GetChipInfo";
-                    chipInfoCmd.payload = std::any();
-                    SdkResult chipInfoRes = SdkManager::instance().callByHandle(g_sdkQhyCamHandles[i], chipInfoCmd);
-                    if (chipInfoRes.success)
-                    {
-                        try
-                        {
-                            SdkChipInfo chip = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
-                            if (chip.maxImageSizeX > 0 && chip.maxImageSizeY > 0)
-                                c.pixels = static_cast<long long>(chip.maxImageSizeX) * static_cast<long long>(chip.maxImageSizeY);
-                        }
-                        catch (const std::bad_any_cast &) {}
-                    }
-                    cands.push_back(c);
-                }
-                if (!cands.empty())
-                {
-                    // MainCamera：优先非 5III；若都同系列按分辨率高
-                    std::sort(cands.begin(), cands.end(), [](const QhyCand &a, const QhyCand &b) {
-                        if (a.is5iii != b.is5iii)
-                            return !a.is5iii && b.is5iii; // 非5III优先
-                        if (a.pixels != b.pixels)
-                            return a.pixels > b.pixels;
-                        return a.idx < b.idx;
-                    });
-                    pickIndex = cands.front().idx;
-                }
-            }
+            // [修改] 移除QHY规则兜底自动选择，等待用户手动选择
+            // 不再自动根据5III/分辨率选择相机
 
             // 单/多相机：都先尝试自动绑定；仅选不到时弹分配窗口
             if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
@@ -6593,19 +6542,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     if (pickIndex == g_sdkMainCameraPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
                         pickIndex = -1;
 
-                    if (pickIndex < 0)
-                    {
-                        for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
-                        {
-                            if (i == g_sdkMainCameraPoolIndex || i == g_sdkPoleCameraPoolIndex)
-                                continue;
-                            if (g_sdkQhyCamHandles[i] != nullptr)
-                            {
-                                pickIndex = i;
-                                break;
-                            }
-                        }
-                    }
+                    // [修改] 移除自动选择逻辑，等待用户手动选择
 
                     if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
                     {
@@ -6792,48 +6729,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 }
             }
 
-            if (pickIndex < 0 && !g_sdkQhyCamHandles.isEmpty())
-            {
-                struct QhyCand { int idx = -1; bool is5iii = false; long long pixels = -1; };
-                std::vector<QhyCand> cands;
-                cands.reserve(static_cast<size_t>(g_sdkQhyCamHandles.size()));
-                for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
-                {
-                    if (!sdkPoolIndexValid(i))
-                        continue;
-                    QhyCand c;
-                    c.idx = i;
-                    c.is5iii = g_sdkQhyCamIds[i].contains("5III", Qt::CaseInsensitive);
-                    SdkCommand chipInfoCmd;
-                    chipInfoCmd.type = SdkCommandType::Custom;
-                    chipInfoCmd.name = "GetChipInfo";
-                    chipInfoCmd.payload = std::any();
-                    SdkResult chipInfoRes = SdkManager::instance().callByHandle(g_sdkQhyCamHandles[i], chipInfoCmd);
-                    if (chipInfoRes.success)
-                    {
-                        try
-                        {
-                            SdkChipInfo chip = std::any_cast<SdkChipInfo>(chipInfoRes.payload);
-                            if (chip.maxImageSizeX > 0 && chip.maxImageSizeY > 0)
-                                c.pixels = static_cast<long long>(chip.maxImageSizeX) * static_cast<long long>(chip.maxImageSizeY);
-                        }
-                        catch (const std::bad_any_cast &) {}
-                    }
-                    cands.push_back(c);
-                }
-                if (!cands.empty())
-                {
-                    // Guider：优先 5III；若都同系列按分辨率低
-                    std::sort(cands.begin(), cands.end(), [](const QhyCand &a, const QhyCand &b) {
-                        if (a.is5iii != b.is5iii)
-                            return a.is5iii && !b.is5iii; // 5III优先
-                        if (a.pixels != b.pixels)
-                            return a.pixels < b.pixels; // 低分辨率优先给导星
-                        return a.idx < b.idx;
-                    });
-                    pickIndex = cands.front().idx;
-                }
-            }
+            // [修改] 移除QHY规则兜底自动选择，等待用户手动选择
 
             // 避免同一个句柄同时被 MainCamera/Guider 绑定
             if (pickIndex == g_sdkMainCameraPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
