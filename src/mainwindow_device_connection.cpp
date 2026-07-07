@@ -415,52 +415,26 @@ void MainWindow::ConnectAllDeviceOnce()
                     return true;
                 };
 
-                int mainPickIndex = -1;
-                int guiderPickIndex = -1;
+                // [修改] 移除SDK相机自动绑定，全部等待用户手动选择
+                // 仅保留POLEMASTER自动绑定（设备唯一性识别）
                 int polePickIndex = -1;
-
-                if (mainWantsSdk)
-                {
-                    const QString savedMainId = (systemdevicelist.system_devices.size() > 20)
-                        ? systemdevicelist.system_devices[20].DeviceIndiName.trimmed()
-                        : QString();
-                    mainPickIndex = findPreferredPoolIndex(savedMainId);
-                }
-                if (guiderWantsSdk)
-                {
-                    const QString savedGuiderId = (systemdevicelist.system_devices.size() > 1)
-                        ? systemdevicelist.system_devices[1].DeviceIndiName.trimmed()
-                        : QString();
-                    guiderPickIndex = findPreferredPoolIndex(savedGuiderId);
-                }
                 if (poleWantsSdk)
                 {
-                    const QString savedPoleId = (systemdevicelist.system_devices.size() > 2)
-                        ? systemdevicelist.system_devices[2].DeviceIndiName.trimmed()
-                        : QString();
-                    polePickIndex = findPreferredPoolIndex(savedPoleId);
-                    if (polePickIndex < 0)
+                    // POLEMASTER基于设备唯一性自动绑定，保留
+                    for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
                     {
-                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                        if (!poolAssigned[i] && sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
                         {
-                            if (!poolAssigned[i] && sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
-                            {
-                                polePickIndex = i;
-                                break;
-                            }
+                            polePickIndex = i;
+                            break;
                         }
                     }
                     if (polePickIndex >= 0)
                         bindPoleCameraFromPool(polePickIndex);
                 }
-                if (mainPickIndex >= 0 && poolAssigned.value(mainPickIndex, false))
-                    mainPickIndex = -1;
-                if (guiderPickIndex >= 0 && poolAssigned.value(guiderPickIndex, false))
-                    guiderPickIndex = -1;
 
-                // [修改] 移除 QHYCCD 自动绑定规则，改为由用户手动选择
-                // 仅保留历史配置回绑（savedMainId / savedGuiderId 匹配）
-                // 若历史配置无法回绑，不再自动分配，等待用户选择
+                // MainCamera和Guider不再自动绑定，等待用户手动选择
+                // 移除历史配置回绑逻辑，避免"跳过人工选择"的问题
 
                 // 关键修复：
                 // 全部连接路径下，即使主相机/导星镜都已自动绑定，也要把“完整相机池”同步给前端分配列表。
@@ -6016,59 +5990,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 "Skip CameraPool cleanup and reuse existing pool for MainCamera binding.",
                                 LogLevel::WARNING, DeviceType::MAIN);
 
-                    // 从池中选择 MainCamera：优先使用上次绑定的 cameraId，其次选择一个未被 Guider 占用的句柄
-                    int pickIndex = -1;
-                    QString preferredId;
-                    if (systemdevicelist.system_devices.size() > 20)
-                        preferredId = systemdevicelist.system_devices[20].DeviceIndiName;
-
-                    if (!preferredId.isEmpty())
-                    {
-                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                        {
-                            if (g_sdkQhyCamIds[i] == preferredId)
-                            {
-                                pickIndex = i;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (pickIndex == g_sdkGuiderPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
-                        pickIndex = -1;
-
-                    // [修改] 移除自动选择逻辑，等待用户手动选择
-                    // 即使poolInUseByOtherRole，也不自动分配相机
-
-                    if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
-                    {
-                        g_sdkMainCameraPoolIndex = pickIndex;
-                        sdkMainCameraHandle = g_sdkQhyCamHandles[pickIndex];
-                        sdkMainCameraId = g_sdkQhyCamIds[pickIndex];
-                        boundByThisCall = true;
-
-                        Tools::systemDeviceList().currentDeviceCode = static_cast<int>(SystemNumber::MainCamera1);
-                        if (systemdevicelist.system_devices.size() > 20)
-                        {
-                            systemdevicelist.system_devices[20].isConnect = true;
-                            systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
-                        }
-
-                        // 注册到 SdkManager，保证 callByHandle/closeByHandle 可用
-                        QString driverNameReg = getSDKDriverName("MainCamera");
-                        if (!driverNameReg.isEmpty() && sdkMainCameraHandle != nullptr)
-                        {
-                            SdkManager::instance().registerDevice(
-                                driverNameReg.toStdString(),
-                                "MainCamera",
-                                sdkMainCameraHandle,
-                                "主相机",
-                                std::any(sdkMainCameraId.toStdString()));
-                        }
-
-                        AfterDeviceConnect(nullptr);
-                    }
-                    else
+                    // [修改] 移除poolInUseByOtherRole场景下MainCamera自动绑定
+                    // 即使复用已有池，也等待用户手动选择
                     {
                         if (systemdevicelist.system_devices.size() > 20)
                         {
@@ -6076,6 +5999,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                             systemdevicelist.system_devices[20].isBind = false;
                         }
                         needAllocation = true;
+                        Logger::Log("ConnectDriver | SDK MainCamera (pool reuse): waiting for user allocation.",
+                                    LogLevel::INFO, DeviceType::MAIN);
                     }
 
                     if (boundByThisCall)
@@ -6239,71 +6164,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            // 5) 自动选择 MainCamera：
-            //    - 优先历史回绑（保存的 DeviceIndiName）
-            //    - 若未命中：QHY 规则兜底（优先非 5III；若同系列按分辨率高）
-            int pickIndex = -1;
-            QString preferredId = systemdevicelist.system_devices.size() > 20
-                                      ? systemdevicelist.system_devices[20].DeviceIndiName
-                                      : QString();
-
-            if (!preferredId.isEmpty())
-            {
-                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                {
-                    if (g_sdkQhyCamIds[i] == preferredId && sdkPoolIndexValid(i))
-                    {
-                        pickIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            // [修改] 移除QHY规则兜底自动选择，等待用户手动选择
-            // 不再自动根据5III/分辨率选择相机
-
-            // 单/多相机：都先尝试自动绑定；仅选不到时弹分配窗口
-            if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
-            {
-                const int poolIndex = pickIndex;
-                g_sdkMainCameraPoolIndex = poolIndex;
-                sdkMainCameraHandle = g_sdkQhyCamHandles[poolIndex];
-                sdkMainCameraId = g_sdkQhyCamIds[poolIndex];
-                boundByThisCall = true;
-
-                Tools::systemDeviceList().currentDeviceCode = static_cast<int>(SystemNumber::MainCamera1);
-                systemdevicelist.system_devices[20].isConnect = true;
-                // 注意：isBind 将由 AfterDeviceConnect 在初始化完成后设置
-                systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
-
-                // 将设备注册到 SdkManager 的设备注册表，以便 callByHandle 和 closeByHandle 能够找到设备
-                QString driverName = getSDKDriverName("MainCamera");
-                if (!driverName.isEmpty() && sdkMainCameraHandle != nullptr)
-                {
-                    SdkResult regRes = SdkManager::instance().registerDevice(
-                        driverName.toStdString(),
-                        "MainCamera",
-                        sdkMainCameraHandle,
-                        "主相机",
-                        std::any(sdkMainCameraId.toStdString())
-                    );
-                    if (!regRes.success)
-                    {
-                        Logger::Log("ConnectDriver | Failed to register MainCamera to SdkManager: " + regRes.message,
-                                    LogLevel::WARNING, DeviceType::MAIN);
-                    }
-                }
-
-                AfterDeviceConnect(nullptr);
-                Logger::Log("ConnectDriver | SDK MainCamera auto-bound: " + sdkMainCameraId.toStdString(),
-                            LogLevel::INFO, DeviceType::MAIN);
-            }
-            else
+            // 5) [修改] 移除SDK MainCamera自动绑定，等待用户手动选择
+            // 不再根据历史配置或QHY规则自动选择相机
             {
                 systemdevicelist.system_devices[20].isConnect = false;
                 systemdevicelist.system_devices[20].isBind = false;
                 needAllocation = true;
-                Logger::Log("ConnectDriver | Multiple SDK cameras opened, waiting for allocation.", LogLevel::INFO, DeviceType::MAIN);
+                Logger::Log("ConnectDriver | SDK MainCamera: waiting for user allocation.", LogLevel::INFO, DeviceType::MAIN);
             }
 
             if (boundByThisCall)
@@ -6524,68 +6391,29 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                     LogLevel::INFO, DeviceType::GUIDER);
                     }
 
-                    int pickIndex = -1;
-                    QString preferredId = systemdevicelist.system_devices.size() > 1 ? systemdevicelist.system_devices[1].DeviceIndiName : "";
-
-                    if (!preferredId.isEmpty())
+                    // [修改] 移除poolInUseByOtherRole场景下Guider自动绑定
+                    // 即使复用已有池，也等待用户手动选择
                     {
-                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                        {
-                            if (g_sdkQhyCamIds[i] == preferredId)
-                            {
-                                pickIndex = i;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (pickIndex == g_sdkMainCameraPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
-                        pickIndex = -1;
-
-                    // [修改] 移除自动选择逻辑，等待用户手动选择
-
-                    if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
-                    {
-                        g_sdkGuiderPoolIndex = pickIndex;
-                        sdkGuiderHandle = g_sdkQhyCamHandles[pickIndex];
-                        const QString guiderId = g_sdkQhyCamIds[pickIndex];
-                        boundByThisCall = true;
-
-                        if (systemdevicelist.system_devices.size() > 1)
-                        {
-                            systemdevicelist.system_devices[1].isConnect = true;
-                            systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
-                        }
-
-                        QString driverNameReg = getSDKDriverName("Guider");
-                        if (!driverNameReg.isEmpty() && sdkGuiderHandle != nullptr)
-                        {
-                            SdkManager::instance().registerDevice(
-                                driverNameReg.toStdString(),
-                                "Guider",
-                                sdkGuiderHandle,
-                                "导星相机",
-                                std::any(guiderId.toStdString()));
-                        }
-
-                        AfterDeviceConnect(nullptr);
-                    }
-                    else
-                    {
-                        // 复用池但找不到可用相机：通常表示只有一个相机且已被 MainCamera 占用
                         if (systemdevicelist.system_devices.size() > 1)
                         {
                             systemdevicelist.system_devices[1].isConnect = false;
                             systemdevicelist.system_devices[1].isBind = false;
                         }
-                        Logger::Log("ConnectDriver | No available SDK camera for Guider (all cameras may be in use by other role).",
-                                    LogLevel::ERROR, DeviceType::GUIDER);
-                        emit wsThread->sendMessageToClient("ConnectDriverFailed:Guider:No available camera (in use)");
-                        return;
+                        needAllocation = true;
+                        Logger::Log("ConnectDriver | SDK Guider (pool reuse): waiting for user allocation.",
+                                    LogLevel::INFO, DeviceType::GUIDER);
                     }
 
                     emit wsThread->sendMessageToClient("AddDeviceType:Guider");
-                    emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                    if (needAllocation)
+                    {
+                        emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:Guider");
+                    }
+                    else
+                    {
+                        emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                    }
+                    syncQhyAllocationStateFromLegacyBindings();
                     return;
                 }
 
@@ -6709,61 +6537,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            // 5) 自动选择 Guider：
-            //    - 优先历史回绑（保存的 DeviceIndiName）
-            //    - 若未命中：QHY 规则兜底（优先 5III；若同系列按分辨率低）
-            int pickIndex = -1;
-            QString preferredId = systemdevicelist.system_devices.size() > 1 ? systemdevicelist.system_devices[1].DeviceIndiName : "";
-            if (preferredId.isEmpty() && systemdevicelist.system_devices.size() > 1)
-                preferredId = systemdevicelist.system_devices[1].DriverIndiName;
-
-            if (!preferredId.isEmpty())
-            {
-                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                {
-                    if (g_sdkQhyCamIds[i] == preferredId)
-                    {
-                        pickIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            // [修改] 移除QHY规则兜底自动选择，等待用户手动选择
-
-            // 避免同一个句柄同时被 MainCamera/Guider 绑定
-            if (pickIndex == g_sdkMainCameraPoolIndex || pickIndex == g_sdkPoleCameraPoolIndex)
-                pickIndex = -1;
-
-            if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
-            {
-                g_sdkGuiderPoolIndex = pickIndex;
-                sdkGuiderHandle = g_sdkQhyCamHandles[pickIndex];
-                const QString guiderId = g_sdkQhyCamIds[pickIndex];
-                boundByThisCall = true;
-
-                if (systemdevicelist.system_devices.size() > 1)
-                {
-                    systemdevicelist.system_devices[1].isConnect = true;
-                    systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
-                }
-
-                QString driverName3 = getSDKDriverName("Guider");
-                if (!driverName3.isEmpty() && sdkGuiderHandle != nullptr)
-                {
-                    SdkManager::instance().registerDevice(
-                        driverName3.toStdString(),
-                        "Guider",
-                        sdkGuiderHandle,
-                        "导星相机",
-                        std::any(guiderId.toStdString()));
-                }
-
-                AfterDeviceConnect(nullptr);
-                Logger::Log("ConnectDriver | SDK Guider auto-bound: " + guiderId.toStdString(),
-                            LogLevel::INFO, DeviceType::GUIDER);
-            }
-            else
+            // 5) [修改] 移除SDK Guider自动绑定，等待用户手动选择
+            // 不再根据历史配置或QHY规则自动选择相机
             {
                 if (systemdevicelist.system_devices.size() > 1)
                 {
@@ -6771,7 +6546,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     systemdevicelist.system_devices[1].isBind = false;
                 }
                 needAllocation = true;
-                Logger::Log("ConnectDriver | Multiple SDK cameras opened, waiting for allocation (Guider).", LogLevel::INFO, DeviceType::GUIDER);
+                Logger::Log("ConnectDriver | SDK Guider: waiting for user allocation.", LogLevel::INFO, DeviceType::GUIDER);
             }
 
             if (boundByThisCall)
@@ -6899,48 +6674,22 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + qid + ":" + qid_cat);
             }
 
+            // [修改] 移除SDK PoleCamera自动绑定（除POLEMASTER外），等待用户手动选择
+            // 仅保留POLEMASTER基于设备唯一性的自动绑定
             int pickIndex = -1;
-            const QString preferredId = systemdevicelist.system_devices.size() > 2
-                ? systemdevicelist.system_devices[2].DeviceIndiName.trimmed()
-                : QString();
+            // POLEMASTER自动绑定（设备唯一性识别，保留）
             for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
             {
                 if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex)
                     continue;
-                if (!sdkPoolIndexValid(i))
-                    continue;
-                if (!preferredId.isEmpty() && g_sdkQhyCamIds[i] == preferredId)
+                if (sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
                 {
                     pickIndex = i;
                     break;
                 }
             }
-            if (pickIndex < 0)
-            {
-                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                {
-                    if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex)
-                        continue;
-                    if (sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
-                    {
-                        pickIndex = i;
-                        break;
-                    }
-                }
-            }
-            if (pickIndex < 0)
-            {
-                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                {
-                    if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex)
-                        continue;
-                    if (sdkPoolIndexValid(i))
-                    {
-                        pickIndex = i;
-                        break;
-                    }
-                }
-            }
+            // 移除：历史配置回绑和fallback自动选择
+            // 非POLEMASTER设备等待用户手动选择
 
             if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
             {
