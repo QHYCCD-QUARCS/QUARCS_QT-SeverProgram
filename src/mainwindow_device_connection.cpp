@@ -2833,7 +2833,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             // SDK 分支此前未调用，导致 SDK 连接时未使用本地保存的 Gain/Offset/温度/USB 等参数。
             getMainCameraParameters();
             
-            // 1) 关键：按 QHY Demo/手册顺序初始化（StreamMode/ReadMode 在 InitQHYCCD 之前）
+            // 1) 关键：按 QHY SDK 手册顺序初始化（StreamMode/ReadMode 在 InitQHYCCD 之前）
             // 1.1 ReadMode（best-effort）
             {
                 SdkCommand rm;
@@ -2888,7 +2888,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                            LogLevel::WARNING, DeviceType::CAMERA);
             }
 
-            // 对齐 Demo/重开流程：确保单帧曝光链路工作在 1x1 硬件 Bin。
+            // 对齐 SDK 重开流程：确保单帧曝光链路工作在 1x1 硬件 Bin。
             // 否则部分机型在 SetResolution(full) 后会出现 memLength/实际读帧尺寸不一致，进而导致 GetSingleFrame 崩溃。
             {
                 SdkCommand binCmd;
@@ -4353,7 +4353,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
 
     const SdkDeviceHandle handleSnap = sdkMainCameraHandle;
 
-    // 若发生模式切换：按 Demo 流程重新初始化（Close -> Open -> SetReadMode/SetStreamMode -> Init -> BeginLive/IDLE）
+    // 若发生模式切换：按 QHY SDK 标准流程重新初始化（Close -> Open -> SetReadMode/SetStreamMode -> Init -> BeginLive/IDLE）
     // 目的：保证 StreamMode/ReadMode 在 InitQHYCCD 之前生效，避免 Live 帧率异常/阻塞。
     const bool modeSwitched = (sdkMainAppliedModeValid && sdkMainAppliedMode != mainCameraCaptureMode);
     const int poolIndexSnap = g_sdkMainCameraPoolIndex;
@@ -4365,7 +4365,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
     const double offsetSnap = ImageOffset;
     const double tempSnap = CameraTemperature;
 
-    auto reopenMainCameraByDemoFlow = [this,
+    auto reopenMainCameraForModeSwitch = [this,
                                        driverNameSnap,
                                        cameraIdSnap,
                                        poolIndexSnap,
@@ -4375,11 +4375,11 @@ void MainWindow::applySdkMainCameraCaptureMode()
                                        tempSnap](MainCameraCaptureMode targetMode) {
         SdkSerialExecutor *mainExec = sdkMainCameraExecutor();
         if (!mainExec || !mainExec->isRunning()) {
-            Logger::Log("reopenMainCameraByDemoFlow | sdkMainCamExec not running", LogLevel::WARNING, DeviceType::CAMERA);
+            Logger::Log("reopenMainCameraForModeSwitch | sdkMainCamExec not running", LogLevel::WARNING, DeviceType::CAMERA);
             return;
         }
         if (driverNameSnap.isEmpty() || cameraIdSnap.isEmpty()) {
-            Logger::Log("reopenMainCameraByDemoFlow | invalid driverName/cameraId | driver=" +
+            Logger::Log("reopenMainCameraForModeSwitch | invalid driverName/cameraId | driver=" +
                             driverNameSnap.toStdString() + " cameraId=" + cameraIdSnap.toStdString(),
                         LogLevel::ERROR, DeviceType::CAMERA);
             return;
@@ -4397,7 +4397,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
         const bool wantBurst = (targetMode == MainCameraCaptureMode::Burst);
         const bool wantLive  = (targetMode == MainCameraCaptureMode::Live);
         const double expUs   = static_cast<double>(glExpTime > 0 ? glExpTime : 1) * 1000.0;
-        const double usbTraffic = (usbTrafficSnap > 0) ? static_cast<double>(usbTrafficSnap) : 30.0; // Demo: 30
+        const double usbTraffic = (usbTrafficSnap > 0) ? static_cast<double>(usbTrafficSnap) : 30.0;
 
         mainExec->post([this,
                         drv,
@@ -4436,7 +4436,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
                     sdkMainLiveReady = false;
                     sdkMainBurstModeReady = false;
                     sdkMainAppliedModeValid = false;
-                    Logger::Log("reopenMainCameraByDemoFlow | failed at " + failStep.toStdString() +
+                    Logger::Log("reopenMainCameraForModeSwitch | failed at " + failStep.toStdString() +
                                     " msg=" + failMsg.toStdString(),
                                 LogLevel::ERROR, DeviceType::CAMERA);
                 }, Qt::QueuedConnection);
@@ -4458,7 +4458,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
                     sdkMainLiveReady = false;
                     sdkMainBurstModeReady = false;
                     sdkMainAppliedModeValid = false;
-                    Logger::Log("reopenMainCameraByDemoFlow | failed at " + failStep.toStdString() +
+                    Logger::Log("reopenMainCameraForModeSwitch | failed at " + failStep.toStdString() +
                                     " msg=" + failMsg.toStdString(),
                                 LogLevel::ERROR, DeviceType::CAMERA);
                 }, Qt::QueuedConnection);
@@ -4476,12 +4476,12 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 return SdkManager::instance().callByHandle(newHandle, c);
             };
 
-            // 4) Demo 初始化顺序（关键：StreamMode 在 Init 之前）
+            // 4) QHY SDK 标准初始化顺序（关键：StreamMode 在 Init 之前）
             // 4.1 ReadMode（best-effort，某些机型可能不支持/无意义）
             {
                 SdkResult r = call("SetReadMode", 0);
                 if (!r.success) {
-                    logWarn("reopenMainCameraByDemoFlow | SetReadMode(0) warn: " + r.message);
+                    logWarn("reopenMainCameraForModeSwitch | SetReadMode(0) warn: " + r.message);
                 }
             }
 
@@ -4505,7 +4505,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 }
             }
 
-            // 4.4 Bits/Debayer/Bin/USB/DDR（均为 best-effort，对齐 Demo）
+            // 4.4 Bits/Debayer/Bin/USB/DDR（均为 best-effort）
             if (ok) {
                 (void)call("SetBitsMode", 16);
                 bool shouldDisableDebayer = false;
@@ -4516,16 +4516,16 @@ void MainWindow::applySdkMainCameraCaptureMode()
                             shouldDisableDebayer = std::any_cast<bool>(colorRes.payload);
                         } catch (const std::bad_any_cast&) {
                             shouldDisableDebayer = false;
-                            logWarn("reopenMainCameraByDemoFlow | IsColorCamera payload cast failed, skip SetDebayerOnOff");
+                            logWarn("reopenMainCameraForModeSwitch | IsColorCamera payload cast failed, skip SetDebayerOnOff");
                         }
                     } else {
-                        logWarn("reopenMainCameraByDemoFlow | IsColorCamera failed, skip SetDebayerOnOff: " + colorRes.message);
+                        logWarn("reopenMainCameraForModeSwitch | IsColorCamera failed, skip SetDebayerOnOff: " + colorRes.message);
                     }
                 }
                 if (shouldDisableDebayer) {
                     (void)call("SetDebayerOnOff", false);
                 } else {
-                    Logger::Log("reopenMainCameraByDemoFlow | skip SetDebayerOnOff(false) for mono/unknown camera",
+                    Logger::Log("reopenMainCameraForModeSwitch | skip SetDebayerOnOff(false) for mono/unknown camera",
                                 LogLevel::INFO, DeviceType::CAMERA);
                 }
                 (void)call("SetBinMode", std::pair<int,int>(1,1));
@@ -4540,7 +4540,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 (void)call("SetCoolerTargetTemperature", static_cast<double>(tempSnap));
             }
 
-            // 4.6 分辨率：按 Demo 走全幅（对部分机型可显著提升/稳定出帧）
+            // 4.6 分辨率：设置全幅（对部分机型可显著提升/稳定出帧）
             if (ok) {
                 SdkAreaInfo fullRoi;
                 bool haveFull = false;
@@ -4562,7 +4562,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 if (haveFull) {
                     (void)call("SetResolution", fullRoi);
                 } else {
-                    logWarn("reopenMainCameraByDemoFlow | GetChipInfo failed, skip SetResolution(full)");
+                    logWarn("reopenMainCameraForModeSwitch | GetChipInfo failed, skip SetResolution(full)");
                 }
             }
 
@@ -4631,7 +4631,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
                     sdkMainBurstModeReady = wantBurst;
                     sdkMainLiveNextPollMs = QDateTime::currentMSecsSinceEpoch() + 100;
 
-                    Logger::Log("reopenMainCameraByDemoFlow | ok | streamMode=" + std::to_string(desiredStreamMode) +
+                    Logger::Log("reopenMainCameraForModeSwitch | ok | streamMode=" + std::to_string(desiredStreamMode) +
                                     " burst=" + std::string(wantBurst ? "true" : "false"),
                                 LogLevel::INFO, DeviceType::CAMERA);
                 } else {
@@ -4641,7 +4641,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
                     sdkMainLiveReady = false;
                     sdkMainBurstModeReady = false;
                     sdkMainAppliedModeValid = false;
-                    Logger::Log("reopenMainCameraByDemoFlow | failed at " + failStep.toStdString() +
+                    Logger::Log("reopenMainCameraForModeSwitch | failed at " + failStep.toStdString() +
                                     " msg=" + failMsg.toStdString(),
                                 LogLevel::ERROR, DeviceType::CAMERA);
                 }
@@ -4652,7 +4652,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
     if (mainCameraCaptureMode == MainCameraCaptureMode::Burst)
     {
         if (modeSwitched) {
-            reopenMainCameraByDemoFlow(MainCameraCaptureMode::Burst);
+            reopenMainCameraForModeSwitch(MainCameraCaptureMode::Burst);
             return;
         }
 
@@ -4874,7 +4874,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
     if (mainCameraCaptureMode == MainCameraCaptureMode::Live)
     {
         if (modeSwitched) {
-            reopenMainCameraByDemoFlow(MainCameraCaptureMode::Live);
+            reopenMainCameraForModeSwitch(MainCameraCaptureMode::Live);
             return;
         }
 
@@ -5030,7 +5030,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
 
     // Single：退出 Live/Burst，恢复单帧模式
     if (modeSwitched) {
-        reopenMainCameraByDemoFlow(MainCameraCaptureMode::Single);
+        reopenMainCameraForModeSwitch(MainCameraCaptureMode::Single);
         return;
     }
 
@@ -6007,6 +6007,24 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         needAllocation = true;
                         Logger::Log("ConnectDriver | SDK MainCamera (pool reuse): waiting for user allocation.",
                                     LogLevel::INFO, DeviceType::MAIN);
+                    }
+
+                    // 为池中所有未被Guider占用的相机发送DeviceToBeAllocated
+                    for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
+                    {
+                        if (g_sdkQhyCamHandles[i] == nullptr)
+                            continue;
+                        if (i == g_sdkGuiderPoolIndex)
+                            continue;
+                        const int uiIdx = sdkUiIndexFromPoolIndex(i);
+                        QString qid_cat;
+                        if (g_sdkQhyCamIds[i].contains("5III", Qt::CaseInsensitive))
+                            qid_cat = "5III";
+                        else if (g_sdkQhyCamIds[i].contains("DEMO", Qt::CaseInsensitive))
+                            qid_cat = "DEMO";
+                        else
+                            qid_cat = "OTHER";
+                        emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + g_sdkQhyCamIds[i] + ":" + qid_cat);
                     }
 
                     if (boundByThisCall)
