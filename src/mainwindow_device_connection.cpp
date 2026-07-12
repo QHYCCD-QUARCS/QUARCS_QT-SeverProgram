@@ -107,6 +107,8 @@ void MainWindow::ConnectAllDeviceOnce()
         if (driverName.isEmpty()) {
             Logger::Log("ConnectAllDeviceOnce | Cannot get SDK driver name for " + sdkCameraDeviceType.toStdString(),
                         LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectFailed:SDK driver name is empty");
+            emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
             return;
         }
         SdkResult initRes = SdkManager::instance().call(driverName.toStdString(), nullptr, initCmd);
@@ -125,6 +127,8 @@ void MainWindow::ConnectAllDeviceOnce()
         if (driverName.isEmpty()) {
             Logger::Log("ConnectAllDeviceOnce | Cannot get SDK driver name for " + sdkCameraDeviceType.toStdString(),
                         LogLevel::ERROR, DeviceType::MAIN);
+            emit wsThread->sendMessageToClient("ConnectFailed:SDK driver name is empty");
+            emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
             return;
         }
         SdkResult scanRes = SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
@@ -415,13 +419,46 @@ void MainWindow::ConnectAllDeviceOnce()
                     return true;
                 };
 
-                // [修改] 移除SDK相机自动绑定，全部等待用户手动选择
-                // 仅保留POLEMASTER自动绑定（设备唯一性识别）
+                // Connect All 优先按上次保存的 cameraId 静默回绑。
+                // 仅当保存的设备当前未扫描到时，才保留为待分配并要求用户选择。
+                if (mainWantsSdk && !sdkMainConnectedNow)
+                {
+                    const QString savedMainId = systemdevicelist.system_devices[20].DeviceIndiName;
+                    const int mainPickIndex = findPreferredPoolIndex(savedMainId);
+                    if (mainPickIndex >= 0)
+                    {
+                        bindMainCameraFromPool(mainPickIndex);
+                    }
+                    else if (!savedMainId.isEmpty())
+                    {
+                        Logger::Log("ConnectAllDeviceOnce | Saved SDK MainCamera not found: " + savedMainId.toStdString(),
+                                    LogLevel::WARNING, DeviceType::CAMERA);
+                    }
+                }
+
+                if (guiderWantsSdk && !sdkGuiderConnectedNow)
+                {
+                    const QString savedGuiderId = systemdevicelist.system_devices[1].DeviceIndiName;
+                    const int guiderPickIndex = findPreferredPoolIndex(savedGuiderId);
+                    if (guiderPickIndex >= 0)
+                    {
+                        bindGuiderFromPool(guiderPickIndex);
+                    }
+                    else if (!savedGuiderId.isEmpty())
+                    {
+                        Logger::Log("ConnectAllDeviceOnce | Saved SDK Guider not found: " + savedGuiderId.toStdString(),
+                                    LogLevel::WARNING, DeviceType::GUIDER);
+                    }
+                }
+
+                // PoleMaster 仍按设备唯一性自动识别；若有已保存 ID，则优先使用保存值。
                 int polePickIndex = -1;
                 if (poleWantsSdk)
                 {
+                    const QString savedPoleId = systemdevicelist.system_devices[2].DeviceIndiName;
+                    polePickIndex = findPreferredPoolIndex(savedPoleId);
                     // POLEMASTER基于设备唯一性自动绑定，保留
-                    for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                    for (int i = 0; polePickIndex < 0 && i < g_sdkQhyCamIds.size(); ++i)
                     {
                         if (!poolAssigned[i] && sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
                         {
@@ -432,9 +469,6 @@ void MainWindow::ConnectAllDeviceOnce()
                     if (polePickIndex >= 0)
                         bindPoleCameraFromPool(polePickIndex);
                 }
-
-                // MainCamera和Guider不再自动绑定，等待用户手动选择
-                // 移除历史配置回绑逻辑，避免"跳过人工选择"的问题
 
                 // 关键修复：
                 // 全部连接路径下，即使主相机/导星镜都已自动绑定，也要把“完整相机池”同步给前端分配列表。
@@ -520,7 +554,6 @@ void MainWindow::ConnectAllDeviceOnce()
                     Logger::Log("ConnectAllDeviceOnce | Multiple SDK cameras opened, waiting for allocation of unbound cameras.",
                                 LogLevel::INFO, DeviceType::CAMERA);
                 }
-                syncQhyAllocationStateFromLegacyBindings();
             }
         }
     }
@@ -594,6 +627,8 @@ void MainWindow::ConnectAllDeviceOnce()
             if (driverName.isEmpty()) {
                 Logger::Log("ConnectAllDeviceOnce | Cannot get SDK driver name for Focuser",
                             LogLevel::ERROR, DeviceType::FOCUSER);
+                emit wsThread->sendMessageToClient("ConnectFailed:SDK focuser driver name is empty");
+                emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
                 return;
             }
             SdkResult openRes = SdkManager::instance().open(driverName.toStdString(), p);
@@ -722,14 +757,14 @@ void MainWindow::ConnectAllDeviceOnce()
     // 若本次只选择 SDK 设备，则到此结束（不启动/重启 INDI，避免影响 INDI 流程）
     if (SelectedDriverNum == 0 && hasSDKDevice)
     {
-        if (!sdkMainConnectedNow && !sdkFocuserConnectedNow)
+        if (!sdkMainConnectedNow && !sdkGuiderConnectedNow && !sdkPoleConnectedNow && !sdkFocuserConnectedNow)
         {
             emit wsThread->sendMessageToClient("ConnectFailed:SDK connection failed");
         }
         // 无论成功还是失败，都需要发送完成消息，通知前端关闭进度条
         emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
         Logger::Log("ConnectAllDeviceOnce | SDK-only connection completed (success: " + 
-                    std::string(sdkMainConnectedNow || sdkFocuserConnectedNow ? "true" : "false") + ")", 
+                    std::string(sdkMainConnectedNow || sdkGuiderConnectedNow || sdkPoleConnectedNow || sdkFocuserConnectedNow ? "true" : "false") + ")", 
                     LogLevel::INFO, DeviceType::MAIN);
         return;
     }
@@ -2006,9 +2041,9 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         systemdevicelist.system_devices[20].isConnect = true;
         systemdevicelist.system_devices[20].isBind = false;
         systemdevicelist.system_devices[20].isSDKConnect = true;
+        systemdevicelist.system_devices[20].Description = "MainCamera";
         // 记录选择的相机 ID，便于下次自动重连/区分多相机
         systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
-        systemdevicelist.system_devices[20].DriverIndiName = getSDKDriverName("MainCamera");
 
         // 将设备注册到 SdkManager 的设备注册表，以便 callByHandle 和 closeByHandle 能够找到设备
         QString driverName = getSDKDriverName("MainCamera");
@@ -2040,7 +2075,6 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 
         // 复用 SDK 初始化流程，AfterDeviceConnect 会完成初始化并设置 isBind = true，同时发送 ConnectSuccess 消息给前端
         AfterDeviceConnect(nullptr);
-        syncQhyAllocationStateFromLegacyBindings();
         refreshBindUi();
         return;
     }
@@ -2076,8 +2110,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         systemdevicelist.system_devices[1].isConnect = true;
         systemdevicelist.system_devices[1].isBind = false;
         systemdevicelist.system_devices[1].isSDKConnect = true;
+        systemdevicelist.system_devices[1].Description = "Guider";
         systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
-        systemdevicelist.system_devices[1].DriverIndiName = getSDKDriverName("Guider");
         if (!systemdevicelist.system_devices[1].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[1].DriverFrom = "SDK";
         Tools::saveSystemDeviceList(systemdevicelist);
@@ -2105,7 +2139,6 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 
         // AfterDeviceConnect 负责完成 SDK 初始化并设置 isBind，同时发送 ConnectSuccess
         AfterDeviceConnect(nullptr);
-        syncQhyAllocationStateFromLegacyBindings();
         refreshBindUi();
         return;
     }
@@ -2140,8 +2173,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         systemdevicelist.system_devices[2].isConnect = true;
         systemdevicelist.system_devices[2].isBind = false;
         systemdevicelist.system_devices[2].isSDKConnect = true;
+        systemdevicelist.system_devices[2].Description = "PoleCamera";
         systemdevicelist.system_devices[2].DeviceIndiName = poleId;
-        systemdevicelist.system_devices[2].DriverIndiName = getSDKDriverName("PoleCamera");
         if (!systemdevicelist.system_devices[2].DriverFrom.contains("SDK", Qt::CaseInsensitive))
             systemdevicelist.system_devices[2].DriverFrom = "SDK";
         Tools::saveSystemDeviceList(systemdevicelist);
@@ -2152,7 +2185,6 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
                     LogLevel::INFO, DeviceType::MAIN);
 
         AfterDeviceConnect(nullptr);
-        syncQhyAllocationStateFromLegacyBindings();
         refreshBindUi();
         return;
     }
@@ -6038,7 +6070,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
                         emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:MainCamera");
                     }
-                    syncQhyAllocationStateFromLegacyBindings();
                     return;
                 }
 
@@ -6188,6 +6219,28 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
+            // 单设备重连：持久化选择已经确定时，扫描后按 cameraId 恢复连接。
+            // 只有首次选择或原设备未扫描到时，才进入候选选择流程。
+            const QString savedMainCameraId = systemdevicelist.system_devices[20].DeviceIndiName.trimmed();
+            if (!savedMainCameraId.isEmpty())
+            {
+                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                {
+                    if (g_sdkQhyCamIds[i] == savedMainCameraId && sdkPoolIndexValid(i))
+                    {
+                        Logger::Log("ConnectDriver | Reconnect saved SDK MainCamera: " +
+                                        savedMainCameraId.toStdString(),
+                                    LogLevel::INFO, DeviceType::CAMERA);
+                        BindingDevice("MainCamera", sdkUiIndexFromPoolIndex(i));
+                        emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                        return;
+                    }
+                }
+                Logger::Log("ConnectDriver | Saved SDK MainCamera not found, waiting for selection: " +
+                                savedMainCameraId.toStdString(),
+                            LogLevel::WARNING, DeviceType::CAMERA);
+            }
+
             // 5) [修改] 移除SDK MainCamera自动绑定，等待用户手动选择
             // 不再根据历史配置或QHY规则自动选择相机
             {
@@ -6208,7 +6261,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 emit wsThread->sendMessageToClient("AddDeviceType:MainCamera");
                 emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:MainCamera");
             }
-            syncQhyAllocationStateFromLegacyBindings();
             return;
         }
 
@@ -6437,7 +6489,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
                     }
-                    syncQhyAllocationStateFromLegacyBindings();
                     return;
                 }
 
@@ -6561,6 +6612,27 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
+            // 单设备重连使用已提交的设备选择，不要求用户再次分配相机。
+            const QString savedGuiderId = systemdevicelist.system_devices[1].DeviceIndiName.trimmed();
+            if (!savedGuiderId.isEmpty())
+            {
+                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                {
+                    if (g_sdkQhyCamIds[i] == savedGuiderId && sdkPoolIndexValid(i))
+                    {
+                        Logger::Log("ConnectDriver | Reconnect saved SDK Guider: " +
+                                        savedGuiderId.toStdString(),
+                                    LogLevel::INFO, DeviceType::GUIDER);
+                        BindingDevice("Guider", sdkUiIndexFromPoolIndex(i));
+                        emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                        return;
+                    }
+                }
+                Logger::Log("ConnectDriver | Saved SDK Guider not found, waiting for selection: " +
+                                savedGuiderId.toStdString(),
+                            LogLevel::WARNING, DeviceType::GUIDER);
+            }
+
             // 5) [修改] 移除SDK Guider自动绑定，等待用户手动选择
             // 不再根据历史配置或QHY规则自动选择相机
             {
@@ -6584,7 +6656,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 emit wsThread->sendMessageToClient("AddDeviceType:Guider");
                 emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:Guider");
             }
-            syncQhyAllocationStateFromLegacyBindings();
             return;
         }
 
@@ -6764,7 +6835,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 emit wsThread->sendMessageToClient("AddDeviceType:PoleCamera");
                 emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:PoleCamera");
             }
-            syncQhyAllocationStateFromLegacyBindings();
             return;
         }
 
@@ -8238,7 +8308,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
             for (const auto &name : sdkPoolNamesBeforeCleanup)
                 appendDeleteCandidate(removeNames, name);
-            emitDeleteDeviceAllocationListBatch(removeNames);
+            // Disconnect 不等于取消选择。候选快照由前端继续显示，重新连接时
+            // 后端会重新扫描并按持久化 cameraId 建立新的 SDK 池索引。
             if (wsThread != nullptr)
             {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
@@ -8371,7 +8442,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
             for (const auto &name : sdkPoolNamesBeforeCleanup)
                 appendDeleteCandidate(removeNames, name);
-            emitDeleteDeviceAllocationListBatch(removeNames);
+            // 保留前端候选快照和角色选择；运行时 SDK 池已在上方释放。
             if (wsThread != nullptr)
             {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
@@ -8464,7 +8535,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
             for (const auto &name : sdkPoolNamesBeforeCleanup)
                 appendDeleteCandidate(removeNames, name);
-            emitDeleteDeviceAllocationListBatch(removeNames);
+            // 保留前端 PoleCamera 候选快照和已选设备。
 
             if (wsThread != nullptr)
             {

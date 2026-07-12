@@ -15,7 +15,25 @@ bool MainWindow::handleDriverSelectionCommand(const QString &message, const QStr
     auto run = [this, &message, &parts]() {
     if (parts.size() >= 2 && parts[0].trimmed() == "ConfirmIndiDriver")
     {
-        if (parts.size() == 2)
+        if (parts.size() >= 4)
+        {
+            bool slotOk = false;
+            const int targetSlot = parts[3].trimmed().toInt(&slotOk);
+            if (!slotOk || targetSlot < 0 || targetSlot >= systemdevicelist.system_devices.size())
+            {
+                Logger::Log("ConfirmIndiDriver | Invalid target slot: " + parts[3].trimmed().toStdString(),
+                            LogLevel::ERROR, DeviceType::MAIN);
+                return;
+            }
+            systemdevicelist.currentDeviceCode = targetSlot;
+            const QString driverName = parts[1].trimmed();
+            const QString baudRate = parts[2].trimmed();
+            Logger::Log("ConfirmIndiDriver:" + driverName.toStdString() + ":" +
+                            baudRate.toStdString() + ":slot=" + std::to_string(targetSlot),
+                        LogLevel::DEBUG, DeviceType::MAIN);
+            indi_Driver_Confirm(driverName, baudRate);
+        }
+        else if (parts.size() == 2)
         {
             Logger::Log("ConfirmIndiDriver:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
             QString driverName = parts[1].trimmed();

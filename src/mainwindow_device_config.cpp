@@ -400,7 +400,22 @@ bool MainWindow::indi_Driver_Clear(int deviceCode)
         return false;
     }
 
-    systemdevicelist.system_devices[deviceCode].Description = "";
+    // Description 是固定槽位的逻辑角色，不属于驱动选择。Clear Driver 只能
+    // 清除驱动、设备选择和运行态，不能删除 Guider/MainCamera 等角色身份。
+    const auto roleForSlot = [](int index) -> QString {
+        switch (index) {
+        case 0: return QStringLiteral("Mount");
+        case 1: return QStringLiteral("Guider");
+        case 2: return QStringLiteral("PoleCamera");
+        case 20: return QStringLiteral("MainCamera");
+        case 21: return QStringLiteral("CFW");
+        case 22: return QStringLiteral("Focuser");
+        default: return QString();
+        }
+    };
+    const QString fixedRole = roleForSlot(deviceCode);
+    if (!fixedRole.isEmpty())
+        systemdevicelist.system_devices[deviceCode].Description = fixedRole;
     systemdevicelist.system_devices[deviceCode].DriverIndiName = "";
     systemdevicelist.system_devices[deviceCode].SDKDriverName = "";
     systemdevicelist.system_devices[deviceCode].BaudRate = 9600;
@@ -646,7 +661,9 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
         auto &d = systemdevicelist.system_devices[index];
         d.isConnect = false;
         d.isBind = false;
-        d.DeviceIndiName.clear();
+        // 资源清理/Disconnect 只复位运行态。DeviceIndiName 是用户选定的
+        // 持久化绑定，必须保留给下一次 Connect All 静默回连；只有明确的
+        // UnBindingDevice/ClearDriver 流程才允许清除它。
         d.dp = NULL;
     };
 
@@ -859,7 +876,6 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
     }
 
     // ReleaseSdkResource 已在“整池清理”路径中由相机线程任务负责执行
-    syncQhyAllocationStateFromLegacyBindings();
 }
 
 bool MainWindow::connectIndiServer(MyClient *client)
