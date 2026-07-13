@@ -6028,6 +6028,97 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                                 "Skip CameraPool cleanup and reuse existing pool for MainCamera binding.",
                                 LogLevel::WARNING, DeviceType::MAIN);
 
+                    // [方案B修复-对称] 池复用重连 MainCamera：先“补齐”池——把 scan 到但未打开的相机
+                    // （尤其是本角色断开时被 close 的那台）重新 open 进池；已在池中打开的（含 Guider 占用）跳过。
+                    for (int idx = 0; idx < cameraCount; ++idx)
+                    {
+                        SdkCommand getIdCmd;
+                        getIdCmd.type = SdkCommandType::Custom;
+                        getIdCmd.name = "GetCameraIdByIndex";
+                        getIdCmd.payload = idx;
+                        SdkResult getIdRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
+                        if (!getIdRes.success || !getIdRes.payload.has_value())
+                            continue;
+                        const std::string cameraId = std::any_cast<std::string>(getIdRes.payload);
+                        const QString qid = QString::fromStdString(cameraId);
+
+                        bool alreadyOpen = false;
+                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                        {
+                            if (g_sdkQhyCamIds[i] == qid && g_sdkQhyCamHandles[i] != nullptr)
+                            {
+                                alreadyOpen = true;
+                                break;
+                            }
+                        }
+                        if (alreadyOpen)
+                            continue;
+
+                        SdkResult openRes;
+                        SdkSerialExecutor *mainExec = sdkMainCameraExecutor();
+                        if (mainExec && mainExec->isRunning()) {
+                            const std::string driverNameStd = driverName.toStdString();
+                            const std::string cameraIdSnap = cameraId;
+                            openRes = mainExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
+                                return SdkManager::instance().open(driverNameStd, cameraIdSnap);
+                            });
+                        } else {
+                            openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
+                        }
+                        if (!openRes.success || !openRes.payload.has_value())
+                            continue;
+
+                        SdkDeviceHandle handle = std::any_cast<SdkDeviceHandle>(openRes.payload);
+                        int slot = -1;
+                        for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
+                        {
+                            if (g_sdkQhyCamHandles[i] == nullptr && (g_sdkQhyCamIds[i].isEmpty() || g_sdkQhyCamIds[i] == qid))
+                            {
+                                slot = i;
+                                break;
+                            }
+                        }
+                        if (slot >= 0)
+                        {
+                            g_sdkQhyCamHandles[slot] = handle;
+                            g_sdkQhyCamIds[slot] = qid;
+                        }
+                        else
+                        {
+                            g_sdkQhyCamHandles.push_back(handle);
+                            g_sdkQhyCamIds.push_back(qid);
+                        }
+                    }
+
+                    // [方案B修复-对称] 若 MainCamera 保留了上次绑定的 cameraId 且已在复用池中，直接自动回绑，
+                    // 恢复“断开后一键重连”；找不到匹配（相机全新/有歧义）时才进入下面的“等待用户手动分配”。
+                    {
+                        const QString savedMainCameraId =
+                            (systemdevicelist.system_devices.size() > 20)
+                                ? systemdevicelist.system_devices[20].DeviceIndiName.trimmed()
+                                : QString();
+                        if (!savedMainCameraId.isEmpty())
+                        {
+                            for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                            {
+                                if (i == g_sdkGuiderPoolIndex)
+                                    continue;
+                                if (g_sdkQhyCamIds[i] == savedMainCameraId && sdkPoolIndexValid(i))
+                                {
+                                    Logger::Log("ConnectDriver | Reconnect saved SDK MainCamera (pool reuse): " +
+                                                    savedMainCameraId.toStdString(),
+                                                LogLevel::INFO, DeviceType::MAIN);
+                                    BindingDevice("MainCamera", sdkUiIndexFromPoolIndex(i));
+                                    emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                                    return;
+                                }
+                            }
+                            Logger::Log("ConnectDriver | Saved SDK MainCamera not found in reused pool, waiting for selection: " +
+                                            savedMainCameraId.toStdString(),
+                                        LogLevel::WARNING, DeviceType::MAIN);
+                        }
+                    }
+
                     // [修改] 移除poolInUseByOtherRole场景下MainCamera自动绑定
                     // 即使复用已有池，也等待用户手动选择
                     {
@@ -6465,6 +6556,36 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         Logger::Log("ConnectDriver | Reused pool and opened " + std::to_string(openedNew) +
                                     " additional camera(s) for Guider reconnect.",
                                     LogLevel::INFO, DeviceType::GUIDER);
+                    }
+
+                    // [方案B修复] 池复用重连：Guider 若保留了上次绑定的 cameraId 且它已在复用池中，
+                    // 直接自动回绑该相机（不清池、不影响 MainCamera），恢复“断开后一键重连”。
+                    // 仅当找不到匹配（相机全新/有歧义）时才进入下面的“等待用户手动分配”。
+                    {
+                        const QString savedGuiderId =
+                            (systemdevicelist.system_devices.size() > 1)
+                                ? systemdevicelist.system_devices[1].DeviceIndiName.trimmed()
+                                : QString();
+                        if (!savedGuiderId.isEmpty())
+                        {
+                            for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+                            {
+                                if (i == g_sdkMainCameraPoolIndex)
+                                    continue;
+                                if (g_sdkQhyCamIds[i] == savedGuiderId && sdkPoolIndexValid(i))
+                                {
+                                    Logger::Log("ConnectDriver | Reconnect saved SDK Guider (pool reuse): " +
+                                                    savedGuiderId.toStdString(),
+                                                LogLevel::INFO, DeviceType::GUIDER);
+                                    BindingDevice("Guider", sdkUiIndexFromPoolIndex(i));
+                                    emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                                    return;
+                                }
+                            }
+                            Logger::Log("ConnectDriver | Saved SDK Guider not found in reused pool, waiting for selection: " +
+                                            savedGuiderId.toStdString(),
+                                        LogLevel::WARNING, DeviceType::GUIDER);
+                        }
                     }
 
                     // [修改] 移除poolInUseByOtherRole场景下Guider自动绑定
@@ -8244,10 +8365,6 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         {
             Logger::Log("DisconnectDevice | Guider is in SDK mode, closing guider handle ...",
                         LogLevel::INFO, DeviceType::GUIDER);
-            QStringList sdkPoolNamesBeforeCleanup;
-            for (const auto &id : g_sdkQhyCamIds)
-                appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
-
             if (guiderLoopTimer)
                 guiderLoopTimer->stop();
             if (sdkGuiderExposureTimer)
@@ -8282,42 +8399,11 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 // 保留 cameraId，便于下次发现同一设备时自动回绑
             }
 
-            // 相机 SDK（QHYCCD）由主相机/导星等角色共享句柄池。
-            // 按需求：断开任一相机角色时，统一清理相机池并释放 SDK 资源，避免另一个角色残留占用。
-            const bool shouldNotifyMainCameraDisconnected =
-                (systemdevicelist.system_devices.size() > 20 &&
-                 systemdevicelist.system_devices[20].isSDKConnect &&
-                 (systemdevicelist.system_devices[20].isConnect || sdkMainCameraHandle != nullptr));
-            const bool shouldNotifyPoleCameraDisconnected =
-                (systemdevicelist.system_devices.size() > 2 &&
-                 systemdevicelist.system_devices[2].isSDKConnect &&
-                 (systemdevicelist.system_devices[2].isConnect || sdkPoleScopeHandle != nullptr));
-            cleanupQhySdkPoolAndResource("DisconnectDevice: Guider -> cleanup shared SDK camera pool", "CameraPool");
-
+            // 单设备 Disconnect 只释放 Guider 对应的 handle/池槽位。
+            // MainCamera/PoleCamera 使用不同 handle，共享 SDK 全局资源但不共享连接状态。
             eraseConnectedDeviceByType("Guider");
-            eraseConnectedDeviceByType("MainCamera");
-            if (shouldNotifyPoleCameraDisconnected)
-                eraseConnectedDeviceByType("PoleCamera");
-            QStringList removeNames;
-            appendDeleteCandidate(removeNames, DeviceName);
-            if (systemdevicelist.system_devices.size() > 1)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
-            if (shouldNotifyMainCameraDisconnected && systemdevicelist.system_devices.size() > 20)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
-            if (shouldNotifyPoleCameraDisconnected && systemdevicelist.system_devices.size() > 2)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
-            for (const auto &name : sdkPoolNamesBeforeCleanup)
-                appendDeleteCandidate(removeNames, name);
-            // Disconnect 不等于取消选择。候选快照由前端继续显示，重新连接时
-            // 后端会重新扫描并按持久化 cameraId 建立新的 SDK 池索引。
             if (wsThread != nullptr)
-            {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
-                if (shouldNotifyMainCameraDisconnected)
-                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
-                if (shouldNotifyPoleCameraDisconnected)
-                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:PoleCamera");
-            }
             Tools::saveSystemDeviceList(systemdevicelist);
             Logger::Log("DisconnectDevice | Guider (SDK) disconnected.", LogLevel::INFO, DeviceType::GUIDER);
             return;
@@ -8333,10 +8419,6 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         if (mainCameraMarkedSDK || sdkMainCameraHandle != nullptr || !g_sdkQhyCamHandles.isEmpty())
         {
             Logger::Log("DisconnectDevice | MainCamera is in SDK mode, disconnect flow with SDK pool ...", LogLevel::INFO, DeviceType::MAIN);
-            QStringList sdkPoolNamesBeforeCleanup;
-            for (const auto &id : g_sdkQhyCamIds)
-                appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
-
             // 小工具：把主相机 SDK 调用串行投递到主相机通道，避免 UI 线程并发访问同一 handle 触发 SDK 内部崩溃
             auto postToCamThread = [&](std::function<void()> fn) {
                 SdkSerialExecutor *mainExec = sdkMainCameraExecutor();
@@ -8412,45 +8494,10 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             glMainCameraStatu = "IDLE";
             ShootStatus = "IDLE";
 
-            const bool shouldNotifyGuiderDisconnected =
-                (systemdevicelist.system_devices.size() > 1 &&
-                 systemdevicelist.system_devices[1].isSDKConnect &&
-                 (systemdevicelist.system_devices[1].isConnect || sdkGuiderHandle != nullptr));
-            const bool shouldNotifyPoleCameraDisconnected =
-                (systemdevicelist.system_devices.size() > 2 &&
-                 systemdevicelist.system_devices[2].isSDKConnect &&
-                 (systemdevicelist.system_devices[2].isConnect || sdkPoleScopeHandle != nullptr));
-
-            Logger::Log("DisconnectDevice | MainCamera SDK disconnect -> cleanup shared SDK camera pool.",
-                        LogLevel::INFO, DeviceType::MAIN);
-            cleanupQhySdkPoolAndResource("DisconnectDevice: MainCamera -> cleanup shared SDK camera pool", "CameraPool");
-
-            // 7) 通知前端断开成功（SDK 模式不会命中 INDI 的循环）
+            // 单设备 Disconnect 不清理共享池；只移除 MainCamera 的运行连接。
             eraseConnectedDeviceByType("MainCamera");
-            if (shouldNotifyGuiderDisconnected)
-                eraseConnectedDeviceByType("Guider");
-            if (shouldNotifyPoleCameraDisconnected)
-                eraseConnectedDeviceByType("PoleCamera");
-            QStringList removeNames;
-            appendDeleteCandidate(removeNames, DeviceName);
-            appendDeleteCandidate(removeNames, closedCameraId);
-            if (systemdevicelist.system_devices.size() > 20)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
-            if (shouldNotifyGuiderDisconnected && systemdevicelist.system_devices.size() > 1)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
-            if (shouldNotifyPoleCameraDisconnected && systemdevicelist.system_devices.size() > 2)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
-            for (const auto &name : sdkPoolNamesBeforeCleanup)
-                appendDeleteCandidate(removeNames, name);
-            // 保留前端候选快照和角色选择；运行时 SDK 池已在上方释放。
             if (wsThread != nullptr)
-            {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
-                if (shouldNotifyGuiderDisconnected)
-                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
-                if (shouldNotifyPoleCameraDisconnected)
-                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:PoleCamera");
-            }
 
             // 关键修复：
             // 走到这里说明 MainCamera 是 SDK 断开路径。此时不应继续执行下面的 INDI 断开流程，
@@ -8470,10 +8517,6 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         {
             Logger::Log("DisconnectDevice | PoleCamera is in SDK mode, closing pole camera handle ...",
                         LogLevel::INFO, DeviceType::MAIN);
-            QStringList sdkPoolNamesBeforeCleanup;
-            for (const auto &id : g_sdkQhyCamIds)
-                appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
-
             if (sdkGuiderExposureRole == "PoleCamera" && sdkGuiderExposureTimer)
                 sdkGuiderExposureTimer->stop();
 
@@ -8508,43 +8551,9 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 systemdevicelist.system_devices[2].isBind = false;
             }
 
-            const bool shouldNotifyMainCameraDisconnected =
-                (systemdevicelist.system_devices.size() > 20 &&
-                 systemdevicelist.system_devices[20].isSDKConnect &&
-                 (systemdevicelist.system_devices[20].isConnect || sdkMainCameraHandle != nullptr));
-            const bool shouldNotifyGuiderDisconnected =
-                (systemdevicelist.system_devices.size() > 1 &&
-                 systemdevicelist.system_devices[1].isSDKConnect &&
-                 (systemdevicelist.system_devices[1].isConnect || sdkGuiderHandle != nullptr));
-
-            cleanupQhySdkPoolAndResource("DisconnectDevice: PoleCamera -> cleanup shared SDK camera pool", "CameraPool");
-
             eraseConnectedDeviceByType("PoleCamera");
-            if (shouldNotifyMainCameraDisconnected)
-                eraseConnectedDeviceByType("MainCamera");
-            if (shouldNotifyGuiderDisconnected)
-                eraseConnectedDeviceByType("Guider");
-
-            QStringList removeNames;
-            appendDeleteCandidate(removeNames, DeviceName);
-            if (systemdevicelist.system_devices.size() > 2)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[2].DeviceIndiName);
-            if (shouldNotifyMainCameraDisconnected && systemdevicelist.system_devices.size() > 20)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[20].DeviceIndiName);
-            if (shouldNotifyGuiderDisconnected && systemdevicelist.system_devices.size() > 1)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[1].DeviceIndiName);
-            for (const auto &name : sdkPoolNamesBeforeCleanup)
-                appendDeleteCandidate(removeNames, name);
-            // 保留前端 PoleCamera 候选快照和已选设备。
-
             if (wsThread != nullptr)
-            {
                 emit wsThread->sendMessageToClient("DisconnectDriverSuccess:PoleCamera");
-                if (shouldNotifyMainCameraDisconnected)
-                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:MainCamera");
-                if (shouldNotifyGuiderDisconnected)
-                    emit wsThread->sendMessageToClient("DisconnectDriverSuccess:Guider");
-            }
 
             Tools::saveSystemDeviceList(systemdevicelist);
             Logger::Log("DisconnectDevice | PoleCamera (SDK) disconnected.", LogLevel::INFO, DeviceType::MAIN);

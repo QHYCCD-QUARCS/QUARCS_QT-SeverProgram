@@ -565,13 +565,11 @@ bool MainWindow::handleSystemCommand(const QString &message, const QStringList &
 
         if (sameDriverCameraGroup)
         {
-            bool anyConnected = false;
             bool anySdkConnected = false;
             bool anyIndiConnected = false;
             for (int roleIdx : linkedCameraIndexes)
             {
                 const bool connected = systemdevicelist.system_devices[roleIdx].isConnect;
-                anyConnected = anyConnected || connected;
                 anySdkConnected = anySdkConnected || (connected && systemdevicelist.system_devices[roleIdx].isSDKConnect);
                 anyIndiConnected = anyIndiConnected || (connected && !systemdevicelist.system_devices[roleIdx].isSDKConnect);
             }
@@ -596,15 +594,10 @@ bool MainWindow::handleSystemCommand(const QString &message, const QStringList &
                 return;
             }
 
-            // 额外兜底：任一已连接时，禁止对“另一台”做跨模式切换（需要先断开）
-            if (anyConnected && oldIsSdk != newIsSdk)
-            {
-                Logger::Log("SetConnectionMode | QHY camera group already connected. Changing connection mode is forbidden. Please disconnect first.",
-                            LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("SetConnectionModeFailed:" + deviceDescription +
-                                                   ":DeviceConnectedLockModeChangeForbidden");
-                return;
-            }
+            // 未连接的第二个角色允许切换到已连接相机的相同模式。
+            // 上面的 anyIndiConnected/anySdkConnected 检查已经阻止了真正的模式冲突；
+            // 若在这里仅因组内存在连接就拒绝，会导致 Guider=SDK 后 MainCamera
+            // 无法从默认 INDI 对齐到 SDK。
         }
 
         // 支持性校验：若要切到 SDK，需要该设备支持；同驱动联动时也要求另一台支持
