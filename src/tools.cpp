@@ -870,14 +870,30 @@ void Tools::saveSystemDeviceList(SystemDeviceList deviceList) {
     }
     infile.close();
 
-    // 如果文件已经包含了 [LastConnectedDevice] 部分，则移除旧的内容
+    // 移除旧的 [LastConnectedDevice] 部分（若存在）。
+    // 说明：历史实现用 find(endMarker)+len 再与 npos 比较，find 失败时会回绕成
+    // 一个很小的偏移使 !=npos 恒真、erase 越界，把整段甚至后续内容乱擦，最终
+    // [LastConnectedDevice] 段被写丢（现网现象：config.ini 长期缺该段）。这里改为
+    // 稳健定位：找到段头后删除到结束标记之后（含其后换行/空行）；找不到结束标记则删到文件末尾。
     std::string content = fileContent.str();
+    const std::string endMarker = "(End of device list)";
     size_t pos = content.find("[LastConnectedDevice]");
     if (pos != std::string::npos) {
-        size_t endPos = content.find("(End of device list)\n\n", pos) + std::string("(End of device list)\n\n").length();  // 找到 [LastConnectedDevice] 部分结束的位置
+        size_t endPos = content.find(endMarker, pos);
         if (endPos != std::string::npos) {
-            content.erase(pos, endPos - pos);  // 删除旧的设备列表部分
+            endPos += endMarker.length();  // 跳过结束标记本身
+            while (endPos < content.size() && (content[endPos] == '\n' || content[endPos] == '\r')) {
+                ++endPos;  // 连同其后的换行/空行一并吃掉，避免残留空段
+            }
+            content.erase(pos, endPos - pos);
+        } else {
+            content.erase(pos);  // 历史损坏：只有段头没有结束标记，直接删到文件末尾
         }
+    }
+
+    // 防御：确保前置内容以换行结尾，避免新段头拼接到上一行末尾
+    if (!content.empty() && content.back() != '\n') {
+        content += "\n";
     }
 
     // 打开文件进行写入（覆盖模式）

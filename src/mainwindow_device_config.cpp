@@ -1186,17 +1186,25 @@ void MainWindow::loadSelectedDriverList()
                     // 获取当前连接模式
                     QString connectionMode = systemdevicelist.system_devices[i].isSDKConnect ? "SDK" : "INDI";
 
-                    // 消息格式：SelectedDriverList:Description:DriverName:SDKSupport:ConnectionMode:...
-                    // SDKSupport: "true" 表示支持 SDK，"false" 表示不支持
-                    // ConnectionMode: "SDK" 或 "INDI"
-                    // 注意：即使 driverName 为空，也发送该条目，以便前端清除驱动显示
+                    // 持久化的设备型号（SDK 相机为 cameraId，INDI 设备为 INDI 设备名）。
+                    // 用作前端左侧"设备名"显示；':' 是分隔符，替换掉以免破坏协议解析。
+                    QString deviceModel = systemdevicelist.system_devices[i].DeviceIndiName;
+                    deviceModel.replace(':', ' ');
+
+                    // 消息格式（每设备 5 字段）：
+                    //   SelectedDriverList:Description:DriverName:SDKSupport:ConnectionMode:DeviceModel:...
+                    // SDKSupport: "true"/"false"；ConnectionMode: "SDK"/"INDI"；
+                    // DeviceModel: 持久化型号，可能为空（未曾绑定过）。
+                    // 注意：即使 driverName/型号为空，也发送该条目，以便前端清除对应显示。
                     order += ":" + description + ":" + driverName + ":" +
-                             (supportSDK ? "true" : "false") + ":" + connectionMode;
+                             (supportSDK ? "true" : "false") + ":" + connectionMode +
+                             ":" + deviceModel;
 
                     Logger::Log("loadSelectedDriverList | Added device: " + description.toStdString() +
                                " - " + (driverName.isEmpty() ? "(empty)" : driverName.toStdString()) +
                                " (SDK支持: " + (supportSDK ? "是" : "否") +
-                               ", 连接模式: " + connectionMode.toStdString() + ")",
+                               ", 连接模式: " + connectionMode.toStdString() +
+                               ", 型号: " + (deviceModel.isEmpty() ? "(empty)" : deviceModel.toStdString()) + ")",
                                LogLevel::DEBUG, DeviceType::MAIN);
                 }
             }
