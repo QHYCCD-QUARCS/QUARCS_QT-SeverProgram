@@ -8757,12 +8757,11 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             disconnectdriverName = systemdevicelist.system_devices[20].DriverIndiName;
             systemdevicelist.system_devices[20].isConnect = false;
             systemdevicelist.system_devices[20].isBind = false;
-            // 保留 isSDKConnect、DriverFrom 和 DriverIndiName（设备固有能力属性），仅清理连接状态
-            // DriverFrom 不应该清空，因为它标识了驱动的 SDK 支持能力（如 "QHYCCDSDK"）
-            // DriverIndiName 不应该清空，因为前端需要它来显示驱动选择并重新连接
-            // 清空会导致：1) isDeviceTypeSupportSDK() 无法识别；2) 前端 driverName 变为空或错误值
-            systemdevicelist.system_devices[20].DeviceIndiName = "";  // 设备实例名，断开时可以清空
-            systemdevicelist.system_devices[20].DeviceIndiGroup = -1;
+            // 对齐 SDK 断开语义：仅复位运行态，保留 DeviceIndiName(型号/实例名)、
+            // DeviceIndiGroup、DriverIndiName、DriverFrom、isSDKConnect。型号供左侧显示与
+            // 重连，下次连接由 AfterDeviceConnect 用真实 INDI 设备名刷新；清型号只在真正的
+            // 删除路径(UnBindingDevice / indi_Driver_Clear)执行。
+            // systemdevicelist.system_devices[20].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
             // systemdevicelist.system_devices[20].DriverIndiName = "";  // ❌ 不应清空（驱动名）
             // systemdevicelist.system_devices[20].DriverFrom = "";  // ❌ 不应清空（驱动能力）
             systemdevicelist.system_devices[20].dp = NULL;
@@ -8774,8 +8773,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         disconnectdriverName = systemdevicelist.system_devices[1].DriverIndiName;
         systemdevicelist.system_devices[1].isConnect = false;
         systemdevicelist.system_devices[1].isBind = false;
-        systemdevicelist.system_devices[1].DeviceIndiName = "";  // 设备实例名，断开时可以清空
-        systemdevicelist.system_devices[1].DeviceIndiGroup = -1;
+        // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
+        // systemdevicelist.system_devices[1].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
         // systemdevicelist.system_devices[1].DriverIndiName = "";  // ❌ 不应清空（驱动名）
         // systemdevicelist.system_devices[1].DriverFrom = "";  // ❌ 不应清空（驱动能力）
         systemdevicelist.system_devices[1].dp = NULL;
@@ -8786,8 +8785,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         disconnectdriverName = systemdevicelist.system_devices[2].DriverIndiName;
         systemdevicelist.system_devices[2].isConnect = false;
         systemdevicelist.system_devices[2].isBind = false;
-        systemdevicelist.system_devices[2].DeviceIndiName = "";  // 设备实例名，断开时可以清空
-        systemdevicelist.system_devices[2].DeviceIndiGroup = -1;
+        // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
+        // systemdevicelist.system_devices[2].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
         // systemdevicelist.system_devices[2].DriverIndiName = "";  // ❌ 不应清空（驱动名）
         // systemdevicelist.system_devices[2].DriverFrom = "";  // ❌ 不应清空（驱动能力）
         systemdevicelist.system_devices[2].dp = NULL;
@@ -8798,8 +8797,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         disconnectdriverName = systemdevicelist.system_devices[0].DriverIndiName;
         systemdevicelist.system_devices[0].isConnect = false;
         systemdevicelist.system_devices[0].isBind = false;
-        systemdevicelist.system_devices[0].DeviceIndiName = "";  // 设备实例名，断开时可以清空
-        systemdevicelist.system_devices[0].DeviceIndiGroup = -1;
+        // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
+        // systemdevicelist.system_devices[0].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
         // systemdevicelist.system_devices[0].DriverIndiName = "";  // ❌ 不应清空（驱动名）
         // systemdevicelist.system_devices[0].DriverFrom = "";  // ❌ 不应清空（驱动能力）
         systemdevicelist.system_devices[0].dp = NULL;
@@ -8810,8 +8809,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         disconnectdriverName = systemdevicelist.system_devices[22].DriverIndiName;
         systemdevicelist.system_devices[22].isConnect = false;
         systemdevicelist.system_devices[22].isBind = false;
-        systemdevicelist.system_devices[22].DeviceIndiName = "";  // 设备实例名，断开时可以清空
-        systemdevicelist.system_devices[22].DeviceIndiGroup = -1;
+        // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
+        // systemdevicelist.system_devices[22].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
         // systemdevicelist.system_devices[22].DriverIndiName = "";  // ❌ 不应清空（驱动名）
         // systemdevicelist.system_devices[22].DriverFrom = "";  // ❌ 不应清空（驱动能力）
         systemdevicelist.system_devices[22].dp = NULL;
@@ -8822,8 +8821,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         disconnectdriverName = systemdevicelist.system_devices[21].DriverIndiName;
         systemdevicelist.system_devices[21].isConnect = false;
         systemdevicelist.system_devices[21].isBind = false;
-        systemdevicelist.system_devices[21].DeviceIndiName = "";  // 设备实例名，断开时可以清空
-        systemdevicelist.system_devices[21].DeviceIndiGroup = -1;
+        // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
+        // systemdevicelist.system_devices[21].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
         // systemdevicelist.system_devices[21].DriverIndiName = "";  // ❌ 不应清空（驱动名）
         // systemdevicelist.system_devices[21].DriverFrom = "";  // ❌ 不应清空（驱动能力）
         systemdevicelist.system_devices[21].dp = NULL;
