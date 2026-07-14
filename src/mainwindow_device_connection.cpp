@@ -1130,12 +1130,30 @@ void MainWindow::continueConnectAllDeviceOnce()
             continue;
         }
         
-        // 若该槽位被标记为 SDK 连接，则跳过 INDI 连接流程
-        if (systemdevicelist.system_devices[i].isSDKConnect)
+        // 修复索引混用 bug：这里的 i 是 INDI 设备表下标(按驱动注册先后排序)，而
+        // systemdevicelist.system_devices 是按“角色槽位”排列(Mount=0/Guider=1/…/Focuser=22)，
+        // 两套下标含义不同。直接用 system_devices[i].isSDKConnect 判断会错位——例如 Guider(槽位1)
+        // 为 SDK 时，恰好落在 INDI 表 i=1 的那个 INDI 设备(赤道仪或电调焦，取决于注册先后)会被
+        // 误当成 SDK 而跳过，导致 connect all 时赤道仪/电调焦间歇性连不上。
+        // 正确做法：按驱动名(driverExec)把该 INDI 设备匹配到对应角色槽位，再判该槽位是否 SDK。
         {
-            Logger::Log("continueConnectAllDeviceOnce | Skip INDI connect for SDK device slot index " + std::to_string(i),
-                        LogLevel::INFO, DeviceType::MAIN);
-            continue;
+            const QString curDriverExec = QString::fromUtf8(device->getDriverExec());
+            int roleSlotIdx = -1;
+            for (int idx = 0; idx < systemdevicelist.system_devices.size(); idx++)
+            {
+                if (indiDriverNamesEquivalent(systemdevicelist.system_devices[idx].DriverIndiName, curDriverExec))
+                {
+                    roleSlotIdx = idx;
+                    break;
+                }
+            }
+            if (roleSlotIdx >= 0 && systemdevicelist.system_devices[roleSlotIdx].isSDKConnect)
+            {
+                Logger::Log("continueConnectAllDeviceOnce | Skip INDI connect for SDK role slot " + std::to_string(roleSlotIdx) +
+                                " (indi device index " + std::to_string(i) + ", " + deviceName + ")",
+                            LogLevel::INFO, DeviceType::MAIN);
+                continue;
+            }
         }
 
         Logger::Log("Start connecting devices(INDI):" + deviceName, LogLevel::INFO, DeviceType::MAIN);
