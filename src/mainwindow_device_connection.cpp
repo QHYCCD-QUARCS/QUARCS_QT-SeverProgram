@@ -1,4 +1,5 @@
 #include "mainwindow_command_support.h"
+#include "device_allocation.h"
 
 namespace
 {
@@ -1629,126 +1630,54 @@ void MainWindow::continueConnectAllDeviceOnce()
             isQhyDualRole &&
             ConnectedCCDList.size() >= 2)
         {
-            struct IndiQhyCandidate
-            {
-                int index = -1;
-                QString name;
-                bool is5III = false;
-                long long pixelCount = -1;
-            };
-
-            auto makeCandidate = [&](int idx) -> IndiQhyCandidate {
-                IndiQhyCandidate c;
-                c.index = idx;
-                INDI::BaseDevice *dev = indi_Client->GetDeviceFromList(idx);
-                if (dev && dev->getDeviceName())
-                {
-                    c.name = QString::fromUtf8(dev->getDeviceName());
-                    c.is5III = c.name.contains("5III", Qt::CaseInsensitive);
-                    int maxX = 0, maxY = 0, bitDepth = 0;
-                    double pixelsize = 0.0, pixelsizX = 0.0, pixelsizY = 0.0;
-                    if (indi_Client->getCCDBasicInfo(dev, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth) == 0 &&
-                        maxX > 0 && maxY > 0)
-                    {
-                        c.pixelCount = static_cast<long long>(maxX) * static_cast<long long>(maxY);
-                    }
-                }
-                return c;
-            };
-
-            std::vector<IndiQhyCandidate> pool;
-            pool.reserve(static_cast<size_t>(ConnectedCCDList.size()));
+            // 自动型号选择统一走纯函数 planCameraAllocation（device_allocation.h）。
+            // 此处只消费 bind 结果；未绑定候选由后续 DeviceToBeAllocated 循环上报。
+            QVector<devalloc::Candidate> pool;
             for (int idx : ConnectedCCDList)
             {
                 if (idx < 0 || idx >= indi_Client->GetDeviceCount())
                     continue;
                 if (boundCcdIndexes.contains(idx))
                     continue;
-                pool.push_back(makeCandidate(idx));
+                devalloc::Candidate cand;
+                cand.index = idx;
+                INDI::BaseDevice *dev = indi_Client->GetDeviceFromList(idx);
+                if (dev && dev->getDeviceName())
+                {
+                    cand.name = QString::fromUtf8(dev->getDeviceName());
+                    cand.is5III = cand.name.contains("5III", Qt::CaseInsensitive);
+                    int maxX = 0, maxY = 0, bitDepth = 0;
+                    double pixelsize = 0.0, pixelsizX = 0.0, pixelsizY = 0.0;
+                    if (indi_Client->getCCDBasicInfo(dev, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth) == 0 &&
+                        maxX > 0 && maxY > 0)
+                        cand.pixelCount = static_cast<long long>(maxX) * static_cast<long long>(maxY);
+                }
+                pool.push_back(cand);
             }
 
-            if (!pool.empty())
+            devalloc::Request req;
+            req.requestMain = mainNeedsFallback;
+            req.requestGuider = guiderNeedsFallback;
+            req.isQhyDualRole = true;
+            const devalloc::Plan plan = devalloc::planCameraAllocation(pool, req);
+
+            for (const auto &b : plan.bind)
             {
-                std::sort(pool.begin(), pool.end(), [](const IndiQhyCandidate &a, const IndiQhyCandidate &b) {
-                    if (a.is5III != b.is5III)
-                        return a.is5III && !b.is5III;
-                    if (a.pixelCount != b.pixelCount)
-                        return a.pixelCount > b.pixelCount;
-                    return a.index < b.index;
-                });
-
-                int fallbackMainIdx = -1;
-                int fallbackGuiderIdx = -1;
-
-                if (mainNeedsFallback && guiderNeedsFallback && pool.size() >= 2)
-                {
-                    std::vector<IndiQhyCandidate> fiveIIIGroup;
-                    std::vector<IndiQhyCandidate> nonFiveIIIGroup;
-                    for (const auto &c : pool)
-                    {
-                        if (c.is5III)
-                            fiveIIIGroup.push_back(c);
-                        else
-                            nonFiveIIIGroup.push_back(c);
-                    }
-
-                    if (!fiveIIIGroup.empty() && !nonFiveIIIGroup.empty())
-                    {
-                        fallbackGuiderIdx = fiveIIIGroup.front().index;
-                        fallbackMainIdx = nonFiveIIIGroup.front().index;
-                    }
-                    else
-                    {
-                        // 同系列：分辨率高 -> Main，低 -> Guider
-                        const IndiQhyCandidate &high = pool[0];
-                        const IndiQhyCandidate &low = pool[1];
-                        fallbackMainIdx = high.index;
-                        fallbackGuiderIdx = low.index;
-                    }
-                }
-                else if (mainNeedsFallback)
-                {
-                    // 仅缺 Main：优先非 5III；若无则选分辨率高
-                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return !c.is5III; });
-                    fallbackMainIdx = (it != pool.end()) ? it->index : pool.front().index;
-                }
-                else if (guiderNeedsFallback)
-                {
-                    // 仅缺 Guider：优先 5III；若无则选分辨率低
-                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return c.is5III; });
-                    if (it != pool.end())
-                        fallbackGuiderIdx = it->index;
-                    else
-                        fallbackGuiderIdx = pool.back().index;
-                }
-
-                auto bindByIdx = [&](const QString &description, int idx) {
-                    if (idx < 0 || idx >= indi_Client->GetDeviceCount())
-                        return;
-                    if (boundCcdIndexes.contains(idx))
-                        return;
-                    INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
-                    if (!device)
-                        return;
-                    if (description == "MainCamera")
-                    {
-                        bindDeviceToRole(DeviceSlot::MainCamera, device);
-                    }
-                    else if (description == "Guider")
-                    {
-                        bindDeviceToRole(DeviceSlot::Guider, device);
-                    }
-                    boundCcdIndexes.insert(idx);
-                    Logger::Log("continueConnectAllDeviceOnce | INDI QHY fallback auto-bind: " +
-                                    description.toStdString() + " -> " +
-                                    QString::fromUtf8(device->getDeviceName()).toStdString(),
-                                LogLevel::INFO, DeviceType::MAIN);
-                };
-
-                if (mainNeedsFallback)
-                    bindByIdx("MainCamera", fallbackMainIdx);
-                if (guiderNeedsFallback)
-                    bindByIdx("Guider", fallbackGuiderIdx);
+                const int idx = b.second;
+                if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                    continue;
+                if (boundCcdIndexes.contains(idx))
+                    continue;
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+                if (!device)
+                    continue;
+                const bool isMain = (b.first == devalloc::Role::MainCamera);
+                bindDeviceToRole(isMain ? DeviceSlot::MainCamera : DeviceSlot::Guider, device);
+                boundCcdIndexes.insert(idx);
+                Logger::Log("continueConnectAllDeviceOnce | INDI QHY fallback auto-bind: " +
+                                std::string(isMain ? "MainCamera" : "Guider") + " -> " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
             }
         }
 
@@ -7911,123 +7840,54 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             isQhyDualRole &&
             ConnectedCCDList.size() >= 2)
         {
-            struct IndiQhyCandidate
-            {
-                int index = -1;
-                QString name;
-                bool is5III = false;
-                long long pixelCount = -1;
-            };
-
-            auto makeCandidate = [&](int idx) -> IndiQhyCandidate {
-                IndiQhyCandidate c;
-                c.index = idx;
-                INDI::BaseDevice *dev = indi_Client->GetDeviceFromList(idx);
-                if (dev && dev->getDeviceName())
-                {
-                    c.name = QString::fromUtf8(dev->getDeviceName());
-                    c.is5III = c.name.contains("5III", Qt::CaseInsensitive);
-                    int maxX = 0, maxY = 0, bitDepth = 0;
-                    double pixelsize = 0.0, pixelsizX = 0.0, pixelsizY = 0.0;
-                    if (indi_Client->getCCDBasicInfo(dev, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth) == 0 &&
-                        maxX > 0 && maxY > 0)
-                    {
-                        c.pixelCount = static_cast<long long>(maxX) * static_cast<long long>(maxY);
-                    }
-                }
-                return c;
-            };
-
-            std::vector<IndiQhyCandidate> pool;
-            pool.reserve(static_cast<size_t>(ConnectedCCDList.size()));
+            // 自动型号选择统一走纯函数 planCameraAllocation（device_allocation.h）。
+            // 此处只消费 bind 结果；未绑定候选由下方 DeviceToBeAllocated 循环上报。
+            QVector<devalloc::Candidate> pool;
             for (int idx : ConnectedCCDList)
             {
                 if (idx < 0 || idx >= indi_Client->GetDeviceCount())
                     continue;
                 if (boundCcdIndexes.contains(idx))
                     continue;
-                pool.push_back(makeCandidate(idx));
+                devalloc::Candidate cand;
+                cand.index = idx;
+                INDI::BaseDevice *dev = indi_Client->GetDeviceFromList(idx);
+                if (dev && dev->getDeviceName())
+                {
+                    cand.name = QString::fromUtf8(dev->getDeviceName());
+                    cand.is5III = cand.name.contains("5III", Qt::CaseInsensitive);
+                    int maxX = 0, maxY = 0, bitDepth = 0;
+                    double pixelsize = 0.0, pixelsizX = 0.0, pixelsizY = 0.0;
+                    if (indi_Client->getCCDBasicInfo(dev, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth) == 0 &&
+                        maxX > 0 && maxY > 0)
+                        cand.pixelCount = static_cast<long long>(maxX) * static_cast<long long>(maxY);
+                }
+                pool.push_back(cand);
             }
 
-            if (!pool.empty())
+            devalloc::Request req;
+            req.requestMain = mainNeedsFallback;
+            req.requestGuider = guiderNeedsFallback;
+            req.isQhyDualRole = isQhyDualRole;
+            const devalloc::Plan plan = devalloc::planCameraAllocation(pool, req);
+
+            for (const auto &b : plan.bind)
             {
-                std::sort(pool.begin(), pool.end(), [](const IndiQhyCandidate &a, const IndiQhyCandidate &b) {
-                    if (a.is5III != b.is5III)
-                        return a.is5III && !b.is5III;
-                    if (a.pixelCount != b.pixelCount)
-                        return a.pixelCount > b.pixelCount;
-                    return a.index < b.index;
-                });
-
-                int fallbackMainIdx = -1;
-                int fallbackGuiderIdx = -1;
-
-                if (mainNeedsFallback && guiderNeedsFallback && pool.size() >= 2)
-                {
-                    std::vector<IndiQhyCandidate> fiveIIIGroup;
-                    std::vector<IndiQhyCandidate> nonFiveIIIGroup;
-                    for (const auto &c : pool)
-                    {
-                        if (c.is5III)
-                            fiveIIIGroup.push_back(c);
-                        else
-                            nonFiveIIIGroup.push_back(c);
-                    }
-
-                    if (!fiveIIIGroup.empty() && !nonFiveIIIGroup.empty())
-                    {
-                        fallbackGuiderIdx = fiveIIIGroup.front().index;
-                        fallbackMainIdx = nonFiveIIIGroup.front().index;
-                    }
-                    else
-                    {
-                        const IndiQhyCandidate &high = pool[0];
-                        const IndiQhyCandidate &low = pool[1];
-                        fallbackMainIdx = high.index;
-                        fallbackGuiderIdx = low.index;
-                    }
-                }
-                else if (mainNeedsFallback)
-                {
-                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return !c.is5III; });
-                    fallbackMainIdx = (it != pool.end()) ? it->index : pool.front().index;
-                }
-                else if (guiderNeedsFallback)
-                {
-                    auto it = std::find_if(pool.begin(), pool.end(), [](const IndiQhyCandidate &c) { return c.is5III; });
-                    if (it != pool.end())
-                        fallbackGuiderIdx = it->index;
-                    else
-                        fallbackGuiderIdx = pool.back().index;
-                }
-
-                auto bindByIdx = [&](const QString &description, int idx) {
-                    if (idx < 0 || idx >= indi_Client->GetDeviceCount())
-                        return;
-                    if (boundCcdIndexes.contains(idx))
-                        return;
-                    INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
-                    if (!device)
-                        return;
-                    if (description == "MainCamera")
-                    {
-                        bindDeviceToRole(DeviceSlot::MainCamera, device);
-                    }
-                    else if (description == "Guider")
-                    {
-                        bindDeviceToRole(DeviceSlot::Guider, device);
-                    }
-                    boundCcdIndexes.insert(idx);
-                    Logger::Log("ConnectDriver | INDI QHY fallback auto-bind: " +
-                                    description.toStdString() + " -> " +
-                                    QString::fromUtf8(device->getDeviceName()).toStdString(),
-                                LogLevel::INFO, DeviceType::MAIN);
-                };
-
-                if (mainNeedsFallback)
-                    bindByIdx("MainCamera", fallbackMainIdx);
-                if (guiderNeedsFallback)
-                    bindByIdx("Guider", fallbackGuiderIdx);
+                const int idx = b.second;
+                if (idx < 0 || idx >= indi_Client->GetDeviceCount())
+                    continue;
+                if (boundCcdIndexes.contains(idx))
+                    continue;
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
+                if (!device)
+                    continue;
+                const bool isMain = (b.first == devalloc::Role::MainCamera);
+                bindDeviceToRole(isMain ? DeviceSlot::MainCamera : DeviceSlot::Guider, device);
+                boundCcdIndexes.insert(idx);
+                Logger::Log("ConnectDriver | INDI QHY fallback auto-bind: " +
+                                std::string(isMain ? "MainCamera" : "Guider") + " -> " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
             }
         }
 
@@ -8094,8 +7954,18 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         {
             if (boundCcdIndexes.contains(ConnectedCCDList[i]))
                 continue;
+            // #2 修复：单角色请求下，只有"被请求角色仍未绑定"时才上报候选（供用户手动选），
+            // 堵住旧代码"自动绑定失败/跳过 -> 既不绑也不报 -> 前端静默转圈"的洞；
+            // 若被请求角色已满足，则仍不因同驱动其它相机误弹分配窗（保持 §4.2）。
             if (requestSingleCcdRole)
-                continue; // 单角色连接时，不因为同驱动其它 CCD 触发分配窗口
+            {
+                const bool requestedRoleUnbound =
+                    (requestMainCameraOnly && dpMainCamera == nullptr) ||
+                    (requestGuiderOnly && dpGuider == nullptr) ||
+                    (requestPoleOnly && dpPoleScope == nullptr);
+                if (!requestedRoleUnbound)
+                    continue;
+            }
             // 修复：检查索引有效性
             if (ConnectedCCDList[i] >= 0 && ConnectedCCDList[i] < indi_Client->GetDeviceCount()) {
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[i]);

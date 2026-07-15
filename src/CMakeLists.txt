@@ -229,6 +229,7 @@ add_executable(client
   mainwindow_commands_control.cpp
   mainwindow_commands_device.cpp
   mainwindow_device_connection.cpp
+  device_allocation.cpp
   mainwindow_autofocus.cpp
   mainwindow_focuser.cpp
   mainwindow_focus_loop.cpp
