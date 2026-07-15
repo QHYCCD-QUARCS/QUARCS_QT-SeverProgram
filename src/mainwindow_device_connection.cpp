@@ -46,6 +46,17 @@ void MainWindow::bindDeviceToRole(int slot, INDI::BaseDevice *device)
     AfterDeviceConnect(device);
 }
 
+// 单点 SDK 相机扫描：构造 ScanCameras 命令并派发。收敛原先散在 4 处的重复调用。
+// 后续在此加"一次/缓存/共享"（doc §7 与 memory）；当前零行为变化。
+SdkResult MainWindow::sdkScanQhyCameras(const QString& driverName)
+{
+    SdkCommand scanCmd;
+    scanCmd.type = SdkCommandType::Custom;
+    scanCmd.name = "ScanCameras";
+    scanCmd.payload = std::any();
+    return SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
+}
+
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
@@ -143,10 +154,6 @@ void MainWindow::ConnectAllDeviceOnce()
         }
 
         // 扫描相机设备（获取 cameraId）
-        SdkCommand scanCmd;
-        scanCmd.type = SdkCommandType::Custom;
-        scanCmd.name = "ScanCameras";
-        scanCmd.payload = std::any();
         // 对于 nullptr 句柄，使用 getSDKDriverName 动态获取驱动名称
         driverName = getSDKDriverName(sdkCameraDeviceType);
         if (driverName.isEmpty()) {
@@ -156,7 +163,7 @@ void MainWindow::ConnectAllDeviceOnce()
             emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
             return;
         }
-        SdkResult scanRes = SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
+        SdkResult scanRes = sdkScanQhyCameras(driverName);
         if (!scanRes.success) {
             Logger::Log("ConnectAllDeviceOnce | SDK ScanCameras failed: " + scanRes.message,
                         LogLevel::ERROR, DeviceType::CAMERA);
@@ -5883,10 +5890,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 2. 扫描相机
-            SdkCommand scanCmd;
-            scanCmd.type = SdkCommandType::Custom;
-            scanCmd.name = "ScanCameras";
-            scanCmd.payload = std::any();
             // 对于nullptr句柄，使用getSDKDriverName动态获取驱动名称
             driverName = getSDKDriverName("MainCamera");
             if (driverName.isEmpty()) {
@@ -5895,7 +5898,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 emit wsThread->sendMessageToClient("ConnectDriverFailed:MainCamera:Cannot get SDK driver name");
                 return;
             }
-            SdkResult scanRes = SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
+            SdkResult scanRes = sdkScanQhyCameras(driverName);
             if (!scanRes.success || !scanRes.payload.has_value()) {
                 Logger::Log("ConnectDriver | ScanCameras failed: " + scanRes.message, 
                            LogLevel::ERROR, DeviceType::MAIN);
@@ -6328,10 +6331,6 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 2) 扫描相机
-            SdkCommand scanCmd;
-            scanCmd.type = SdkCommandType::Custom;
-            scanCmd.name = "ScanCameras";
-            scanCmd.payload = std::any();
 
             driverName = getSDKDriverName("Guider");
             if (driverName.isEmpty())
@@ -6342,7 +6341,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            SdkResult scanRes = SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
+            SdkResult scanRes = sdkScanQhyCameras(driverName);
             if (!scanRes.success || !scanRes.payload.has_value())
             {
                 Logger::Log("ConnectDriver | ScanCameras(Guider) failed: " + scanRes.message,
@@ -6750,11 +6749,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            SdkCommand scanCmd;
-            scanCmd.type = SdkCommandType::Custom;
-            scanCmd.name = "ScanCameras";
-            scanCmd.payload = std::any();
-            SdkResult scanRes = SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
+            SdkResult scanRes = sdkScanQhyCameras(driverName);
             if (!scanRes.success || !scanRes.payload.has_value())
             {
                 Logger::Log("ConnectDriver | ScanCameras(PoleCamera) failed: " + scanRes.message,

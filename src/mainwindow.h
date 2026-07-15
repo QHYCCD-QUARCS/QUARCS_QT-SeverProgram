@@ -412,6 +412,9 @@ public:
      */
     void ConnectDriver(QString DriverName, QString DriverType);
 
+    // 单点 SDK 相机扫描（ScanQHYCCD）。后续在此加"一次/缓存/共享"以降 EP0 频次（见 doc §7）。
+    SdkResult sdkScanQhyCameras(const QString& driverName);
+
     /**
      * @brief 断开某设备
      * @param client 客户端
