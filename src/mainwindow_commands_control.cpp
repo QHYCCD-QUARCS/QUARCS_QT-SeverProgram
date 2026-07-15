@@ -34,7 +34,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
         Tools::saveParameter("Guider", "Offset", parts[1].trimmed());
 
         bool isGuiderSDK = (systemdevicelist.system_devices.size() > 1 &&
-                            systemdevicelist.system_devices[1].isSDKConnect &&
+                            systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
                             sdkGuiderHandle != nullptr);
 
         if (isGuiderSDK)
@@ -87,7 +87,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
 
             const bool guiderSdk =
                 (systemdevicelist.system_devices.size() > 1 &&
-                 systemdevicelist.system_devices[1].isSDKConnect &&
+                 systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
                  sdkGuiderHandle != nullptr);
             const bool guiderConnected = ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk);
             const guiding::State gs = guiderCoreStateCache;
@@ -112,7 +112,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
         Logger::Log("getGuiderStatus ...", LogLevel::DEBUG, DeviceType::GUIDER);
         const bool guiderSdk =
             (systemdevicelist.system_devices.size() > 1 &&
-             systemdevicelist.system_devices[1].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
              sdkGuiderHandle != nullptr);
         const bool loopOn = (isGuiderLoopExp && ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk));
         bool guidingOn = false;
@@ -151,7 +151,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
     {
         const bool guiderSdk =
             (systemdevicelist.system_devices.size() > 1 &&
-             systemdevicelist.system_devices[1].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
              sdkGuiderHandle != nullptr);
         const bool guiderConnected = ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk);
         const bool wantOn = (parts[1].trimmed() == "true");
@@ -197,7 +197,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
     {
         const bool guiderSdk =
             (systemdevicelist.system_devices.size() > 1 &&
-             systemdevicelist.system_devices[1].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
              sdkGuiderHandle != nullptr);
 
         if ((dpGuider == NULL || !dpGuider->isConnected()) && !guiderSdk)
@@ -246,7 +246,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
 
             // 尝试中止当前曝光（SDK/INDI）
             if (systemdevicelist.system_devices.size() > 1 &&
-                systemdevicelist.system_devices[1].isSDKConnect &&
+                systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
                 sdkGuiderHandle != nullptr)
             {
                 if (sdkGuiderExposureTimer)
@@ -308,7 +308,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
         Tools::saveParameter("Guider", "Gain", parts[1].trimmed());
 
         bool isGuiderSDK = (systemdevicelist.system_devices.size() > 1 &&
-                            systemdevicelist.system_devices[1].isSDKConnect &&
+                            systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
                             sdkGuiderHandle != nullptr);
 
         if (isGuiderSDK)

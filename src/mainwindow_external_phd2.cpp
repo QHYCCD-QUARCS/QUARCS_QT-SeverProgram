@@ -210,14 +210,14 @@ void MainWindow::disconnectFocuserIfConnected()
         DisconnectDevice(indi_Client, dpFocuser->getDeviceName(), "Focuser");
     }
     else if (systemdevicelist.system_devices.size() > 22 &&
-             systemdevicelist.system_devices[22].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
              sdkFocuserHandle != nullptr)
     {
         SdkManager::instance().closeByHandle(sdkFocuserHandle);
         sdkFocuserHandle = nullptr;
         sdkFocuserPort.clear();
-        systemdevicelist.system_devices[22].isConnect = false;
-        systemdevicelist.system_devices[22].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = false;
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = false;
     }
 }
 

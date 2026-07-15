@@ -45,7 +45,7 @@ void MainWindow::onGuiderLoopTimeout()
 
     const bool guiderSdk =
         (systemdevicelist.system_devices.size() > 1 &&
-         systemdevicelist.system_devices[1].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
          sdkGuiderHandle != nullptr);
 
     // SDK 模式：导星相机不依赖 INDI 连接

@@ -22,7 +22,7 @@ void MainWindow::FocusingLooping()
     Logger::Log("FocusingLooping start ...", LogLevel::DEBUG, DeviceType::FOCUSER);
 
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                            systemdevicelist.system_devices[20].isSDKConnect &&
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                             sdkMainCameraHandle != nullptr);
 
     if (!isMainCameraSDK && dpMainCamera == NULL)
@@ -520,7 +520,7 @@ void MainWindow::focusLoopShooting(bool isLoop)
         glIsFocusingLooping = false;
 
         bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                                systemdevicelist.system_devices[20].isSDKConnect &&
+                                systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                                 sdkMainCameraHandle != nullptr);
 
         if (isMainCameraSDK)

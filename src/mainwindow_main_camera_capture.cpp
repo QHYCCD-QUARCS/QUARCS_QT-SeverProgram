@@ -22,7 +22,7 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
 
     const bool isMainCameraSDK =
         (systemdevicelist.system_devices.size() > 20 &&
-         systemdevicelist.system_devices[20].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
          sdkMainCameraHandle != nullptr);
 
     if (!isMainCameraSDK) {
@@ -33,12 +33,12 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
     }
 
     const QString sdkDriverNameRaw =
-        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[20].SDKDriverName : "";
+        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[DeviceSlot::MainCamera].SDKDriverName : "";
     QString sdkDriverName = sdkDriverNameRaw.trimmed();
     if (sdkDriverName.isEmpty())
         sdkDriverName = getSDKDriverName("MainCamera").trimmed();
     if (sdkDriverName.isEmpty() && systemdevicelist.system_devices.size() > 20)
-        sdkDriverName = systemdevicelist.system_devices[20].DriverIndiName.trimmed();
+        sdkDriverName = systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName.trimmed();
 
     auto isQhySdkDriverName = [](const QString& n) -> bool {
         const QString s = n.trimmed().toLower();
@@ -360,7 +360,7 @@ bool MainWindow::ensureSdkMainCameraSingleModeReady(QString *errorReason)
 {
     const bool isMainCameraSDK =
         (systemdevicelist.system_devices.size() > 20 &&
-         systemdevicelist.system_devices[20].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
          sdkMainCameraHandle != nullptr);
     if (!isMainCameraSDK)
         return true;
@@ -371,12 +371,12 @@ bool MainWindow::ensureSdkMainCameraSingleModeReady(QString *errorReason)
     };
 
     QString sdkDriverName =
-        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[20].SDKDriverName : "";
+        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[DeviceSlot::MainCamera].SDKDriverName : "";
     QString effectiveSdkDriverName = sdkDriverName.trimmed();
     if (effectiveSdkDriverName.isEmpty())
         effectiveSdkDriverName = getSDKDriverName("MainCamera").trimmed();
     if (effectiveSdkDriverName.isEmpty() && systemdevicelist.system_devices.size() > 20)
-        effectiveSdkDriverName = systemdevicelist.system_devices[20].DriverIndiName.trimmed();
+        effectiveSdkDriverName = systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName.trimmed();
 
     if (!isQhySdkDriverName(effectiveSdkDriverName))
         return true;
@@ -466,7 +466,7 @@ void MainWindow::startMainCameraCapture(int exposureMs)
     Logger::Log("startMainCameraCapture | convert exposureMs to seconds:" + std::to_string(expTime_sec), LogLevel::INFO, DeviceType::CAMERA);
 
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                            systemdevicelist.system_devices[20].isSDKConnect &&
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                             sdkMainCameraHandle != nullptr);
 
     if (isMainCameraSDK)
@@ -731,7 +731,7 @@ void MainWindow::abortMainCameraCapture()
     Logger::Log("abortMainCameraCapture | glMainCameraStatu:" + glMainCameraStatu.toStdString(), LogLevel::INFO, DeviceType::CAMERA);
 
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                            systemdevicelist.system_devices[20].isSDKConnect &&
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                             sdkMainCameraHandle != nullptr);
 
     if (isMainCameraSDK)

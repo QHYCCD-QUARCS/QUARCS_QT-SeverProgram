@@ -483,12 +483,12 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
     const bool guiderSdk =
         (!poleCapture &&
          systemdevicelist.system_devices.size() > 1 &&
-         systemdevicelist.system_devices[1].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
          sdkGuiderHandle != nullptr);
     const bool poleSdk =
         (poleCapture &&
          systemdevicelist.system_devices.size() > 2 &&
-         systemdevicelist.system_devices[2].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect &&
          sdkPoleScopeHandle != nullptr);
 
     if ((!guiderSdk && !poleSdk) || (!isGuiderLoopExp && !polarGuiderSingleCapturePending))
@@ -633,10 +633,10 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
             const bool captureSdk =
                 poleCapture
                     ? (systemdevicelist.system_devices.size() > 2 &&
-                       systemdevicelist.system_devices[2].isSDKConnect &&
+                       systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect &&
                        sdkPoleScopeHandle != nullptr)
                     : (systemdevicelist.system_devices.size() > 1 &&
-                       systemdevicelist.system_devices[1].isSDKConnect &&
+                       systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
                        sdkGuiderHandle != nullptr);
             if (!captureSdk)
             {

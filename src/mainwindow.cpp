@@ -512,7 +512,7 @@ MainWindow::MainWindow(QObject *parent) : QObject(parent)
 bool MainWindow::isMainCameraSDK()
 {
     return (systemdevicelist.system_devices.size() > 20 &&
-            systemdevicelist.system_devices[20].isSDKConnect &&
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
             sdkMainCameraHandle != nullptr);
 }
 
@@ -524,7 +524,7 @@ bool MainWindow::isMainCameraConnected()
 {
     // SDK 模式：检查 SDK 句柄是否有效
     if (systemdevicelist.system_devices.size() > 20 &&
-        systemdevicelist.system_devices[20].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect)
     {
         return sdkMainCameraHandle != nullptr;
     }
@@ -536,14 +536,14 @@ bool MainWindow::isMainCameraConnected()
 bool MainWindow::isGuiderCameraSDK() const
 {
     return (systemdevicelist.system_devices.size() > 1 &&
-            systemdevicelist.system_devices[1].isSDKConnect &&
+            systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
             sdkGuiderHandle != nullptr);
 }
 
 bool MainWindow::isGuiderCameraConnected() const
 {
     if (systemdevicelist.system_devices.size() > 1 &&
-        systemdevicelist.system_devices[1].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect)
     {
         return sdkGuiderHandle != nullptr;
     }
@@ -553,14 +553,14 @@ bool MainWindow::isGuiderCameraConnected() const
 bool MainWindow::isPoleCameraSDK() const
 {
     return (systemdevicelist.system_devices.size() > 2 &&
-            systemdevicelist.system_devices[2].isSDKConnect &&
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect &&
             sdkPoleScopeHandle != nullptr);
 }
 
 bool MainWindow::isPoleCameraConnected() const
 {
     if (systemdevicelist.system_devices.size() > 2 &&
-        systemdevicelist.system_devices[2].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect)
     {
         return sdkPoleScopeHandle != nullptr;
     }
@@ -644,8 +644,8 @@ int MainWindow::getMainCameraFocalLengthFromConfigAndMigrateIfNeeded()
 bool MainWindow::isFocuserSDK()
 {
     return (systemdevicelist.system_devices.size() > 22 &&
-            systemdevicelist.system_devices[22].isSDKConnect &&
-            systemdevicelist.system_devices[22].isBind &&
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
             sdkFocuserHandle != nullptr);
 }
 
@@ -992,7 +992,7 @@ void MainWindow::onTimeout()
 
     // 判断是 SDK 模式还是 INDI 模式
     bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                            systemdevicelist.system_devices[20].isSDKConnect &&
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                             sdkMainCameraHandle != nullptr);
 
     if (isMainCameraSDK || dpMainCamera != NULL)

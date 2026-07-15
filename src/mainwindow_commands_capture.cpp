@@ -73,7 +73,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
         // 若主相机处于 SDK Live/Burst 模式（Live 已开启），则同步更新曝光时间（一次性模式，不必重启 Live）
         const bool isMainCameraSDK =
             (systemdevicelist.system_devices.size() > 20 &&
-             systemdevicelist.system_devices[20].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
              sdkMainCameraHandle != nullptr);
         if (isMainCameraSDK &&
             (mainCameraCaptureMode == MainCameraCaptureMode::Burst || mainCameraCaptureMode == MainCameraCaptureMode::Live) &&
@@ -183,7 +183,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
         
         // 判断是 SDK 模式还是 INDI 模式
         bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                                systemdevicelist.system_devices[20].isSDKConnect &&
+                                systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                                 sdkMainCameraHandle != nullptr);
         
         if (isMainCameraSDK)
@@ -416,7 +416,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
         
         // 判断是 SDK 模式还是 INDI 模式
         bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                                systemdevicelist.system_devices[20].isSDKConnect &&
+                                systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                                 sdkMainCameraHandle != nullptr);
         
         if (isMainCameraSDK)
@@ -449,7 +449,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
         
         // 判断是 SDK 模式还是 INDI 模式
         bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                                systemdevicelist.system_devices[20].isSDKConnect &&
+                                systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                                 sdkMainCameraHandle != nullptr);
         
         if (isMainCameraSDK)
@@ -481,7 +481,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
 
         // 判断是 SDK 模式还是 INDI 模式
         bool isMainCameraSDK = (systemdevicelist.system_devices.size() > 20 &&
-                                systemdevicelist.system_devices[20].isSDKConnect &&
+                                systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
                                 sdkMainCameraHandle != nullptr);
 
         if (isMainCameraSDK)
@@ -775,8 +775,8 @@ bool MainWindow::handleFocuserCommand(const QString &message, const QStringList 
         // 检查是否是SDK模式
         const bool focuserSdkReady =
             (systemdevicelist.system_devices.size() > 22 &&
-             systemdevicelist.system_devices[22].isSDKConnect &&
-             systemdevicelist.system_devices[22].isBind &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
              sdkFocuserHandle != nullptr);
         
         if (dpFocuser != NULL || focuserSdkReady)

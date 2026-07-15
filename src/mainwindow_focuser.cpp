@@ -62,8 +62,8 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
 
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
 
     Logger::Log("HandleFocuserMovementDataPeriodically | dpFocuser: " + std::string(dpFocuser ? "Valid" : "NULL") +
@@ -403,8 +403,8 @@ void MainWindow::FocuserControlMove(bool isInward)
     sdkFocuserPeriodicTaskInFlight = false;
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
     if (dpFocuser == NULL && !focuserSdkReady)
     {
@@ -481,8 +481,8 @@ void MainWindow::FocuserControlStop(bool isClickMove, bool silent)
 
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
     if (dpFocuser == NULL && !focuserSdkReady)
     {
@@ -592,8 +592,8 @@ void MainWindow::FocuserControlStop(bool isClickMove, bool silent)
 
             const bool focuserSdkReady =
                 (systemdevicelist.system_devices.size() > 22 &&
-                 systemdevicelist.system_devices[22].isSDKConnect &&
-                 systemdevicelist.system_devices[22].isBind &&
+                 systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+                 systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
                  sdkFocuserHandle != nullptr);
 
             if (dpFocuser == NULL && focuserSdkReady)
@@ -678,8 +678,8 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
 
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
     if (dpFocuser != NULL || focuserSdkReady)
     {
@@ -837,8 +837,8 @@ int MainWindow::FocuserControl_setSpeed(int speed)
         return value;
     }
     else if (systemdevicelist.system_devices.size() > 22 &&
-             systemdevicelist.system_devices[22].isSDKConnect &&
-             systemdevicelist.system_devices[22].isBind &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
              sdkFocuserHandle != nullptr)
     {
         if (sdkFocuserExec && sdkFocuserExec->isRunning())
@@ -870,8 +870,8 @@ int MainWindow::FocuserControl_getSpeed()
         return value;
     }
     else if (systemdevicelist.system_devices.size() > 22 &&
-             systemdevicelist.system_devices[22].isSDKConnect &&
-             systemdevicelist.system_devices[22].isBind &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
              sdkFocuserHandle != nullptr)
     {
         return currentSpeed;
@@ -884,8 +884,8 @@ void MainWindow::requestSdkFocuserPositionUpdate(bool emitWs)
 {
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
 
     if (!focuserSdkReady)
@@ -971,8 +971,8 @@ void MainWindow::requestSdkFocuserVersionUpdate(bool emitWs)
 {
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
     if (!focuserSdkReady)
         return;
@@ -1035,8 +1035,8 @@ int MainWindow::FocuserControl_getPosition()
         return value;
     }
     else if (systemdevicelist.system_devices.size() > 22 &&
-             systemdevicelist.system_devices[22].isSDKConnect &&
-             systemdevicelist.system_devices[22].isBind &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
              sdkFocuserHandle != nullptr)
     {
         if (sdkFocuserPosValid.load())
@@ -1070,8 +1070,8 @@ bool MainWindow::tryReadStableFocuserPosition(int &stablePosition,
 {
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
     const bool focuserConnected = (dpFocuser != nullptr || focuserSdkReady);
     if (!focuserConnected)
@@ -1157,8 +1157,8 @@ void MainWindow::focusMoveToMin()
     emit wsThread->sendMessageToClient("focusMoveToMinStarted");
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
     if (dpFocuser == nullptr && !focuserSdkReady)
     {
@@ -1301,8 +1301,8 @@ void MainWindow::focusMoveToMax()
     emit wsThread->sendMessageToClient("focusMoveToMaxStarted");
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
     if (dpFocuser == nullptr && !focuserSdkReady)
     {
@@ -1486,8 +1486,8 @@ void MainWindow::focusSetTravelRange()
     emit wsThread->sendMessageToClient("focusSetTravelRangeStarted");
     const bool focuserSdkReady =
         (systemdevicelist.system_devices.size() > 22 &&
-         systemdevicelist.system_devices[22].isSDKConnect &&
-         systemdevicelist.system_devices[22].isBind &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::Focuser].isBind &&
          sdkFocuserHandle != nullptr);
 
     if (dpFocuser == nullptr && !focuserSdkReady)

@@ -763,15 +763,15 @@ void Tools::printSystemDeviceList(const SystemDeviceList& s){
 QStringList Tools::getCameraNumFromSystemDeviceList(const SystemDeviceList& s) {
   QStringList cameras;
 
-  if (s.system_devices[1].Description != "") {
+  if (s.system_devices[DeviceSlot::Guider].Description != "") {
     cameras << "Guider";
   }
 
-  if (s.system_devices[2].Description != "") {
+  if (s.system_devices[DeviceSlot::PoleCamera].Description != "") {
     cameras << "PoleCamera";
   }
 
-  if (s.system_devices[20].Description != "") {
+  if (s.system_devices[DeviceSlot::MainCamera].Description != "") {
     cameras << "MainCamera";
   }
 

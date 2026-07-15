@@ -82,9 +82,9 @@ void MainWindow::ConnectAllDeviceOnce()
     bool sdkFocuserConnectedNow = false;
     const bool wantSdkCamera =
         hasSDKDevice &&
-        ((systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect) ||
-         (systemdevicelist.system_devices.size() > 1  && systemdevicelist.system_devices[1].isSDKConnect) ||
-         (systemdevicelist.system_devices.size() > 2  && systemdevicelist.system_devices[2].isSDKConnect));
+        ((systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect) ||
+         (systemdevicelist.system_devices.size() > 1  && systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect) ||
+         (systemdevicelist.system_devices.size() > 2  && systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect));
 
     if (wantSdkCamera)
     {
@@ -98,9 +98,9 @@ void MainWindow::ConnectAllDeviceOnce()
         // 对于 nullptr 句柄，使用 getSDKDriverName 动态获取驱动名称：
         // 主相机未启用 SDK 但导星相机启用 SDK 的场景，也需要能初始化/扫描相机
         const QString sdkCameraDeviceType =
-            (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect)
+            (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect)
                 ? QStringLiteral("MainCamera")
-                : ((systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[1].isSDKConnect)
+                : ((systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect)
                        ? QStringLiteral("Guider")
                        : QStringLiteral("PoleCamera"));
         QString driverName = getSDKDriverName(sdkCameraDeviceType);
@@ -270,11 +270,11 @@ void MainWindow::ConnectAllDeviceOnce()
             else
             {
                 const bool mainWantsSdk =
-                    (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect);
+                    (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect);
                 const bool guiderWantsSdk =
-                    (systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[1].isSDKConnect);
+                    (systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect);
                 const bool poleWantsSdk =
-                    (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[2].isSDKConnect);
+                    (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect);
 
                 QVector<bool> poolAssigned(g_sdkQhyCamHandles.size(), false);
                 auto findPreferredPoolIndex = [&](const QString &savedId) -> int {
@@ -316,9 +316,9 @@ void MainWindow::ConnectAllDeviceOnce()
                     g_sdkMainCameraPoolIndex = poolIndex;
                     sdkMainCameraHandle = g_sdkQhyCamHandles[poolIndex];
                     sdkMainCameraId = g_sdkQhyCamIds[poolIndex];
-                    systemdevicelist.system_devices[20].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                     // 保留实际 cameraId，供下次自动识别同一设备
-                    systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
+                    systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName = sdkMainCameraId;
 
                     QString driverName = getSDKDriverName("MainCamera");
                     if (!driverName.isEmpty() && sdkMainCameraHandle != nullptr)
@@ -355,9 +355,9 @@ void MainWindow::ConnectAllDeviceOnce()
                     g_sdkGuiderPoolIndex = poolIndex;
                     sdkGuiderHandle = g_sdkQhyCamHandles[poolIndex];
                     const QString guiderId = g_sdkQhyCamIds[poolIndex];
-                    systemdevicelist.system_devices[1].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                     // 保留实际 cameraId，供下次自动识别同一设备
-                    systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName = guiderId;
 
                     QString driverName = getSDKDriverName("Guider");
                     if (!driverName.isEmpty() && sdkGuiderHandle != nullptr)
@@ -387,8 +387,8 @@ void MainWindow::ConnectAllDeviceOnce()
                     g_sdkPoleCameraPoolIndex = poolIndex;
                     sdkPoleScopeHandle = g_sdkQhyCamHandles[poolIndex];
                     const QString poleId = g_sdkQhyCamIds[poolIndex];
-                    systemdevicelist.system_devices[2].isConnect = true;
-                    systemdevicelist.system_devices[2].DeviceIndiName = poleId;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName = poleId;
 
                     QString driverName = getSDKDriverName("PoleCamera");
                     if (!driverName.isEmpty() && sdkPoleScopeHandle != nullptr)
@@ -423,7 +423,7 @@ void MainWindow::ConnectAllDeviceOnce()
                 // 仅当保存的设备当前未扫描到时，才保留为待分配并要求用户选择。
                 if (mainWantsSdk && !sdkMainConnectedNow)
                 {
-                    const QString savedMainId = systemdevicelist.system_devices[20].DeviceIndiName;
+                    const QString savedMainId = systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName;
                     const int mainPickIndex = findPreferredPoolIndex(savedMainId);
                     if (mainPickIndex >= 0)
                     {
@@ -438,7 +438,7 @@ void MainWindow::ConnectAllDeviceOnce()
 
                 if (guiderWantsSdk && !sdkGuiderConnectedNow)
                 {
-                    const QString savedGuiderId = systemdevicelist.system_devices[1].DeviceIndiName;
+                    const QString savedGuiderId = systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName;
                     const int guiderPickIndex = findPreferredPoolIndex(savedGuiderId);
                     if (guiderPickIndex >= 0)
                     {
@@ -455,7 +455,7 @@ void MainWindow::ConnectAllDeviceOnce()
                 int polePickIndex = -1;
                 if (poleWantsSdk)
                 {
-                    const QString savedPoleId = systemdevicelist.system_devices[2].DeviceIndiName;
+                    const QString savedPoleId = systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName;
                     polePickIndex = findPreferredPoolIndex(savedPoleId);
                     // POLEMASTER基于设备唯一性自动绑定，保留
                     for (int i = 0; polePickIndex < 0 && i < g_sdkQhyCamIds.size(); ++i)
@@ -561,7 +561,7 @@ void MainWindow::ConnectAllDeviceOnce()
     // ===================== SDK 连接：电调（Focuser）=====================
     if (hasSDKDevice &&
         systemdevicelist.system_devices.size() > 22 &&
-        systemdevicelist.system_devices[22].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect)
     {
         Logger::Log("ConnectAllDeviceOnce | Start SDK focuser connection.", LogLevel::INFO, DeviceType::FOCUSER);
 
@@ -581,10 +581,10 @@ void MainWindow::ConnectAllDeviceOnce()
             portToUse = focuserSerialPortOverride;
             portSource = "override";
         }
-        else if (!systemdevicelist.system_devices[22].DeviceIndiName.isEmpty() &&
-                 systemdevicelist.system_devices[22].DeviceIndiName.startsWith("/dev/"))
+        else if (!systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.isEmpty() &&
+                 systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.startsWith("/dev/"))
         {
-            portToUse = systemdevicelist.system_devices[22].DeviceIndiName;
+            portToUse = systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName;
             portSource = "saved";
         }
         else
@@ -614,12 +614,12 @@ void MainWindow::ConnectAllDeviceOnce()
         else
         {
             Logger::Log("ConnectAllDeviceOnce | SDK focuser using port: " + portToUse.toStdString() +
-                            ", baud: " + std::to_string(systemdevicelist.system_devices[22].BaudRate),
+                            ", baud: " + std::to_string(systemdevicelist.system_devices[DeviceSlot::Focuser].BaudRate),
                         LogLevel::INFO, DeviceType::FOCUSER);
             // 3) 打开串口
             SdkFocuserOpenParam p;
             p.port = portToUse.toStdString();
-            p.baudRate = systemdevicelist.system_devices[22].BaudRate;
+            p.baudRate = systemdevicelist.system_devices[DeviceSlot::Focuser].BaudRate;
             p.timeoutMs = 3000;
 
             // 使用getSDKDriverName动态获取驱动名称
@@ -734,9 +734,9 @@ void MainWindow::ConnectAllDeviceOnce()
                     }
                     else
                     {
-                        systemdevicelist.system_devices[22].isConnect = true;
+                        systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
                         // 注意：isBind 将由 AfterDeviceConnect 在初始化完成后设置
-                        systemdevicelist.system_devices[22].DeviceIndiName = portToUse;
+                        systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName = portToUse;
 
                         // SDK-only 场景下可能没有 INDI 设备循环，补发一次 DeviceType
                         if (SelectedDriverNum == 0)
@@ -775,7 +775,7 @@ void MainWindow::ConnectAllDeviceOnce()
     // 如果 MainCamera 将使用 INDI 连接，需要先释放可能被 SDK 占用的相机资源
     bool needIndiMainCamera = false;
     if (systemdevicelist.system_devices.size() > 20) {
-        const auto &mainCamDev = systemdevicelist.system_devices[20];
+        const auto &mainCamDev = systemdevicelist.system_devices[DeviceSlot::MainCamera];
         // 如果 MainCamera 不是 SDK 连接模式，且有 INDI 驱动名称，说明需要 INDI 连接
         if (!mainCamDev.isSDKConnect && !mainCamDev.DriverIndiName.isEmpty()) {
             needIndiMainCamera = true;
@@ -1047,14 +1047,14 @@ void MainWindow::continueConnectAllDeviceOnce()
     // 检查是否有 SDK 设备已经连接成功
     bool hasSDKConnected = false;
     if (systemdevicelist.system_devices.size() > 20 && 
-        systemdevicelist.system_devices[20].isSDKConnect && 
-        systemdevicelist.system_devices[20].isConnect) {
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect && 
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect) {
         hasSDKConnected = true;
         Logger::Log("continueConnectAllDeviceOnce | SDK MainCamera is connected", LogLevel::INFO, DeviceType::MAIN);
     }
     if (systemdevicelist.system_devices.size() > 22 && 
-        systemdevicelist.system_devices[22].isSDKConnect && 
-        systemdevicelist.system_devices[22].isConnect) {
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect && 
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect) {
         hasSDKConnected = true;
         Logger::Log("continueConnectAllDeviceOnce | SDK Focuser is connected", LogLevel::INFO, DeviceType::MAIN);
     }
@@ -1509,7 +1509,7 @@ void MainWindow::continueConnectAllDeviceOnce()
                 dpGuider = device;
                 // 修复：检查system_devices索引是否有效
                 if (systemdevicelist.system_devices.size() > 1) {
-                    systemdevicelist.system_devices[1].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                 }
                 AfterDeviceConnect(dpGuider);
             }
@@ -1522,7 +1522,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             } else {
                 dpPoleScope = device;
                 if (systemdevicelist.system_devices.size() > 2) {
-                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
                 }
                 AfterDeviceConnect(dpPoleScope);
             }
@@ -1535,7 +1535,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             } else {
                 dpMainCamera = device;
                 if (systemdevicelist.system_devices.size() > 20) {
-                    systemdevicelist.system_devices[20].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                 }
                 AfterDeviceConnect(dpMainCamera);
             }
@@ -1561,21 +1561,21 @@ void MainWindow::continueConnectAllDeviceOnce()
             {
                 dpGuider = device;
                 if (systemdevicelist.system_devices.size() > 1)
-                    systemdevicelist.system_devices[1].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                 AfterDeviceConnect(dpGuider);
             }
             else if (description == "PoleCamera")
             {
                 dpPoleScope = device;
                 if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
                 AfterDeviceConnect(dpPoleScope);
             }
             else if (description == "MainCamera")
             {
                 dpMainCamera = device;
                 if (systemdevicelist.system_devices.size() > 20)
-                    systemdevicelist.system_devices[20].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                 AfterDeviceConnect(dpMainCamera);
             }
 
@@ -1602,7 +1602,7 @@ void MainWindow::continueConnectAllDeviceOnce()
                     continue;
                 dpPoleScope = device;
                 if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
                 AfterDeviceConnect(dpPoleScope);
                 boundCcdIndexes.insert(idx);
                 Logger::Log("continueConnectAllDeviceOnce | INDI PoleCamera auto-bound by POLEMASTER: " +
@@ -1617,10 +1617,10 @@ void MainWindow::continueConnectAllDeviceOnce()
         const bool mainNeedsFallback = !mainBoundByHistory;
         const bool guiderNeedsFallback = !guiderBoundByHistory;
         const QString mainDriverName = (systemdevicelist.system_devices.size() > 20)
-                                           ? systemdevicelist.system_devices[20].DriverIndiName
+                                           ? systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName
                                            : QString();
         const QString guiderDriverName = (systemdevicelist.system_devices.size() > 1)
-                                             ? systemdevicelist.system_devices[1].DriverIndiName
+                                             ? systemdevicelist.system_devices[DeviceSlot::Guider].DriverIndiName
                                              : QString();
         const bool isQhyDualRole =
             mainDriverName.contains("qhy", Qt::CaseInsensitive) &&
@@ -1735,14 +1735,14 @@ void MainWindow::continueConnectAllDeviceOnce()
                     {
                         dpMainCamera = device;
                         if (systemdevicelist.system_devices.size() > 20)
-                            systemdevicelist.system_devices[20].isConnect = true;
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                         AfterDeviceConnect(dpMainCamera);
                     }
                     else if (description == "Guider")
                     {
                         dpGuider = device;
                         if (systemdevicelist.system_devices.size() > 1)
-                            systemdevicelist.system_devices[1].isConnect = true;
+                            systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                         AfterDeviceConnect(dpGuider);
                     }
                     boundCcdIndexes.insert(idx);
@@ -1791,7 +1791,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             if (device != nullptr) {
                 dpMount = device;
                 if (systemdevicelist.system_devices.size() > 0) {
-                    systemdevicelist.system_devices[0].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
                 }
                 AfterDeviceConnect(dpMount);
             }
@@ -1808,7 +1808,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             {
                 dpMount = device;
                 if (systemdevicelist.system_devices.size() > 0)
-                    systemdevicelist.system_devices[0].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
                 AfterDeviceConnect(dpMount);
                 Logger::Log("continueConnectAllDeviceOnce | INDI Mount auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -1840,7 +1840,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             if (device != nullptr) {
                 dpFocuser = device;
                 if (systemdevicelist.system_devices.size() > 22) {
-                    systemdevicelist.system_devices[22].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
                 }
                 AfterDeviceConnect(dpFocuser);
             }
@@ -1857,7 +1857,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             {
                 dpFocuser = device;
                 if (systemdevicelist.system_devices.size() > 22)
-                    systemdevicelist.system_devices[22].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
                 AfterDeviceConnect(dpFocuser);
                 Logger::Log("continueConnectAllDeviceOnce | INDI Focuser auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -1889,7 +1889,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             if (device != nullptr) {
                 dpCFW = device;
                 if (systemdevicelist.system_devices.size() > 21) {
-                    systemdevicelist.system_devices[21].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = true;
                 }
                 AfterDeviceConnect(dpCFW);
             }
@@ -1906,7 +1906,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             {
                 dpCFW = device;
                 if (systemdevicelist.system_devices.size() > 21)
-                    systemdevicelist.system_devices[21].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = true;
                 AfterDeviceConnect(dpCFW);
                 Logger::Log("continueConnectAllDeviceOnce | INDI CFW auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -2023,7 +2023,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
     // 仅当 MainCamera 槽位标记为 SDK 连接时启用（其它角色后续按需扩展）
     if (DeviceType == "MainCamera" &&
         systemdevicelist.system_devices.size() > 20 &&
-        systemdevicelist.system_devices[20].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect)
     {
         if (DeviceIndex >= 0)
         {
@@ -2056,12 +2056,12 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         // 只设置 isConnect = true，isBind 应该由 AfterDeviceConnect 在完成初始化后设置
         // 这样可以确保 AfterDeviceConnect 中的 SDK 初始化流程能够执行（检查条件为 !isBind），
         // 并在初始化完成后发送 ConnectSuccess 消息给前端
-        systemdevicelist.system_devices[20].isConnect = true;
-        systemdevicelist.system_devices[20].isBind = false;
-        systemdevicelist.system_devices[20].isSDKConnect = true;
-        systemdevicelist.system_devices[20].Description = "MainCamera";
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].Description = "MainCamera";
         // 记录选择的相机 ID，便于下次自动重连/区分多相机
-        systemdevicelist.system_devices[20].DeviceIndiName = sdkMainCameraId;
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName = sdkMainCameraId;
 
         // 将设备注册到 SdkManager 的设备注册表，以便 callByHandle 和 closeByHandle 能够找到设备
         QString driverName = getSDKDriverName("MainCamera");
@@ -2082,8 +2082,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
         // 注意：DriverIndiName 语义为“驱动名”（例如 indi_qhy_ccd），不能被 cameraId 覆盖；
         // SDK 相机的唯一标识（cameraId）只写入 DeviceIndiName。
-        if (!systemdevicelist.system_devices[20].DriverFrom.contains("SDK", Qt::CaseInsensitive)) {
-            systemdevicelist.system_devices[20].DriverFrom = "SDK";
+        if (!systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverFrom.contains("SDK", Qt::CaseInsensitive)) {
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverFrom = "SDK";
         }
         Tools::saveSystemDeviceList(systemdevicelist);
 
@@ -2100,7 +2100,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
     // ==================== SDK 多相机分配：Guider ====================
     if (DeviceType == "Guider" &&
         systemdevicelist.system_devices.size() > 1 &&
-        systemdevicelist.system_devices[1].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect)
     {
         const int poolIndex = sdkPoolIndexFromUiIndex(DeviceIndex);
         if (!sdkPoolIndexValid(poolIndex))
@@ -2125,13 +2125,13 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 
         const QString guiderId = g_sdkQhyCamIds[poolIndex];
 
-        systemdevicelist.system_devices[1].isConnect = true;
-        systemdevicelist.system_devices[1].isBind = false;
-        systemdevicelist.system_devices[1].isSDKConnect = true;
-        systemdevicelist.system_devices[1].Description = "Guider";
-        systemdevicelist.system_devices[1].DeviceIndiName = guiderId;
-        if (!systemdevicelist.system_devices[1].DriverFrom.contains("SDK", Qt::CaseInsensitive))
-            systemdevicelist.system_devices[1].DriverFrom = "SDK";
+        systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::Guider].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::Guider].Description = "Guider";
+        systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName = guiderId;
+        if (!systemdevicelist.system_devices[DeviceSlot::Guider].DriverFrom.contains("SDK", Qt::CaseInsensitive))
+            systemdevicelist.system_devices[DeviceSlot::Guider].DriverFrom = "SDK";
         Tools::saveSystemDeviceList(systemdevicelist);
 
         // 注册设备到 SdkManager
@@ -2164,7 +2164,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
     // ==================== SDK 多相机分配：PoleCamera ====================
     if (DeviceType == "PoleCamera" &&
         systemdevicelist.system_devices.size() > 2 &&
-        systemdevicelist.system_devices[2].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect)
     {
         const int poolIndex = sdkPoolIndexFromUiIndex(DeviceIndex);
         if (!sdkPoolIndexValid(poolIndex))
@@ -2188,13 +2188,13 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         sdkPoleScopeHandle = g_sdkQhyCamHandles[poolIndex];
 
         const QString poleId = g_sdkQhyCamIds[poolIndex];
-        systemdevicelist.system_devices[2].isConnect = true;
-        systemdevicelist.system_devices[2].isBind = false;
-        systemdevicelist.system_devices[2].isSDKConnect = true;
-        systemdevicelist.system_devices[2].Description = "PoleCamera";
-        systemdevicelist.system_devices[2].DeviceIndiName = poleId;
-        if (!systemdevicelist.system_devices[2].DriverFrom.contains("SDK", Qt::CaseInsensitive))
-            systemdevicelist.system_devices[2].DriverFrom = "SDK";
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].Description = "PoleCamera";
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName = poleId;
+        if (!systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverFrom.contains("SDK", Qt::CaseInsensitive))
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverFrom = "SDK";
         Tools::saveSystemDeviceList(systemdevicelist);
 
         registerSdkRole("PoleCamera", sdkPoleScopeHandle, poleId);
@@ -2213,7 +2213,7 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
     // - 使用固定负数 index 作为 SDK 电调的标识（见 SDK_FOCUSER_UI_INDEX）
     if (DeviceType == "Focuser" &&
         systemdevicelist.system_devices.size() > 22 &&
-        systemdevicelist.system_devices[22].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect)
     {
         if (DeviceIndex != SDK_FOCUSER_UI_INDEX)
         {
@@ -2233,10 +2233,10 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
                 portToUse = sdkFocuserPort;
             }
             // 2) 其次使用系统设备表中保存的 DeviceIndiName（若是 /dev/xxx）
-            else if (!systemdevicelist.system_devices[22].DeviceIndiName.isEmpty() &&
-                     systemdevicelist.system_devices[22].DeviceIndiName.startsWith("/dev/"))
+            else if (!systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.isEmpty() &&
+                     systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.startsWith("/dev/"))
             {
-                portToUse = systemdevicelist.system_devices[22].DeviceIndiName;
+                portToUse = systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName;
             }
             // 3) 最后自动识别
             else
@@ -2253,11 +2253,11 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
 
             // 打开串口
             Logger::Log("ConnectDriver | SDK focuser using port: " + portToUse.toStdString() +
-                            ", baud: " + std::to_string(systemdevicelist.system_devices[22].BaudRate),
+                            ", baud: " + std::to_string(systemdevicelist.system_devices[DeviceSlot::Focuser].BaudRate),
                         LogLevel::INFO, DeviceType::FOCUSER);
             SdkFocuserOpenParam p;
             p.port = portToUse.toStdString();
-            p.baudRate = systemdevicelist.system_devices[22].BaudRate;
+            p.baudRate = systemdevicelist.system_devices[DeviceSlot::Focuser].BaudRate;
             p.timeoutMs = 3000;
 
             QString driverName = getSDKDriverName("Focuser");
@@ -2297,11 +2297,11 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
 
         // 标记已连接，触发 AfterDeviceConnect(nullptr) 走 SDK 电调初始化并最终设置 isBind
-        systemdevicelist.system_devices[22].isConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
         // 重要：此处不提前置 isBind，避免 AfterDeviceConnect 的 “!isBind” 初始化条件失效
-        systemdevicelist.system_devices[22].isBind = false;
-        if (!systemdevicelist.system_devices[22].DriverFrom.contains("SDK", Qt::CaseInsensitive))
-            systemdevicelist.system_devices[22].DriverFrom = "SDK";
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = false;
+        if (!systemdevicelist.system_devices[DeviceSlot::Focuser].DriverFrom.contains("SDK", Qt::CaseInsensitive))
+            systemdevicelist.system_devices[DeviceSlot::Focuser].DriverFrom = "SDK";
         Tools::saveSystemDeviceList(systemdevicelist);
 
         Logger::Log("BindingDevice | Bind SDK Focuser requested. port=" + sdkFocuserPort.toStdString(),
@@ -2385,8 +2385,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         Logger::Log("Binding Guider Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpGuider = device;
         if (systemdevicelist.system_devices.size() > 1) {
-            systemdevicelist.system_devices[1].isConnect = true;
-            systemdevicelist.system_devices[1].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::Guider].isBind = true;
         }
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpGuider);
@@ -2398,8 +2398,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         Logger::Log("Binding MainCamera Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpMainCamera = device;
         if (systemdevicelist.system_devices.size() > 20) {
-            systemdevicelist.system_devices[20].isConnect = true;
-            systemdevicelist.system_devices[20].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = true;
         }
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpMainCamera);
@@ -2411,8 +2411,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         Logger::Log("Binding Mount Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpMount = device;
         if (systemdevicelist.system_devices.size() > 0) {
-            systemdevicelist.system_devices[0].isConnect = true;
-            systemdevicelist.system_devices[0].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::Mount].isBind = true;
         }
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpMount);
@@ -2423,8 +2423,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         Logger::Log("Binding Focuser Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpFocuser = device;
         if (systemdevicelist.system_devices.size() > 22) {
-            systemdevicelist.system_devices[22].isConnect = true;
-            systemdevicelist.system_devices[22].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = true;
         }
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpFocuser);
@@ -2436,8 +2436,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         // 修复：使用已检查的device指针
         dpPoleScope = device;
         if (systemdevicelist.system_devices.size() > 2) {
-            systemdevicelist.system_devices[2].isConnect = true;
-            systemdevicelist.system_devices[2].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = true;
         }
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpPoleScope);
@@ -2447,8 +2447,8 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
     {
         Logger::Log("Binding CFW Device start ...", LogLevel::INFO, DeviceType::MAIN);
         dpCFW = indi_Client->GetDeviceFromList(DeviceIndex);
-        systemdevicelist.system_devices[21].isConnect = true;
-        systemdevicelist.system_devices[21].isBind = true;
+        systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = true;
+        systemdevicelist.system_devices[DeviceSlot::CFW].isBind = true;
         Tools::saveSystemDeviceList(systemdevicelist);
         AfterDeviceConnect(dpCFW);
         Logger::Log("Binding CFW Device end !", LogLevel::INFO, DeviceType::MAIN);
@@ -2473,10 +2473,10 @@ void MainWindow::UnBindingDevice(QString DeviceType)
             sdkGuiderExposureTimer->stop();
 
         // SDK 模式：解绑仅清理角色绑定，不关闭池句柄
-        if (systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[1].isSDKConnect)
+        if (systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect)
         {
-            systemdevicelist.system_devices[1].isBind = false;
-            systemdevicelist.system_devices[1].DeviceIndiName.clear();
+            systemdevicelist.system_devices[DeviceSlot::Guider].isBind = false;
+            systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName.clear();
             dpGuider = nullptr;
 
             if (g_sdkGuiderPoolIndex >= 0 && sdkPoolIndexValid(g_sdkGuiderPoolIndex))
@@ -2518,7 +2518,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         indi_Client->disconnectDevice(dpGuider->getDeviceName());
         Logger::Log("Disconnect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(1);
-        indi_Client->setBaudRate(dpGuider, systemdevicelist.system_devices[1].BaudRate);
+        indi_Client->setBaudRate(dpGuider, systemdevicelist.system_devices[DeviceSlot::Guider].BaudRate);
         indi_Client->connectDevice(dpGuider->getDeviceName());
         Logger::Log("Connect Guider Device", LogLevel::INFO, DeviceType::MAIN);
         sleep(3);
@@ -2530,8 +2530,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-        systemdevicelist.system_devices[1].isBind = false;
-        systemdevicelist.system_devices[1].DeviceIndiName = "";
+        systemdevicelist.system_devices[DeviceSlot::Guider].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName = "";
         dpGuider = nullptr;
         Tools::saveSystemDeviceList(systemdevicelist);
         Logger::Log("UnBinding Guider Device end !", LogLevel::INFO, DeviceType::MAIN);
@@ -2551,7 +2551,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     else if (DeviceType == "MainCamera")
     {
         // SDK 模式：不依赖 dpMainCamera/INDI 设备列表
-        if (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect)
+        if (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect)
         {
             Logger::Log("UnBinding MainCamera (SDK) start ...", LogLevel::INFO, DeviceType::MAIN);
 
@@ -2565,8 +2565,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
             }
 
             // 解除绑定：仅清理角色绑定，不关闭句柄池（保持待分配列表可用）
-            systemdevicelist.system_devices[20].isBind = false;
-            systemdevicelist.system_devices[20].DeviceIndiName.clear();
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName.clear();
             dpMainCamera = nullptr;
 
             // 将当前绑定的 SDK 相机重新放回待分配列表
@@ -2610,8 +2610,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         {
             emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
         }
-        systemdevicelist.system_devices[20].isBind = false;
-        systemdevicelist.system_devices[20].DeviceIndiName = "";
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName = "";
         dpMainCamera = nullptr;
         Tools::saveSystemDeviceList(systemdevicelist);
 
@@ -2635,8 +2635,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-        systemdevicelist.system_devices[0].isBind = false;
-        systemdevicelist.system_devices[0].DeviceIndiName = "";
+        systemdevicelist.system_devices[DeviceSlot::Mount].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::Mount].DeviceIndiName = "";
         dpMount = nullptr;
         Tools::saveSystemDeviceList(systemdevicelist);
 
@@ -2645,7 +2645,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     else if (DeviceType == "Focuser")
     {
         // SDK 模式：不依赖 dpFocuser/INDI 设备列表
-        if (systemdevicelist.system_devices.size() > 22 && systemdevicelist.system_devices[22].isSDKConnect)
+        if (systemdevicelist.system_devices.size() > 22 && systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect)
         {
             Logger::Log("UnBinding Focuser (SDK) start ...", LogLevel::INFO, DeviceType::FOCUSER);
 
@@ -2653,19 +2653,19 @@ void MainWindow::UnBindingDevice(QString DeviceType)
             // 与主相机/导星镜一致，解绑后仍保留“已连接”状态与句柄，
             // 这样刷新后 loadBindDeviceTypeList 仍会下发 Focuser 类型，前端卡片不会消失。
             // 若确实需要“断开电调”，应走 DisconnectDriver/DisconnectAllDevice 流程，而不是 Unbind。
-            systemdevicelist.system_devices[22].isBind = false;
-            systemdevicelist.system_devices[22].isConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = false;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
             // 清空绑定名称（让左侧卡片显示为空白，避免“已解绑但仍显示旧设备名”）
-            systemdevicelist.system_devices[22].DeviceIndiName.clear();
+            systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.clear();
 
             // 保留串口路径到配置中，便于下次自动重连（不清空 DeviceIndiName）
-            // systemdevicelist.system_devices[22].DeviceIndiName.clear();
+            // systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.clear();
 
             Logger::Log("UnBinding Focuser (SDK) end.", LogLevel::INFO, DeviceType::FOCUSER);
             // 解绑后重新进入“待分配列表”：必须使用真实串口名，避免占位符 SDK_Focuser 造成前端误判/误绑定
             // 只在可用时下发；否则跳过（用户可通过重新探测/连接流程恢复串口信息）
             QString name;
-            const QString saved = systemdevicelist.system_devices[22].DeviceIndiName;
+            const QString saved = systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName;
             if (!saved.isEmpty())
                 name = saved;
             else if (!sdkFocuserPort.isEmpty())
@@ -2690,8 +2690,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-        systemdevicelist.system_devices[22].isBind = false;
-        systemdevicelist.system_devices[22].DeviceIndiName = "";
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName = "";
         dpFocuser = nullptr;
         Tools::saveSystemDeviceList(systemdevicelist);
 
@@ -2699,11 +2699,11 @@ void MainWindow::UnBindingDevice(QString DeviceType)
     }
     else if (DeviceType == "PoleCamera")
     {
-        if (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[2].isSDKConnect)
+        if (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect)
         {
             Logger::Log("UnBinding PoleCamera (SDK) start ...", LogLevel::INFO, DeviceType::MAIN);
-            systemdevicelist.system_devices[2].isBind = false;
-            systemdevicelist.system_devices[2].DeviceIndiName.clear();
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = false;
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName.clear();
             dpPoleScope = nullptr;
 
             if (g_sdkPoleCameraPoolIndex >= 0 && sdkPoolIndexValid(g_sdkPoleCameraPoolIndex))
@@ -2740,8 +2740,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-        systemdevicelist.system_devices[2].isBind = false;
-        systemdevicelist.system_devices[2].DeviceIndiName = "";
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName = "";
         dpPoleScope = nullptr;
         Tools::saveSystemDeviceList(systemdevicelist);
 
@@ -2768,8 +2768,8 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 DeviceIndex = i;
             }
         }
-        systemdevicelist.system_devices[21].isBind = false;
-        systemdevicelist.system_devices[21].DeviceIndiName = "";
+        systemdevicelist.system_devices[DeviceSlot::CFW].isBind = false;
+        systemdevicelist.system_devices[DeviceSlot::CFW].DeviceIndiName = "";
         dpCFW = nullptr;
         Tools::saveSystemDeviceList(systemdevicelist);
 
@@ -2784,7 +2784,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
     auto ensureGuiderLoopStarted = [this](const QString& sourceTag) {
         const bool guiderSdk =
             (systemdevicelist.system_devices.size() > 1 &&
-             systemdevicelist.system_devices[1].isSDKConnect &&
+             systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
              sdkGuiderHandle != nullptr);
         const bool guiderConnected = ((dpGuider != NULL && dpGuider->isConnected()) || guiderSdk);
         if (!guiderConnected)
@@ -2830,9 +2830,9 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         const bool mainPoolAssigned =
             (g_sdkMainCameraPoolIndex >= 0 && sdkPoolIndexValid(g_sdkMainCameraPoolIndex) && sdkMainCameraHandle != nullptr);
         if (systemdevicelist.system_devices.size() > 20 &&
-            systemdevicelist.system_devices[20].isSDKConnect &&
-            systemdevicelist.system_devices[20].isConnect &&
-            !systemdevicelist.system_devices[20].isBind &&
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect &&
+            !systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind &&
             mainPoolAssigned)
         {
             Logger::Log("AfterDeviceConnect | Processing SDK MainCamera connection", 
@@ -3277,8 +3277,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             // ==================== 完成初始化 ====================
             if (!mainSdkInitOk)
             {
-                systemdevicelist.system_devices[20].isBind = false;
-                systemdevicelist.system_devices[20].isConnect = false;
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = false;
                 sdkMainAppliedModeValid = false;
                 sdkMainLiveReady = false;
                 sdkMainBurstModeReady = false;
@@ -3296,21 +3296,21 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             }
             
             // 标记设备已绑定
-            systemdevicelist.system_devices[20].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = true;
             
             // 发送连接成功消息给前端
             // SDK 模式下，DeviceIndiName 保存 cameraId（设备名）；DriverIndiName 仍应保存“驱动名”
-            QString deviceName = systemdevicelist.system_devices[20].DeviceIndiName;
+            QString deviceName = systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName;
             if (deviceName.isEmpty()) {
                 deviceName = "SDK_MainCamera";
             }
             
             // 保存设备名称
-            systemdevicelist.system_devices[20].DeviceIndiName = deviceName;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName = deviceName;
             
             // 修复：发送实际的 DriverIndiName 而不是 "SDK"，供前端用于驱动选择和连接
             // 连接模式信息通过 SelectedDriverList 消息传递，前端通过 device.connectionMode 区分
-            QString driverNameForConnect = systemdevicelist.system_devices[20].DriverIndiName;
+            QString driverNameForConnect = systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName;
             emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + deviceName + ":" + driverNameForConnect);
             Logger::Log("AfterDeviceConnect | SDK MainCamera connected successfully: " + deviceName.toStdString(), 
                        LogLevel::INFO, DeviceType::CAMERA);
@@ -3383,9 +3383,9 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                        LogLevel::INFO, DeviceType::CAMERA);
         }
         else if (systemdevicelist.system_devices.size() > 20 &&
-                 systemdevicelist.system_devices[20].isSDKConnect &&
-                 systemdevicelist.system_devices[20].isConnect &&
-                 !systemdevicelist.system_devices[20].isBind &&
+                 systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
+                 systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect &&
+                 !systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind &&
                  !mainPoolAssigned)
         {
             Logger::Log("AfterDeviceConnect | Skip SDK MainCamera init: main camera not assigned to SDK pool yet (likely allocating/other device init).",
@@ -3395,10 +3395,10 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         // ==================== SDK 电调(Focuser)初始化流程 ====================
         // 检查是否有 SDK 电调连接（且未完成绑定初始化，避免重复处理）
         if (systemdevicelist.system_devices.size() > 22 && 
-            systemdevicelist.system_devices[22].isSDKConnect && 
-            systemdevicelist.system_devices[22].isConnect &&
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect && 
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect &&
             sdkFocuserHandle != nullptr &&
-            !systemdevicelist.system_devices[22].isBind)
+            !systemdevicelist.system_devices[DeviceSlot::Focuser].isBind)
         {
             Logger::Log("AfterDeviceConnect | Processing SDK Focuser connection", 
                        LogLevel::INFO, DeviceType::FOCUSER);
@@ -3487,15 +3487,15 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                                              ":" + QString::number(focuserMaxPosition));
             
             // 6. 标记设备已绑定
-            systemdevicelist.system_devices[22].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = true;
             
             // 7. 发送连接成功消息给前端（与 INDI 电调保持一致的格式）
             // 设备名必须为真实串口（如 /dev/ttyACM0），避免占位符导致前端错误识别
-            QString deviceName = systemdevicelist.system_devices[22].DeviceIndiName;
+            QString deviceName = systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName;
             if (deviceName.isEmpty() && !sdkFocuserPort.isEmpty())
             {
                 deviceName = sdkFocuserPort;
-                systemdevicelist.system_devices[22].DeviceIndiName = deviceName;
+                systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName = deviceName;
             }
             if (deviceName.isEmpty())
             {
@@ -3505,7 +3505,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             }
             // 修复：发送实际的 DriverIndiName 而不是 "SDK"，供前端用于驱动选择和连接
             // 连接模式信息通过 SelectedDriverList 消息传递，前端通过 device.connectionMode 区分
-            QString driverNameForConnect = systemdevicelist.system_devices[22].DriverIndiName;
+            QString driverNameForConnect = systemdevicelist.system_devices[DeviceSlot::Focuser].DriverIndiName;
             if (!deviceName.isEmpty())
                 emit wsThread->sendMessageToClient("ConnectSuccess:Focuser:" + deviceName + ":" + driverNameForConnect);
             Logger::Log("AfterDeviceConnect | SDK Focuser connected successfully: " + deviceName.toStdString(), 
@@ -3520,10 +3520,10 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         
         // ==================== SDK 导星相机(Guider)初始化流程 ====================
         if (systemdevicelist.system_devices.size() > 1 &&
-            systemdevicelist.system_devices[1].isSDKConnect &&
-            systemdevicelist.system_devices[1].isConnect &&
+            systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect &&
+            systemdevicelist.system_devices[DeviceSlot::Guider].isConnect &&
             sdkGuiderHandle != nullptr &&
-            !systemdevicelist.system_devices[1].isBind)
+            !systemdevicelist.system_devices[DeviceSlot::Guider].isBind)
         {
             Logger::Log("AfterDeviceConnect | Processing SDK Guider connection",
                         LogLevel::INFO, DeviceType::GUIDER);
@@ -3711,12 +3711,12 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 }
             }
 
-            systemdevicelist.system_devices[1].isBind = true;
-            QString deviceName = systemdevicelist.system_devices[1].DeviceIndiName;
+            systemdevicelist.system_devices[DeviceSlot::Guider].isBind = true;
+            QString deviceName = systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName;
             if (deviceName.isEmpty())
                 deviceName = "SDK_Guider";
 
-            QString driverNameForConnect = systemdevicelist.system_devices[1].DriverIndiName;
+            QString driverNameForConnect = systemdevicelist.system_devices[DeviceSlot::Guider].DriverIndiName;
             emit wsThread->sendMessageToClient("ConnectSuccess:Guider:" + deviceName + ":" + driverNameForConnect);
             ConnectedDevices.push_back({"Guider", deviceName});
             ensureGuiderLoopStarted(QStringLiteral("SDK"));
@@ -3726,10 +3726,10 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         // ==================== SDK 电子极轴镜(PoleCamera)初始化流程 ====================
         if (systemdevicelist.system_devices.size() > 2 &&
-            systemdevicelist.system_devices[2].isSDKConnect &&
-            systemdevicelist.system_devices[2].isConnect &&
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect &&
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect &&
             sdkPoleScopeHandle != nullptr &&
-            !systemdevicelist.system_devices[2].isBind)
+            !systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind)
         {
             Logger::Log("AfterDeviceConnect | Processing SDK PoleCamera connection",
                         LogLevel::INFO, DeviceType::MAIN);
@@ -3772,12 +3772,12 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                 catch (const std::bad_any_cast &) {}
             }
 
-            systemdevicelist.system_devices[2].isBind = true;
-            QString deviceName = systemdevicelist.system_devices[2].DeviceIndiName;
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = true;
+            QString deviceName = systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName;
             if (deviceName.isEmpty())
                 deviceName = "SDK_PoleCamera";
 
-            QString driverNameForConnect = systemdevicelist.system_devices[2].DriverIndiName;
+            QString driverNameForConnect = systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverIndiName;
             emit wsThread->sendMessageToClient("ConnectSuccess:PoleCamera:" + deviceName + ":" + driverNameForConnect);
             ConnectedDevices.push_back({"PoleCamera", deviceName});
             Logger::Log("AfterDeviceConnect | SDK PoleCamera initialization completed",
@@ -3852,8 +3852,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         
         ConnectedDevices.push_back({"MainCamera", QString::fromUtf8(dpMainCamera->getDeviceName())});
 
-        systemdevicelist.system_devices[20].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
-        systemdevicelist.system_devices[20].isBind = true;
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
+        systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = true;
 
         indi_Client->setBLOBMode(B_ALSO, dpMainCamera->getDeviceName(), nullptr);
         indi_Client->enableDirectBlobAccess(dpMainCamera->getDeviceName(), nullptr);
@@ -3959,8 +3959,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         
         ConnectedDevices.push_back({"Mount", QString::fromUtf8(dpMount->getDeviceName())});
 
-        systemdevicelist.system_devices[0].DeviceIndiName = QString::fromUtf8(dpMount->getDeviceName());
-        systemdevicelist.system_devices[0].isBind = true;
+        systemdevicelist.system_devices[DeviceSlot::Mount].DeviceIndiName = QString::fromUtf8(dpMount->getDeviceName());
+        systemdevicelist.system_devices[DeviceSlot::Mount].isBind = true;
         QString DevicePort;
 
         indi_Client->GetAllPropertyName(dpMount);
@@ -4083,8 +4083,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         
         ConnectedDevices.push_back({"Focuser", QString::fromUtf8(dpFocuser->getDeviceName())});
 
-        systemdevicelist.system_devices[22].DeviceIndiName = QString::fromUtf8(dpFocuser->getDeviceName());
-        systemdevicelist.system_devices[22].isBind = true;
+        systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName = QString::fromUtf8(dpFocuser->getDeviceName());
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = true;
         indi_Client->GetAllPropertyName(dpFocuser);
         // indi_Client->syncFocuserPosition(dpFocuser, 0);
         
@@ -4179,8 +4179,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         
         ConnectedDevices.push_back({"CFW", QString::fromUtf8(dpCFW->getDeviceName())});
 
-        systemdevicelist.system_devices[21].DeviceIndiName = QString::fromUtf8(dpCFW->getDeviceName());
-        systemdevicelist.system_devices[21].isBind = true;
+        systemdevicelist.system_devices[DeviceSlot::CFW].DeviceIndiName = QString::fromUtf8(dpCFW->getDeviceName());
+        systemdevicelist.system_devices[DeviceSlot::CFW].isBind = true;
         indi_Client->GetAllPropertyName(dpCFW);
         int min, max, pos;
         indi_Client->getCFWPosition(dpCFW, pos, min, max);
@@ -4206,8 +4206,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
 
         if (systemdevicelist.system_devices.size() > 2)
         {
-            systemdevicelist.system_devices[2].DeviceIndiName = deviceName;
-            systemdevicelist.system_devices[2].isBind = true;
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName = deviceName;
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = true;
         }
 
         indi_Client->setBLOBMode(B_ALSO, dpPoleScope->getDeviceName(), nullptr);
@@ -4237,8 +4237,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->setCCDUploadModeToLacal(dpGuider);
         indi_Client->setCCDUpload(dpGuider, "/dev/shm", "guiding");
 
-        systemdevicelist.system_devices[1].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
-        systemdevicelist.system_devices[1].isBind = true;
+        systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName = QString::fromUtf8(dpGuider->getDeviceName());
+        systemdevicelist.system_devices[DeviceSlot::Guider].isBind = true;
 
         // INDI 直出图：与主相机一致，启用 BLOB 并设置本地保存目录/前缀
         indi_Client->setBLOBMode(B_ALSO, dpGuider->getDeviceName(), nullptr);
@@ -4339,14 +4339,14 @@ void MainWindow::applySdkMainCameraCaptureMode()
     // - Single：退出 Live 并关闭 Burst，恢复传统单帧（SetStreamMode=0）
     const bool isMainCameraSDK =
         (systemdevicelist.system_devices.size() > 20 &&
-         systemdevicelist.system_devices[20].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
          sdkMainCameraHandle != nullptr);
 
     const QString sdkDriverName =
-        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[20].SDKDriverName : "";
+        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[DeviceSlot::MainCamera].SDKDriverName : "";
 
     // 兼容：QHY SDK 驱动名可能为 "QHYCCD" 或 "indi_qhy_ccd"（别名）。
-    // 同时，部分路径下 system_devices[20].SDKDriverName 可能为空（尚未持久化/未同步），因此做一次推导兜底。
+    // 同时，部分路径下 system_devices[DeviceSlot::MainCamera].SDKDriverName 可能为空（尚未持久化/未同步），因此做一次推导兜底。
     auto isQhySdkDriverName = [](const QString& n) -> bool {
         const QString s = n.trimmed().toLower();
         return (s == "qhyccd" || s == "indi_qhy_ccd");
@@ -4357,7 +4357,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
         n = getSDKDriverName("MainCamera").trimmed();
         if (!n.isEmpty()) return n;
         if (systemdevicelist.system_devices.size() > 20)
-            n = systemdevicelist.system_devices[20].DriverIndiName.trimmed();
+            n = systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName.trimmed();
         return n;
     };
     const QString effectiveSdkDriverName = resolveMainCameraSdkDriverName();
@@ -5298,19 +5298,19 @@ void MainWindow::onSdkMainLiveTimerTimeout()
     // 仅用于主相机 SDK + QHYCCD
     const bool isMainCameraSDK =
         (systemdevicelist.system_devices.size() > 20 &&
-         systemdevicelist.system_devices[20].isSDKConnect &&
+         systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect &&
          sdkMainCameraHandle != nullptr);
     auto isQhySdkDriverName = [](const QString& n) -> bool {
         const QString s = n.trimmed().toLower();
         return (s == "qhyccd" || s == "indi_qhy_ccd");
     };
     QString sdkDriverName =
-        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[20].SDKDriverName : "";
+        (systemdevicelist.system_devices.size() > 20) ? systemdevicelist.system_devices[DeviceSlot::MainCamera].SDKDriverName : "";
     QString effectiveSdkDriverName = sdkDriverName.trimmed();
     if (effectiveSdkDriverName.isEmpty())
         effectiveSdkDriverName = getSDKDriverName("MainCamera").trimmed();
     if (effectiveSdkDriverName.isEmpty() && systemdevicelist.system_devices.size() > 20)
-        effectiveSdkDriverName = systemdevicelist.system_devices[20].DriverIndiName.trimmed();
+        effectiveSdkDriverName = systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName.trimmed();
 
     if (!isMainCameraSDK || !isQhySdkDriverName(effectiveSdkDriverName)) {
         throttledSkipLog(std::string("not SDK/QHY | isMainCameraSDK=") + (isMainCameraSDK ? "true" : "false") +
@@ -5940,9 +5940,9 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             // 标记主相机槽位为 SDK 连接，以便后续"全部连接"流程识别
             if (systemdevicelist.system_devices.size() > 20)
             {
-                systemdevicelist.system_devices[20].Description = "MainCamera";
-                systemdevicelist.system_devices[20].isSDKConnect = true;
-                systemdevicelist.system_devices[20].DriverFrom = "SDK";
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].Description = "MainCamera";
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect = true;
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverFrom = "SDK";
             }
 
             // 使用新 SdkManager 框架连接 SDK 相机
@@ -6113,7 +6113,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         const QString savedMainCameraId =
                             (systemdevicelist.system_devices.size() > 20)
-                                ? systemdevicelist.system_devices[20].DeviceIndiName.trimmed()
+                                ? systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName.trimmed()
                                 : QString();
                         if (!savedMainCameraId.isEmpty())
                         {
@@ -6142,8 +6142,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         if (systemdevicelist.system_devices.size() > 20)
                         {
-                            systemdevicelist.system_devices[20].isConnect = false;
-                            systemdevicelist.system_devices[20].isBind = false;
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = false;
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
                         }
                         needAllocation = true;
                         Logger::Log("ConnectDriver | SDK MainCamera (pool reuse): waiting for user allocation.",
@@ -6330,7 +6330,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
             // 单设备重连：持久化选择已经确定时，扫描后按 cameraId 恢复连接。
             // 只有首次选择或原设备未扫描到时，才进入候选选择流程。
-            const QString savedMainCameraId = systemdevicelist.system_devices[20].DeviceIndiName.trimmed();
+            const QString savedMainCameraId = systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName.trimmed();
             if (!savedMainCameraId.isEmpty())
             {
                 for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
@@ -6353,8 +6353,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             // 5) [修改] 移除SDK MainCamera自动绑定，等待用户手动选择
             // 不再根据历史配置或QHY规则自动选择相机
             {
-                systemdevicelist.system_devices[20].isConnect = false;
-                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = false;
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
                 needAllocation = true;
                 Logger::Log("ConnectDriver | SDK MainCamera: waiting for user allocation.", LogLevel::INFO, DeviceType::MAIN);
             }
@@ -6383,9 +6383,9 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             // 标记导星相机槽位为 SDK 连接，以便后续流程识别
             if (systemdevicelist.system_devices.size() > 1)
             {
-                systemdevicelist.system_devices[1].Description = "Guider";
-                systemdevicelist.system_devices[1].isSDKConnect = true;
-                systemdevicelist.system_devices[1].DriverFrom = "SDK";
+                systemdevicelist.system_devices[DeviceSlot::Guider].Description = "Guider";
+                systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect = true;
+                systemdevicelist.system_devices[DeviceSlot::Guider].DriverFrom = "SDK";
             }
 
             // 1) 初始化 SDK 资源
@@ -6582,7 +6582,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         const QString savedGuiderId =
                             (systemdevicelist.system_devices.size() > 1)
-                                ? systemdevicelist.system_devices[1].DeviceIndiName.trimmed()
+                                ? systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName.trimmed()
                                 : QString();
                         if (!savedGuiderId.isEmpty())
                         {
@@ -6611,8 +6611,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         if (systemdevicelist.system_devices.size() > 1)
                         {
-                            systemdevicelist.system_devices[1].isConnect = false;
-                            systemdevicelist.system_devices[1].isBind = false;
+                            systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = false;
+                            systemdevicelist.system_devices[DeviceSlot::Guider].isBind = false;
                         }
                         needAllocation = true;
                         Logger::Log("ConnectDriver | SDK Guider (pool reuse): waiting for user allocation.",
@@ -6752,7 +6752,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 单设备重连使用已提交的设备选择，不要求用户再次分配相机。
-            const QString savedGuiderId = systemdevicelist.system_devices[1].DeviceIndiName.trimmed();
+            const QString savedGuiderId = systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName.trimmed();
             if (!savedGuiderId.isEmpty())
             {
                 for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
@@ -6777,8 +6777,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 if (systemdevicelist.system_devices.size() > 1)
                 {
-                    systemdevicelist.system_devices[1].isConnect = false;
-                    systemdevicelist.system_devices[1].isBind = false;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = false;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].isBind = false;
                 }
                 needAllocation = true;
                 Logger::Log("ConnectDriver | SDK Guider: waiting for user allocation.", LogLevel::INFO, DeviceType::GUIDER);
@@ -6807,10 +6807,10 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
             if (systemdevicelist.system_devices.size() > 2)
             {
-                systemdevicelist.system_devices[2].Description = "PoleCamera";
-                systemdevicelist.system_devices[2].DriverIndiName = DriverName;
-                systemdevicelist.system_devices[2].isSDKConnect = true;
-                systemdevicelist.system_devices[2].DriverFrom = "SDK";
+                systemdevicelist.system_devices[DeviceSlot::PoleCamera].Description = "PoleCamera";
+                systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverIndiName = DriverName;
+                systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect = true;
+                systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverFrom = "SDK";
             }
 
             QString driverName = getSDKDriverName("PoleCamera");
@@ -6934,8 +6934,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
                 if (systemdevicelist.system_devices.size() > 2)
                 {
-                    systemdevicelist.system_devices[2].isConnect = true;
-                    systemdevicelist.system_devices[2].DeviceIndiName = poleId;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName = poleId;
                 }
 
                 SdkResult regRes = SdkManager::instance().registerDevice(
@@ -6958,8 +6958,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 if (systemdevicelist.system_devices.size() > 2)
                 {
-                    systemdevicelist.system_devices[2].isConnect = false;
-                    systemdevicelist.system_devices[2].isBind = false;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = false;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = false;
                 }
                 needAllocation = true;
             }
@@ -6992,12 +6992,12 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 标记电调槽位为 SDK 连接，并记录 driverName（用于前端 SelectedDriverList / 后续重连）
-            systemdevicelist.system_devices[22].Description = "Focuser";
-            systemdevicelist.system_devices[22].DriverIndiName = DriverName;
-            systemdevicelist.system_devices[22].isSDKConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].Description = "Focuser";
+            systemdevicelist.system_devices[DeviceSlot::Focuser].DriverIndiName = DriverName;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect = true;
             // 命名约定：DriverFrom 仅用于“是否支持 SDK”判断（contains("SDK")），这里填 SDK 即可
-            if (!systemdevicelist.system_devices[22].DriverFrom.contains("SDK", Qt::CaseInsensitive))
-                systemdevicelist.system_devices[22].DriverFrom = "QHYFOCUSERSDK";
+            if (!systemdevicelist.system_devices[DeviceSlot::Focuser].DriverFrom.contains("SDK", Qt::CaseInsensitive))
+                systemdevicelist.system_devices[DeviceSlot::Focuser].DriverFrom = "QHYFOCUSERSDK";
 
             // 关闭旧句柄（避免重复占用串口）
             if (sdkFocuserHandle != nullptr)
@@ -7015,10 +7015,10 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 portToUse = focuserSerialPortOverride;
                 portSource = "override";
             }
-            else if (!systemdevicelist.system_devices[22].DeviceIndiName.isEmpty() &&
-                     systemdevicelist.system_devices[22].DeviceIndiName.startsWith("/dev/"))
+            else if (!systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.isEmpty() &&
+                     systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName.startsWith("/dev/"))
             {
-                portToUse = systemdevicelist.system_devices[22].DeviceIndiName;
+                portToUse = systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName;
                 portSource = "saved";
             }
             else
@@ -7052,7 +7052,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             // 打开串口
             SdkFocuserOpenParam p;
             p.port = portToUse.toStdString();
-            p.baudRate = systemdevicelist.system_devices[22].BaudRate;
+            p.baudRate = systemdevicelist.system_devices[DeviceSlot::Focuser].BaudRate;
             p.timeoutMs = 3000;
 
             // 使用getSDKDriverName动态获取驱动名称
@@ -7167,8 +7167,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 连接成功：更新 systemdevicelist（注意：isBind 将由 AfterDeviceConnect 在初始化完成后设置）
-            systemdevicelist.system_devices[22].isConnect = true;
-            systemdevicelist.system_devices[22].DeviceIndiName = portToUse;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName = portToUse;
 
             // 通知前端设备类型
             emit wsThread->sendMessageToClient("AddDeviceType:Focuser");
@@ -7247,38 +7247,38 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         if (DriverType == "Mount")
         {
             driverCode = 0;
-            systemdevicelist.system_devices[0].Description = "Mount";
-            systemdevicelist.system_devices[0].DriverIndiName = DriverName;
+            systemdevicelist.system_devices[DeviceSlot::Mount].Description = "Mount";
+            systemdevicelist.system_devices[DeviceSlot::Mount].DriverIndiName = DriverName;
         }
         else if (DriverType == "Guider")
         {
             driverCode = 1;
-            systemdevicelist.system_devices[1].Description = "Guider";
-            systemdevicelist.system_devices[1].DriverIndiName = DriverName;
+            systemdevicelist.system_devices[DeviceSlot::Guider].Description = "Guider";
+            systemdevicelist.system_devices[DeviceSlot::Guider].DriverIndiName = DriverName;
         }
         else if (DriverType == "PoleCamera")
         {
             driverCode = 2;
-            systemdevicelist.system_devices[2].Description = "PoleCamera";
-            systemdevicelist.system_devices[2].DriverIndiName = DriverName;
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].Description = "PoleCamera";
+            systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverIndiName = DriverName;
         }
         else if (DriverType == "MainCamera")
         {
             driverCode = 20;
-            systemdevicelist.system_devices[20].Description = "MainCamera";
-            systemdevicelist.system_devices[20].DriverIndiName = DriverName;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].Description = "MainCamera";
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName = DriverName;
         }
         else if (DriverType == "CFW")
         {
             driverCode = 21;
-            systemdevicelist.system_devices[21].Description = "CFW";
-            systemdevicelist.system_devices[21].DriverIndiName = DriverName;
+            systemdevicelist.system_devices[DeviceSlot::CFW].Description = "CFW";
+            systemdevicelist.system_devices[DeviceSlot::CFW].DriverIndiName = DriverName;
         }
         else if (DriverType == "Focuser")
         {
             driverCode = 22;
-            systemdevicelist.system_devices[22].Description = "Focuser";
-            systemdevicelist.system_devices[22].DriverIndiName = DriverName;
+            systemdevicelist.system_devices[DeviceSlot::Focuser].Description = "Focuser";
+            systemdevicelist.system_devices[DeviceSlot::Focuser].DriverIndiName = DriverName;
         }
         else
         {
@@ -7804,7 +7804,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 dpGuider = device;
                 if (systemdevicelist.system_devices.size() > 1) {
-                    systemdevicelist.system_devices[1].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                 }
                 // TODO(PHD2): 导星相机已切换为 INDI 直出图模式，不再通过 PHD2 选择相机/断开设备
                 // indi_Client->disconnectDevice(device->getDeviceName());
@@ -7816,7 +7816,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 dpPoleScope = device;
                 if (systemdevicelist.system_devices.size() > 2) {
-                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
                 }
                 AfterDeviceConnect(dpPoleScope);
             }
@@ -7825,7 +7825,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 Logger::Log("ConnectDriver | MainCamera Connected Success!", LogLevel::INFO, DeviceType::MAIN);
                 dpMainCamera = device;
                 if (systemdevicelist.system_devices.size() > 20) {
-                    systemdevicelist.system_devices[20].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                 }
                 AfterDeviceConnect(dpMainCamera);
             }
@@ -7851,21 +7851,21 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 dpGuider = device;
                 if (systemdevicelist.system_devices.size() > 1)
-                    systemdevicelist.system_devices[1].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                 AfterDeviceConnect(dpGuider);
             }
             else if (description == "PoleCamera")
             {
                 dpPoleScope = device;
                 if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
                 AfterDeviceConnect(dpPoleScope);
             }
             else if (description == "MainCamera")
             {
                 dpMainCamera = device;
                 if (systemdevicelist.system_devices.size() > 20)
-                    systemdevicelist.system_devices[20].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                 AfterDeviceConnect(dpMainCamera);
             }
 
@@ -7904,7 +7904,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     continue;
                 dpPoleScope = device;
                 if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[2].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
                 AfterDeviceConnect(dpPoleScope);
                 boundCcdIndexes.insert(idx);
                 Logger::Log("ConnectDriver | INDI PoleCamera auto-bound by POLEMASTER: " +
@@ -7919,10 +7919,10 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         const bool mainNeedsFallback = !mainBoundByHistory && (!requestSingleCcdRole || requestMainCameraOnly);
         const bool guiderNeedsFallback = !guiderBoundByHistory && (!requestSingleCcdRole || requestGuiderOnly);
         const QString mainDriverName = (systemdevicelist.system_devices.size() > 20)
-                                           ? systemdevicelist.system_devices[20].DriverIndiName
+                                           ? systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName
                                            : QString();
         const QString guiderDriverName = (systemdevicelist.system_devices.size() > 1)
-                                             ? systemdevicelist.system_devices[1].DriverIndiName
+                                             ? systemdevicelist.system_devices[DeviceSlot::Guider].DriverIndiName
                                              : QString();
         const bool requestUsesQhyDriver = DriverName.contains("qhy", Qt::CaseInsensitive);
         const bool configuredQhyDualRole =
@@ -8047,14 +8047,14 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         dpMainCamera = device;
                         if (systemdevicelist.system_devices.size() > 20)
-                            systemdevicelist.system_devices[20].isConnect = true;
+                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                         AfterDeviceConnect(dpMainCamera);
                     }
                     else if (description == "Guider")
                     {
                         dpGuider = device;
                         if (systemdevicelist.system_devices.size() > 1)
-                            systemdevicelist.system_devices[1].isConnect = true;
+                            systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                         AfterDeviceConnect(dpGuider);
                     }
                     boundCcdIndexes.insert(idx);
@@ -8096,7 +8096,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         {
                             dpMainCamera = device;
                             if (systemdevicelist.system_devices.size() > 20)
-                                systemdevicelist.system_devices[20].isConnect = true;
+                                systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
                             AfterDeviceConnect(dpMainCamera);
                             Logger::Log("ConnectDriver | Single CCD fallback auto-bind: MainCamera -> " +
                                             QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -8116,7 +8116,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         {
                             dpGuider = device;
                             if (systemdevicelist.system_devices.size() > 1)
-                                systemdevicelist.system_devices[1].isConnect = true;
+                                systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
                             AfterDeviceConnect(dpGuider);
                             Logger::Log("ConnectDriver | Single CCD fallback auto-bind: Guider -> " +
                                             QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -8128,7 +8128,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     {
                         dpPoleScope = device;
                         if (systemdevicelist.system_devices.size() > 2)
-                            systemdevicelist.system_devices[2].isConnect = true;
+                            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
                         AfterDeviceConnect(dpPoleScope);
                         Logger::Log("ConnectDriver | Single CCD fallback auto-bind: PoleCamera -> " +
                                         QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -8173,7 +8173,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             if (device != nullptr) {
                 dpMount = device;
                 if (systemdevicelist.system_devices.size() > 0) {
-                    systemdevicelist.system_devices[0].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
                 }
                 AfterDeviceConnect(dpMount);
             }
@@ -8190,7 +8190,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 dpMount = device;
                 if (systemdevicelist.system_devices.size() > 0)
-                    systemdevicelist.system_devices[0].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
                 AfterDeviceConnect(dpMount);
                 Logger::Log("ConnectDriver | INDI Mount auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -8222,7 +8222,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             if (device != nullptr) {
                 dpFocuser = device;
                 if (systemdevicelist.system_devices.size() > 22) {
-                    systemdevicelist.system_devices[22].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
                 }
                 AfterDeviceConnect(dpFocuser);
             }
@@ -8239,7 +8239,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 dpFocuser = device;
                 if (systemdevicelist.system_devices.size() > 22)
-                    systemdevicelist.system_devices[22].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
                 AfterDeviceConnect(dpFocuser);
                 Logger::Log("ConnectDriver | INDI Focuser auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -8271,7 +8271,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             if (device != nullptr) {
                 dpCFW = device;
                 if (systemdevicelist.system_devices.size() > 21) {
-                    systemdevicelist.system_devices[21].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = true;
                 }
                 AfterDeviceConnect(dpCFW);
             }
@@ -8288,7 +8288,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             {
                 dpCFW = device;
                 if (systemdevicelist.system_devices.size() > 21)
-                    systemdevicelist.system_devices[21].isConnect = true;
+                    systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = true;
                 AfterDeviceConnect(dpCFW);
                 Logger::Log("ConnectDriver | INDI CFW auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
@@ -8377,7 +8377,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     if (DeviceType == "Guider")
     {
         const bool guiderMarkedSDK =
-            (systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[1].isSDKConnect);
+            (systemdevicelist.system_devices.size() > 1 && systemdevicelist.system_devices[DeviceSlot::Guider].isSDKConnect);
 
         if (guiderMarkedSDK || sdkGuiderHandle != nullptr)
         {
@@ -8412,8 +8412,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
 
             if (systemdevicelist.system_devices.size() > 1)
             {
-                systemdevicelist.system_devices[1].isConnect = false;
-                systemdevicelist.system_devices[1].isBind = false;
+                systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = false;
+                systemdevicelist.system_devices[DeviceSlot::Guider].isBind = false;
                 // 保留 cameraId，便于下次发现同一设备时自动回绑
             }
 
@@ -8432,7 +8432,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     if (DeviceType == "MainCamera")
     {
         const bool mainCameraMarkedSDK =
-            (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[20].isSDKConnect);
+            (systemdevicelist.system_devices.size() > 20 && systemdevicelist.system_devices[DeviceSlot::MainCamera].isSDKConnect);
 
         if (mainCameraMarkedSDK || sdkMainCameraHandle != nullptr || !g_sdkQhyCamHandles.isEmpty())
         {
@@ -8503,8 +8503,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             g_sdkMainCameraPoolIndex = -1;
             if (systemdevicelist.system_devices.size() > 20)
             {
-                systemdevicelist.system_devices[20].isConnect = false;
-                systemdevicelist.system_devices[20].isBind = false;
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = false;
+                systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
                 // 保留 cameraId，便于下次发现同一设备时自动回绑
             }
 
@@ -8529,7 +8529,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     if (DeviceType == "PoleCamera")
     {
         const bool poleCameraMarkedSDK =
-            (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[2].isSDKConnect);
+            (systemdevicelist.system_devices.size() > 2 && systemdevicelist.system_devices[DeviceSlot::PoleCamera].isSDKConnect);
 
         if (poleCameraMarkedSDK || sdkPoleScopeHandle != nullptr)
         {
@@ -8565,8 +8565,8 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
 
             if (systemdevicelist.system_devices.size() > 2)
             {
-                systemdevicelist.system_devices[2].isConnect = false;
-                systemdevicelist.system_devices[2].isBind = false;
+                systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = false;
+                systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = false;
             }
 
             eraseConnectedDeviceByType("PoleCamera");
@@ -8583,7 +8583,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     if (DeviceType == "Focuser")
     {
         const bool focuserMarkedSDK =
-            (systemdevicelist.system_devices.size() > 22 && systemdevicelist.system_devices[22].isSDKConnect);
+            (systemdevicelist.system_devices.size() > 22 && systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect);
 
         if (focuserMarkedSDK || sdkFocuserHandle != nullptr)
         {
@@ -8686,10 +8686,10 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
 
             if (systemdevicelist.system_devices.size() > 22)
             {
-                systemdevicelist.system_devices[22].isConnect = false;
-                systemdevicelist.system_devices[22].isBind = false;
+                systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = false;
+                systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = false;
                 // 保留 isSDKConnect（模式选择），串口路径也保留便于下次重连
-                systemdevicelist.system_devices[22].dp = NULL;
+                systemdevicelist.system_devices[DeviceSlot::Focuser].dp = NULL;
             }
 
             eraseConnectedDeviceByType("Focuser");
@@ -8697,7 +8697,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             appendDeleteCandidate(removeNames, DeviceName);
             appendDeleteCandidate(removeNames, focuserPortBeforeClear);
             if (systemdevicelist.system_devices.size() > 22)
-                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[22].DeviceIndiName);
+                appendDeleteCandidate(removeNames, systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName);
             emitDeleteDeviceAllocationListBatch(removeNames);
             if (wsThread != nullptr)
             {
@@ -8772,78 +8772,78 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         dpMainCamera = NULL;
         if (systemdevicelist.system_devices.size() > 20)
         {
-            disconnectdriverName = systemdevicelist.system_devices[20].DriverIndiName;
-            systemdevicelist.system_devices[20].isConnect = false;
-            systemdevicelist.system_devices[20].isBind = false;
+            disconnectdriverName = systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = false;
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].isBind = false;
             // 对齐 SDK 断开语义：仅复位运行态，保留 DeviceIndiName(型号/实例名)、
             // DeviceIndiGroup、DriverIndiName、DriverFrom、isSDKConnect。型号供左侧显示与
             // 重连，下次连接由 AfterDeviceConnect 用真实 INDI 设备名刷新；清型号只在真正的
             // 删除路径(UnBindingDevice / indi_Driver_Clear)执行。
-            // systemdevicelist.system_devices[20].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
-            // systemdevicelist.system_devices[20].DriverIndiName = "";  // ❌ 不应清空（驱动名）
-            // systemdevicelist.system_devices[20].DriverFrom = "";  // ❌ 不应清空（驱动能力）
-            systemdevicelist.system_devices[20].dp = NULL;
+            // systemdevicelist.system_devices[DeviceSlot::MainCamera].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
+            // systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverIndiName = "";  // ❌ 不应清空（驱动名）
+            // systemdevicelist.system_devices[DeviceSlot::MainCamera].DriverFrom = "";  // ❌ 不应清空（驱动能力）
+            systemdevicelist.system_devices[DeviceSlot::MainCamera].dp = NULL;
         }
     }
     else if (DeviceType == "Guider")
     {
         dpGuider = NULL;
-        disconnectdriverName = systemdevicelist.system_devices[1].DriverIndiName;
-        systemdevicelist.system_devices[1].isConnect = false;
-        systemdevicelist.system_devices[1].isBind = false;
+        disconnectdriverName = systemdevicelist.system_devices[DeviceSlot::Guider].DriverIndiName;
+        systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = false;
+        systemdevicelist.system_devices[DeviceSlot::Guider].isBind = false;
         // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
-        // systemdevicelist.system_devices[1].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
-        // systemdevicelist.system_devices[1].DriverIndiName = "";  // ❌ 不应清空（驱动名）
-        // systemdevicelist.system_devices[1].DriverFrom = "";  // ❌ 不应清空（驱动能力）
-        systemdevicelist.system_devices[1].dp = NULL;
+        // systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
+        // systemdevicelist.system_devices[DeviceSlot::Guider].DriverIndiName = "";  // ❌ 不应清空（驱动名）
+        // systemdevicelist.system_devices[DeviceSlot::Guider].DriverFrom = "";  // ❌ 不应清空（驱动能力）
+        systemdevicelist.system_devices[DeviceSlot::Guider].dp = NULL;
     }
     else if (DeviceType == "PoleCamera")
     {
         dpPoleScope = NULL;
-        disconnectdriverName = systemdevicelist.system_devices[2].DriverIndiName;
-        systemdevicelist.system_devices[2].isConnect = false;
-        systemdevicelist.system_devices[2].isBind = false;
+        disconnectdriverName = systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverIndiName;
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = false;
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].isBind = false;
         // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
-        // systemdevicelist.system_devices[2].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
-        // systemdevicelist.system_devices[2].DriverIndiName = "";  // ❌ 不应清空（驱动名）
-        // systemdevicelist.system_devices[2].DriverFrom = "";  // ❌ 不应清空（驱动能力）
-        systemdevicelist.system_devices[2].dp = NULL;
+        // systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
+        // systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverIndiName = "";  // ❌ 不应清空（驱动名）
+        // systemdevicelist.system_devices[DeviceSlot::PoleCamera].DriverFrom = "";  // ❌ 不应清空（驱动能力）
+        systemdevicelist.system_devices[DeviceSlot::PoleCamera].dp = NULL;
     }
     else if (DeviceType == "Mount")
     {
         dpMount = NULL;
-        disconnectdriverName = systemdevicelist.system_devices[0].DriverIndiName;
-        systemdevicelist.system_devices[0].isConnect = false;
-        systemdevicelist.system_devices[0].isBind = false;
+        disconnectdriverName = systemdevicelist.system_devices[DeviceSlot::Mount].DriverIndiName;
+        systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = false;
+        systemdevicelist.system_devices[DeviceSlot::Mount].isBind = false;
         // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
-        // systemdevicelist.system_devices[0].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
-        // systemdevicelist.system_devices[0].DriverIndiName = "";  // ❌ 不应清空（驱动名）
-        // systemdevicelist.system_devices[0].DriverFrom = "";  // ❌ 不应清空（驱动能力）
-        systemdevicelist.system_devices[0].dp = NULL;
+        // systemdevicelist.system_devices[DeviceSlot::Mount].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
+        // systemdevicelist.system_devices[DeviceSlot::Mount].DriverIndiName = "";  // ❌ 不应清空（驱动名）
+        // systemdevicelist.system_devices[DeviceSlot::Mount].DriverFrom = "";  // ❌ 不应清空（驱动能力）
+        systemdevicelist.system_devices[DeviceSlot::Mount].dp = NULL;
     }
     else if (DeviceType == "Focuser")
     {
         dpFocuser = NULL;
-        disconnectdriverName = systemdevicelist.system_devices[22].DriverIndiName;
-        systemdevicelist.system_devices[22].isConnect = false;
-        systemdevicelist.system_devices[22].isBind = false;
+        disconnectdriverName = systemdevicelist.system_devices[DeviceSlot::Focuser].DriverIndiName;
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = false;
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isBind = false;
         // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
-        // systemdevicelist.system_devices[22].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
-        // systemdevicelist.system_devices[22].DriverIndiName = "";  // ❌ 不应清空（驱动名）
-        // systemdevicelist.system_devices[22].DriverFrom = "";  // ❌ 不应清空（驱动能力）
-        systemdevicelist.system_devices[22].dp = NULL;
+        // systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
+        // systemdevicelist.system_devices[DeviceSlot::Focuser].DriverIndiName = "";  // ❌ 不应清空（驱动名）
+        // systemdevicelist.system_devices[DeviceSlot::Focuser].DriverFrom = "";  // ❌ 不应清空（驱动能力）
+        systemdevicelist.system_devices[DeviceSlot::Focuser].dp = NULL;
     }
     else if (DeviceType == "CFW")
     {
         dpCFW = NULL;
-        disconnectdriverName = systemdevicelist.system_devices[21].DriverIndiName;
-        systemdevicelist.system_devices[21].isConnect = false;
-        systemdevicelist.system_devices[21].isBind = false;
+        disconnectdriverName = systemdevicelist.system_devices[DeviceSlot::CFW].DriverIndiName;
+        systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = false;
+        systemdevicelist.system_devices[DeviceSlot::CFW].isBind = false;
         // 对齐 SDK：仅复位运行态，保留 DeviceIndiName(型号)/DeviceIndiGroup；清型号只在删除路径
-        // systemdevicelist.system_devices[21].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
-        // systemdevicelist.system_devices[21].DriverIndiName = "";  // ❌ 不应清空（驱动名）
-        // systemdevicelist.system_devices[21].DriverFrom = "";  // ❌ 不应清空（驱动能力）
-        systemdevicelist.system_devices[21].dp = NULL;
+        // systemdevicelist.system_devices[DeviceSlot::CFW].DeviceIndiName = "";  // ❌ 不再清空（对齐 SDK）
+        // systemdevicelist.system_devices[DeviceSlot::CFW].DriverIndiName = "";  // ❌ 不应清空（驱动名）
+        // systemdevicelist.system_devices[DeviceSlot::CFW].DriverFrom = "";  // ❌ 不应清空（驱动能力）
+        systemdevicelist.system_devices[DeviceSlot::CFW].dp = NULL;
     }
 
     QStringList SelectedCameras;

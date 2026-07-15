@@ -128,6 +128,31 @@ struct SystemDeviceList {
   int currentDeviceCode = -1;
 };
 
+// -- 设备角色 <-> system_devices 槽位下标：权威映射 --------------------------------
+// 历史上这些下标以魔法数字散落全仓（system_devices[20] 等 300+ 处），
+// 极易把「INDI 设备表下标」误当「角色槽位下标」（见 2026-07-15 connect-all 漏连 bug）。
+// 新代码一律用 DeviceSlot::* 与 deviceSlotFromDescription()，逐步替换裸下标。
+namespace DeviceSlot {
+enum Index : int {
+  Mount      = 0,
+  Guider     = 1,
+  PoleCamera = 2,
+  MainCamera = 20,
+  CFW        = 21,   // 外置滤镜轮
+  Focuser    = 22,
+};
+}
+
+inline int deviceSlotFromDescription(const QString& description) {
+  if (description == "MainCamera")                             return DeviceSlot::MainCamera;
+  if (description == "Guider" || description == "GuideCamera") return DeviceSlot::Guider;
+  if (description == "PoleCamera")                             return DeviceSlot::PoleCamera;
+  if (description == "Mount")                                  return DeviceSlot::Mount;
+  if (description == "CFW")                                    return DeviceSlot::CFW;
+  if (description == "Focuser")                                return DeviceSlot::Focuser;
+  return -1;
+}
+
 struct DSLRsInfo
 {
   QString Name;

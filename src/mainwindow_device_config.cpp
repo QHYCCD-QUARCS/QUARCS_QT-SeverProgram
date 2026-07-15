@@ -360,17 +360,8 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
 
 QString MainWindow::getSDKDriverName(const QString& deviceType)
 {
-    // 根据设备类型找到对应的槽位索引
-    int index = -1;
-    if (deviceType == "MainCamera") index = 20;
-    // Guider（导星相机）在 system_devices[1]
-    else if (deviceType == "Guider" || deviceType == "GuideCamera") index = 1;
-    // PoleCamera（电子极轴镜）在 system_devices[2]
-    else if (deviceType == "PoleCamera") index = 2;
-    // CFW（外置滤镜轮）在 system_devices[21]
-    else if (deviceType == "CFW") index = 21;
-    else if (deviceType == "Focuser") index = 22;
-    // ... 可以继续添加其他设备类型的映射
+    // 角色 -> 槽位下标（权威映射见 tools.h: deviceSlotFromDescription）
+    const int index = deviceSlotFromDescription(deviceType);
 
     if (index < 0 || index >= systemdevicelist.system_devices.size())
         return "";
@@ -1365,12 +1356,12 @@ void MainWindow::loadBindDeviceList(MyClient *client)
     // - SDK 电调不在 INDI 设备列表里，若不在此处同步，前端刷新后会看不到它
     // - 使用固定负 index，避免与 INDI 的 index 以及相机池 index 冲突
     if (systemdevicelist.system_devices.size() > 22 &&
-        systemdevicelist.system_devices[22].isSDKConnect)
+        systemdevicelist.system_devices[DeviceSlot::Focuser].isSDKConnect)
     {
         // 名称必须与 BindDeviceTypeList/ConnectSuccess 中的 DeviceName 保持一致，
         // 否则前端无法把该设备从“未分配列表”标记为已绑定，造成“已绑定但仍出现在未分配列表/命名变化”。
         QString name;
-        const QString saved = systemdevicelist.system_devices[22].DeviceIndiName;
+        const QString saved = systemdevicelist.system_devices[DeviceSlot::Focuser].DeviceIndiName;
         if (!saved.isEmpty())
             name = saved;
         else if (!sdkFocuserPort.isEmpty())
