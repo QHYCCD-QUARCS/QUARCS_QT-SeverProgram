@@ -21,6 +21,30 @@ bool indiDriverNamesEquivalent(const QString &lhs, const QString &rhs)
 }
 }
 
+// 把已连接的 INDI 设备绑定到角色槽位：设对应 dp 全局 + isConnect + 完成初始化。
+// 收敛历史上重复 20+ 处的
+//   dp = device; if (size()>N) sd[slot].isConnect = true; AfterDeviceConnect(dp)
+// 样板；slot 取 DeviceSlot::*。仅覆盖 Mount/Guider/PoleCamera/MainCamera。
+void MainWindow::bindDeviceToRole(int slot, INDI::BaseDevice *device)
+{
+    if (device == nullptr)
+        return;
+    switch (slot)
+    {
+    case DeviceSlot::Mount:      dpMount      = device; break;
+    case DeviceSlot::Guider:     dpGuider     = device; break;
+    case DeviceSlot::PoleCamera: dpPoleScope  = device; break;
+    case DeviceSlot::MainCamera: dpMainCamera = device; break;
+    default:
+        Logger::Log("bindDeviceToRole | unsupported slot=" + std::to_string(slot),
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return;
+    }
+    if (slot >= 0 && slot < systemdevicelist.system_devices.size())
+        systemdevicelist.system_devices[slot].isConnect = true;
+    AfterDeviceConnect(device);
+}
+
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
@@ -1506,12 +1530,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             if (device == nullptr) {
                 Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
             } else {
-                dpGuider = device;
-                // 修复：检查system_devices索引是否有效
-                if (systemdevicelist.system_devices.size() > 1) {
-                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
-                }
-                AfterDeviceConnect(dpGuider);
+                bindDeviceToRole(DeviceSlot::Guider, device);
             }
         }
         else if (SelectedCameras[0] == "PoleCamera")
@@ -1520,11 +1539,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             if (device == nullptr) {
                 Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
             } else {
-                dpPoleScope = device;
-                if (systemdevicelist.system_devices.size() > 2) {
-                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
-                }
-                AfterDeviceConnect(dpPoleScope);
+                bindDeviceToRole(DeviceSlot::PoleCamera, device);
             }
         }
         else if (SelectedCameras[0] == "MainCamera")
@@ -1533,11 +1548,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             if (device == nullptr) {
                 Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
             } else {
-                dpMainCamera = device;
-                if (systemdevicelist.system_devices.size() > 20) {
-                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
-                }
-                AfterDeviceConnect(dpMainCamera);
+                bindDeviceToRole(DeviceSlot::MainCamera, device);
             }
         }
     }
@@ -1559,24 +1570,15 @@ void MainWindow::continueConnectAllDeviceOnce()
 
             if (description == "Guider")
             {
-                dpGuider = device;
-                if (systemdevicelist.system_devices.size() > 1)
-                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
-                AfterDeviceConnect(dpGuider);
+                bindDeviceToRole(DeviceSlot::Guider, device);
             }
             else if (description == "PoleCamera")
             {
-                dpPoleScope = device;
-                if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
-                AfterDeviceConnect(dpPoleScope);
+                bindDeviceToRole(DeviceSlot::PoleCamera, device);
             }
             else if (description == "MainCamera")
             {
-                dpMainCamera = device;
-                if (systemdevicelist.system_devices.size() > 20)
-                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
-                AfterDeviceConnect(dpMainCamera);
+                bindDeviceToRole(DeviceSlot::MainCamera, device);
             }
 
             boundCcdIndexes.insert(idx);
@@ -1600,10 +1602,7 @@ void MainWindow::continueConnectAllDeviceOnce()
                 const QString name = QString::fromUtf8(device->getDeviceName());
                 if (!isPoleMasterName(name))
                     continue;
-                dpPoleScope = device;
-                if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
-                AfterDeviceConnect(dpPoleScope);
+                bindDeviceToRole(DeviceSlot::PoleCamera, device);
                 boundCcdIndexes.insert(idx);
                 Logger::Log("continueConnectAllDeviceOnce | INDI PoleCamera auto-bound by POLEMASTER: " +
                                 name.toStdString(),
@@ -1733,17 +1732,11 @@ void MainWindow::continueConnectAllDeviceOnce()
                         return;
                     if (description == "MainCamera")
                     {
-                        dpMainCamera = device;
-                        if (systemdevicelist.system_devices.size() > 20)
-                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
-                        AfterDeviceConnect(dpMainCamera);
+                        bindDeviceToRole(DeviceSlot::MainCamera, device);
                     }
                     else if (description == "Guider")
                     {
-                        dpGuider = device;
-                        if (systemdevicelist.system_devices.size() > 1)
-                            systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
-                        AfterDeviceConnect(dpGuider);
+                        bindDeviceToRole(DeviceSlot::Guider, device);
                     }
                     boundCcdIndexes.insert(idx);
                     Logger::Log("continueConnectAllDeviceOnce | INDI QHY fallback auto-bind: " +
@@ -1789,11 +1782,7 @@ void MainWindow::continueConnectAllDeviceOnce()
         if (!ConnectedTELESCOPEList.empty() && ConnectedTELESCOPEList[0] >= 0 && ConnectedTELESCOPEList[0] < indi_Client->GetDeviceCount()) {
             INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
             if (device != nullptr) {
-                dpMount = device;
-                if (systemdevicelist.system_devices.size() > 0) {
-                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
-                }
-                AfterDeviceConnect(dpMount);
+                bindDeviceToRole(DeviceSlot::Mount, device);
             }
         }
     }
@@ -1806,10 +1795,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundMountIndex);
             if (device != nullptr)
             {
-                dpMount = device;
-                if (systemdevicelist.system_devices.size() > 0)
-                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
-                AfterDeviceConnect(dpMount);
+                bindDeviceToRole(DeviceSlot::Mount, device);
                 Logger::Log("continueConnectAllDeviceOnce | INDI Mount auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
                             LogLevel::INFO, DeviceType::MAIN);
@@ -7814,20 +7800,12 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
             else if (SelectedCameras[0] == "PoleCamera")
             {
-                dpPoleScope = device;
-                if (systemdevicelist.system_devices.size() > 2) {
-                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
-                }
-                AfterDeviceConnect(dpPoleScope);
+                bindDeviceToRole(DeviceSlot::PoleCamera, device);
             }
             else if (SelectedCameras[0] == "MainCamera")
             {
                 Logger::Log("ConnectDriver | MainCamera Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-                dpMainCamera = device;
-                if (systemdevicelist.system_devices.size() > 20) {
-                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
-                }
-                AfterDeviceConnect(dpMainCamera);
+                bindDeviceToRole(DeviceSlot::MainCamera, device);
             }
         }
     }
@@ -7849,24 +7827,15 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
             if (description == "Guider")
             {
-                dpGuider = device;
-                if (systemdevicelist.system_devices.size() > 1)
-                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
-                AfterDeviceConnect(dpGuider);
+                bindDeviceToRole(DeviceSlot::Guider, device);
             }
             else if (description == "PoleCamera")
             {
-                dpPoleScope = device;
-                if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
-                AfterDeviceConnect(dpPoleScope);
+                bindDeviceToRole(DeviceSlot::PoleCamera, device);
             }
             else if (description == "MainCamera")
             {
-                dpMainCamera = device;
-                if (systemdevicelist.system_devices.size() > 20)
-                    systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
-                AfterDeviceConnect(dpMainCamera);
+                bindDeviceToRole(DeviceSlot::MainCamera, device);
             }
 
             boundCcdIndexes.insert(idx);
@@ -7902,10 +7871,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 const QString name = QString::fromUtf8(device->getDeviceName());
                 if (!isPoleMasterName(name))
                     continue;
-                dpPoleScope = device;
-                if (systemdevicelist.system_devices.size() > 2)
-                    systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
-                AfterDeviceConnect(dpPoleScope);
+                bindDeviceToRole(DeviceSlot::PoleCamera, device);
                 boundCcdIndexes.insert(idx);
                 Logger::Log("ConnectDriver | INDI PoleCamera auto-bound by POLEMASTER: " +
                                 name.toStdString(),
@@ -8045,17 +8011,11 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         return;
                     if (description == "MainCamera")
                     {
-                        dpMainCamera = device;
-                        if (systemdevicelist.system_devices.size() > 20)
-                            systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
-                        AfterDeviceConnect(dpMainCamera);
+                        bindDeviceToRole(DeviceSlot::MainCamera, device);
                     }
                     else if (description == "Guider")
                     {
-                        dpGuider = device;
-                        if (systemdevicelist.system_devices.size() > 1)
-                            systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
-                        AfterDeviceConnect(dpGuider);
+                        bindDeviceToRole(DeviceSlot::Guider, device);
                     }
                     boundCcdIndexes.insert(idx);
                     Logger::Log("ConnectDriver | INDI QHY fallback auto-bind: " +
@@ -8094,10 +8054,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         }
                         else
                         {
-                            dpMainCamera = device;
-                            if (systemdevicelist.system_devices.size() > 20)
-                                systemdevicelist.system_devices[DeviceSlot::MainCamera].isConnect = true;
-                            AfterDeviceConnect(dpMainCamera);
+                            bindDeviceToRole(DeviceSlot::MainCamera, device);
                             Logger::Log("ConnectDriver | Single CCD fallback auto-bind: MainCamera -> " +
                                             QString::fromUtf8(device->getDeviceName()).toStdString(),
                                         LogLevel::INFO, DeviceType::MAIN);
@@ -8114,10 +8071,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                         }
                         else
                         {
-                            dpGuider = device;
-                            if (systemdevicelist.system_devices.size() > 1)
-                                systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
-                            AfterDeviceConnect(dpGuider);
+                            bindDeviceToRole(DeviceSlot::Guider, device);
                             Logger::Log("ConnectDriver | Single CCD fallback auto-bind: Guider -> " +
                                             QString::fromUtf8(device->getDeviceName()).toStdString(),
                                         LogLevel::INFO, DeviceType::MAIN);
@@ -8126,10 +8080,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     }
                     else if (requestPoleOnly)
                     {
-                        dpPoleScope = device;
-                        if (systemdevicelist.system_devices.size() > 2)
-                            systemdevicelist.system_devices[DeviceSlot::PoleCamera].isConnect = true;
-                        AfterDeviceConnect(dpPoleScope);
+                        bindDeviceToRole(DeviceSlot::PoleCamera, device);
                         Logger::Log("ConnectDriver | Single CCD fallback auto-bind: PoleCamera -> " +
                                         QString::fromUtf8(device->getDeviceName()).toStdString(),
                                     LogLevel::INFO, DeviceType::MAIN);
@@ -8171,11 +8122,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         if (!ConnectedTELESCOPEList.empty() && ConnectedTELESCOPEList[0] >= 0 && ConnectedTELESCOPEList[0] < indi_Client->GetDeviceCount()) {
             INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
             if (device != nullptr) {
-                dpMount = device;
-                if (systemdevicelist.system_devices.size() > 0) {
-                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
-                }
-                AfterDeviceConnect(dpMount);
+                bindDeviceToRole(DeviceSlot::Mount, device);
             }
         }
     }
@@ -8188,10 +8135,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundMountIndex);
             if (device != nullptr)
             {
-                dpMount = device;
-                if (systemdevicelist.system_devices.size() > 0)
-                    systemdevicelist.system_devices[DeviceSlot::Mount].isConnect = true;
-                AfterDeviceConnect(dpMount);
+                bindDeviceToRole(DeviceSlot::Mount, device);
                 Logger::Log("ConnectDriver | INDI Mount auto-bound by saved name: " +
                                 QString::fromUtf8(device->getDeviceName()).toStdString(),
                             LogLevel::INFO, DeviceType::MAIN);

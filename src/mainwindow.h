@@ -383,6 +383,9 @@ public:
      */
     void AfterDeviceConnect(INDI::BaseDevice *dp);
 
+    // 把已连接 INDI 设备绑定到角色槽位（dp 全局 + isConnect + AfterDeviceConnect）。
+    void bindDeviceToRole(int slot, INDI::BaseDevice *device);
+
     /**
      * @brief 断开 INDI 服务器
      * @param client 客户端指针
