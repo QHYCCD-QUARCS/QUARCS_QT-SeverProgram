@@ -5858,7 +5858,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         //   3) 同一设备不得用另一模式重复连接 —— 见下方"单设备兜底"。
     }
 
-    // 单设备兜底：若该设备已连接，则不允许用另一模式重复连接；同模式则直接视为成功
+    // 单设备兜底：若该设备已连接，则不允许用另一模式重复连接。
+    //
+    // 注意 isConnect 与 isBind 是两层、不是一回事：
+    //   isConnect —— 驱动/设备层：驱动在跑、设备可用；
+    //   isBind    —— 角色分配层：这个角色当前绑了哪一台。
+    // UnBindingDevice 只退出分配层（isBind=false），驱动仍在跑（isConnect 保持 true，
+    // 前端卡片才不会消失）。所以"已连接"绝不等于"无事可做"。
     {
         const int idxDesc = findDeviceIndexByDesc(driverTypeDesc);
         if (idxDesc >= 0 && systemdevicelist.system_devices[idxDesc].isConnect)
@@ -5873,11 +5879,22 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            Logger::Log("ConnectDriver | Device " + driverTypeDesc.toStdString() + " already connected (" +
-                            std::string(currentSdk ? "SDK" : "INDI") + "). Skip re-connect.",
+            if (systemdevicelist.system_devices[idxDesc].isBind)
+            {
+                // 已连接【且仍绑着】才是真正的幂等"无事可做"。
+                Logger::Log("ConnectDriver | Device " + driverTypeDesc.toStdString() + " already connected and bound (" +
+                                std::string(currentSdk ? "SDK" : "INDI") + "). Skip re-connect.",
+                            LogLevel::INFO, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+                return;
+            }
+
+            // 已连接但未绑定（典型：刚解绑）——用户点"连接"要的正是候选列表，
+            // 这里不能 return，否则该角色再也分配不上。继续走下面的常规流程：
+            // 它本身幂等（驱动已在跑会被跳过），只会重新上报未绑定的候选。
+            Logger::Log("ConnectDriver | Device " + driverTypeDesc.toStdString() + " already connected but unbound (" +
+                            std::string(currentSdk ? "SDK" : "INDI") + "). Re-report candidates.",
                         LogLevel::INFO, DeviceType::MAIN);
-            emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
-            return;
         }
     }
 
