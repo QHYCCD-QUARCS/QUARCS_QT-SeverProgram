@@ -419,6 +419,13 @@ public:
     // 已打开则直接返回其句柄；未打开才真正 OpenQHYCCD 并存回池。失败返回 nullptr。
     SdkDeviceHandle ensureSdkCameraOpen(int poolIndex, const QString& role);
 
+    // 扫描 SDK 相机并登记进池（M2：只枚举、不 open）。幂等：已登记的 cameraId 不重复加。
+    // 返回池中有效相机数；<0 表示扫描失败。真正的 open 推迟到 ensureSdkCameraOpen。
+    int registerSdkCameraPool(const QString& driverName);
+
+    // 把池中【尚未绑定给任何角色】的相机作为候选上报给前端（DeviceToBeAllocated）。
+    void reportSdkCameraCandidates();
+
     /**
      * @brief 断开某设备
      * @param client 客户端

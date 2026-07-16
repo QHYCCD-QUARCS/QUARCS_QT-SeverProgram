@@ -110,6 +110,106 @@ SdkDeviceHandle MainWindow::ensureSdkCameraOpen(int poolIndex, const QString& ro
     return handle;
 }
 
+// 相机名 -> 前端分类标签。原先这段 if/else 在全仓复制了 ~10 份。
+static QString sdkCameraCategory(const QString& camId)
+{
+    if (camId.contains("5III", Qt::CaseInsensitive)) return QStringLiteral("5III");
+    if (camId.contains("DEMO", Qt::CaseInsensitive)) return QStringLiteral("DEMO");
+    return QStringLiteral("OTHER");
+}
+
+// 扫描 SDK 相机并登记进池 —— M2 的核心：只枚举，不 open。
+// ScanQHYCCD/GetQHYCCDId 只枚举、不占用设备；真正的排他是 OpenQHYCCD。旧流程"扫到几台
+// 就 open 全部"会把本该留给 INDI 的相机也占住，是混用时双开冲突的自造根源。
+// 这里只登记 (cameraId, handle=nullptr)；待某角色真正被分配到它时，由 ensureSdkCameraOpen 打开。
+// 幂等：已登记的 cameraId 不重复加（可安全重复调用，例如池复用场景的"补齐"）。
+// 返回：池中有效相机数；<0 表示扫描失败。
+int MainWindow::registerSdkCameraPool(const QString& driverName)
+{
+    if (driverName.isEmpty())
+    {
+        Logger::Log("registerSdkCameraPool | empty driverName", LogLevel::ERROR, DeviceType::MAIN);
+        return -1;
+    }
+
+    const SdkResult scanRes = sdkScanQhyCameras(driverName);
+    if (!scanRes.success || !scanRes.payload.has_value())
+    {
+        Logger::Log("registerSdkCameraPool | ScanCameras failed: " + scanRes.message,
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return -1;
+    }
+    const int cameraCount = std::any_cast<int>(scanRes.payload);
+
+    for (int idx = 0; idx < cameraCount; ++idx)
+    {
+        SdkCommand getIdCmd;
+        getIdCmd.type = SdkCommandType::Custom;
+        getIdCmd.name = "GetCameraIdByIndex";
+        getIdCmd.payload = idx;
+        const SdkResult idRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
+        if (!idRes.success || !idRes.payload.has_value())
+        {
+            Logger::Log("registerSdkCameraPool | GetCameraIdByIndex failed at idx=" + std::to_string(idx) +
+                            ": " + idRes.message,
+                        LogLevel::WARNING, DeviceType::MAIN);
+            continue;
+        }
+        const QString qid = QString::fromStdString(std::any_cast<std::string>(idRes.payload));
+
+        // 幂等：按 cameraId 判是否已登记（句柄可能为空——扫描不再 open）。
+        bool already = false;
+        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+            if (g_sdkQhyCamIds[i] == qid) { already = true; break; }
+        if (already)
+            continue;
+
+        // 优先复用空槽（handle==nullptr 且 id 为空），否则追加。
+        int slot = -1;
+        for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
+            if (g_sdkQhyCamHandles[i] == nullptr && g_sdkQhyCamIds[i].isEmpty()) { slot = i; break; }
+        if (slot >= 0)
+        {
+            g_sdkQhyCamIds[slot] = qid;
+        }
+        else
+        {
+            g_sdkQhyCamHandles.push_back(nullptr);
+            g_sdkQhyCamIds.push_back(qid);
+        }
+        Logger::Log("registerSdkCameraPool | registered (not opened): " + qid.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+    }
+
+    int valid = 0;
+    for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+        if (sdkPoolIndexValid(i)) ++valid;
+    Logger::Log("registerSdkCameraPool | scanned=" + std::to_string(cameraCount) +
+                    " poolValid=" + std::to_string(valid),
+                LogLevel::INFO, DeviceType::MAIN);
+    return valid;
+}
+
+// 把池中尚未绑定给任何角色的相机上报为候选（供用户在分配面板手动指派）。
+// 使用负数 UI 索引（sdkUiIndexFromPoolIndex），避免与 INDI 的正索引冲突。
+void MainWindow::reportSdkCameraCandidates()
+{
+    if (wsThread == nullptr)
+        return;
+    for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
+    {
+        if (!sdkPoolIndexValid(i))
+            continue;
+        // 已被某角色占用的池槽位不作为候选
+        if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex || i == g_sdkPoleCameraPoolIndex)
+            continue;
+        const QString &camId = g_sdkQhyCamIds[i];
+        emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" +
+                                          QString::number(sdkUiIndexFromPoolIndex(i)) + ":" +
+                                          camId + ":" + sdkCameraCategory(camId));
+    }
+}
+
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
@@ -285,68 +385,8 @@ void MainWindow::ConnectAllDeviceOnce()
             }
 
             // 打开全部相机，推送到待分配列表
-            int openedCount = 0;
-            const int cameraCount = scanRes.payload.has_value() ? std::any_cast<int>(scanRes.payload) : 0;
-            for (int idx = 0; idx < cameraCount; ++idx)
-            {
-                SdkCommand getIdCmd;
-                getIdCmd.type = SdkCommandType::Custom;
-                getIdCmd.name = "GetCameraIdByIndex";
-                getIdCmd.payload = idx;
-                // 对于nullptr句柄，使用getSDKDriverName动态获取驱动名称
-                QString driverName = getSDKDriverName(sdkCameraDeviceType);
-                if (driverName.isEmpty()) {
-                    Logger::Log("ConnectAllDeviceOnce | Cannot get SDK driver name for " + sdkCameraDeviceType.toStdString(),
-                                LogLevel::ERROR, DeviceType::MAIN);
-                    continue;
-                }
-                SdkResult idRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
-                if (!idRes.success || !idRes.payload.has_value())
-                {
-                    Logger::Log("ConnectAllDeviceOnce | GetCameraIdByIndex failed at idx=" + std::to_string(idx) + ": " + idRes.message,
-                                LogLevel::WARNING, DeviceType::CAMERA);
-                    continue;
-                }
-
-                const std::string cameraId = std::any_cast<std::string>(idRes.payload);
-                // 使用getSDKDriverName动态获取驱动名称
-                driverName = getSDKDriverName(sdkCameraDeviceType);
-                if (driverName.isEmpty()) {
-                    Logger::Log("ConnectAllDeviceOnce | Cannot get SDK driver name for " + sdkCameraDeviceType.toStdString(),
-                                LogLevel::ERROR, DeviceType::MAIN);
-                    continue;
-                }
-                SdkResult openRes;
-                SdkSerialExecutor *openExec = sdkCamExec.get();
-                if (sdkCameraDeviceType == "MainCamera")
-                    openExec = sdkMainCameraExecutor();
-                else if (sdkCameraDeviceType == "Guider")
-                    openExec = sdkGuiderCameraExecutor();
-                else if (sdkCameraDeviceType == "PoleCamera")
-                    openExec = sdkPoleCameraExecutor();
-                if (openExec && openExec->isRunning()) {
-                    const std::string driverNameStd = driverName.toStdString();
-                    const std::string cameraIdSnap = cameraId;
-                    openRes = openExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
-                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
-                    });
-                } else {
-                    openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
-                }
-                if (!openRes.success || !openRes.payload.has_value())
-                {
-                    Logger::Log("ConnectAllDeviceOnce | Open failed for " + cameraId + ": " + openRes.message,
-                                LogLevel::WARNING, DeviceType::CAMERA);
-                    continue;
-                }
-
-                SdkDeviceHandle handle = std::any_cast<SdkDeviceHandle>(openRes.payload);
-                g_sdkQhyCamHandles.push_back(handle);
-                g_sdkQhyCamIds.push_back(QString::fromStdString(cameraId));
-                ++openedCount;
-                // 注意：不在循环中立即发送 DeviceToBeAllocated 消息，而是先收集所有相机，
-                // 然后在循环结束后统一发送，确保消息发送顺序正确
-            }
+            // M2：扫描登记（不 open）。真正的 open 推迟到 BindingDevice -> ensureSdkCameraOpen。
+            const int openedCount = registerSdkCameraPool(driverName);
 
             if (openedCount <= 0)
             {
@@ -5971,65 +6011,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
 
                     // [方案B修复-对称] 池复用重连 MainCamera：先“补齐”池——把 scan 到但未打开的相机
                     // （尤其是本角色断开时被 close 的那台）重新 open 进池；已在池中打开的（含 Guider 占用）跳过。
-                    for (int idx = 0; idx < cameraCount; ++idx)
-                    {
-                        SdkCommand getIdCmd;
-                        getIdCmd.type = SdkCommandType::Custom;
-                        getIdCmd.name = "GetCameraIdByIndex";
-                        getIdCmd.payload = idx;
-                        SdkResult getIdRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
-                        if (!getIdRes.success || !getIdRes.payload.has_value())
-                            continue;
-                        const std::string cameraId = std::any_cast<std::string>(getIdRes.payload);
-                        const QString qid = QString::fromStdString(cameraId);
-
-                        bool alreadyOpen = false;
-                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                        {
-                            if (g_sdkQhyCamIds[i] == qid && g_sdkQhyCamHandles[i] != nullptr)
-                            {
-                                alreadyOpen = true;
-                                break;
-                            }
-                        }
-                        if (alreadyOpen)
-                            continue;
-
-                        SdkResult openRes;
-                        SdkSerialExecutor *mainExec = sdkMainCameraExecutor();
-                        if (mainExec && mainExec->isRunning()) {
-                            const std::string driverNameStd = driverName.toStdString();
-                            const std::string cameraIdSnap = cameraId;
-                            openRes = mainExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
-                                return SdkManager::instance().open(driverNameStd, cameraIdSnap);
-                            });
-                        } else {
-                            openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
-                        }
-                        if (!openRes.success || !openRes.payload.has_value())
-                            continue;
-
-                        SdkDeviceHandle handle = std::any_cast<SdkDeviceHandle>(openRes.payload);
-                        int slot = -1;
-                        for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
-                        {
-                            if (g_sdkQhyCamHandles[i] == nullptr && (g_sdkQhyCamIds[i].isEmpty() || g_sdkQhyCamIds[i] == qid))
-                            {
-                                slot = i;
-                                break;
-                            }
-                        }
-                        if (slot >= 0)
-                        {
-                            g_sdkQhyCamHandles[slot] = handle;
-                            g_sdkQhyCamIds[slot] = qid;
-                        }
-                        else
-                        {
-                            g_sdkQhyCamHandles.push_back(handle);
-                            g_sdkQhyCamIds.push_back(qid);
-                        }
-                    }
+                    // M2：池复用“补齐”——只登记扫描到但尚未在池中的相机（幂等、不 open）。
+                    registerSdkCameraPool(driverName);
 
                     // [方案B修复-对称] 若 MainCamera 保留了上次绑定的 cameraId 且已在复用池中，直接自动回绑，
                     // 恢复“断开后一键重连”；找不到匹配（相机全新/有歧义）时才进入下面的“等待用户手动分配”。
@@ -6175,81 +6158,21 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 4. 依次获取 cameraId 并 open，全部加入“待分配设备列表”
-            bool anyOpened = false;
-            for (int idx = 0; idx < cameraCount; ++idx)
+            // ── M2：扫描登记（不 open）+ 上报候选 ─────────────────────────────
+            // ScanQHYCCD/GetQHYCCDId 只枚举、不占用设备；真正的排他是 OpenQHYCCD。
+            // 旧流程在此 open 全部相机 -> 占住本该留给 INDI 的相机（混用双开冲突的自造
+            // 根源），且同段逻辑全仓复制 6 份。现统一走 registerSdkCameraPool（只登记
+            // cameraId、句柄留空）+ reportSdkCameraCandidates；真正的 open 推迟到
+            // BindingDevice -> ensureSdkCameraOpen（只开被分配的那台）。
+            const int poolValid = registerSdkCameraPool(driverName);
+            if (poolValid < 1)
             {
-                SdkCommand getIdCmd;
-                getIdCmd.type = SdkCommandType::Custom;
-                getIdCmd.name = "GetCameraIdByIndex";
-                getIdCmd.payload = idx;
-                // 对于nullptr句柄，使用getSDKDriverName动态获取驱动名称
-                QString driverName = getSDKDriverName("MainCamera");
-                if (driverName.isEmpty()) {
-                    Logger::Log("ConnectDriver | Cannot get SDK driver name for MainCamera",
-                                LogLevel::ERROR, DeviceType::MAIN);
-                    continue;
-                }
-                SdkResult getIdRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
-                if (!getIdRes.success || !getIdRes.payload.has_value())
-                {
-                    Logger::Log("ConnectDriver | GetCameraIdByIndex failed at idx=" + std::to_string(idx) + ": " + getIdRes.message,
-                                LogLevel::WARNING, DeviceType::MAIN);
-                    continue;
-                }
-
-                const std::string cameraId = std::any_cast<std::string>(getIdRes.payload);
-                Logger::Log("ConnectDriver | Found cameraId[" + std::to_string(idx) + "]: " + cameraId, LogLevel::INFO, DeviceType::MAIN);
-
-                // 使用getSDKDriverName动态获取驱动名称
-                driverName = getSDKDriverName("MainCamera");
-                if (driverName.isEmpty()) {
-                    Logger::Log("ConnectDriver | Cannot get SDK driver name for MainCamera",
-                                LogLevel::ERROR, DeviceType::MAIN);
-                    continue;
-                }
-                SdkResult openRes;
-                SdkSerialExecutor *mainExec = sdkMainCameraExecutor();
-                if (mainExec && mainExec->isRunning()) {
-                    const std::string driverNameStd = driverName.toStdString();
-                    const std::string cameraIdSnap = cameraId;
-                    openRes = mainExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
-                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
-                    });
-                } else {
-                    openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
-                }
-                if (!openRes.success || !openRes.payload.has_value())
-                {
-                    Logger::Log("ConnectDriver | Open camera failed for " + cameraId + ": " + openRes.message,
-                                LogLevel::WARNING, DeviceType::MAIN);
-                    continue;
-                }
-
-                SdkDeviceHandle handle = std::any_cast<SdkDeviceHandle>(openRes.payload);
-                g_sdkQhyCamHandles.push_back(handle);
-                g_sdkQhyCamIds.push_back(QString::fromStdString(cameraId));
-                anyOpened = true;
-
-                // 发送到前端待分配列表：复用 CCD 分类，但用负数 index 表示 SDK 池索引
-                const int poolIndex = g_sdkQhyCamHandles.size() - 1;
-                const int uiIdx = sdkUiIndexFromPoolIndex(poolIndex);
-                const QString &camId = g_sdkQhyCamIds[poolIndex];
-                QString camId_cat;
-                if (camId.contains("5III", Qt::CaseInsensitive))
-                    camId_cat = "5III";
-                else if (camId.contains("DEMO", Qt::CaseInsensitive))
-                    camId_cat = "DEMO";
-                else
-                    camId_cat = "OTHER";
-                emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + camId + ":" + camId_cat);
-            }
-
-            if (!anyOpened)
-            {
-                Logger::Log("ConnectDriver | SDK scan success but no camera opened successfully.", LogLevel::ERROR, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("ConnectDriverFailed:MainCamera:Open failed");
+                Logger::Log("ConnectDriver | SDK scan/register produced no camera for MainCamera.",
+                            LogLevel::ERROR, DeviceType::MAIN);
+                emit wsThread->sendMessageToClient("ConnectDriverFailed:MainCamera:No camera found");
                 return;
             }
+            reportSdkCameraCandidates();
 
             // 单设备重连：持久化选择已经确定时，扫描后按 cameraId 恢复连接。
             // 只有首次选择或原设备未扫描到时，才进入候选选择流程。
@@ -6406,88 +6329,8 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     // 先“补齐”池：在不清理全池的前提下，对 scan 出来的相机里未打开的那些做 open，
                     // 这样 Guider 被断开（close）后也能重联回来，而不会影响正在工作的 MainCamera。
                     int openedNew = 0;
-                    for (int idx = 0; idx < cameraCount; ++idx)
-                    {
-                        SdkCommand getIdCmd;
-                        getIdCmd.type = SdkCommandType::Custom;
-                        getIdCmd.name = "GetCameraIdByIndex";
-                        getIdCmd.payload = idx;
-
-                        // 使用当前 Guider driverName（已经用于 ScanCameras）
-                        SdkResult getIdRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
-                        if (!getIdRes.success || !getIdRes.payload.has_value())
-                            continue;
-
-                        const std::string cameraId = std::any_cast<std::string>(getIdRes.payload);
-                        const QString qid = QString::fromStdString(cameraId);
-
-                        // 若该相机已打开（池里有非空 handle）或就是当前 MainCamera，跳过
-                        bool alreadyOpen = false;
-                        if (!sdkMainCameraId.isEmpty() && sdkMainCameraHandle != nullptr && qid == sdkMainCameraId)
-                            alreadyOpen = true;
-                        if (!alreadyOpen)
-                        {
-                            for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                            {
-                                if (g_sdkQhyCamIds[i] == qid && g_sdkQhyCamHandles[i] != nullptr)
-                                {
-                                    alreadyOpen = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (alreadyOpen)
-                            continue;
-
-                        SdkResult openRes;
-                        SdkSerialExecutor *guiderExec = sdkGuiderCameraExecutor();
-                        if (guiderExec && guiderExec->isRunning()) {
-                            const std::string driverNameStd = driverName.toStdString();
-                            const std::string cameraIdSnap = cameraId;
-                            openRes = guiderExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
-                                return SdkManager::instance().open(driverNameStd, cameraIdSnap);
-                            });
-                        } else {
-                            openRes = SdkManager::instance().open(driverName.toStdString(), cameraId);
-                        }
-                        if (!openRes.success || !openRes.payload.has_value())
-                            continue;
-
-                        SdkDeviceHandle handle = std::any_cast<SdkDeviceHandle>(openRes.payload);
-
-                        // 尽量复用空槽位，避免索引漂移
-                        int slot = -1;
-                        for (int i = 0; i < g_sdkQhyCamHandles.size(); ++i)
-                        {
-                            if (g_sdkQhyCamHandles[i] == nullptr && (g_sdkQhyCamIds[i].isEmpty() || g_sdkQhyCamIds[i] == qid))
-                            {
-                                slot = i;
-                                break;
-                            }
-                        }
-                        if (slot >= 0)
-                        {
-                            g_sdkQhyCamHandles[slot] = handle;
-                            g_sdkQhyCamIds[slot] = qid;
-                        }
-                        else
-                        {
-                            g_sdkQhyCamHandles.push_back(handle);
-                            g_sdkQhyCamIds.push_back(qid);
-                            slot = g_sdkQhyCamHandles.size() - 1;
-                        }
-                        openedNew++;
-
-                        const int uiIdx = sdkUiIndexFromPoolIndex(slot);
-                        QString qid_cat;
-                        if (qid.contains("5III", Qt::CaseInsensitive))
-                            qid_cat = "5III";
-                        else if (qid.contains("DEMO", Qt::CaseInsensitive))
-                            qid_cat = "DEMO";
-                        else
-                            qid_cat = "OTHER";
-                        emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + qid + ":" + qid_cat);
-                    }
+                    // M2：池复用“补齐”——只登记扫描到但尚未在池中的相机（幂等、不 open）。
+                    registerSdkCameraPool(driverName);
                     if (openedNew > 0)
                     {
                         Logger::Log("ConnectDriver | Reused pool and opened " + std::to_string(openedNew) +
@@ -6592,83 +6435,21 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             }
 
             // 4) 打开全部相机（多相机场景：触发设备分配逻辑；单相机：自动绑定）
-            bool anyOpened = false;
-            for (int idx = 0; idx < cameraCount; ++idx)
+            // ── M2：扫描登记（不 open）+ 上报候选 ─────────────────────────────
+            // ScanQHYCCD/GetQHYCCDId 只枚举、不占用设备；真正的排他是 OpenQHYCCD。
+            // 旧流程在此 open 全部相机 -> 占住本该留给 INDI 的相机（混用双开冲突的自造
+            // 根源），且同段逻辑全仓复制 6 份。现统一走 registerSdkCameraPool（只登记
+            // cameraId、句柄留空）+ reportSdkCameraCandidates；真正的 open 推迟到
+            // BindingDevice -> ensureSdkCameraOpen（只开被分配的那台）。
+            const int poolValid = registerSdkCameraPool(driverName);
+            if (poolValid < 1)
             {
-                SdkCommand getIdCmd;
-                getIdCmd.type = SdkCommandType::Custom;
-                getIdCmd.name = "GetCameraIdByIndex";
-                getIdCmd.payload = idx;
-
-                QString driverName2 = getSDKDriverName("Guider");
-                if (driverName2.isEmpty())
-                {
-                    Logger::Log("ConnectDriver | Cannot get SDK driver name for Guider",
-                                LogLevel::ERROR, DeviceType::GUIDER);
-                    continue;
-                }
-
-                SdkResult getIdRes = SdkManager::instance().call(driverName2.toStdString(), nullptr, getIdCmd);
-                if (!getIdRes.success || !getIdRes.payload.has_value())
-                {
-                    Logger::Log("ConnectDriver | GetCameraIdByIndex failed at idx=" + std::to_string(idx) + ": " + getIdRes.message,
-                                LogLevel::WARNING, DeviceType::GUIDER);
-                    continue;
-                }
-
-                const std::string cameraId = std::any_cast<std::string>(getIdRes.payload);
-                Logger::Log("ConnectDriver | Found cameraId[" + std::to_string(idx) + "]: " + cameraId, LogLevel::INFO, DeviceType::GUIDER);
-
-                driverName2 = getSDKDriverName("Guider");
-                if (driverName2.isEmpty())
-                {
-                    Logger::Log("ConnectDriver | Cannot get SDK driver name for Guider",
-                                LogLevel::ERROR, DeviceType::GUIDER);
-                    continue;
-                }
-
-                SdkResult openRes;
-                SdkSerialExecutor *guiderExec = sdkGuiderCameraExecutor();
-                if (guiderExec && guiderExec->isRunning()) {
-                    const std::string driverNameStd = driverName2.toStdString();
-                    const std::string cameraIdSnap = cameraId;
-                    openRes = guiderExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
-                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
-                    });
-                } else {
-                    openRes = SdkManager::instance().open(driverName2.toStdString(), cameraId);
-                }
-                if (!openRes.success || !openRes.payload.has_value())
-                {
-                    Logger::Log("ConnectDriver | Open camera failed for " + cameraId + ": " + openRes.message,
-                                LogLevel::WARNING, DeviceType::GUIDER);
-                    continue;
-                }
-
-                SdkDeviceHandle handle = std::any_cast<SdkDeviceHandle>(openRes.payload);
-                g_sdkQhyCamHandles.push_back(handle);
-                g_sdkQhyCamIds.push_back(QString::fromStdString(cameraId));
-                anyOpened = true;
-
-                const int poolIndex = g_sdkQhyCamHandles.size() - 1;
-                const int uiIdx = sdkUiIndexFromPoolIndex(poolIndex);
-                const QString &camId = g_sdkQhyCamIds[poolIndex];
-                QString camId_cat;
-                if (camId.contains("5III", Qt::CaseInsensitive))
-                    camId_cat = "5III";
-                else if (camId.contains("DEMO", Qt::CaseInsensitive))
-                    camId_cat = "DEMO";
-                else
-                    camId_cat = "OTHER";
-                emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + camId + ":" + camId_cat);
-            }
-
-            if (!anyOpened)
-            {
-                Logger::Log("ConnectDriver | SDK scan success but no camera opened successfully (Guider).", LogLevel::ERROR, DeviceType::GUIDER);
-                emit wsThread->sendMessageToClient("ConnectDriverFailed:Guider:Open failed");
+                Logger::Log("ConnectDriver | SDK scan/register produced no camera for Guider.",
+                            LogLevel::ERROR, DeviceType::GUIDER);
+                emit wsThread->sendMessageToClient("ConnectDriverFailed:Guider:No camera found");
                 return;
             }
+            reportSdkCameraCandidates();
 
             // 单设备重连使用已提交的设备选择，不要求用户再次分配相机。
             const QString savedGuiderId = systemdevicelist.system_devices[DeviceSlot::Guider].DeviceIndiName.trimmed();
@@ -6771,57 +6552,9 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 return;
             }
 
-            for (int idx = 0; idx < cameraCount; ++idx)
-            {
-                SdkCommand getIdCmd;
-                getIdCmd.type = SdkCommandType::Custom;
-                getIdCmd.name = "GetCameraIdByIndex";
-                getIdCmd.payload = idx;
-                SdkResult getIdRes = SdkManager::instance().call(driverName.toStdString(), nullptr, getIdCmd);
-                if (!getIdRes.success || !getIdRes.payload.has_value())
-                    continue;
-
-                const QString qid = QString::fromStdString(std::any_cast<std::string>(getIdRes.payload));
-                bool alreadyOpen = false;
-                for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
-                {
-                    if (g_sdkQhyCamIds[i] == qid && g_sdkQhyCamHandles.value(i, nullptr) != nullptr)
-                    {
-                        alreadyOpen = true;
-                        break;
-                    }
-                }
-                if (alreadyOpen)
-                    continue;
-
-                SdkResult openRes;
-                const std::string driverNameStd = driverName.toStdString();
-                const std::string cameraIdSnap = qid.toStdString();
-                if (sdkCamExec && sdkCamExec->isRunning())
-                {
-                    openRes = sdkCamExec->postAndWait<SdkResult>([driverNameStd, cameraIdSnap]() {
-                        return SdkManager::instance().open(driverNameStd, cameraIdSnap);
-                    });
-                }
-                else
-                {
-                    openRes = SdkManager::instance().open(driverNameStd, cameraIdSnap);
-                }
-                if (!openRes.success || !openRes.payload.has_value())
-                    continue;
-
-                g_sdkQhyCamHandles.push_back(std::any_cast<SdkDeviceHandle>(openRes.payload));
-                g_sdkQhyCamIds.push_back(qid);
-                const int uiIdx = sdkUiIndexFromPoolIndex(g_sdkQhyCamIds.size() - 1);
-                QString qid_cat;
-                if (qid.contains("5III", Qt::CaseInsensitive))
-                    qid_cat = "5III";
-                else if (qid.contains("DEMO", Qt::CaseInsensitive))
-                    qid_cat = "DEMO";
-                else
-                    qid_cat = "OTHER";
-                emit wsThread->sendMessageToClient("DeviceToBeAllocated:CCD:" + QString::number(uiIdx) + ":" + qid + ":" + qid_cat);
-            }
+            // M2：扫描登记（不 open）+ 上报候选；真正的 open 推迟到 BindingDevice。
+            registerSdkCameraPool(driverName);
+            reportSdkCameraCandidates();
 
             // [修改] 移除SDK PoleCamera自动绑定（除POLEMASTER外），等待用户手动选择
             // 仅保留POLEMASTER基于设备唯一性的自动绑定
