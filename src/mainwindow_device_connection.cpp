@@ -7282,10 +7282,18 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             if (indi_Client->GetDeviceFromList(i)->isConnected())
             {
                 Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is connected", LogLevel::INFO, DeviceType::MAIN);
+                // “这台设备是否已被某个角色占用”必须以 isBind 为准。
+                // DeviceIndiName 同时承担『记住上次选的设备』的持久化职责：设备未连接、未绑定时
+                // 槽位里也会留着它的名字（重启后据此显示型号）。若只比名字，就会把
+                // “槽位记得它” 误判成 “它已被占用”。
+                // 症状：第一台相机绑定后再连第二台 —— 第二台因 Guider 槽位persist 着它的名字
+                // 而被判为 is Used -> 无可用设备 -> ConnectDriverFailed，且驱动被整个移除。
+                // （以前自动历史回绑会把该槽位真绑上，掩盖了这个混淆；自动分配移除后暴露。）
                 bool isDeviceBind = false;
                 for (int j = 0; j < systemdevicelist.system_devices.size(); j++)
                 {
-                    if (systemdevicelist.system_devices[j].DeviceIndiName == indi_Client->GetDeviceNameFromList(i).c_str())
+                    if (systemdevicelist.system_devices[j].DeviceIndiName == indi_Client->GetDeviceNameFromList(i).c_str()
+                        && systemdevicelist.system_devices[j].isBind)
                     {
                         isDeviceBind = true;
                     }
