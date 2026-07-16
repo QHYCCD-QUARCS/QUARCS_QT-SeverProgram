@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 
 #include <regex>
+#include <QDir>
 
 extern INDI::BaseDevice *dpGuider;
 extern INDI::BaseDevice *dpPoleScope;
@@ -24,6 +25,18 @@ void MainWindow::initINDIServer()
     glIndiServer->setProcessChannelMode(QProcess::MergedChannels);
     glIndiServer->setStandardOutputFile("/tmp/indiserver.log", QIODevice::Append);
     glIndiServer->setStandardErrorFile("/tmp/indiserver.log", QIODevice::Append);
+
+    // INDI 驱动（indi_qhy_ccd）由 indiserver spawn，会继承 indiserver 的工作目录；
+    // 而 QHY SDK 用相对路径读配置：INIReader("qhyccd.ini") —— 即按进程 cwd 解析。
+    // 默认 indiserver 继承 client 的 cwd（BUILD 目录），导致 INDI 驱动与本进程 SDK
+    // 共用同一份 BUILD/qhyccd.ini，无法分别配置（例如 DEMO 相机一边开、一边关）。
+    // 这里把 indiserver 的工作目录设为用户主目录，使 INDI 侧读 ~/qhyccd.ini，
+    // 与 client 侧的 BUILD/qhyccd.ini 相互独立；且 ~ 下的配置不会被部署脚本覆盖。
+    const QString indiWorkDir = QDir::homePath();
+    glIndiServer->setWorkingDirectory(indiWorkDir);
+    Logger::Log("initINDIServer | indiserver workingDirectory = " + indiWorkDir.toStdString() +
+                    " (INDI 驱动将从该目录读取 qhyccd.ini)",
+                LogLevel::INFO, DeviceType::MAIN);
 
     glIndiServer->setProgram("indiserver");
     glIndiServer->setArguments(QStringList() << "-f" << "/tmp/myFIFO" << "-p" << "7624");
