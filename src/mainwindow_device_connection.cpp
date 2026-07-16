@@ -7838,7 +7838,30 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
     }
     emit wsThread->sendMessageToClient("AddDeviceType:" + systemdevicelist.system_devices[driverCode].Description);
-    emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+
+    // 自动分配移除后：被请求的相机角色不会再被自动绑定，需由用户在候选条中手动指派。
+    // 此时必须发 ConnectDriverPendingAllocation 而不是 ConnectDriverSuccess——前端的
+    // connectDriverSuccess() 会把二级抽屉/设备页关掉（drawer_2=false），
+    // 导致刚由 ShowDeviceAllocationWindow 打开的候选条被立刻关闭、用户看不到相机列表。
+    // ConnectDriverPendingAllocation 在前端会保持候选条打开，并同样结束 loading 态。
+    const bool requestedCameraRoleUnbound =
+        (requestMainCameraOnly && dpMainCamera == nullptr) ||
+        (requestGuiderOnly && dpGuider == nullptr) ||
+        (requestPoleOnly && dpPoleScope == nullptr);
+    if (hasPendingAllocation && requestedCameraRoleUnbound)
+    {
+        const QString pendingRole = requestMainCameraOnly ? QStringLiteral("MainCamera")
+                                  : (requestGuiderOnly ? QStringLiteral("Guider")
+                                                       : QStringLiteral("PoleCamera"));
+        Logger::Log("ConnectDriver | Requested role " + pendingRole.toStdString() +
+                        " awaits manual allocation; sending ConnectDriverPendingAllocation.",
+                    LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectDriverPendingAllocation:" + pendingRole);
+    }
+    else
+    {
+        emit wsThread->sendMessageToClient("ConnectDriverSuccess:" + DriverName);
+    }
 }
 void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString DeviceType)
 {
