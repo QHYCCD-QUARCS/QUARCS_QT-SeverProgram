@@ -5842,32 +5842,20 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         const bool mainConnected = (idxMain >= 0) && systemdevicelist.system_devices[idxMain].isConnect;
         const bool guiderConnected = (idxGuider >= 0) && systemdevicelist.system_devices[idxGuider].isConnect;
 
-        // 同驱动：只要任一已连接，则锁定到其当前模式（防止同驱动混用 INDI/SDK）
-        bool sameDriver = false;
-        if (idxMain >= 0 && idxGuider >= 0)
-        {
-            const QString d1 = systemdevicelist.system_devices[idxMain].DriverIndiName.trimmed();
-            const QString d2 = systemdevicelist.system_devices[idxGuider].DriverIndiName.trimmed();
-            if (!d1.isEmpty() && !d2.isEmpty() && d1.compare(d2, Qt::CaseInsensitive) == 0)
-                sameDriver = true;
-        }
-
-        if (sameDriver && (mainConnected || guiderConnected))
-        {
-            // 以“已连接的那台”的模式为准
-            bool lockedSdk = false;
-            if (mainConnected) lockedSdk = systemdevicelist.system_devices[idxMain].isSDKConnect;
-            else if (guiderConnected) lockedSdk = systemdevicelist.system_devices[idxGuider].isSDKConnect;
-
-            if (lockedSdk != requestedSdk)
-            {
-                Logger::Log("ConnectDriver | MainCamera/Guider already connected with " + std::string(lockedSdk ? "SDK" : "INDI") +
-                                ". Connecting with the other mode is forbidden.",
-                            LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("ConnectDriverFailed:" + driverTypeDesc + ":ConnectedInOtherMode");
-                return;
-            }
-        }
+        // ── M3：已拆除"同驱动任一已连接就锁定整组模式"的第三道锁 ──────────────────
+        // 原先：Main 或 Guider 任一已连接时，另一个只能用【相同】模式连接，否则报
+        // ConnectDriverFailed:<Role>:ConnectedInOtherMode。这挡死了"Main=SDK + Guider=INDI"。
+        //
+        // 该约束和 SetConnectionMode 里的两道锁同源，都是为了回避"SDK 会 open 全部相机、
+        // 抢走本该留给 INDI 的那台"——而那是代码自造的冲突，已由 M2 消除
+        // （registerSdkCameraPool 只登记不 open；ensureSdkCameraOpen 只在绑定时打开选中那台）。
+        // 硬件层面本就允许不同物理相机分别走 SDK/INDI（见 doc §7：库全局状态每进程私有，
+        // 排他只发生在 OpenQHYCCD/同一台设备上）。
+        //
+        // 保留的正确约束（在别处保证）：
+        //   1) 同一台物理相机不得被双开 —— 一台相机只绑一个角色（cameraId 在池中唯一对应角色）；
+        //   2) 已连接的设备不许改模式 —— SetConnectionMode 的 DeviceConnectedLockModeChangeForbidden；
+        //   3) 同一设备不得用另一模式重复连接 —— 见下方"单设备兜底"。
     }
 
     // 单设备兜底：若该设备已连接，则不允许用另一模式重复连接；同模式则直接视为成功

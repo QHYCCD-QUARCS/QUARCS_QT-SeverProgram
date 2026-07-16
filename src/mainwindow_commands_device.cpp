@@ -563,42 +563,18 @@ bool MainWindow::handleSystemCommand(const QString &message, const QStringList &
         }
         const bool sameDriverCameraGroup = isCameraMutexRole && linkedCameraIndexes.size() > 1;
 
-        if (sameDriverCameraGroup)
-        {
-            bool anySdkConnected = false;
-            bool anyIndiConnected = false;
-            for (int roleIdx : linkedCameraIndexes)
-            {
-                const bool connected = systemdevicelist.system_devices[roleIdx].isConnect;
-                anySdkConnected = anySdkConnected || (connected && systemdevicelist.system_devices[roleIdx].isSDKConnect);
-                anyIndiConnected = anyIndiConnected || (connected && !systemdevicelist.system_devices[roleIdx].isSDKConnect);
-            }
-
-            // 反向锁定：若任一已通过 INDI 连接，则禁止切到 SDK（避免同驱动混用两种连接方式）
-            if (newIsSdk && anyIndiConnected)
-            {
-                Logger::Log("SetConnectionMode | INDI connected in QHY camera group. Switching to SDK is forbidden.",
-                            LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("SetConnectionModeFailed:" + deviceDescription +
-                                                   ":INDIConnectedLockSdkForbidden");
-                return;
-            }
-
-            // 原有锁定：若任一已通过 SDK 连接，则禁止切到 INDI
-            if (!newIsSdk && anySdkConnected)
-            {
-                Logger::Log("SetConnectionMode | SDK connected in QHY camera group. Switching to INDI is forbidden.",
-                            LogLevel::WARNING, DeviceType::MAIN);
-                emit wsThread->sendMessageToClient("SetConnectionModeFailed:" + deviceDescription +
-                                                   ":SDKConnectedLockIndiForbidden");
-                return;
-            }
-
-            // 未连接的第二个角色允许切换到已连接相机的相同模式。
-            // 上面的 anyIndiConnected/anySdkConnected 检查已经阻止了真正的模式冲突；
-            // 若在这里仅因组内存在连接就拒绝，会导致 Guider=SDK 后 MainCamera
-            // 无法从默认 INDI 对齐到 SDK。
-        }
+        // ── M3：已拆除"同驱动相机组必须同模式"的互斥锁 ──────────────────────────
+        // 原先：组内任一相机以 INDI 连着 -> 禁止别的角色切 SDK（反之亦然）。
+        // 该约束过宽：硬件层面允许不同物理相机分别走 SDK/INDI（库全局状态每进程私有；
+        // 排他只发生在 OpenQHYCCD/同一台设备上，见 doc §7）。此前之所以必须禁止，是因为
+        // SDK 连接会"扫到几台就 open 全部"，把本该留给 INDI 的相机也占住 —— 那是代码
+        // 自造的冲突，已由 M2（registerSdkCameraPool 只登记不 open + ensureSdkCameraOpen
+        // 按需打开）消除。
+        //
+        // 现在的正确约束只有两条，且都已在别处保证：
+        //   1) 已连接的设备不许切模式 —— 见上方 DeviceConnectedLockModeChangeForbidden；
+        //   2) 同一台物理相机不得被 SDK 与 INDI 双开 —— 由"一台相机只绑一个角色"的
+        //      分配逻辑保证（每个 cameraId 在池中只对应一个角色）。
 
         // 支持性校验：若要切到 SDK，需要该设备支持；同驱动联动时也要求另一台支持
         {
@@ -634,11 +610,10 @@ bool MainWindow::handleSystemCommand(const QString &message, const QStringList &
         // 应用模式（必要时同步另一台）
         systemdevicelist.system_devices[idx].isSDKConnect = newIsSdk;
 
-        // 同驱动联动：同步相机三角色的 isSDKConnect，防止 Main/Guider/PoleCamera 混用 SDK/INDI
-        if (sameDriverCameraGroup) {
-            for (int roleIdx : linkedCameraIndexes)
-                systemdevicelist.system_devices[roleIdx].isSDKConnect = newIsSdk;
-        }
+        // ── M3：已拆除"同驱动联动"——不再强制把整组 isSDKConnect 同步成同一个值 ──
+        // 每个角色的连接方式相互独立（Main=SDK / Guider=INDI 是合法配置）。
+        // 原先的强制同步会让"设 Guider=INDI"把 MainCamera 也一起拽回 INDI，
+        // 用户根本无法建立混用配置；且一条命令改动多个角色，是回包放大的源头之一。
 
         // ===== 关键修复：从 SDK 切到 INDI 时，释放 SDK 句柄以避免串口占用（仅 Focuser 需要） =====
         if (oldIsSdk && !newIsSdk)
@@ -713,15 +688,12 @@ bool MainWindow::handleSystemCommand(const QString &message, const QStringList &
         // 保存配置到文件
         Tools::saveSystemDeviceList(systemdevicelist);
 
-        // 回包：当前设备 success；若联动了同驱动相机组也回包，方便前端 UI 同步
+        // ── M3：回包只回【被请求的那个角色】──────────────────────────────────
+        // 原先联动时会给组内每个角色都回一条 Success。由于 Success 是【广播】消息、
+        // 且前端曾据此触发副作用（自动连接/一致性回灌），一条命令回 N 条 Success 会被
+        // 放大成连接风暴（实测两相机都设 SDK -> 候选上报 ~25 轮）。联动已拆除，
+        // 每条命令只改一个角色，也就只回一条应答。
         emit wsThread->sendMessageToClient("SetConnectionModeSuccess:" + deviceDescription + ":" + mode);
-        if (sameDriverCameraGroup) {
-            for (const auto &peerDesc : linkedCameraDescriptions)
-            {
-                if (peerDesc != deviceDescription)
-                    emit wsThread->sendMessageToClient("SetConnectionModeSuccess:" + peerDesc + ":" + mode);
-            }
-        }
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "disconnectSelectDriver")
     {
