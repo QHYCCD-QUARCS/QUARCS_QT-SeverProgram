@@ -415,6 +415,10 @@ public:
     // 单点 SDK 相机扫描（ScanQHYCCD）。后续在此加"一次/缓存/共享"以降 EP0 频次（见 doc §7）。
     SdkResult sdkScanQhyCameras(const QString& driverName);
 
+    // 按需打开相机池中某个槽位的相机（M2：SDK 只 open 被分配的相机）。
+    // 已打开则直接返回其句柄；未打开才真正 OpenQHYCCD 并存回池。失败返回 nullptr。
+    SdkDeviceHandle ensureSdkCameraOpen(int poolIndex, const QString& role);
+
     /**
      * @brief 断开某设备
      * @param client 客户端

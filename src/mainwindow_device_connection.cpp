@@ -56,6 +56,60 @@ SdkResult MainWindow::sdkScanQhyCameras(const QString& driverName)
     return SdkManager::instance().call(driverName.toStdString(), nullptr, scanCmd);
 }
 
+// 按需打开相机池中某槽位的相机（M2）。
+// 背景：扫描（ScanQHYCCD + GetQHYCCDId）只枚举、不占用设备；真正的排他是 OpenQHYCCD。
+// 旧流程"扫到几台就 open 全部"会把本该留给 INDI 的相机也占住，是混用时双开冲突的自造根源。
+// 池中槽位允许 handle==nullptr（sdkPoolIndexValid 只要求 cameraId 非空），
+// 直到某个角色真正被分配到它时，才在此处打开。
+SdkDeviceHandle MainWindow::ensureSdkCameraOpen(int poolIndex, const QString& role)
+{
+    if (!sdkPoolIndexValid(poolIndex))
+    {
+        Logger::Log("ensureSdkCameraOpen | invalid poolIndex=" + std::to_string(poolIndex),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return nullptr;
+    }
+    if (g_sdkQhyCamHandles[poolIndex] != nullptr)
+        return g_sdkQhyCamHandles[poolIndex];   // 已打开：no-op
+
+    const QString driverName = getSDKDriverName(role);
+    if (driverName.isEmpty())
+    {
+        Logger::Log("ensureSdkCameraOpen | cannot resolve SDK driver for role " + role.toStdString(),
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return nullptr;
+    }
+
+    const std::string drv = driverName.toStdString();
+    const std::string camId = g_sdkQhyCamIds[poolIndex].toStdString();
+
+    SdkSerialExecutor *exec = nullptr;
+    if (role == "MainCamera")      exec = sdkMainCameraExecutor();
+    else if (role == "Guider")     exec = sdkGuiderCameraExecutor();
+    else if (role == "PoleCamera") exec = sdkPoleCameraExecutor();
+
+    SdkResult openRes;
+    if (exec && exec->isRunning())
+        openRes = exec->postAndWait<SdkResult>([drv, camId]() { return SdkManager::instance().open(drv, camId); });
+    else
+        openRes = SdkManager::instance().open(drv, camId);
+
+    if (!openRes.success || !openRes.payload.has_value())
+    {
+        Logger::Log("ensureSdkCameraOpen | open failed for " + camId + " (role " + role.toStdString() +
+                        "): " + openRes.message,
+                    LogLevel::ERROR, DeviceType::MAIN);
+        return nullptr;
+    }
+
+    SdkDeviceHandle handle = std::any_cast<SdkDeviceHandle>(openRes.payload);
+    g_sdkQhyCamHandles[poolIndex] = handle;
+    Logger::Log("ensureSdkCameraOpen | opened on demand: " + camId + " -> role " + role.toStdString() +
+                    " (poolIndex=" + std::to_string(poolIndex) + ")",
+                LogLevel::INFO, DeviceType::MAIN);
+    return handle;
+}
+
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
@@ -1902,6 +1956,13 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
 
         g_sdkMainCameraPoolIndex = poolIndex;
+        // M2：池中该槽位可能尚未打开（扫描只枚举不 open），此刻按需打开。
+        if (ensureSdkCameraOpen(poolIndex, "MainCamera") == nullptr)
+        {
+            Logger::Log("BindingDevice | open MainCamera failed for poolIndex=" + std::to_string(poolIndex),
+                        LogLevel::ERROR, DeviceType::MAIN);
+            return;
+        }
         sdkMainCameraHandle = g_sdkQhyCamHandles[poolIndex];
         sdkMainCameraId = g_sdkQhyCamIds[poolIndex];
 
@@ -1973,6 +2034,13 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
 
         g_sdkGuiderPoolIndex = poolIndex;
+        // M2：池中该槽位可能尚未打开（扫描只枚举不 open），此刻按需打开。
+        if (ensureSdkCameraOpen(poolIndex, "Guider") == nullptr)
+        {
+            Logger::Log("BindingDevice | open Guider failed for poolIndex=" + std::to_string(poolIndex),
+                        LogLevel::ERROR, DeviceType::GUIDER);
+            return;
+        }
         sdkGuiderHandle = g_sdkQhyCamHandles[poolIndex];
 
         const QString guiderId = g_sdkQhyCamIds[poolIndex];
@@ -2037,6 +2105,13 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         }
 
         g_sdkPoleCameraPoolIndex = poolIndex;
+        // M2：池中该槽位可能尚未打开（扫描只枚举不 open），此刻按需打开。
+        if (ensureSdkCameraOpen(poolIndex, "PoleCamera") == nullptr)
+        {
+            Logger::Log("BindingDevice | open PoleCamera failed for poolIndex=" + std::to_string(poolIndex),
+                        LogLevel::ERROR, DeviceType::MAIN);
+            return;
+        }
         sdkPoleScopeHandle = g_sdkQhyCamHandles[poolIndex];
 
         const QString poleId = g_sdkQhyCamIds[poolIndex];
