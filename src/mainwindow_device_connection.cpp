@@ -1640,41 +1640,13 @@ void MainWindow::continueConnectAllDeviceOnce()
     bool EachDeviceOne = true;
     bool hasPendingAllocation = false;
 
-    if (SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1)
-    {
-        Logger::Log("The Camera Selected and Connected are Both 1", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量是否为空以及索引是否有效
-        if (SelectedCameras.empty() || ConnectedCCDList.empty()) {
-            Logger::Log("SelectedCameras or ConnectedCCDList is empty, cannot assign camera", LogLevel::ERROR, DeviceType::MAIN);
-        } else if (SelectedCameras[0] == "Guider")
-        {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            if (device == nullptr) {
-                Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
-            } else {
-                bindDeviceToRole(DeviceSlot::Guider, device);
-            }
-        }
-        else if (SelectedCameras[0] == "PoleCamera")
-        {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            if (device == nullptr) {
-                Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
-            } else {
-                bindDeviceToRole(DeviceSlot::PoleCamera, device);
-            }
-        }
-        else if (SelectedCameras[0] == "MainCamera")
-        {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            if (device == nullptr) {
-                Logger::Log("GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
-            } else {
-                bindDeviceToRole(DeviceSlot::MainCamera, device);
-            }
-        }
-    }
-    else if (SelectedCameras.size() > 1 || ConnectedCCDList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (SelectedCameras.size() >= 1 || ConnectedCCDList.size() >= 1)
     {
         EachDeviceOne = false;
         QSet<int> boundCcdIndexes;
@@ -1762,18 +1734,13 @@ void MainWindow::continueConnectAllDeviceOnce()
         }
     }
 
-    if (ConnectedTELESCOPEList.size() == 1)
-    {
-        Logger::Log("Mount Connected Success and Mount device is only one!", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量和索引有效性
-        if (!ConnectedTELESCOPEList.empty() && ConnectedTELESCOPEList[0] >= 0 && ConnectedTELESCOPEList[0] < indi_Client->GetDeviceCount()) {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
-            if (device != nullptr) {
-                bindDeviceToRole(DeviceSlot::Mount, device);
-            }
-        }
-    }
-    else if (ConnectedTELESCOPEList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (ConnectedTELESCOPEList.size() >= 1)
     {
         EachDeviceOne = false;
         const int boundMountIndex = findConnectedIndexBySavedName(ConnectedTELESCOPEList, savedDeviceNameByDescription("Mount"));
@@ -1804,22 +1771,13 @@ void MainWindow::continueConnectAllDeviceOnce()
         }
     }
 
-    if (ConnectedFOCUSERList.size() == 1)
-    {
-        Logger::Log("Focuser Connected Success and Focuser device is only one!", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量和索引有效性
-        if (!ConnectedFOCUSERList.empty() && ConnectedFOCUSERList[0] >= 0 && ConnectedFOCUSERList[0] < indi_Client->GetDeviceCount()) {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
-            if (device != nullptr) {
-                dpFocuser = device;
-                if (systemdevicelist.system_devices.size() > 22) {
-                    systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
-                }
-                AfterDeviceConnect(dpFocuser);
-            }
-        }
-    }
-    else if (ConnectedFOCUSERList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (ConnectedFOCUSERList.size() >= 1)
     {
         EachDeviceOne = false;
         const int boundFocuserIndex = findConnectedIndexBySavedName(ConnectedFOCUSERList, savedDeviceNameByDescription("Focuser"));
@@ -1853,22 +1811,13 @@ void MainWindow::continueConnectAllDeviceOnce()
         }
     }
 
-    if (ConnectedFILTERList.size() == 1)
-    {
-        Logger::Log("Filter Connected Success and Filter device is only one!", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量和索引有效性
-        if (!ConnectedFILTERList.empty() && ConnectedFILTERList[0] >= 0 && ConnectedFILTERList[0] < indi_Client->GetDeviceCount()) {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
-            if (device != nullptr) {
-                dpCFW = device;
-                if (systemdevicelist.system_devices.size() > 21) {
-                    systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = true;
-                }
-                AfterDeviceConnect(dpCFW);
-            }
-        }
-    }
-    else if (ConnectedFILTERList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (ConnectedFILTERList.size() >= 1)
     {
         EachDeviceOne = false;
         const int boundFilterIndex = findConnectedIndexBySavedName(ConnectedFILTERList, savedDeviceNameByDescription("CFW"));
@@ -7517,40 +7466,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     bool EachDeviceOne = true;
     bool hasPendingAllocation = false;
 
-    if (SelectedCameras.size() == 1 && ConnectedCCDList.size() == 1)
-    {
-        Logger::Log("ConnectDriver | The Camera Selected and Connected are Both 1", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量和索引有效性
-        if (SelectedCameras.empty() || ConnectedCCDList.empty()) {
-            Logger::Log("ConnectDriver | SelectedCameras or ConnectedCCDList is empty", LogLevel::ERROR, DeviceType::MAIN);
-        } else if (ConnectedCCDList[0] >= 0 && ConnectedCCDList[0] < indi_Client->GetDeviceCount()) {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedCCDList[0]);
-            if (device == nullptr) {
-                Logger::Log("ConnectDriver | GetDeviceFromList returned nullptr for ConnectedCCDList[0]", LogLevel::ERROR, DeviceType::MAIN);
-            } else if (SelectedCameras[0] == "Guider")
-            {
-                dpGuider = device;
-                if (systemdevicelist.system_devices.size() > 1) {
-                    systemdevicelist.system_devices[DeviceSlot::Guider].isConnect = true;
-                }
-                // TODO(PHD2): 导星相机已切换为 INDI 直出图模式，不再通过 PHD2 选择相机/断开设备
-                // indi_Client->disconnectDevice(device->getDeviceName());
-                // sleep(1);
-                // call_phd_whichCamera(device->getDeviceName());
-                AfterDeviceConnect(dpGuider);
-            }
-            else if (SelectedCameras[0] == "PoleCamera")
-            {
-                bindDeviceToRole(DeviceSlot::PoleCamera, device);
-            }
-            else if (SelectedCameras[0] == "MainCamera")
-            {
-                Logger::Log("ConnectDriver | MainCamera Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-                bindDeviceToRole(DeviceSlot::MainCamera, device);
-            }
-        }
-    }
-    else if (SelectedCameras.size() > 1 || ConnectedCCDList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (SelectedCameras.size() >= 1 || ConnectedCCDList.size() >= 1)
     {
         EachDeviceOne = false;
         QSet<int> boundCcdIndexes;
@@ -7579,18 +7501,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         }
     }
 
-    if (ConnectedTELESCOPEList.size() == 1)
-    {
-        Logger::Log("ConnectDriver | Mount Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量和索引有效性
-        if (!ConnectedTELESCOPEList.empty() && ConnectedTELESCOPEList[0] >= 0 && ConnectedTELESCOPEList[0] < indi_Client->GetDeviceCount()) {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedTELESCOPEList[0]);
-            if (device != nullptr) {
-                bindDeviceToRole(DeviceSlot::Mount, device);
-            }
-        }
-    }
-    else if (ConnectedTELESCOPEList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (ConnectedTELESCOPEList.size() >= 1)
     {
         EachDeviceOne = false;
         const int boundMountIndex = findConnectedIndexBySavedName(ConnectedTELESCOPEList, savedDeviceNameByDescription("Mount"));
@@ -7621,22 +7538,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         }
     }
 
-    if (ConnectedFOCUSERList.size() == 1)
-    {
-        Logger::Log("ConnectDriver | Focuser Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量和索引有效性
-        if (!ConnectedFOCUSERList.empty() && ConnectedFOCUSERList[0] >= 0 && ConnectedFOCUSERList[0] < indi_Client->GetDeviceCount()) {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFOCUSERList[0]);
-            if (device != nullptr) {
-                dpFocuser = device;
-                if (systemdevicelist.system_devices.size() > 22) {
-                    systemdevicelist.system_devices[DeviceSlot::Focuser].isConnect = true;
-                }
-                AfterDeviceConnect(dpFocuser);
-            }
-        }
-    }
-    else if (ConnectedFOCUSERList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (ConnectedFOCUSERList.size() >= 1)
     {
         EachDeviceOne = false;
         const int boundFocuserIndex = findConnectedIndexBySavedName(ConnectedFOCUSERList, savedDeviceNameByDescription("Focuser"));
@@ -7670,22 +7578,13 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
         }
     }
 
-    if (ConnectedFILTERList.size() == 1)
-    {
-        Logger::Log("ConnectDriver | Filter Connected Success!", LogLevel::INFO, DeviceType::MAIN);
-        // 修复：检查向量和索引有效性
-        if (!ConnectedFILTERList.empty() && ConnectedFILTERList[0] >= 0 && ConnectedFILTERList[0] < indi_Client->GetDeviceCount()) {
-            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedFILTERList[0]);
-            if (device != nullptr) {
-                dpCFW = device;
-                if (systemdevicelist.system_devices.size() > 21) {
-                    systemdevicelist.system_devices[DeviceSlot::CFW].isConnect = true;
-                }
-                AfterDeviceConnect(dpCFW);
-            }
-        }
-    }
-    else if (ConnectedFILTERList.size() > 1)
+    // 「只有一台就绑给该角色」曾在此特判：它是自动决策（系统替用户挑），
+    // 且该分支【不上报候选】——封堵它而不删，会让设备既绑不上也选不了。
+    // 删除后 1 台与 N 台走同一条路：持久化回放命中就绑（回放用户上次的手动
+    // 选择，不是决策），命中不了就作为候选上报、由用户手动指派。
+    // 顺带修掉一个 bug：原特判在只有一台时【根本不查持久化】，会静默覆盖
+    // 用户上次的选择（上次选 X、这次只有 Y 在场 → 直接绑 Y）。
+    if (ConnectedFILTERList.size() >= 1)
     {
         EachDeviceOne = false;
         const int boundFilterIndex = findConnectedIndexBySavedName(ConnectedFILTERList, savedDeviceNameByDescription("CFW"));
