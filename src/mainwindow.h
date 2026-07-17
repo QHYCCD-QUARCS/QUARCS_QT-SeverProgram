@@ -386,6 +386,25 @@ public:
     // 把已连接 INDI 设备绑定到角色槽位（dp 全局 + isConnect + AfterDeviceConnect）。
     void bindDeviceToRole(int slot, INDI::BaseDevice *device);
 
+    // ── 自动决策旁路（唯一入口，当前封堵）──────────────────────────────
+    // 「自动决策」= 系统替用户挑一台设备。例：只有一台就绑给该角色、按型号名
+    // 认出 POLEMASTER。它与「用户手动选择」是等价物，因此只允许存在于这一个
+    // 函数里；一旦散回各处，同一个动作在不同路径下就会行为不一致——改一处漏三处，
+    // 正是本次重构在消灭的形态。
+    //
+    // 【不属于自动决策】按持久化信息回绑：那是回放用户上次的手动选择，走
+    // findConnectedIndexBySavedName / findPreferredPoolIndex，与本函数无关。
+    struct AutoDecisionCandidate
+    {
+        int index;      // 调用方自己的索引空间：INDI 设备表下标，或 SDK 池下标
+        QString name;   // 设备名 / cameraId，供按名字判别用
+    };
+
+    // 返回被选中项的 index；-1 = 决策不出来。
+    // 调用方收到 -1 必须保持该角色【未绑定】，并确保候选已上报给前端，
+    // 由用户手动指派——否则该设备既绑不上也选不了，直接变成死路。
+    int autoDecideDeviceForRole(const QString &role, const QVector<AutoDecisionCandidate> &candidates);
+
     /**
      * @brief 断开 INDI 服务器
      * @param client 客户端指针

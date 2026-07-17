@@ -45,6 +45,23 @@ void MainWindow::bindDeviceToRole(int slot, INDI::BaseDevice *device)
     AfterDeviceConnect(device);
 }
 
+// 自动决策旁路 —— 当前【封堵】：一律返回「无决策」，所有角色都走用户手动选择。
+//
+// 将来要恢复任何自动决策规则（"只有一台就绑给该角色"、"名字里带 POLEMASTER 的
+// 就是极轴镜"、按型号推断……），只在这个函数体里写，不要写回调用点。
+// 历史上这些规则散落在 continueConnectAllDeviceOnce / ConnectDriver / SDK 三条路径
+// 上，同一条规则复制多份且互相不一致，是「连接行为随路径漂移」的主要来源。
+//
+// role       : "MainCamera" / "Guider" / "PoleCamera" / "Mount" / "Focuser" / "CFW"
+// candidates : 调用方整理好的候选集
+// 返回       : 选中项的 index；-1 = 无决策 -> 调用方须保持该角色未绑定并上报候选
+int MainWindow::autoDecideDeviceForRole(const QString &role, const QVector<AutoDecisionCandidate> &candidates)
+{
+    Q_UNUSED(role);
+    Q_UNUSED(candidates);
+    return -1;
+}
+
 // 单点 SDK 相机扫描：构造 ScanCameras 命令并派发。收敛原先散在 4 处的重复调用。
 // 后续在此加"一次/缓存/共享"（doc §7 与 memory）；当前零行为变化。
 SdkResult MainWindow::sdkScanQhyCameras(const QString& driverName)
@@ -582,14 +599,18 @@ void MainWindow::ConnectAllDeviceOnce()
                 {
                     const QString savedPoleId = systemdevicelist.system_devices[DeviceSlot::PoleCamera].DeviceIndiName;
                     polePickIndex = findPreferredPoolIndex(savedPoleId);
-                    // POLEMASTER基于设备唯一性自动绑定，保留
-                    for (int i = 0; polePickIndex < 0 && i < g_sdkQhyCamIds.size(); ++i)
+                    // 持久化回放没命中时，才轮到自动决策——走旁路（当前封堵 -> -1）。
+                    // 原先此处按 isPoleMasterName() 认名字直接绑，那是自动决策散落在
+                    // 调用点的典型形态，已收敛进 autoDecideDeviceForRole()。
+                    if (polePickIndex < 0)
                     {
-                        if (!poolAssigned[i] && sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
+                        QVector<AutoDecisionCandidate> poleCands;
+                        for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
                         {
-                            polePickIndex = i;
-                            break;
+                            if (!poolAssigned[i] && sdkPoolIndexValid(i))
+                                poleCands.append({i, g_sdkQhyCamIds[i]});
                         }
+                        polePickIndex = autoDecideDeviceForRole("PoleCamera", poleCands);
                     }
                     if (polePickIndex >= 0)
                         bindPoleCameraFromPool(polePickIndex);
@@ -1693,6 +1714,10 @@ void MainWindow::continueConnectAllDeviceOnce()
         autoBindCcdRole("PoleCamera");
         if (dpPoleScope == nullptr)
         {
+            // 原先此处按 isPoleMasterName() 认名字直接绑 PoleCamera —— 那是自动决策，
+            // 已收敛进 autoDecideDeviceForRole()（当前封堵 -> -1 -> 保持未绑定）。
+            // 没绑上的相机会被下面的循环作为候选上报，用户可手动指派，不会成死路。
+            QVector<AutoDecisionCandidate> poleCands;
             for (int idx : ConnectedCCDList)
             {
                 if (idx < 0 || idx >= indi_Client->GetDeviceCount() || boundCcdIndexes.contains(idx))
@@ -1700,15 +1725,17 @@ void MainWindow::continueConnectAllDeviceOnce()
                 INDI::BaseDevice *device = indi_Client->GetDeviceFromList(idx);
                 if (device == nullptr || device->getDeviceName() == nullptr)
                     continue;
-                const QString name = QString::fromUtf8(device->getDeviceName());
-                if (!isPoleMasterName(name))
-                    continue;
-                bindDeviceToRole(DeviceSlot::PoleCamera, device);
-                boundCcdIndexes.insert(idx);
-                Logger::Log("continueConnectAllDeviceOnce | INDI PoleCamera auto-bound by POLEMASTER: " +
-                                name.toStdString(),
-                            LogLevel::INFO, DeviceType::MAIN);
-                break;
+                poleCands.append({idx, QString::fromUtf8(device->getDeviceName())});
+            }
+            const int polePick = autoDecideDeviceForRole("PoleCamera", poleCands);
+            if (polePick >= 0)
+            {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(polePick);
+                if (device != nullptr)
+                {
+                    bindDeviceToRole(DeviceSlot::PoleCamera, device);
+                    boundCcdIndexes.insert(polePick);
+                }
             }
         }
 
@@ -6603,22 +6630,19 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             registerSdkCameraPool(driverName);
             reportSdkCameraCandidates();
 
-            // [修改] 移除SDK PoleCamera自动绑定（除POLEMASTER外），等待用户手动选择
-            // 仅保留POLEMASTER基于设备唯一性的自动绑定
-            int pickIndex = -1;
-            // POLEMASTER自动绑定（设备唯一性识别，保留）
+            // SDK PoleCamera 不做任何自动绑定，一律等用户手动选择。
+            // 原先此处保留了 isPoleMasterName() 的按名识别；现已收敛进
+            // autoDecideDeviceForRole()（当前封堵 -> -1 -> 保持未绑定）。
+            // 候选已由上面的 reportSdkCameraCandidates() 上报，用户可手动指派。
+            QVector<AutoDecisionCandidate> poleCands;
             for (int i = 0; i < g_sdkQhyCamIds.size(); ++i)
             {
                 if (i == g_sdkMainCameraPoolIndex || i == g_sdkGuiderPoolIndex)
                     continue;
-                if (sdkPoolIndexValid(i) && isPoleMasterName(g_sdkQhyCamIds[i]))
-                {
-                    pickIndex = i;
-                    break;
-                }
+                if (sdkPoolIndexValid(i))
+                    poleCands.append({i, g_sdkQhyCamIds[i]});
             }
-            // 移除：历史配置回绑和fallback自动选择
-            // 非POLEMASTER设备等待用户手动选择
+            int pickIndex = autoDecideDeviceForRole("PoleCamera", poleCands);
 
             if (pickIndex >= 0 && sdkPoolIndexValid(pickIndex))
             {
