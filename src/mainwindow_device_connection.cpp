@@ -1876,9 +1876,51 @@ void MainWindow::continueConnectAllDeviceOnce()
     }
 
     Logger::Log("Each Device Only Has One:" + std::to_string(EachDeviceOne), LogLevel::INFO, DeviceType::MAIN);
-    if (!EachDeviceOne && hasPendingAllocation)
+
+    // connectAll 是「按持久化信息自动决策」的静默路径：决策已在上面的 autoBindCcdRole /
+    // 各角色自动绑定里做完了。此处唯一该问的是——**有没有角色没能决策出结果**？
+    //
+    // 原条件是 (!EachDeviceOne && hasPendingAllocation)，问的却是「还有相机没被分配吗」。
+    // 但相机有富余是完全正常的（4 台相机、2 个角色 → 剩 2 台备用），这不代表有人在等
+    // 用户拿主意。于是「选好相机 → 断开全部 → connect all」这种本该静默的流程也会
+    // 弹出下级抽屉（前端收到 ShowDeviceAllocationWindow 就置 drawer_2 = true）。
+    //
+    // 判据换成「角色」：SelectedCameras 是用户配置过的相机角色，autoBindCcdRole 找不到
+    // 对应的持久化设备名时会直接 return、该角色的 dp 保持 nullptr —— 那才是自动决策没
+    // 决策出来、需要回退到问用户的情形。
+    //
+    // 仍保留 hasPendingAllocation：没有候选可选时弹窗没有意义。两条合起来是对原条件的
+    // 严格收窄——只会比原来少弹，不会在原本不弹的路径上多弹。
+    bool hasUnresolvedRole = false;
+    QStringList unresolvedRoles;
+    for (const QString &role : SelectedCameras)
     {
+        const bool unresolved = (role == "MainCamera" && dpMainCamera == nullptr) ||
+                                (role == "Guider" && dpGuider == nullptr) ||
+                                (role == "PoleCamera" && dpPoleScope == nullptr);
+        if (unresolved)
+        {
+            hasUnresolvedRole = true;
+            unresolvedRoles << role;
+        }
+    }
+    if (!ConnectedFILTERList.empty() && dpCFW == nullptr)
+    {
+        hasUnresolvedRole = true;
+        unresolvedRoles << "CFW";
+    }
+
+    if (hasUnresolvedRole && hasPendingAllocation)
+    {
+        Logger::Log("continueConnectAllDeviceOnce | roles unresolved by saved config: " +
+                        unresolvedRoles.join(",").toStdString() + " -> ask user to allocate",
+                    LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ShowDeviceAllocationWindow");
+    }
+    else
+    {
+        Logger::Log("continueConnectAllDeviceOnce | all roles resolved by saved config, silent connect (no allocation window)",
+                    LogLevel::INFO, DeviceType::MAIN);
     }
     
     // 发送全部连接完成消息，通知前端可以关闭进度条
