@@ -251,6 +251,7 @@ enum class SystemNumber {
   CFW1 = 21,
   Focuser1 = 22,
   LensCover1 = 23,
+  CAA1 = 24,
 };
 
 typedef struct

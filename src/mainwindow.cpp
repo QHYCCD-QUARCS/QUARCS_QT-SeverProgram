@@ -86,6 +86,7 @@ SdkDeviceHandle sdkPoleScopeHandle = nullptr;  // SDK 极轴镜句柄
 SdkDeviceHandle sdkMainCameraHandle = nullptr; // SDK 主相机句柄
 SdkDeviceHandle sdkFocuserHandle   = nullptr;  // SDK 电调句柄
 SdkDeviceHandle sdkCFWHandle        = nullptr;  // SDK 滤镜轮句柄
+SdkDeviceHandle sdkCAAHandle        = nullptr;  // SDK 相机内置 CAA 旋转器句柄（复用相机 handle）
 
 QString sdkFocuserPort;  // SDK 电调串口路径
 

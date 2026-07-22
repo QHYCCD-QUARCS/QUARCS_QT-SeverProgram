@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <functional>
+#include <memory>
 #include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
@@ -37,7 +38,7 @@ class MyClient : public INDI::BaseClient
         // uint32_t QHYCCD_SUCCESS = 1;
         // uint32_t QHYCCD_ERROR = 0;
         // 添加设备
-        void AddDevice(INDI::BaseDevice* device, const std::string& name);
+        void AddDevice(const INDI::BaseDevice& device, const std::string& name);
         // 删除设备
         void RemoveDevice(const std::string& name);
         // 获取当前设备列表的设备数
@@ -253,7 +254,7 @@ class MyClient : public INDI::BaseClient
         INDI::BaseDevice mSimpleCCD;
 
         // 存储设备的列表
-        std::vector<INDI::BaseDevice *> deviceList;
+        std::vector<std::shared_ptr<INDI::BaseDevice>> deviceList;
         // 存储设备名字的列表
         std::vector<std::string> deviceNames;
 
@@ -268,7 +269,6 @@ class MyClient : public INDI::BaseClient
 
 
 #endif // MYCLIENT_H
-
 
 
 

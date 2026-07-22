@@ -171,7 +171,12 @@ std::vector<SdkCommandInfo> QhyCameraDriver::commandList() const
         {"GetCFWPosition",               "获取当前滤镜轮位置（CONTROL_CFWPORT），返回 int（0 开始）"},
         {"SetCFWPosition",               "设置滤镜轮位置（CONTROL_CFWPORT），payload 传入 int 位置（0 开始）"},
         {"SendOrderToCFW",               "发送自定义命令到滤镜轮，payload 传入 std::string order"},
-        {"GetCFWStatus",                 "获取滤镜轮状态字符串，返回 std::string"}
+        {"GetCFWStatus",                 "获取滤镜轮状态字符串，返回 std::string"},
+#if defined(QUARCS_QHY_HAS_CONTROL_CAA_ROTATOR)
+        {"IsCAARotatorAvailable",        "检测相机是否支持 CAA 旋转器（CONTROL_CAA_ROTATOR），返回 bool"},
+        {"GetCAARotator",                "获取 CAA 旋转器角度范围/当前值（CONTROL_CAA_ROTATOR），返回 SdkControlParamInfo"},
+        {"SetCAARotator",                "设置 CAA 旋转器角度（CONTROL_CAA_ROTATOR），payload 传入 double 角度"}
+#endif
     };
 }
 
@@ -1572,6 +1577,82 @@ SdkResult QhyCameraDriver::execute(SdkDeviceHandle device, const SdkCommand& cmd
                 r.message = "GetQHYCCDCFWStatus failed, error code: " + std::to_string(ret);
             }
             return r;
+        }
+
+        // 33. 检测相机内置 CAA 旋转器能力
+        if (name == "IsCAARotatorAvailable") {
+            if (!handle) {
+                r.success = false;
+                r.message = "IsCAARotatorAvailable requires a valid device handle";
+                return r;
+            }
+#if defined(QUARCS_QHY_HAS_CONTROL_CAA_ROTATOR)
+            const unsigned int ret = IsQHYCCDControlAvailable(handle, CONTROL_CAA_ROTATOR);
+            r.success = true;
+            r.payload = (ret == QHYCCD_SUCCESS);
+            r.message = (ret == QHYCCD_SUCCESS) ? "CAA rotator is available" : "CAA rotator is not available";
+#else
+            r.success = true;
+            r.payload = false;
+            r.message = "CAA rotator is not supported by this QHY SDK";
+#endif
+            return r;
+        }
+
+        // 34. 获取 CAA 旋转器角度范围和当前值
+        if (name == "GetCAARotator") {
+            if (!handle) {
+                r.success = false;
+                r.message = "GetCAARotator requires a valid device handle";
+                return r;
+            }
+#if defined(QUARCS_QHY_HAS_CONTROL_CAA_ROTATOR)
+            double minV = -360.0, maxV = 360.0, stepV = 1.0;
+            const uint32_t rangeRet = GetQHYCCDParamMinMaxStep(handle, CONTROL_CAA_ROTATOR, &minV, &maxV, &stepV);
+            const double cur = GetQHYCCDParam(handle, CONTROL_CAA_ROTATOR);
+            if (rangeRet != QHYCCD_SUCCESS || cur == QHYCCD_ERROR) {
+                r.success = false;
+                r.message = "GetQHYCCDParamMinMaxStep/CONTROL_CAA_ROTATOR failed";
+            } else {
+                SdkControlParamInfo info;
+                info.minValue = -360.0;
+                info.maxValue = 360.0;
+                info.step = stepV;
+                info.current = cur;
+                r.success = true;
+                r.payload = info;
+                r.message = "CAA rotator param info acquired";
+            }
+#else
+            r.success = false;
+            r.errorCode = SdkErrorCode::NotImplemented;
+            r.message = "CAA rotator is not supported by this QHY SDK";
+#endif
+            return r;
+        }
+
+        // 35. 设置 CAA 旋转器角度
+        if (name == "SetCAARotator") {
+            if (!handle) {
+                r.success = false;
+                r.message = "SetCAARotator requires a valid device handle";
+                return r;
+            }
+            double angle = 0.0;
+            if (!extractParam<double>(cmd.payload, angle, r, "angle")) {
+                return r;
+            }
+            if (angle < -360.0) angle = -360.0;
+            if (angle > 360.0) angle = 360.0;
+#if defined(QUARCS_QHY_HAS_CONTROL_CAA_ROTATOR)
+            const unsigned int ret = SetQHYCCDParam(handle, CONTROL_CAA_ROTATOR, angle);
+            return makeResultFromRet("SetQHYCCDParam CONTROL_CAA_ROTATOR", ret);
+#else
+            r.success = false;
+            r.errorCode = SdkErrorCode::NotImplemented;
+            r.message = "CAA rotator is not supported by this QHY SDK";
+            return r;
+#endif
         }
     }
 

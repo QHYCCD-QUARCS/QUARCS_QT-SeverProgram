@@ -1709,7 +1709,10 @@ public:
     int glMainCameraBinning = 1;   // 主相机 bin
 
     bool isFilterOnCamera = false; // 滤镜是否内置相机
+    bool isCAAOnCamera = false;    // CAA 旋转器是否内置相机
     int sdkMainCfwSlotsCached = 0; // SDK 主相机内置 CFW 槽位缓存（>0 有效）
+    SdkControlParamInfo sdkMainCaaInfoCached; // SDK 主相机内置 CAA 范围/当前角度缓存
+    double sdkCaaAccumulatedOffset = 0.0; // SDK 主相机内置 CAA 本次连接期间累计相对旋转角度
     QString sdkMainCameraId;       // SDK 主相机 cameraId（用于 CFWList 等稳定 key；避免依赖 INDI 的 FILTER_NAME）
 
     /**

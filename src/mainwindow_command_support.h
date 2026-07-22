@@ -20,6 +20,7 @@ extern SdkDeviceHandle sdkPoleScopeHandle;
 extern SdkDeviceHandle sdkMainCameraHandle;
 extern SdkDeviceHandle sdkFocuserHandle;
 extern SdkDeviceHandle sdkCFWHandle;
+extern SdkDeviceHandle sdkCAAHandle;
 extern QString sdkFocuserPort;
 extern QVector<SdkDeviceHandle> g_sdkQhyCamHandles;
 extern QVector<QString> g_sdkQhyCamIds;
@@ -49,6 +50,7 @@ inline int sdkUiIndexFromPoolIndex(int poolIndex)
 }
 
 inline constexpr int SDK_FOCUSER_UI_INDEX = -10001;
+inline constexpr int SDK_CAA_UI_INDEX = -10002;
 inline constexpr int kIndiFocuserRelMoveChunkMax = 10000;
 
 inline int sdkPoolIndexFromUiIndex(int uiIndex)
@@ -105,6 +107,59 @@ inline QString sdkCfwStorageKey(const QString &cameraId)
     if (!cameraId.isEmpty())
         return "SDK_CFW_" + cameraId;
     return "SDK_CFW_MainCamera";
+}
+
+inline QString sdkCaaDisplayName(const QString &cameraId)
+{
+    if (!cameraId.isEmpty())
+        return "CAA (on camera) - " + cameraId;
+    return "CAA (on camera)";
+}
+
+inline bool sdkGetCaaRotator(SdkDeviceHandle handle, SdkControlParamInfo &info, std::string *errMsg = nullptr)
+{
+    SdkCommand cmd;
+    cmd.type = SdkCommandType::Custom;
+    cmd.name = "GetCAARotator";
+    cmd.payload = std::any();
+
+    SdkResult res = SdkManager::instance().callByHandle(handle, cmd);
+    if (!res.success || !res.payload.has_value())
+    {
+        if (errMsg)
+            *errMsg = res.message;
+        return false;
+    }
+
+    try
+    {
+        info = std::any_cast<SdkControlParamInfo>(res.payload);
+        return true;
+    }
+    catch (const std::bad_any_cast &)
+    {
+        if (errMsg)
+            *errMsg = "GetCAARotator bad_any_cast";
+        return false;
+    }
+}
+
+inline bool sdkSetCaaRotator(SdkDeviceHandle handle, double angle, std::string *errMsg = nullptr)
+{
+    SdkCommand cmd;
+    cmd.type = SdkCommandType::Custom;
+    cmd.name = "SetCAARotator";
+    cmd.payload = angle;
+
+    SdkResult res = SdkManager::instance().callByHandle(handle, cmd);
+    if (!res.success)
+    {
+        if (errMsg)
+            *errMsg = res.message;
+        return false;
+    }
+
+    return true;
 }
 
 inline bool sdkGetCfwSlotsNum(SdkDeviceHandle handle, int &slotsNum, std::string *errMsg = nullptr)

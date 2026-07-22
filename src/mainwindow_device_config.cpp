@@ -370,6 +370,7 @@ QString MainWindow::getSDKDriverName(const QString& deviceType)
     // CFW（外置滤镜轮）在 system_devices[21]
     else if (deviceType == "CFW") index = 21;
     else if (deviceType == "Focuser") index = 22;
+    else if (deviceType == "Rotator" || deviceType == "CAA") index = 24;
     // ... 可以继续添加其他设备类型的映射
 
     if (index < 0 || index >= systemdevicelist.system_devices.size())
@@ -656,6 +657,22 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
         ShootStatus = "IDLE";
         glIsFocusingLooping = false;
         isFocusLoopShooting = false;
+        isFilterOnCamera = false;
+        sdkMainCfwSlotsCached = 0;
+        isCAAOnCamera = false;
+        sdkCAAHandle = nullptr;
+        sdkMainCaaInfoCached = SdkControlParamInfo{};
+        sdkCaaAccumulatedOffset = 0.0;
+        SdkManager::instance().unregisterDevice("Rotator");
+        resetDeviceEntry(24);
+        if (systemdevicelist.system_devices.size() > 24)
+        {
+            systemdevicelist.system_devices[24].Description.clear();
+            systemdevicelist.system_devices[24].DriverIndiName.clear();
+            systemdevicelist.system_devices[24].SDKDriverName.clear();
+            systemdevicelist.system_devices[24].DriverFrom.clear();
+            systemdevicelist.system_devices[24].isSDKConnect = false;
+        }
     };
 
     auto makeCancelExposureCmd = [&]() {
@@ -959,6 +976,20 @@ void MainWindow::getConnectedDevices()
                 indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
                 Logger::Log("getConnectedDevices | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+            }
+
+            if (isCAAOnCamera && sdkCAAHandle != nullptr)
+            {
+                const QString caaDisplayName = sdkCaaDisplayName(sdkMainCameraId);
+                emit wsThread->sendMessageToClient("ConnectSuccess:Rotator:" + caaDisplayName + ":" + QString::fromLatin1("indi_qhy_ccd"));
+                emit wsThread->sendMessageToClient(
+                    "CAARotatorRange:" +
+                    QString::number(sdkMainCaaInfoCached.minValue, 'f', 2) + ":" +
+                    QString::number(sdkMainCaaInfoCached.maxValue, 'f', 2) + ":" +
+                    QString::number(sdkMainCaaInfoCached.step, 'f', 2) + ":" +
+                    QString::number(sdkMainCaaInfoCached.current, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(sdkMainCaaInfoCached.current, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:" + QString::number(sdkCaaAccumulatedOffset, 'f', 2));
             }
         }
         else if (ConnectedDevices[i].DeviceType == "Guider" && (dpGuider != nullptr || sdkGuiderHandle != nullptr))
@@ -1284,6 +1315,23 @@ void MainWindow::loadBindDeviceTypeList()
                     {
                         Logger::Log("LoadBindDeviceTypeList | MainCamera is in SDK mode but sdkMainCameraHandle is nullptr", LogLevel::WARNING, DeviceType::MAIN);
                     }
+
+                    if (isCAAOnCamera && sdkCAAHandle != nullptr)
+                    {
+                        const QString caaDisplayName = sdkCaaDisplayName(sdkMainCameraId);
+                        order += ":Rotator:" + caaDisplayName + ":" +
+                                 QString::fromLatin1("indi_qhy_ccd") + ":" +
+                                 (systemdevicelist.system_devices[i].isBind ? "true" : "false");
+
+                        emit wsThread->sendMessageToClient(
+                            "CAARotatorRange:" +
+                            QString::number(sdkMainCaaInfoCached.minValue, 'f', 2) + ":" +
+                            QString::number(sdkMainCaaInfoCached.maxValue, 'f', 2) + ":" +
+                            QString::number(sdkMainCaaInfoCached.step, 'f', 2) + ":" +
+                            QString::number(sdkMainCaaInfoCached.current, 'f', 2));
+                        emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(sdkMainCaaInfoCached.current, 'f', 2));
+                        emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:" + QString::number(sdkCaaAccumulatedOffset, 'f', 2));
+                    }
                 }
             }
             else if (systemdevicelist.system_devices[i].Description == "Guider" && systemdevicelist.system_devices[i].isBind)
@@ -1359,6 +1407,11 @@ void MainWindow::loadBindDeviceList(MyClient *client)
         {
             Logger::Log("LoadBindDeviceList | skip SDK Focuser: no valid port/name", LogLevel::WARNING, DeviceType::FOCUSER);
         }
+    }
+
+    if (isCAAOnCamera && sdkCAAHandle != nullptr)
+    {
+        appendDeviceToOrder("Rotator", sdkCaaDisplayName(sdkMainCameraId), SDK_CAA_UI_INDEX);
     }
 
     // 再追加 INDI 已连接设备（保持原有协议）

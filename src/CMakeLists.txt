@@ -174,6 +174,17 @@ find_path(QHYCCD_INCLUDE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../../QUARCS_phd2/cameras"
 )
 
+set(QUARCS_QHY_HAS_CONTROL_CAA_ROTATOR OFF)
+if(QHYCCD_INCLUDE_DIR AND EXISTS "${QHYCCD_INCLUDE_DIR}/qhyccdstruct.h")
+  file(STRINGS "${QHYCCD_INCLUDE_DIR}/qhyccdstruct.h" _quarcs_qhy_caa_control
+    REGEX "CONTROL_CAA_ROTATOR")
+  if(_quarcs_qhy_caa_control)
+    set(QUARCS_QHY_HAS_CONTROL_CAA_ROTATOR ON)
+    add_compile_definitions(QUARCS_QHY_HAS_CONTROL_CAA_ROTATOR=1)
+  endif()
+  unset(_quarcs_qhy_caa_control)
+endif()
+
 if(CMAKE_SYSROOT AND TARGET StellarSolver::stellarsolver)
   get_target_property(_quarcs_stellarsolver_imported_links StellarSolver::stellarsolver INTERFACE_LINK_LIBRARIES)
   if(_quarcs_stellarsolver_imported_links)
@@ -427,6 +438,10 @@ add_executable(flatfield_batch_test
   guiding/GuidingStarDetector.h guiding/GuidingStarDetector.cpp
   guiding/CentroidUtils.h guiding/CentroidUtils.cpp
   guiding/flatfield/FlatFieldDetector.h guiding/flatfield/FlatFieldDetector.cpp
+  Logger.h Logger.cpp
+  websocketthread.h websocketthread.cpp
+  websocketclient.h websocketclient.cpp
+  mountstate.h
 )
 
 target_link_libraries(flatfield_batch_test PRIVATE
@@ -437,6 +452,11 @@ target_link_libraries(flatfield_batch_test PRIVATE
   Qt5::Widgets
   Qt5::Network
   Qt5::WebSockets
+  indiclient
+  ${ZLIB_LIBRARY}
+  ${NOVA_LIBRARIES}
+  qhyccd
+  ${StellarSolver_LIBS}
 )
 
 target_link_libraries(client PRIVATE
@@ -530,6 +550,7 @@ if(CMAKE_SYSROOT)
     target_link_libraries(client PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
     target_link_libraries(guiding_offline_test PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
     target_link_libraries(guiding_batch_analyzer PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
+    target_link_libraries(flatfield_batch_test PRIVATE "${_QUARCS_ATLAS_BLAS}" "${_QUARCS_ATLAS_LAPACK}")
   endif()
   unset(_QUARCS_ATLAS_BLAS)
   unset(_QUARCS_ATLAS_LAPACK)

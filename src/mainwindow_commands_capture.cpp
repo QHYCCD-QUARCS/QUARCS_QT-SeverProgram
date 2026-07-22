@@ -17,7 +17,10 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
             command == QLatin1String("SetCFWPosition") ||
             command == QLatin1String("CFWList") ||
             command == QLatin1String("getCFWList") ||
+            command == QLatin1String("SetCAARotator") ||
+            command == QLatin1String("getCAARotator") ||
             command == QLatin1String("SetBinning") ||
+
             command == QLatin1String("SetCameraTemperature") ||
             command == QLatin1String("SetCameraGain") ||
             command == QLatin1String("SetUsbTraffic") ||
@@ -395,6 +398,73 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
             }
         }
         Logger::Log("get CFWList finish!", LogLevel::DEBUG, DeviceType::CFW);
+    }
+
+    else if (parts[0].trimmed() == "SetCAARotator" && parts.size() == 2)
+    {
+        double angle = parts[1].trimmed().toDouble();
+        if (angle < -360.0) angle = -360.0;
+        if (angle > 360.0) angle = 360.0;
+
+        if (!isCAAOnCamera || !isMainCameraSDK() || sdkCAAHandle == nullptr)
+        {
+            emit wsThread->sendMessageToClient("SetCAARotatorFailed:caa_disconnected");
+            Logger::Log("SetCAARotator failed: caa_disconnected", LogLevel::WARNING, DeviceType::CAMERA);
+        }
+        else
+        {
+            std::string err;
+            if (sdkSetCaaRotator(sdkCAAHandle, angle, &err))
+            {
+                SdkControlParamInfo info;
+                if (sdkGetCaaRotator(sdkCAAHandle, info, &err))
+                    sdkMainCaaInfoCached = info;
+                else
+                    sdkMainCaaInfoCached.current = angle;
+
+                sdkCaaAccumulatedOffset += angle;
+                emit wsThread->sendMessageToClient("SetCAARotatorSuccess:" + QString::number(angle, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(sdkMainCaaInfoCached.current, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:" + QString::number(sdkCaaAccumulatedOffset, 'f', 2));
+                Logger::Log("SetCAARotator success angle=" + std::to_string(angle), LogLevel::INFO, DeviceType::CAMERA);
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("SetCAARotatorFailed:" + QString::fromStdString(err));
+                Logger::Log("SetCAARotator failed: " + err, LogLevel::WARNING, DeviceType::CAMERA);
+            }
+        }
+    }
+
+    else if (message == "getCAARotator")
+    {
+        if (!isCAAOnCamera || !isMainCameraSDK() || sdkCAAHandle == nullptr)
+        {
+            emit wsThread->sendMessageToClient("CAARotatorUnavailable");
+            Logger::Log("getCAARotator | CAA unavailable", LogLevel::DEBUG, DeviceType::CAMERA);
+        }
+        else
+        {
+            SdkControlParamInfo info;
+            std::string err;
+            if (sdkGetCaaRotator(sdkCAAHandle, info, &err))
+            {
+                sdkMainCaaInfoCached = info;
+                emit wsThread->sendMessageToClient(
+                    "CAARotatorRange:" +
+                    QString::number(info.minValue, 'f', 2) + ":" +
+                    QString::number(info.maxValue, 'f', 2) + ":" +
+                    QString::number(info.step, 'f', 2) + ":" +
+                    QString::number(info.current, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(info.current, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:" + QString::number(sdkCaaAccumulatedOffset, 'f', 2));
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("CAARotatorFailed:" + QString::fromStdString(err));
+                Logger::Log("getCAARotator failed: " + err, LogLevel::WARNING, DeviceType::CAMERA);
+            }
+        }
     }
 
     else if (parts.size() == 2 && parts[0].trimmed() == "SetBinning")

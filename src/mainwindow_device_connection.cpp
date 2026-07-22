@@ -2780,6 +2780,25 @@ void MainWindow::UnBindingDevice(QString DeviceType)
                 sdkMainCfwSlotsCached = 0;
                 emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
             }
+            if (isCAAOnCamera)
+            {
+                isCAAOnCamera = false;
+                sdkCAAHandle = nullptr;
+                sdkMainCaaInfoCached = SdkControlParamInfo{};
+                sdkCaaAccumulatedOffset = 0.0;
+                SdkManager::instance().unregisterDevice("Rotator");
+                if (systemdevicelist.system_devices.size() > 24)
+                {
+                    systemdevicelist.system_devices[24].Description.clear();
+                    systemdevicelist.system_devices[24].DriverIndiName.clear();
+                    systemdevicelist.system_devices[24].SDKDriverName.clear();
+                    systemdevicelist.system_devices[24].DriverFrom.clear();
+                    systemdevicelist.system_devices[24].isSDKConnect = false;
+                    systemdevicelist.system_devices[24].isConnect = false;
+                    systemdevicelist.system_devices[24].isBind = false;
+                }
+                emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:Rotator");
+            }
 
             // 解除绑定：仅清理角色绑定，不关闭句柄池（保持待分配列表可用）
             systemdevicelist.system_devices[20].isBind = false;
@@ -3058,8 +3077,13 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             // ==================== SDK 主相机初始化流程 ====================
             // 记录“上一轮是否为相机内置 CFW”，用于在本轮未检测到 CFW 时清理前端残留状态
             const bool prevFilterOnCamera = isFilterOnCamera;
+            const bool prevCAAOnCamera = isCAAOnCamera;
             isFilterOnCamera = false;
+            isCAAOnCamera = false;
             sdkMainCfwSlotsCached = 0;
+            sdkCAAHandle = nullptr;
+            sdkMainCaaInfoCached = SdkControlParamInfo{};
+            sdkCaaAccumulatedOffset = 0.0;
 
             // 0. 读取本地保存的主相机参数（config/config.ini）
             // 注意：INDI 分支在 dpMainCamera == dp 时会调用 getMainCameraParameters() 并设置初始参数；
@@ -3560,6 +3584,84 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             if (!isFilterOnCamera && prevFilterOnCamera)
             {
                 emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
+            }
+
+            // ==================== SDK 模式下探测“相机内置 CAA 旋转器” ====================
+            {
+                SdkCommand caaAvailableCmd;
+                caaAvailableCmd.type = SdkCommandType::Custom;
+                caaAvailableCmd.name = "IsCAARotatorAvailable";
+                caaAvailableCmd.payload = std::any();
+                SdkResult caaAvailableRes = sdkCallMain(caaAvailableCmd);
+                bool caaAvailable = false;
+                if (caaAvailableRes.success && caaAvailableRes.payload.has_value())
+                {
+                    try { caaAvailable = std::any_cast<bool>(caaAvailableRes.payload); } catch (const std::bad_any_cast&) { caaAvailable = false; }
+                }
+
+                if (caaAvailable)
+                {
+                    SdkControlParamInfo caaInfo;
+                    std::string err;
+                    if (sdkGetCaaRotator(sdkMainCameraHandle, caaInfo, &err))
+                    {
+                        isCAAOnCamera = true;
+                        sdkCAAHandle = sdkMainCameraHandle;
+                        sdkMainCaaInfoCached = caaInfo;
+                        sdkCaaAccumulatedOffset = 0.0;
+
+                        QString caaDriverName = getSDKDriverName("MainCamera");
+                        if (!caaDriverName.isEmpty())
+                        {
+                            SdkResult caaRegRes = SdkManager::instance().registerDevice(
+                                caaDriverName.toStdString(),
+                                "Rotator",
+                                sdkCAAHandle,
+                                "CAA Rotator",
+                                std::any(sdkMainCameraId.toStdString()));
+                            if (!caaRegRes.success)
+                            {
+                                Logger::Log("AfterDeviceConnect | Failed to register CAA Rotator to SdkManager: " + caaRegRes.message,
+                                            LogLevel::WARNING, DeviceType::CAMERA);
+                            }
+                        }
+
+                        if (systemdevicelist.system_devices.size() > 24)
+                        {
+                            systemdevicelist.system_devices[24].Description = "Rotator";
+                            systemdevicelist.system_devices[24].DriverIndiName = systemdevicelist.system_devices[20].DriverIndiName;
+                            systemdevicelist.system_devices[24].SDKDriverName = systemdevicelist.system_devices[20].SDKDriverName;
+                            systemdevicelist.system_devices[24].DriverFrom = "SDK";
+                            systemdevicelist.system_devices[24].DeviceIndiName = sdkCaaDisplayName(sdkMainCameraId);
+                            systemdevicelist.system_devices[24].isSDKConnect = true;
+                            systemdevicelist.system_devices[24].isConnect = true;
+                            systemdevicelist.system_devices[24].isBind = true;
+                        }
+
+                        const QString caaDisplayName = sdkCaaDisplayName(sdkMainCameraId);
+                        Logger::Log("AfterDeviceConnect | SDK CAA detected, angle=" + std::to_string(caaInfo.current),
+                                    LogLevel::INFO, DeviceType::CAMERA);
+                        emit wsThread->sendMessageToClient("ConnectSuccess:Rotator:" + caaDisplayName + ":" + QString::fromLatin1("indi_qhy_ccd"));
+                        emit wsThread->sendMessageToClient(
+                            "CAARotatorRange:" +
+                            QString::number(caaInfo.minValue, 'f', 2) + ":" +
+                            QString::number(caaInfo.maxValue, 'f', 2) + ":" +
+                            QString::number(caaInfo.step, 'f', 2) + ":" +
+                            QString::number(caaInfo.current, 'f', 2));
+                        emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(caaInfo.current, 'f', 2));
+                        emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:" + QString::number(sdkCaaAccumulatedOffset, 'f', 2));
+                    }
+                    else
+                    {
+                        Logger::Log("AfterDeviceConnect | SDK CAA available but GetCAARotator failed: " + err,
+                                    LogLevel::WARNING, DeviceType::CAMERA);
+                    }
+                }
+            }
+
+            if (!isCAAOnCamera && prevCAAOnCamera)
+            {
+                emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:Rotator");
             }
             
             Logger::Log("AfterDeviceConnect | SDK MainCamera initialization completed", 
@@ -8848,6 +8950,26 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 if (wsThread != nullptr)
                     emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
             }
+            if (isCAAOnCamera)
+            {
+                isCAAOnCamera = false;
+                sdkCAAHandle = nullptr;
+                sdkMainCaaInfoCached = SdkControlParamInfo{};
+                sdkCaaAccumulatedOffset = 0.0;
+                SdkManager::instance().unregisterDevice("Rotator");
+                if (systemdevicelist.system_devices.size() > 24)
+                {
+                    systemdevicelist.system_devices[24].Description.clear();
+                    systemdevicelist.system_devices[24].DriverIndiName.clear();
+                    systemdevicelist.system_devices[24].SDKDriverName.clear();
+                    systemdevicelist.system_devices[24].DriverFrom.clear();
+                    systemdevicelist.system_devices[24].isSDKConnect = false;
+                    systemdevicelist.system_devices[24].isConnect = false;
+                    systemdevicelist.system_devices[24].isBind = false;
+                }
+                if (wsThread != nullptr)
+                    emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:Rotator");
+            }
 
             // 2) 关闭当前绑定的 MainCamera 句柄（若存在）
             QString closedCameraId;
@@ -9215,6 +9337,26 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                     sdkMainCfwSlotsCached = 0;
                     if (wsThread != nullptr)
                         emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:CFW");
+                }
+                if (DeviceType == "MainCamera" && isCAAOnCamera)
+                {
+                    isCAAOnCamera = false;
+                    sdkCAAHandle = nullptr;
+                    sdkMainCaaInfoCached = SdkControlParamInfo{};
+                    sdkCaaAccumulatedOffset = 0.0;
+                    SdkManager::instance().unregisterDevice("Rotator");
+                    if (systemdevicelist.system_devices.size() > 24)
+                    {
+                        systemdevicelist.system_devices[24].Description.clear();
+                        systemdevicelist.system_devices[24].DriverIndiName.clear();
+                        systemdevicelist.system_devices[24].SDKDriverName.clear();
+                        systemdevicelist.system_devices[24].DriverFrom.clear();
+                        systemdevicelist.system_devices[24].isSDKConnect = false;
+                        systemdevicelist.system_devices[24].isConnect = false;
+                        systemdevicelist.system_devices[24].isBind = false;
+                    }
+                    if (wsThread != nullptr)
+                        emit wsThread->sendMessageToClient("deleteDeviceTypeAllocationList:Rotator");
                 }
 
                 if (wsThread != nullptr)
