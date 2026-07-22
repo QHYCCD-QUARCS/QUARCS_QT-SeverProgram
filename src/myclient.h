@@ -158,6 +158,13 @@ class MyClient : public INDI::BaseClient
         uint32_t getCFWSlotName(INDI::BaseDevice *dp,QString & name);
         uint32_t setCFWSlotName(INDI::BaseDevice *dp,QString name);
 
+        //Rotator / CAA API (INDI standard Rotator Interface)
+        uint32_t getRotatorAngle(INDI::BaseDevice *dp,double &angle,double &min,double &max,double &step);
+        uint32_t setRotatorAngle(INDI::BaseDevice *dp,double angle);
+        uint32_t abortRotatorMove(INDI::BaseDevice *dp);
+        uint32_t getRotatorReverse(INDI::BaseDevice *dp,bool &isReversed);
+        uint32_t setRotatorReverse(INDI::BaseDevice *dp,bool isReversed);
+
 
         //Focuser API
         uint32_t getFocuserSDKVersion(INDI::BaseDevice *dp,QString &version);
@@ -269,7 +276,6 @@ class MyClient : public INDI::BaseClient
 
 
 #endif // MYCLIENT_H
-
 
 
 

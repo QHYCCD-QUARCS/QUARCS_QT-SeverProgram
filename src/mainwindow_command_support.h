@@ -13,6 +13,7 @@ extern INDI::BaseDevice *dpPoleScope;
 extern INDI::BaseDevice *dpMainCamera;
 extern INDI::BaseDevice *dpFocuser;
 extern INDI::BaseDevice *dpCFW;
+extern INDI::BaseDevice *dpRotator;
 
 extern SdkDeviceHandle sdkMountHandle;
 extern SdkDeviceHandle sdkGuiderHandle;

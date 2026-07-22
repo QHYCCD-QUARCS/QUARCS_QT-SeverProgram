@@ -59,6 +59,7 @@ INDI::BaseDevice *dpPoleScope  = nullptr;  // 极轴镜设备指针
 INDI::BaseDevice *dpMainCamera = nullptr;  // 主相机设备指针
 INDI::BaseDevice *dpFocuser    = nullptr;  // 电调设备指针
 INDI::BaseDevice *dpCFW        = nullptr;  // 滤镜轮设备指针
+INDI::BaseDevice *dpRotator    = nullptr;  // CAA/旋转器设备指针
 
 namespace {
 

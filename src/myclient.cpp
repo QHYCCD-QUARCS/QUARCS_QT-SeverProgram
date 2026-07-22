@@ -3694,6 +3694,168 @@ uint32_t MyClient::getCFWSlotName(INDI::BaseDevice *dp, QString &name)
     return QHYCCD_SUCCESS;
 }
 
+/**************************************************************************************
+**                                  ROTATOR / CAA API
+***************************************************************************************/
+uint32_t MyClient::getRotatorAngle(INDI::BaseDevice *dp, double &angle, double &min, double &max, double &step)
+{
+    if (!dp)
+        return QHYCCD_ERROR;
+
+    INDI::PropertyNumber property = dp->getProperty("ABS_ROTATOR_ANGLE");
+
+    if (!property.isValid())
+    {
+        Logger::Log("indi_client | getRotatorAngle | Error: unable to find ABS_ROTATOR_ANGLE property...",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        angle = 0.0;
+        min = 0.0;
+        max = 0.0;
+        step = 0.0;
+        return QHYCCD_ERROR;
+    }
+
+    if (property.size() < 1)
+        return QHYCCD_ERROR;
+
+    angle = property[0].getValue();
+    min = property[0].getMin();
+    max = property[0].getMax();
+    step = property[0].getStep();
+
+    Logger::Log("indi_client | getRotatorAngle | angle=" + std::to_string(angle) +
+                    " min=" + std::to_string(min) +
+                    " max=" + std::to_string(max) +
+                    " step=" + std::to_string(step),
+                LogLevel::DEBUG, DeviceType::MAIN);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::setRotatorAngle(INDI::BaseDevice *dp, double angle)
+{
+    if (!dp)
+        return QHYCCD_ERROR;
+
+    INDI::PropertyNumber property = dp->getProperty("ABS_ROTATOR_ANGLE");
+
+    if (!property.isValid())
+    {
+        Logger::Log("indi_client | setRotatorAngle | Error: unable to find ABS_ROTATOR_ANGLE property...",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return QHYCCD_ERROR;
+    }
+
+    if (property.size() < 1)
+        return QHYCCD_ERROR;
+
+    const double min = property[0].getMin();
+    const double max = property[0].getMax();
+    if (max > min)
+        angle = std::min(max, std::max(min, angle));
+
+    property[0].setValue(angle);
+    sendNewProperty(property);
+
+    Logger::Log("indi_client | setRotatorAngle | angle=" + std::to_string(angle),
+                LogLevel::INFO, DeviceType::MAIN);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::abortRotatorMove(INDI::BaseDevice *dp)
+{
+    if (!dp)
+        return QHYCCD_ERROR;
+
+    INDI::PropertySwitch property = dp->getProperty("ROTATOR_ABORT_MOTION");
+
+    if (!property.isValid())
+    {
+        Logger::Log("indi_client | abortRotatorMove | Error: unable to find ROTATOR_ABORT_MOTION property...",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return QHYCCD_ERROR;
+    }
+
+    if (property.size() < 1)
+        return QHYCCD_ERROR;
+
+    property[0].setState(ISS_ON);
+    sendNewProperty(property);
+
+    Logger::Log("indi_client | abortRotatorMove", LogLevel::INFO, DeviceType::MAIN);
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::getRotatorReverse(INDI::BaseDevice *dp, bool &isReversed)
+{
+    if (!dp)
+        return QHYCCD_ERROR;
+
+    INDI::PropertySwitch property = dp->getProperty("ROTATOR_REVERSE");
+
+    if (!property.isValid())
+    {
+        Logger::Log("indi_client | getRotatorReverse | Error: unable to find ROTATOR_REVERSE property...",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return QHYCCD_ERROR;
+    }
+
+    for (size_t i = 0; i < property.size(); ++i)
+    {
+        const QString name = QString::fromUtf8(property[i].getName()).toUpper();
+        if (property[i].getState() == ISS_ON &&
+            (name.contains("ENABLED") || name.contains("ON") || name.contains("REVERSE")))
+        {
+            isReversed = true;
+            return QHYCCD_SUCCESS;
+        }
+    }
+
+    isReversed = false;
+    return QHYCCD_SUCCESS;
+}
+
+uint32_t MyClient::setRotatorReverse(INDI::BaseDevice *dp, bool isReversed)
+{
+    if (!dp)
+        return QHYCCD_ERROR;
+
+    INDI::PropertySwitch property = dp->getProperty("ROTATOR_REVERSE");
+
+    if (!property.isValid())
+    {
+        Logger::Log("indi_client | setRotatorReverse | Error: unable to find ROTATOR_REVERSE property...",
+                    LogLevel::WARNING, DeviceType::MAIN);
+        return QHYCCD_ERROR;
+    }
+
+    if (property.size() < 1)
+        return QHYCCD_ERROR;
+
+    int targetIndex = -1;
+    for (size_t i = 0; i < property.size(); ++i)
+    {
+        const QString name = QString::fromUtf8(property[i].getName()).toUpper();
+        const bool looksOn = name.contains("ENABLED") || name.contains("ON") || name.contains("REVERSE");
+        const bool looksOff = name.contains("DISABLED") || name.contains("OFF") || name.contains("NORMAL");
+        if ((isReversed && looksOn) || (!isReversed && looksOff))
+        {
+            targetIndex = static_cast<int>(i);
+            break;
+        }
+    }
+    if (targetIndex < 0)
+        targetIndex = isReversed ? 0 : std::min<int>(1, static_cast<int>(property.size()) - 1);
+
+    for (size_t i = 0; i < property.size(); ++i)
+        property[i].setState(static_cast<int>(i) == targetIndex ? ISS_ON : ISS_OFF);
+
+    sendNewProperty(property);
+
+    Logger::Log("indi_client | setRotatorReverse | reversed=" + std::to_string(isReversed),
+                LogLevel::INFO, DeviceType::MAIN);
+    return QHYCCD_SUCCESS;
+}
+
 uint32_t MyClient::setCFWSlotName(INDI::BaseDevice *dp, QString name)
 {
     INDI::PropertyText property = dp->getProperty("FILTER_NAME");

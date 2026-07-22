@@ -2688,6 +2688,19 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
         AfterDeviceConnect(dpCFW);
         Logger::Log("Binding CFW Device end !", LogLevel::INFO, DeviceType::MAIN);
     }
+    else if (DeviceType == "Rotator" || DeviceType == "CAA")
+    {
+        Logger::Log("Binding Rotator Device start ...", LogLevel::INFO, DeviceType::MAIN);
+        dpRotator = device;
+        if (systemdevicelist.system_devices.size() > 24) {
+            systemdevicelist.system_devices[24].Description = "Rotator";
+            systemdevicelist.system_devices[24].isConnect = true;
+            systemdevicelist.system_devices[24].isBind = true;
+        }
+        Tools::saveSystemDeviceList(systemdevicelist);
+        AfterDeviceConnect(dpRotator);
+        Logger::Log("Binding Rotator Device end !", LogLevel::INFO, DeviceType::MAIN);
+    }
 }
 void MainWindow::UnBindingDevice(QString DeviceType)
 {
@@ -2976,6 +2989,34 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         Tools::saveSystemDeviceList(systemdevicelist);
 
         emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
+    }
+    else if (DeviceType == "Rotator" || DeviceType == "CAA")
+    {
+        if (!dpRotator)
+        {
+            Logger::Log("UnBinding Rotator Device skipped: dpRotator is nullptr", LogLevel::WARNING, DeviceType::MAIN);
+            return;
+        }
+
+        int DeviceIndex = -1;
+        for (int i = 0; i < indi_Client->GetDeviceCount(); i++)
+        {
+            if (indi_Client->GetDeviceFromList(i)->getDeviceName() == dpRotator->getDeviceName())
+            {
+                DeviceIndex = i;
+                break;
+            }
+        }
+        if (systemdevicelist.system_devices.size() > 24)
+        {
+            systemdevicelist.system_devices[24].isBind = false;
+            systemdevicelist.system_devices[24].DeviceIndiName = "";
+        }
+        dpRotator = nullptr;
+        Tools::saveSystemDeviceList(systemdevicelist);
+
+        if (DeviceIndex >= 0 && DeviceIndex < indi_Client->GetDeviceCount())
+            emit wsThread->sendMessageToClient("DeviceToBeAllocated:Rotator:" + QString::number(DeviceIndex) + ":" + QString::fromUtf8(indi_Client->GetDeviceFromList(DeviceIndex)->getDeviceName()));
     }
 
     indi_Client->PrintDevices();
@@ -4477,6 +4518,51 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         }
         Logger::Log("CFW connected successfully.", LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectSuccess:CFW:" + QString::fromUtf8(dpCFW->getDeviceName()) + ":" + QString::fromUtf8(dpCFW->getDriverExec()));
+    }
+
+    if (dpRotator == dp)
+    {
+        const QString deviceName = QString::fromUtf8(dpRotator->getDeviceName());
+        const QString driverExec = QString::fromUtf8(dpRotator->getDriverExec());
+        Logger::Log("Rotator connected after Device(" + deviceName.toStdString() + ") Connect: " + deviceName.toStdString(),
+                    LogLevel::INFO, DeviceType::MAIN);
+
+        ConnectedDevices.push_back({"Rotator", deviceName});
+
+        if (systemdevicelist.system_devices.size() > 24)
+        {
+            systemdevicelist.system_devices[24].Description = "Rotator";
+            systemdevicelist.system_devices[24].DeviceIndiName = deviceName;
+            systemdevicelist.system_devices[24].DriverFrom = "INDI";
+            systemdevicelist.system_devices[24].isSDKConnect = false;
+            systemdevicelist.system_devices[24].isBind = true;
+        }
+
+        indi_Client->GetAllPropertyName(dpRotator);
+
+        double angle = 0.0;
+        double min = 0.0;
+        double max = 0.0;
+        double step = 0.0;
+        if (indi_Client->getRotatorAngle(dpRotator, angle, min, max, step) == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient(
+                "CAARotatorRange:" +
+                QString::number(min, 'f', 2) + ":" +
+                QString::number(max, 'f', 2) + ":" +
+                QString::number(step, 'f', 2) + ":" +
+                QString::number(angle, 'f', 2));
+            emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(angle, 'f', 2));
+            emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:0.00");
+        }
+        else
+        {
+            Logger::Log("AfterDeviceConnect | Rotator connected but ABS_ROTATOR_ANGLE is unavailable",
+                        LogLevel::WARNING, DeviceType::MAIN);
+        }
+
+        Logger::Log("Rotator connected successfully.", LogLevel::INFO, DeviceType::MAIN);
+        emit wsThread->sendMessageToClient("ConnectSuccess:Rotator:" + deviceName + ":" + driverExec);
     }
 
     if (dpPoleScope == dp)
@@ -7741,6 +7827,12 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             systemdevicelist.system_devices[22].Description = "Focuser";
             systemdevicelist.system_devices[22].DriverIndiName = DriverName;
         }
+        else if (DriverType == "Rotator" || DriverType == "CAA")
+        {
+            driverCode = 24;
+            systemdevicelist.system_devices[24].Description = "Rotator";
+            systemdevicelist.system_devices[24].DriverIndiName = DriverName;
+        }
         else
         {
             Logger::Log("ConnectDriver | DriverType(" + DriverType.toStdString() + ") is not supported.", LogLevel::WARNING, DeviceType::MAIN);
@@ -8160,6 +8252,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     ConnectedTELESCOPEList.clear();
     ConnectedFOCUSERList.clear();
     ConnectedFILTERList.clear();
+    ConnectedROTATORList.clear();
 
     // 判断连接设备的类型
     for (int i = 0; i < connectedDeviceIdList.size(); i++)
@@ -8186,6 +8279,11 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 Logger::Log("ConnectDriver | We received a FOCUSER!", LogLevel::INFO, DeviceType::MAIN);
                 ConnectedFOCUSERList.push_back(connectedDeviceIdList[i]);
             }
+            else if (indi_Client->GetDeviceFromList(connectedDeviceIdList[i])->getDriverInterface() & INDI::BaseDevice::ROTATOR_INTERFACE)
+            {
+                Logger::Log("ConnectDriver | We received a ROTATOR!", LogLevel::INFO, DeviceType::MAIN);
+                ConnectedROTATORList.push_back(connectedDeviceIdList[i]);
+            }
         }
         else
         {
@@ -8211,6 +8309,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     Logger::Log("ConnectDriver | Number of Connected TELESCOPE:" + std::to_string(ConnectedTELESCOPEList.size()), LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("ConnectDriver | Number of Connected FOCUSER:" + std::to_string(ConnectedFOCUSERList.size()), LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("ConnectDriver | Number of Connected FILTER:" + std::to_string(ConnectedFILTERList.size()), LogLevel::INFO, DeviceType::MAIN);
+    Logger::Log("ConnectDriver | Number of Connected ROTATOR:" + std::to_string(ConnectedROTATORList.size()), LogLevel::INFO, DeviceType::MAIN);
 
     auto savedDeviceNameByDescription = [&](const QString &description) -> QString
     {
@@ -8759,6 +8858,53 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                 if (device != nullptr) {
                     hasPendingAllocation = true;
                     emit wsThread->sendMessageToClient("DeviceToBeAllocated:CFW:" + QString::number(ConnectedFILTERList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
+                }
+            }
+        }
+    }
+
+    if (ConnectedROTATORList.size() == 1)
+    {
+        Logger::Log("ConnectDriver | Rotator Connected Success!", LogLevel::INFO, DeviceType::MAIN);
+        if (!ConnectedROTATORList.empty() && ConnectedROTATORList[0] >= 0 && ConnectedROTATORList[0] < indi_Client->GetDeviceCount()) {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedROTATORList[0]);
+            if (device != nullptr) {
+                dpRotator = device;
+                if (systemdevicelist.system_devices.size() > 24) {
+                    systemdevicelist.system_devices[24].isConnect = true;
+                }
+                AfterDeviceConnect(dpRotator);
+            }
+        }
+    }
+    else if (ConnectedROTATORList.size() > 1)
+    {
+        EachDeviceOne = false;
+        const int boundRotatorIndex = findConnectedIndexBySavedName(ConnectedROTATORList, savedDeviceNameByDescription("Rotator"));
+        if (boundRotatorIndex >= 0)
+        {
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(boundRotatorIndex);
+            if (device != nullptr)
+            {
+                dpRotator = device;
+                if (systemdevicelist.system_devices.size() > 24)
+                    systemdevicelist.system_devices[24].isConnect = true;
+                AfterDeviceConnect(dpRotator);
+                Logger::Log("ConnectDriver | INDI Rotator auto-bound by saved name: " +
+                                QString::fromUtf8(device->getDeviceName()).toStdString(),
+                            LogLevel::INFO, DeviceType::MAIN);
+            }
+        }
+
+        for (int i = 0; i < ConnectedROTATORList.size(); i++)
+        {
+            if (ConnectedROTATORList[i] == boundRotatorIndex)
+                continue;
+            if (ConnectedROTATORList[i] >= 0 && ConnectedROTATORList[i] < indi_Client->GetDeviceCount()) {
+                INDI::BaseDevice *device = indi_Client->GetDeviceFromList(ConnectedROTATORList[i]);
+                if (device != nullptr) {
+                    hasPendingAllocation = true;
+                    emit wsThread->sendMessageToClient("DeviceToBeAllocated:Rotator:" + QString::number(ConnectedROTATORList[i]) + ":" + QString::fromUtf8(device->getDeviceName()));
                 }
             }
         }
@@ -9449,6 +9595,19 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         // systemdevicelist.system_devices[21].DriverIndiName = "";  // ❌ 不应清空（驱动名）
         // systemdevicelist.system_devices[21].DriverFrom = "";  // ❌ 不应清空（驱动能力）
         systemdevicelist.system_devices[21].dp = NULL;
+    }
+    else if (DeviceType == "Rotator" || DeviceType == "CAA")
+    {
+        dpRotator = NULL;
+        if (systemdevicelist.system_devices.size() > 24)
+        {
+            disconnectdriverName = systemdevicelist.system_devices[24].DriverIndiName;
+            systemdevicelist.system_devices[24].isConnect = false;
+            systemdevicelist.system_devices[24].isBind = false;
+            systemdevicelist.system_devices[24].DeviceIndiName = "";
+            systemdevicelist.system_devices[24].DeviceIndiGroup = -1;
+            systemdevicelist.system_devices[24].dp = NULL;
+        }
     }
 
     QStringList SelectedCameras;

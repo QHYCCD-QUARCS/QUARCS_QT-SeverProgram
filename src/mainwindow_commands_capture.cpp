@@ -19,6 +19,9 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
             command == QLatin1String("getCFWList") ||
             command == QLatin1String("SetCAARotator") ||
             command == QLatin1String("getCAARotator") ||
+            command == QLatin1String("AbortCAARotator") ||
+            command == QLatin1String("SetCAARotatorReverse") ||
+            command == QLatin1String("getCAARotatorReverse") ||
             command == QLatin1String("SetBinning") ||
 
             command == QLatin1String("SetCameraTemperature") ||
@@ -406,12 +409,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
         if (angle < -360.0) angle = -360.0;
         if (angle > 360.0) angle = 360.0;
 
-        if (!isCAAOnCamera || !isMainCameraSDK() || sdkCAAHandle == nullptr)
-        {
-            emit wsThread->sendMessageToClient("SetCAARotatorFailed:caa_disconnected");
-            Logger::Log("SetCAARotator failed: caa_disconnected", LogLevel::WARNING, DeviceType::CAMERA);
-        }
-        else
+        if (isCAAOnCamera && isMainCameraSDK() && sdkCAAHandle != nullptr)
         {
             std::string err;
             if (sdkSetCaaRotator(sdkCAAHandle, angle, &err))
@@ -434,16 +432,43 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
                 Logger::Log("SetCAARotator failed: " + err, LogLevel::WARNING, DeviceType::CAMERA);
             }
         }
+        else if (dpRotator != nullptr && dpRotator->isConnected())
+        {
+            if (indi_Client->setRotatorAngle(dpRotator, angle) == QHYCCD_SUCCESS)
+            {
+                double current = 0.0;
+                double min = 0.0;
+                double max = 0.0;
+                double step = 0.0;
+                if (indi_Client->getRotatorAngle(dpRotator, current, min, max, step) == QHYCCD_SUCCESS)
+                {
+                    emit wsThread->sendMessageToClient(
+                        "CAARotatorRange:" +
+                        QString::number(min, 'f', 2) + ":" +
+                        QString::number(max, 'f', 2) + ":" +
+                        QString::number(step, 'f', 2) + ":" +
+                        QString::number(current, 'f', 2));
+                    emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(current, 'f', 2));
+                }
+                emit wsThread->sendMessageToClient("SetCAARotatorSuccess:" + QString::number(angle, 'f', 2));
+                Logger::Log("SetCAARotator(INDI) success angle=" + std::to_string(angle), LogLevel::INFO, DeviceType::CAMERA);
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("SetCAARotatorFailed:indi_error");
+                Logger::Log("SetCAARotator(INDI) failed", LogLevel::WARNING, DeviceType::CAMERA);
+            }
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("SetCAARotatorFailed:caa_disconnected");
+            Logger::Log("SetCAARotator failed: caa_disconnected", LogLevel::WARNING, DeviceType::CAMERA);
+        }
     }
 
     else if (message == "getCAARotator")
     {
-        if (!isCAAOnCamera || !isMainCameraSDK() || sdkCAAHandle == nullptr)
-        {
-            emit wsThread->sendMessageToClient("CAARotatorUnavailable");
-            Logger::Log("getCAARotator | CAA unavailable", LogLevel::DEBUG, DeviceType::CAMERA);
-        }
-        else
+        if (isCAAOnCamera && isMainCameraSDK() && sdkCAAHandle != nullptr)
         {
             SdkControlParamInfo info;
             std::string err;
@@ -464,6 +489,76 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
                 emit wsThread->sendMessageToClient("CAARotatorFailed:" + QString::fromStdString(err));
                 Logger::Log("getCAARotator failed: " + err, LogLevel::WARNING, DeviceType::CAMERA);
             }
+        }
+        else if (dpRotator != nullptr && dpRotator->isConnected())
+        {
+            double angle = 0.0;
+            double min = 0.0;
+            double max = 0.0;
+            double step = 0.0;
+            if (indi_Client->getRotatorAngle(dpRotator, angle, min, max, step) == QHYCCD_SUCCESS)
+            {
+                emit wsThread->sendMessageToClient(
+                    "CAARotatorRange:" +
+                    QString::number(min, 'f', 2) + ":" +
+                    QString::number(max, 'f', 2) + ":" +
+                    QString::number(step, 'f', 2) + ":" +
+                    QString::number(angle, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(angle, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:0.00");
+            }
+            else
+            {
+                emit wsThread->sendMessageToClient("CAARotatorFailed:indi_error");
+                Logger::Log("getCAARotator(INDI) failed", LogLevel::WARNING, DeviceType::CAMERA);
+            }
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("CAARotatorUnavailable");
+            Logger::Log("getCAARotator | CAA unavailable", LogLevel::DEBUG, DeviceType::CAMERA);
+        }
+    }
+
+    else if (message == "AbortCAARotator")
+    {
+        if (dpRotator != nullptr && dpRotator->isConnected() &&
+            indi_Client->abortRotatorMove(dpRotator) == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient("AbortCAARotatorSuccess");
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("AbortCAARotatorFailed:caa_disconnected_or_unsupported");
+        }
+    }
+
+    else if (parts.size() == 2 && parts[0].trimmed() == "SetCAARotatorReverse")
+    {
+        const QString value = parts[1].trimmed().toLower();
+        const bool reversed = (value == "true" || value == "1" || value == "on" || value == "yes");
+        if (dpRotator != nullptr && dpRotator->isConnected() &&
+            indi_Client->setRotatorReverse(dpRotator, reversed) == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient("CAARotatorReverse:" + QString(reversed ? "true" : "false"));
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("SetCAARotatorReverseFailed:caa_disconnected_or_unsupported");
+        }
+    }
+
+    else if (message == "getCAARotatorReverse")
+    {
+        bool reversed = false;
+        if (dpRotator != nullptr && dpRotator->isConnected() &&
+            indi_Client->getRotatorReverse(dpRotator, reversed) == QHYCCD_SUCCESS)
+        {
+            emit wsThread->sendMessageToClient("CAARotatorReverse:" + QString(reversed ? "true" : "false"));
+        }
+        else
+        {
+            emit wsThread->sendMessageToClient("CAARotatorReverseUnavailable");
         }
     }
 

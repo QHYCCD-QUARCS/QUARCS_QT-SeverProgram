@@ -476,6 +476,7 @@ public:
     QVector<int> ConnectedTELESCOPEList;  // 已连接赤道仪索引
     QVector<int> ConnectedFOCUSERList;    // 已连接电调索引
     QVector<int> ConnectedFILTERList;     // 已连接滤镜轮索引
+    QVector<int> ConnectedROTATORList;    // 已连接 CAA/旋转器索引
     QVector<QString> ConnectDriverList;   // 已连接驱动名
     QVector<QString> INDI_Driver_List;    // INDI 驱动列表缓存
     QVector<ConnectedDevice> ConnectedDevices; // 已连接设备详细列表

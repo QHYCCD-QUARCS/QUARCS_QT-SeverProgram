@@ -302,6 +302,11 @@ bool MainWindow::indi_Driver_Confirm(QString DriverName, QString BaudRate)
         systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
         Logger::Log("indi_Driver_Confirm | Focuser | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
         break;
+    case 24:
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].Description = "Rotator";
+        systemdevicelist.system_devices[systemdevicelist.currentDeviceCode].BaudRate = BaudRate.toInt();
+        Logger::Log("indi_Driver_Confirm | Rotator | DriverName: " + DriverName.toStdString() + " BaudRate: " + std::to_string(BaudRate.toInt()), LogLevel::INFO, DeviceType::MAIN);
+        break;
 
     default:
         Logger::Log("indi_Driver_Confirm | Invalid currentDeviceCode: " + std::to_string(systemdevicelist.currentDeviceCode), LogLevel::ERROR, DeviceType::MAIN);
@@ -997,6 +1002,23 @@ void MainWindow::getConnectedDevices()
             emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" + QString::number(glGuiderOffsetMax) + ":" + QString::number(glGuiderOffsetValue));
             emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" + QString::number(glGuiderGainMax) + ":" + QString::number(glGuiderGainValue));
         }
+        else if (ConnectedDevices[i].DeviceType == "Rotator" && dpRotator != nullptr)
+        {
+            double angle = 0.0;
+            double min = 0.0;
+            double max = 0.0;
+            double step = 0.0;
+            if (indi_Client->getRotatorAngle(dpRotator, angle, min, max, step) == QHYCCD_SUCCESS)
+            {
+                emit wsThread->sendMessageToClient(
+                    "CAARotatorRange:" +
+                    QString::number(min, 'f', 2) + ":" +
+                    QString::number(max, 'f', 2) + ":" +
+                    QString::number(step, 'f', 2) + ":" +
+                    QString::number(angle, 'f', 2));
+                emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(angle, 'f', 2));
+            }
+        }
     }
     Logger::Log("getConnectedDevices finish!", LogLevel::INFO, DeviceType::MAIN);
 }
@@ -1339,6 +1361,24 @@ void MainWindow::loadBindDeviceTypeList()
                 emit wsThread->sendMessageToClient("GuiderOffsetRange:" + QString::number(glGuiderOffsetMin) + ":" + QString::number(glGuiderOffsetMax) + ":" + QString::number(glGuiderOffsetValue));
                 emit wsThread->sendMessageToClient("GuiderGainRange:" + QString::number(glGuiderGainMin) + ":" + QString::number(glGuiderGainMax) + ":" + QString::number(glGuiderGainValue));
             }
+            else if (systemdevicelist.system_devices[i].Description == "Rotator" && systemdevicelist.system_devices[i].isBind && dpRotator != nullptr)
+            {
+                double angle = 0.0;
+                double min = 0.0;
+                double max = 0.0;
+                double step = 0.0;
+                if (indi_Client->getRotatorAngle(dpRotator, angle, min, max, step) == QHYCCD_SUCCESS)
+                {
+                    emit wsThread->sendMessageToClient(
+                        "CAARotatorRange:" +
+                        QString::number(min, 'f', 2) + ":" +
+                        QString::number(max, 'f', 2) + ":" +
+                        QString::number(step, 'f', 2) + ":" +
+                        QString::number(angle, 'f', 2));
+                    emit wsThread->sendMessageToClient("CAARotatorAngle:" + QString::number(angle, 'f', 2));
+                    emit wsThread->sendMessageToClient("CAARotatorAccumulatedOffset:0.00");
+                }
+            }
         }
     }
     Logger::Log("LoadBindDeviceTypeList | Bind Device Type List:" + order.toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -1456,6 +1496,7 @@ void MainWindow::loadBindDeviceList(MyClient *client)
             else if (iface & INDI::BaseDevice::FILTER_INTERFACE) type = "CFW";
             else if (iface & INDI::BaseDevice::TELESCOPE_INTERFACE) type = "Mount";
             else if (iface & INDI::BaseDevice::FOCUSER_INTERFACE) type = "Focuser";
+            else if (iface & INDI::BaseDevice::ROTATOR_INTERFACE) type = "Rotator";
             // 待分配设备列表中暂时不展示 Mount（望远镜）项
             if (type == "Mount")
                 continue;
