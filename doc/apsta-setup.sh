@@ -26,6 +26,8 @@ UPLINK_WAIT_SEC="25"
 AP_HW_MODE=""
 AP_CHANNEL=""
 BACKUP_DIR=""
+AUTO_SWITCH_APT_MIRROR=1
+INSTALL_DEPS=1
 
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
@@ -85,6 +87,8 @@ Optional:
   --ap-hw-mode <g|a>         Force hostapd hw_mode. Auto-detect by uplink if omitted.
   --ap-channel <num>         Force hostapd channel. Auto-detect by uplink if omitted.
   --uplink-wait <sec>        Seconds to wait for STA association. Default: ${UPLINK_WAIT_SEC}
+  --no-install-deps          Do not install missing packages.
+  --no-apt-mirror-switch     Probe mirrors, but do not rewrite APT sources before installing.
   -h, --help                 Show this help.
 
 Examples:
@@ -99,6 +103,19 @@ need_root() {
   fi
 }
 
+require_base_commands() {
+  local missing=()
+  local cmd
+  for cmd in ip systemctl awk sed apt-get; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+      missing+=("${cmd}")
+    fi
+  done
+  if ((${#missing[@]} > 0)); then
+    die "missing base commands: ${missing[*]}"
+  fi
+}
+
 require_commands() {
   local missing=()
   local cmd
@@ -110,6 +127,106 @@ require_commands() {
   if ((${#missing[@]} > 0)); then
     die "missing required commands: ${missing[*]}"
   fi
+}
+
+missing_dependency_packages() {
+  local missing=()
+  local cmd pkg
+  for cmd in iw:iw wpa_passphrase:wpasupplicant hostapd:hostapd dnsmasq:dnsmasq dhclient:isc-dhcp-client iptables:iptables; do
+    pkg="${cmd#*:}"
+    cmd="${cmd%%:*}"
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+      missing+=("${pkg}")
+    fi
+  done
+  if ((${#missing[@]} > 0)); then
+    printf '%s\n' "${missing[@]}"
+  fi
+}
+
+probe_url() {
+  local url="$1"
+  local result=""
+  if command -v curl >/dev/null 2>&1; then
+    result="$(curl -L -o /dev/null -s -w '%{time_total} %{http_code}' --connect-timeout 4 --max-time 12 "${url}" 2>/dev/null || true)"
+  elif command -v wget >/dev/null 2>&1; then
+    if wget -q --spider --timeout=12 "${url}" 2>/dev/null; then
+      result="12 200"
+    fi
+  fi
+  case "${result}" in
+    *" 200") printf '%s\n' "${result%% *}" ;;
+  esac
+}
+
+best_apt_mirror() {
+  local best_name=""
+  local best_base=""
+  local best_time="999999"
+  local name base t
+  while IFS='|' read -r name base; do
+    [[ -n "${name}" ]] || continue
+    t="$(probe_url "${base}/dists/bookworm/Release")"
+    if [[ -n "${t}" ]]; then
+      printf '[%s] APT mirror probe: %s %ss\n' "$(date '+%F %T')" "${name}" "${t}" >&2
+      if awk -v a="${t}" -v b="${best_time}" 'BEGIN {exit !(a < b)}'; then
+        best_name="${name}"
+        best_base="${base}"
+        best_time="${t}"
+      fi
+    else
+      warn "APT mirror probe failed: ${name}"
+    fi
+  done <<'EOF'
+debian.org|http://deb.debian.org/debian
+tuna|http://mirrors.tuna.tsinghua.edu.cn/debian
+aliyun|http://mirrors.aliyun.com/debian
+EOF
+  [[ -n "${best_base}" ]] || return 1
+  printf '%s|%s|%s\n' "${best_name}" "${best_base}" "${best_time}"
+}
+
+maybe_switch_debian_mirror() {
+  [[ "${AUTO_SWITCH_APT_MIRROR}" -eq 1 ]] || return 0
+  [[ -e /etc/apt/sources.list ]] || return 0
+
+  local best best_name best_base
+  best="$(best_apt_mirror || true)"
+  [[ -n "${best}" ]] || return 0
+  best_name="${best%%|*}"
+  best_base="${best#*|}"
+  best_base="${best_base%%|*}"
+
+  if grep -q "${best_base}" /etc/apt/sources.list; then
+    log "APT source already uses fastest probed Debian mirror: ${best_name}"
+    return 0
+  fi
+  if ! grep -q 'http://deb.debian.org/debian' /etc/apt/sources.list; then
+    warn "current Debian source is custom; leaving /etc/apt/sources.list unchanged"
+    return 0
+  fi
+
+  if [[ -z "${BACKUP_DIR}" ]]; then
+    BACKUP_DIR="/root/apsta-backup-$(date +%Y%m%d-%H%M%S)"
+  fi
+  backup_file "/etc/apt/sources.list"
+  sed -i "s|http://deb.debian.org/debian|${best_base}|g" /etc/apt/sources.list
+  log "switched Debian APT mirror to ${best_name}: ${best_base}"
+}
+
+install_missing_dependencies() {
+  [[ "${INSTALL_DEPS}" -eq 1 ]] || return 0
+  local missing=()
+  mapfile -t missing < <(missing_dependency_packages)
+  if ((${#missing[@]} == 0)); then
+    log "all AP+STA dependencies are already installed"
+    return 0
+  fi
+
+  log "missing packages: ${missing[*]}"
+  maybe_switch_debian_mirror
+  apt-get update
+  apt-get install -y "${missing[@]}"
 }
 
 parse_args() {
@@ -201,6 +318,14 @@ parse_args() {
         UPLINK_WAIT_SEC="${2:-}"
         shift 2
         ;;
+      --no-install-deps)
+        INSTALL_DEPS=0
+        shift
+        ;;
+      --no-apt-mirror-switch)
+        AUTO_SWITCH_APT_MIRROR=0
+        shift
+        ;;
       -h|--help)
         usage
         exit 0
@@ -267,6 +392,7 @@ backup_existing_files() {
   backup_file "/etc/wpa_supplicant/wpa_supplicant-${WLAN_IF}.conf"
   backup_file "/etc/systemd/system/wpa_supplicant@${WLAN_IF}.service.d/override.conf"
   backup_file "/etc/systemd/system/wlan0-dhcp.service"
+  backup_file "/usr/local/sbin/${WLAN_IF}-route-metric.sh"
   backup_file "/usr/local/sbin/${AP_IF}-create.sh"
   backup_file "/etc/systemd/system/uap0-create.service"
   backup_file "/etc/hostapd/${AP_IF}.conf"
@@ -292,8 +418,9 @@ disable_ifupdown_conflicts() {
     mv /etc/network/interfaces.d/wlan0-uap0 \
       "/etc/network/interfaces.d/wlan0-uap0.backup-by-apsta-$(date +%Y%m%d-%H%M%S)"
   fi
-  systemctl disable networking >/dev/null 2>&1 || true
-  systemctl stop networking >/dev/null 2>&1 || true
+  if grep -RqsE "(^|[[:space:]])(auto|allow-hotplug|iface)[[:space:]]+(${WLAN_IF}|${AP_IF})([[:space:]]|$)" /etc/network/interfaces /etc/network/interfaces.d 2>/dev/null; then
+    die "wireless ifupdown config still exists; move only the ${WLAN_IF}/${AP_IF} config before rerunning"
+  fi
 }
 
 write_nm_unmanaged() {
@@ -358,6 +485,21 @@ EOF
 }
 
 write_dhcp_service() {
+  cat > "/usr/local/sbin/${WLAN_IF}-route-metric.sh" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+dev="${WLAN_IF}"
+gw="\$(ip -4 route show default dev "\${dev}" | awk 'NR == 1 { for (i = 1; i <= NF; i++) if (\$i == "via") { print \$(i + 1); exit } }')"
+[[ -n "\${gw}" ]] || exit 0
+
+while ip -4 route show default dev "\${dev}" | awk '\$0 !~ /metric/ { found = 1 } END { exit found ? 0 : 1 }'; do
+  ip route del default via "\${gw}" dev "\${dev}" || break
+done
+ip route replace default via "\${gw}" dev "\${dev}" metric 600
+EOF
+  chmod 755 "/usr/local/sbin/${WLAN_IF}-route-metric.sh"
+
   cat > /etc/systemd/system/wlan0-dhcp.service <<EOF
 [Unit]
 Description=DHCP client on ${WLAN_IF} (STA uplink)
@@ -368,6 +510,7 @@ Wants=wpa_supplicant@${WLAN_IF}.service
 Type=forking
 PIDFile=/run/dhclient.${WLAN_IF}.pid
 ExecStart=/sbin/dhclient -4 -pf /run/dhclient.${WLAN_IF}.pid ${WLAN_IF}
+ExecStartPost=-/usr/local/sbin/${WLAN_IF}-route-metric.sh
 ExecStop=/sbin/dhclient -x -pf /run/dhclient.${WLAN_IF}.pid ${WLAN_IF}
 Restart=on-failure
 RestartSec=3
@@ -872,6 +1015,7 @@ start_ap_stack() {
   systemctl restart ap-sta-nat.service
   if [[ "${ENABLE_DUAL_LAN_POLICY}" -eq 1 ]]; then
     systemctl restart quarcs-dual-lan-policy.service
+    systemctl restart quarcs-dual-lan-policy.timer
   fi
 }
 
@@ -940,6 +1084,8 @@ main() {
   need_root "$@"
   parse_args "$@"
   validate_inputs
+  require_base_commands
+  install_missing_dependencies
   require_commands
   check_interfaces
   check_radio_support
