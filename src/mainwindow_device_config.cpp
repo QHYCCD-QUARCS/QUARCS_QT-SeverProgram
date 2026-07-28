@@ -7,6 +7,41 @@ bool isValidSystemDeviceIndex(const SystemDeviceList &deviceList, int index)
     return index >= 0 && index < deviceList.system_devices.size();
 }
 
+QString resolveIndiDriversXmlPath(const std::string &requestedFilename)
+{
+    QStringList candidates;
+    const QString requestedPath = QString::fromStdString(requestedFilename);
+    if (!requestedPath.isEmpty())
+        candidates << requestedPath;
+    candidates << "/usr/share/indi/drivers.xml"
+               << "/usr/local/share/indi/drivers.xml";
+
+    QStringList checked;
+    for (const QString &candidate : candidates)
+    {
+        if (checked.contains(candidate))
+            continue;
+        checked << candidate;
+
+        QFileInfo info(candidate);
+        if (info.exists() && info.isFile() && info.isReadable())
+        {
+            if (candidate != requestedPath)
+            {
+                Logger::Log("resolveIndiDriversXmlPath | Using fallback INDI drivers file: " +
+                                candidate.toStdString(),
+                            LogLevel::WARNING, DeviceType::GUIDER);
+            }
+            return candidate;
+        }
+    }
+
+    Logger::Log("resolveIndiDriversXmlPath | Unable to find readable INDI drivers.xml. Checked: " +
+                    checked.join(", ").toStdString(),
+                LogLevel::ERROR, DeviceType::GUIDER);
+    return requestedPath;
+}
+
 int scoreByIdLinkForType(const QString &fileNameLower, const QString &driverType)
 {
     int score = 0;
@@ -33,11 +68,15 @@ int scoreByIdLinkForType(const QString &fileNameLower, const QString &driverType
 void MainWindow::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
                                           std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from)
 {
-    Logger::Log("Opening XML file: " + filename, LogLevel::INFO, DeviceType::GUIDER);
-    QFile file(QString::fromStdString(filename));
+    const QString driversXmlPath = resolveIndiDriversXmlPath(filename);
+    const QFileInfo driversXmlInfo(driversXmlPath);
+    const QString driversDirPath = driversXmlInfo.absolutePath();
+
+    Logger::Log("Opening XML file: " + driversXmlPath.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
+    QFile file(driversXmlPath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-        Logger::Log("Failed to open file: " + filename, LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("Failed to open file: " + driversXmlPath.toStdString(), LogLevel::ERROR, DeviceType::GUIDER);
         return;
     }
     QXmlStreamReader xml(&file);
@@ -52,8 +91,10 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
             Logger::Log("Added device group: " + dev_group.group.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
         }
     }
-    DIR *dir = opendir("/usr/share/indi");
-    std::string DirPath = "/usr/share/indi/";
+    DIR *dir = opendir(driversDirPath.toStdString().c_str());
+    std::string DirPath = driversDirPath.toStdString();
+    if (!DirPath.empty() && DirPath.back() != '/')
+        DirPath += "/";
     std::string xmlpath;
 
     int index;
@@ -72,16 +113,17 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
 
     if (dir == nullptr)
     {
-        Logger::Log("Unable to find INDI drivers directory at /usr/share/indi", LogLevel::ERROR, DeviceType::GUIDER);
+        Logger::Log("Unable to find INDI drivers directory at " + driversDirPath.toStdString(), LogLevel::ERROR, DeviceType::GUIDER);
         return;
     }
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != nullptr)
     {
-        if (strcmp(entry->d_name + strlen(entry->d_name) - 4, ".xml") == 0)
+        const QString entryName = QString::fromLocal8Bit(entry->d_name);
+        if (entryName.endsWith(".xml"))
         {
-            if (strcmp(entry->d_name + strlen(entry->d_name) - 6, "sk.xml") == 0)
+            if (entryName.endsWith("sk.xml"))
             {
                 continue; // Skip sky charts
             }
@@ -92,6 +134,7 @@ void MainWindow::readDriversListFromFiles(const std::string &filename, DriversLi
                 if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
                 {
                     Logger::Log("Failed to open file: " + xmlpath, LogLevel::ERROR, DeviceType::GUIDER);
+                    continue;
                 }
 
                 QXmlStreamReader xml(&file);
@@ -164,7 +207,7 @@ void MainWindow::printDevGroups2(const DriversList drivers_list, int ListNum, QS
     bool foundGroup = false;
     for (int i = 0; i < drivers_list.dev_groups.size(); i++)
     {
-        if (drivers_list.dev_groups[i].group == group)
+        if (indiDriverGroupsEquivalent(drivers_list.dev_groups[i].group, group))
         {
             foundGroup = true;
             Logger::Log("Processing device group: " + drivers_list.dev_groups[i].group.toStdString(), LogLevel::INFO, DeviceType::MAIN);
@@ -375,7 +418,7 @@ QString MainWindow::getSDKDriverName(const QString& deviceType)
     // CFW（外置滤镜轮）在 system_devices[21]
     else if (deviceType == "CFW") index = 21;
     else if (deviceType == "Focuser") index = 22;
-    else if (deviceType == "Rotator" || deviceType == "CAA") index = 24;
+    else if (isRotatorDriverType(deviceType)) index = 24;
     // ... 可以继续添加其他设备类型的映射
 
     if (index < 0 || index >= systemdevicelist.system_devices.size())
@@ -1495,8 +1538,8 @@ void MainWindow::loadBindDeviceList(MyClient *client)
             if (iface & INDI::BaseDevice::CCD_INTERFACE) type = "CCD";
             else if (iface & INDI::BaseDevice::FILTER_INTERFACE) type = "CFW";
             else if (iface & INDI::BaseDevice::TELESCOPE_INTERFACE) type = "Mount";
+            else if (isRotatorLikeIndiDevice(device)) type = "Rotator";
             else if (iface & INDI::BaseDevice::FOCUSER_INTERFACE) type = "Focuser";
-            else if (iface & INDI::BaseDevice::ROTATOR_INTERFACE) type = "Rotator";
             // 待分配设备列表中暂时不展示 Mount（望远镜）项
             if (type == "Mount")
                 continue;

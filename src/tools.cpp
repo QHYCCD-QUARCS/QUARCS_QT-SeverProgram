@@ -2,7 +2,9 @@
 #include <vector>
 #include <cstdio>
 #include <QFile>
+#include <QFileInfo>
 #include <QString>
+#include <QStringList>
 #include <qdebug.h>
 #include <iostream>
 #include <string>
@@ -52,6 +54,41 @@ static inline void disableIndiFifoOnce(const QString &why)
     {
         Logger::Log("INDI FIFO disabled: " + why.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
     }
+}
+
+QString resolveToolsIndiDriversXmlPath(const std::string &requestedFilename)
+{
+    QStringList candidates;
+    const QString requestedPath = QString::fromStdString(requestedFilename);
+    if (!requestedPath.isEmpty())
+        candidates << requestedPath;
+    candidates << "/usr/share/indi/drivers.xml"
+               << "/usr/local/share/indi/drivers.xml";
+
+    QStringList checked;
+    for (const QString &candidate : candidates)
+    {
+        if (checked.contains(candidate))
+            continue;
+        checked << candidate;
+
+        QFileInfo info(candidate);
+        if (info.exists() && info.isFile() && info.isReadable())
+        {
+            if (candidate != requestedPath)
+            {
+                Logger::Log("readDriversListFromFiles | Using fallback INDI drivers file: " +
+                                candidate.toStdString(),
+                            LogLevel::WARNING, DeviceType::MAIN);
+            }
+            return candidate;
+        }
+    }
+
+    Logger::Log("readDriversListFromFiles | Unable to find readable INDI drivers.xml. Checked: " +
+                    checked.join(", ").toStdString(),
+                LogLevel::ERROR, DeviceType::MAIN);
+    return requestedPath;
 }
 }  // namespace
 
@@ -435,10 +472,16 @@ void Tools::ClearSystemDeviceListItem(int index) {
 void Tools::readDriversListFromFiles(const std::string &filename, DriversList &drivers_list_from,
                               std::vector<DevGroup> &dev_groups_from, std::vector<Device> &devices_from)
 {
-    QFile file(QString::fromStdString(filename));
+    const QString driversXmlPath = resolveToolsIndiDriversXmlPath(filename);
+    const QFileInfo driversXmlInfo(driversXmlPath);
+    const QString driversDirPath = driversXmlInfo.absolutePath();
+
+    QFile file(driversXmlPath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
-        Logger::Log("readDriversListFromFiles | Fail to open Drivers List file.", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("readDriversListFromFiles | Fail to open Drivers List file: " +
+                        driversXmlPath.toStdString(),
+                    LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
     QXmlStreamReader xml(&file);
@@ -454,8 +497,10 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
         }
     }
     // qDebug() << "Read_XML_1";
-    DIR *dir = opendir("/usr/share/indi");
-    std::string DirPath = "/usr/share/indi/";
+    DIR *dir = opendir(driversDirPath.toStdString().c_str());
+    std::string DirPath = driversDirPath.toStdString();
+    if (!DirPath.empty() && DirPath.back() != '/')
+        DirPath += "/";
     std::string xmlpath;
 
     int index;
@@ -474,16 +519,19 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
 
     if (dir == nullptr)
     {
-        Logger::Log("readDriversListFromFiles | Unable to find INDI drivers directory, Please make sure the path is true.", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("readDriversListFromFiles | Unable to find INDI drivers directory: " +
+                        driversDirPath.toStdString(),
+                    LogLevel::ERROR, DeviceType::MAIN);
         return;
     }
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != nullptr)
     {
-        if (strcmp(entry->d_name + strlen(entry->d_name) - 4, ".xml") == 0)
+        const QString entryName = QString::fromLocal8Bit(entry->d_name);
+        if (entryName.endsWith(".xml"))
         {
-            if (strcmp(entry->d_name + strlen(entry->d_name) - 6, "sk.xml") == 0)
+            if (entryName.endsWith("sk.xml"))
             {
                 continue;
             }
@@ -498,6 +546,7 @@ void Tools::readDriversListFromFiles(const std::string &filename, DriversList &d
                 if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
                 {
                     Logger::Log("readDriversListFromFiles | Open File failed!!!", LogLevel::ERROR, DeviceType::MAIN);
+                    continue;
                 }
 
                 QXmlStreamReader xml(&file);

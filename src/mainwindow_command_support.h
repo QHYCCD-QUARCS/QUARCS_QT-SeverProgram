@@ -117,6 +117,46 @@ inline QString sdkCaaDisplayName(const QString &cameraId)
     return "CAA (on camera)";
 }
 
+inline bool isRotatorDriverType(const QString &deviceType)
+{
+    return deviceType.compare("Rotator", Qt::CaseInsensitive) == 0 ||
+           deviceType.compare("CAA", Qt::CaseInsensitive) == 0;
+}
+
+inline bool isRotatorDriverGroup(const QString &group)
+{
+    return group.compare("Rotators", Qt::CaseInsensitive) == 0 ||
+           group.compare("Rotator", Qt::CaseInsensitive) == 0 ||
+           group.compare("CAA", Qt::CaseInsensitive) == 0;
+}
+
+inline bool indiDriverGroupsEquivalent(const QString &availableGroup, const QString &requestedGroup)
+{
+    if (availableGroup.compare(requestedGroup, Qt::CaseInsensitive) == 0)
+        return true;
+    return isRotatorDriverGroup(availableGroup) && isRotatorDriverGroup(requestedGroup);
+}
+
+inline bool isRotatorLikeIndiDevice(INDI::BaseDevice *device)
+{
+    if (device == nullptr)
+        return false;
+
+    if (device->getDriverInterface() & INDI::BaseDevice::ROTATOR_INTERFACE)
+        return true;
+
+    INDI::PropertyNumber angleProperty = device->getProperty("ABS_ROTATOR_ANGLE");
+    if (angleProperty.isValid())
+        return true;
+
+    const QString deviceName = device->getDeviceName() ? QString::fromUtf8(device->getDeviceName()) : QString();
+    const QString driverExec = device->getDriverExec() ? QString::fromUtf8(device->getDriverExec()) : QString();
+    return deviceName.contains("CAA", Qt::CaseInsensitive) ||
+           deviceName.contains("Rotator", Qt::CaseInsensitive) ||
+           driverExec.contains("caa", Qt::CaseInsensitive) ||
+           driverExec.contains("rotator", Qt::CaseInsensitive);
+}
+
 inline bool sdkGetCaaRotator(SdkDeviceHandle handle, SdkControlParamInfo &info, std::string *errMsg = nullptr)
 {
     SdkCommand cmd;
