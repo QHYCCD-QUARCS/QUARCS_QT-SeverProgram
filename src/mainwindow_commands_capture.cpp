@@ -241,7 +241,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
         Logger::Log("SetCFWPosition ...", LogLevel::DEBUG, DeviceType::CFW);
         int pos1 = parts[1].trimmed().toInt(); // 前端协议：1-based
         if (pos1 <= 0) pos1 = 1;
-        constexpr int kCfwMoveTimeoutMs = 10000;
+        constexpr int kCfwMoveTimeoutMs = 60000;
 
         if (isFilterOnCamera)
         {

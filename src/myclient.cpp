@@ -3656,7 +3656,7 @@ uint32_t MyClient::setCFWPosition(INDI::BaseDevice *dp, int position)
     QElapsedTimer t;
     t.start();
 
-    int timeout = 10000;
+    int timeout = 60000;
     while (t.elapsed() < timeout)
     {
         Logger::Log("indi_client | setCFWPosition | State:" + std::string(property.getStateAsString()), LogLevel::DEBUG, DeviceType::CAMERA);
