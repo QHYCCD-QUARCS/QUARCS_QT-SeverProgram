@@ -6255,6 +6255,50 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
     };
     const QString driverTypeDesc = DriverType.section(':', 0, 0).trimmed(); // e.g. "Guider:SDK" -> "Guider"
 
+    auto fixedSlotIndexForDesc = [&](const QString& desc) -> int {
+        if (desc == "Mount") return (systemdevicelist.system_devices.size() > 0) ? 0 : -1;
+        if (desc == "Guider") return (systemdevicelist.system_devices.size() > 1) ? 1 : -1;
+        if (desc == "PoleCamera") return (systemdevicelist.system_devices.size() > 2) ? 2 : -1;
+        if (desc == "MainCamera") return (systemdevicelist.system_devices.size() > 20) ? 20 : -1;
+        if (desc == "CFW") return (systemdevicelist.system_devices.size() > 21) ? 21 : -1;
+        if (desc == "Focuser") return (systemdevicelist.system_devices.size() > 22) ? 22 : -1;
+        if (isRotatorDriverType(desc)) return (systemdevicelist.system_devices.size() > 24) ? 24 : -1;
+        return -1;
+    };
+
+    auto syncRequestedSdkSlot = [&]() {
+        if (!requestedSdk)
+            return;
+
+        const std::string sdkName = SdkDriverRegistry::instance().getSDKDriverName(DriverName.toStdString());
+        if (sdkName.empty())
+            return;
+
+        int slotIdx = findDeviceIndexByDesc(driverTypeDesc);
+        if (slotIdx < 0)
+            slotIdx = fixedSlotIndexForDesc(driverTypeDesc);
+        if (slotIdx < 0 || slotIdx >= systemdevicelist.system_devices.size())
+            return;
+
+        auto &slot = systemdevicelist.system_devices[slotIdx];
+        if (slot.Description.isEmpty())
+            slot.Description = driverTypeDesc;
+        if (slot.DriverIndiName.compare(DriverName, Qt::CaseInsensitive) != 0)
+            slot.DriverIndiName = DriverName;
+        if (slot.SDKDriverName.compare(QString::fromStdString(sdkName), Qt::CaseInsensitive) != 0)
+            slot.SDKDriverName = QString::fromStdString(sdkName);
+        if (slot.DriverFrom.isEmpty() || slot.DriverFrom == "SDK" ||
+            !slot.DriverFrom.contains("SDK", Qt::CaseInsensitive))
+            slot.DriverFrom = DriverName + "SDK";
+        slot.isSDKConnect = true;
+
+        Logger::Log("ConnectDriver | Synced SDK slot before connect: " +
+                        driverTypeDesc.toStdString() + " -> " + DriverName.toStdString() +
+                        " (" + sdkName + ")",
+                    LogLevel::DEBUG, DeviceType::MAIN);
+    };
+    syncRequestedSdkSlot();
+
     // ===== 自动降级：驱动不支持 SDK 时，本次连接改为 INDI =====
     // 场景：
     // - 前端显式请求 "xxx:SDK"
@@ -6274,11 +6318,7 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
             auto resolveSlotIndex = [&](const QString& desc) -> int {
                 int idx = findDeviceIndexByDesc(desc);
                 if (idx >= 0) return idx;
-                if (desc == "MainCamera") return (systemdevicelist.system_devices.size() > 20) ? 20 : -1;
-                if (desc == "Guider")    return (systemdevicelist.system_devices.size() > 1)  ? 1  : -1;
-                if (desc == "CFW")       return (systemdevicelist.system_devices.size() > 21) ? 21 : -1;
-                if (desc == "Focuser")   return (systemdevicelist.system_devices.size() > 22) ? 22 : -1;
-                return -1;
+                return fixedSlotIndexForDesc(desc);
             };
 
             const int slotIdx = resolveSlotIndex(driverTypeDesc);

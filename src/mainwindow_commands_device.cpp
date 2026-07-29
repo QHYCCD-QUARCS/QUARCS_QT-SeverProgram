@@ -15,7 +15,26 @@ bool MainWindow::handleDriverSelectionCommand(const QString &message, const QStr
     auto run = [this, &message, &parts]() {
     if (parts.size() >= 2 && parts[0].trimmed() == "ConfirmIndiDriver")
     {
-        if (parts.size() == 2)
+        if (parts.size() >= 4)
+        {
+            const QString driverName = parts[1].trimmed();
+            const QString baudRate = parts[2].trimmed();
+            const QString deviceCodeText = parts[3].trimmed();
+            bool ok = false;
+            const int deviceCode = deviceCodeText.toInt(&ok);
+            Logger::Log("ConfirmIndiDriver:" + driverName.toStdString() + ":" +
+                            baudRate.toStdString() + ":" + deviceCodeText.toStdString(),
+                        LogLevel::DEBUG, DeviceType::MAIN);
+            if (!ok || deviceCode < 0 || deviceCode >= systemdevicelist.system_devices.size())
+            {
+                Logger::Log("ConfirmIndiDriver | Invalid deviceCode: " + deviceCodeText.toStdString(),
+                            LogLevel::ERROR, DeviceType::MAIN);
+                return;
+            }
+            systemdevicelist.currentDeviceCode = deviceCode;
+            indi_Driver_Confirm(driverName, baudRate);
+        }
+        else if (parts.size() == 2)
         {
             Logger::Log("ConfirmIndiDriver:" + parts[1].trimmed().toStdString(), LogLevel::DEBUG, DeviceType::MAIN);
             QString driverName = parts[1].trimmed();
