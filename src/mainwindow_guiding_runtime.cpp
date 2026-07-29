@@ -409,8 +409,18 @@ void MainWindow::startPoleCameraSingleCapture(int exposureMs)
         guiderExposureInFlight = true;
         const double expSec = expMs / 1000.0;
         const SdkDeviceHandle handleSnap = sdkPoleScopeHandle;
+        const uint64_t epochSnap = sdkPoleCameraOpEpoch.load(std::memory_order_relaxed);
 
-        poleExec->post([this, handleSnap, expMs, expSec]() {
+        poleExec->post([this, handleSnap, epochSnap, expMs, expSec]() {
+            if (epochSnap != sdkPoleCameraOpEpoch.load(std::memory_order_relaxed))
+            {
+                QMetaObject::invokeMethod(this, [this]() {
+                    polarGuiderSingleCapturePending = false;
+                    guiderExposureInFlight = false;
+                }, Qt::QueuedConnection);
+                return;
+            }
+
             auto failOnMain = [this](const std::string &message) {
                 QMetaObject::invokeMethod(this, [this, message]() {
                     Logger::Log(message, LogLevel::ERROR, DeviceType::MAIN);
@@ -447,7 +457,14 @@ void MainWindow::startPoleCameraSingleCapture(int exposureMs)
                 return;
             }
 
-            QMetaObject::invokeMethod(this, [this, expMs]() {
+            QMetaObject::invokeMethod(this, [this, handleSnap, epochSnap, expMs]() {
+                if (!polarGuiderSingleCapturePending ||
+                    sdkPoleScopeHandle != handleSnap ||
+                    epochSnap != sdkPoleCameraOpEpoch.load(std::memory_order_relaxed))
+                {
+                    guiderExposureInFlight = false;
+                    return;
+                }
                 sdkGuiderExposureStartTime = QDateTime::currentMSecsSinceEpoch();
                 sdkGuiderExposureExpectedDuration = expMs;
                 sdkGuiderExposureRole = "PoleCamera";
@@ -527,6 +544,9 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
     }
 
     const SdkDeviceHandle handleSnap = poleCapture ? sdkPoleScopeHandle : sdkGuiderHandle;
+    const uint64_t epochSnap = poleCapture
+        ? sdkPoleCameraOpEpoch.load(std::memory_order_relaxed)
+        : sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed);
     const PolarAlignmentCameraRole captureRole =
         poleCapture ? PolarAlignmentCameraRole::PoleCamera : PolarAlignmentCameraRole::Guider;
     const qint64 startSnap = sdkGuiderExposureStartTime;
@@ -538,7 +558,20 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                     " expectedMs=" + std::to_string(expectedSnap),
                 LogLevel::INFO, DeviceType::GUIDER);
 
-    captureExec->post([this, handleSnap, startSnap, expectedSnap, timerFiredAtMs, captureRole]() {
+    captureExec->post([this, handleSnap, epochSnap, startSnap, expectedSnap, timerFiredAtMs, captureRole]() {
+        const bool poleCaptureWorker = (captureRole == PolarAlignmentCameraRole::PoleCamera);
+        const uint64_t currentEpoch = poleCaptureWorker
+            ? sdkPoleCameraOpEpoch.load(std::memory_order_relaxed)
+            : sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed);
+        if (epochSnap != currentEpoch)
+        {
+            QMetaObject::invokeMethod(this, [this]() {
+                sdkGuiderFrameTaskInFlight = false;
+                guiderExposureInFlight = false;
+            }, Qt::QueuedConnection);
+            return;
+        }
+
         QElapsedTimer workerPerf;
         workerPerf.start();
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -572,8 +605,17 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                             " msg=" + cancelRes.message,
                         LogLevel::INFO, DeviceType::GUIDER);
 
-            QMetaObject::invokeMethod(this, [this, cancelRes, elapsed, expected, maxWaitMs, cancelCostMs, workerTotalMs]() {
+            QMetaObject::invokeMethod(this, [this, cancelRes, elapsed, expected, maxWaitMs, cancelCostMs, workerTotalMs, epochSnap, captureRole]() {
                 sdkGuiderFrameTaskInFlight = false;
+                const bool poleCapture = (captureRole == PolarAlignmentCameraRole::PoleCamera);
+                const uint64_t currentEpoch = poleCapture
+                    ? sdkPoleCameraOpEpoch.load(std::memory_order_relaxed)
+                    : sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed);
+                if (epochSnap != currentEpoch)
+                {
+                    guiderExposureInFlight = false;
+                    return;
+                }
                 Logger::Log("onSdkGuiderExposureTimerTimeout | TIMEOUT waiting guider frame (elapsed=" +
                                 std::to_string(elapsed) + "ms, expected=" + std::to_string(expected) +
                                 "ms, maxWait=" + std::to_string(maxWaitMs) +
@@ -618,7 +660,7 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                         " msg=" + frameRes.message,
                     LogLevel::INFO, DeviceType::GUIDER);
 
-        QMetaObject::invokeMethod(this, [this, frameRes, expected, getFrameCostMs, workerTotalMs, timerFiredAtMs, captureRole]() mutable {
+        QMetaObject::invokeMethod(this, [this, frameRes, expected, getFrameCostMs, workerTotalMs, timerFiredAtMs, captureRole, epochSnap]() mutable {
             QElapsedTimer mainPerf;
             mainPerf.start();
             sdkGuiderFrameTaskInFlight = false;
@@ -630,6 +672,14 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                         LogLevel::INFO, DeviceType::GUIDER);
 
             const bool poleCapture = (captureRole == PolarAlignmentCameraRole::PoleCamera);
+            const uint64_t currentEpoch = poleCapture
+                ? sdkPoleCameraOpEpoch.load(std::memory_order_relaxed)
+                : sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed);
+            if (epochSnap != currentEpoch)
+            {
+                guiderExposureInFlight = false;
+                return;
+            }
             const bool captureSdk =
                 poleCapture
                     ? (systemdevicelist.system_devices.size() > 2 &&

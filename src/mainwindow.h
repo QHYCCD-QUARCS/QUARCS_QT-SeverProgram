@@ -623,6 +623,10 @@ public:
     // 电调操作代际号：用于让“旧任务”（尤其是位置读取/旧移动）在 SDK 线程中快速失效，
     // 避免 stop 末尾的定时器位置读取队列占满串口，导致后续 move/abort 被长期排队。
     std::atomic_uint64_t sdkFocuserOpEpoch{0};
+    // SDK 相机操作代际号：断开/重开时递增，让已排队但尚未执行的旧任务在触碰旧 handle 前失效。
+    std::atomic_uint64_t sdkMainCameraOpEpoch{0};
+    std::atomic_uint64_t sdkGuiderCameraOpEpoch{0};
+    std::atomic_uint64_t sdkPoleCameraOpEpoch{0};
 
     // 请求一次“电调位置刷新”（异步）：在 SDK 线程读取真实位置，回主线程更新缓存/可选推送 WS
     void requestSdkFocuserPositionUpdate(bool emitWs = false);

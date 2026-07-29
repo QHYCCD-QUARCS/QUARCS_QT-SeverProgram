@@ -682,6 +682,15 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
                 ", deviceType=" + deviceType.toStdString(),
                 LogLevel::INFO, DeviceType::MAIN);
 
+    if (cleanupMainCamera || cleanupCameraPool || cleanupAll)
+        sdkMainCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
+    if (cleanupPoleCamera || cleanupCameraPool || cleanupAll)
+        sdkPoleCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
+    if (cleanupCameraPool || cleanupAll)
+        sdkGuiderCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
+    if (cleanupFocuser || cleanupAll)
+        sdkFocuserOpEpoch.fetch_add(1, std::memory_order_relaxed);
+
     // -----------------------------
     // 2) 小工具：统一线程投递（可读性 + 去重）
     // -----------------------------
@@ -843,7 +852,19 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
                 // 若 sdkExposureTimer 的线程归属不明确，建议用 invokeMethod 投递到其线程
                 sdkExposureTimer->stop();
             }
+            if (sdkGuiderExposureTimer)
+                sdkGuiderExposureTimer->stop();
+            if (sdkMainLiveTimer)
+                sdkMainLiveTimer->stop();
+            if (sdkMainLiveProcessTimer)
+                sdkMainLiveProcessTimer->stop();
             sdkExposureIsROI = false;
+            sdkFrameTaskInFlight = false;
+            sdkGuiderFrameTaskInFlight = false;
+            sdkBurstCancelRequested = true;
+            sdkMainLiveLoopOn = false;
+            sdkMainLiveFrameInFlight = false;
+            sdkMainLiveProcessingBusy = false;
 
             std::vector<SdkDeviceHandle> handles;
             handles.reserve(static_cast<size_t>(g_sdkQhyCamHandles.size()));
@@ -904,6 +925,13 @@ void MainWindow::cleanupQhySdkPoolAndResource(const QString& reason, const QStri
             g_sdkPoleCameraPoolIndex = -1;
             sdkMainCameraId.clear();
             resetMainCameraRuntimeState();
+            sdkBurstActive = false;
+            sdkBurstCancelRequested = false;
+            sdkMainLiveReady = false;
+            sdkMainBurstModeReady = false;
+            sdkMainAppliedModeValid = false;
+            guiderExposureInFlight = false;
+            polarGuiderSingleCapturePending = false;
 
             // 设备表复位：
             // CameraPool/All 都应清理“相机角色”绑定状态，避免仅清主相机导致 Guider/PoleCamera 残留“已连接”。

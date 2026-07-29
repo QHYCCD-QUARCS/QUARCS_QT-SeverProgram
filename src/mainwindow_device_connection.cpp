@@ -4576,6 +4576,7 @@ void MainWindow::applySdkMainCameraCaptureMode()
     }
 
     const SdkDeviceHandle handleSnap = sdkMainCameraHandle;
+    const uint64_t mainEpochSnap = sdkMainCameraOpEpoch.load(std::memory_order_relaxed);
 
     // 若发生模式切换：按 Demo 流程重新初始化（Close -> Open -> SetReadMode/SetStreamMode -> Init -> BeginLive/IDLE）
     // 目的：保证 StreamMode/ReadMode 在 InitQHYCCD 之前生效，避免 Live 帧率异常/阻塞。
@@ -4596,7 +4597,8 @@ void MainWindow::applySdkMainCameraCaptureMode()
                                        usbTrafficSnap,
                                        gainSnap,
                                        offsetSnap,
-                                       tempSnap](MainCameraCaptureMode targetMode) {
+                                       tempSnap,
+                                       mainEpochSnap](MainCameraCaptureMode targetMode) {
         SdkSerialExecutor *mainExec = sdkMainCameraExecutor();
         if (!mainExec || !mainExec->isRunning()) {
             Logger::Log("reopenMainCameraByDemoFlow | sdkMainCamExec not running", LogLevel::WARNING, DeviceType::CAMERA);
@@ -4634,7 +4636,11 @@ void MainWindow::applySdkMainCameraCaptureMode()
                         usbTraffic,
                         gainSnap,
                         offsetSnap,
-                        tempSnap]() {
+                        tempSnap,
+                        mainEpochSnap]() {
+            if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                return;
+
             bool ok = true;
             QString failStep;
             QString failMsg;
@@ -4653,7 +4659,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 ok = false;
                 failStep = QStringLiteral("Open");
                 failMsg = QString::fromStdString(openRes.message);
-                QMetaObject::invokeMethod(this, [this, ok, poolIndexSnap, failStep, failMsg]() {
+                QMetaObject::invokeMethod(this, [this, ok, poolIndexSnap, failStep, failMsg, mainEpochSnap]() {
+                    if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                        return;
                     sdkMainCameraHandle = nullptr;
                     if (sdkPoolIndexValid(poolIndexSnap))
                         g_sdkQhyCamHandles[poolIndexSnap] = nullptr;
@@ -4675,7 +4683,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 failMsg = QStringLiteral("bad_any_cast");
             }
             if (!ok || newHandle == nullptr) {
-                QMetaObject::invokeMethod(this, [this, poolIndexSnap, failStep, failMsg]() {
+                QMetaObject::invokeMethod(this, [this, poolIndexSnap, failStep, failMsg, mainEpochSnap]() {
+                    if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                        return;
                     sdkMainCameraHandle = nullptr;
                     if (sdkPoolIndexValid(poolIndexSnap))
                         g_sdkQhyCamHandles[poolIndexSnap] = nullptr;
@@ -4836,7 +4846,13 @@ void MainWindow::applySdkMainCameraCaptureMode()
             }
 
             // 6) 回主线程：更新句柄/池/状态
-            QMetaObject::invokeMethod(this, [this, ok, newHandle, poolIndexSnap, desiredStreamMode, wantBurst, wantLive, failStep, failMsg]() {
+            QMetaObject::invokeMethod(this, [this, ok, newHandle, poolIndexSnap, desiredStreamMode, wantBurst, wantLive, failStep, failMsg, mainEpochSnap]() {
+                if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                {
+                    if (newHandle != nullptr)
+                        SdkManager::instance().closeByHandle(newHandle);
+                    return;
+                }
                 if (ok) {
                     sdkMainCameraHandle = newHandle;
                     if (sdkPoolIndexValid(poolIndexSnap))
@@ -4885,7 +4901,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
         if (sdkMainLiveReady.load() && sdkMainBurstModeReady.load())
             return;
 
-        mainExec->post([this, handleSnap]() {
+        mainExec->post([this, handleSnap, mainEpochSnap]() {
+            if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                return;
             // 连接后一次性进入 Burst：SetExposure + EnableBurst + StreamMode(1) + BeginLive + PatchNumber + ResetCounter + IDLE
             // 注意：这些调用必须串行在主相机 SDK 通道执行，避免跨线程/并发触碰 SDK 句柄导致不稳定。
             const double expUs = static_cast<double>(glExpTime > 0 ? glExpTime : 1) * 1000.0;
@@ -5075,7 +5093,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 }
             }
 
-            QMetaObject::invokeMethod(this, [this, ok, failStep, failMsg]() {
+            QMetaObject::invokeMethod(this, [this, ok, failStep, failMsg, mainEpochSnap]() {
+                if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                    return;
                 if (ok) {
                     sdkMainBurstModeReady = true;
                     sdkMainLiveReady = true;
@@ -5106,7 +5126,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
         if (sdkMainLiveReady.load() && !sdkMainBurstModeReady.load())
             return;
 
-        mainExec->post([this, handleSnap]() {
+        mainExec->post([this, handleSnap, mainEpochSnap]() {
+            if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                return;
             bool ok = true;
             QString failStep;
             QString failMsg;
@@ -5232,7 +5254,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
                 if (!res.success && ok) { ok = false; failStep = QStringLiteral("BeginLive"); failMsg = QString::fromStdString(res.message); }
             }
 
-            QMetaObject::invokeMethod(this, [this, ok, failStep, failMsg]() {
+            QMetaObject::invokeMethod(this, [this, ok, failStep, failMsg, mainEpochSnap]() {
+                if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                    return;
                 if (ok) {
                     sdkMainLiveReady = true;
                     sdkMainBurstModeReady = false;
@@ -5261,7 +5285,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
     if (!sdkMainLiveReady.load() && !sdkMainBurstModeReady.load())
         return;
 
-    mainExec->post([this, handleSnap]() {
+    mainExec->post([this, handleSnap, mainEpochSnap]() {
+        if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+            return;
         // 释放 IDLE（best-effort）：切模式前先释放一次，避免相机仍处于等待触发状态导致 StopLive 不生效
         {
             Logger::Log("applySdkMainCameraCaptureMode(Single) | ReleaseBurstIDLE (best-effort) start",
@@ -5318,7 +5344,9 @@ void MainWindow::applySdkMainCameraCaptureMode()
                         res.success ? LogLevel::INFO : LogLevel::WARNING, DeviceType::CAMERA);
         }
 
-        QMetaObject::invokeMethod(this, [this]() {
+        QMetaObject::invokeMethod(this, [this, mainEpochSnap]() {
+            if (mainEpochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                return;
             sdkMainBurstModeReady = false;
             sdkMainLiveReady = false;
             Logger::Log("applySdkMainCameraCaptureMode | Switched to Single mode (StopLive+DisableBurst+StreamMode=0)",
@@ -8509,6 +8537,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         {
             Logger::Log("DisconnectDevice | Guider is in SDK mode, closing guider handle ...",
                         LogLevel::INFO, DeviceType::GUIDER);
+            sdkGuiderCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
             QStringList sdkPoolNamesBeforeCleanup;
             for (const auto &id : g_sdkQhyCamIds)
                 appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
@@ -8606,15 +8635,16 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         if (mainCameraMarkedSDK || sdkMainCameraHandle != nullptr || !g_sdkQhyCamHandles.isEmpty())
         {
             Logger::Log("DisconnectDevice | MainCamera is in SDK mode, disconnect flow with SDK pool ...", LogLevel::INFO, DeviceType::MAIN);
+            sdkMainCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
             QStringList sdkPoolNamesBeforeCleanup;
             for (const auto &id : g_sdkQhyCamIds)
                 appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
 
             // 小工具：把主相机 SDK 调用串行投递到主相机通道，避免 UI 线程并发访问同一 handle 触发 SDK 内部崩溃
-            auto postToCamThread = [&](std::function<void()> fn) {
+            auto runOnMainCamThreadSync = [&](std::function<void()> fn) {
                 SdkSerialExecutor *mainExec = sdkMainCameraExecutor();
                 if (mainExec && mainExec->isRunning())
-                    mainExec->post(std::move(fn));
+                    mainExec->postAndWait(std::move(fn));
                 else
                     fn();
             };
@@ -8622,6 +8652,15 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             // 1) 停止 SDK 曝光轮询，避免在句柄关闭后仍然访问
             if (sdkExposureTimer)
                 sdkExposureTimer->stop();
+            if (sdkMainLiveTimer)
+                sdkMainLiveTimer->stop();
+            if (sdkMainLiveProcessTimer)
+                sdkMainLiveProcessTimer->stop();
+            sdkFrameTaskInFlight = false;
+            sdkBurstCancelRequested = true;
+            sdkMainLiveLoopOn = false;
+            sdkMainLiveFrameInFlight = false;
+            sdkMainLiveProcessingBusy = false;
 
             // 1.1) 若主相机存在“相机内置 CFW”，断开主相机时必须同步清理前端的 CFW 入口/状态，
             //      否则前端仍会保留滤镜轮控制入口，造成“CFW 未断开”的现象。
@@ -8663,7 +8702,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 // 注意：GetSingleFrame 等 SDK 调用在主相机 SDK 通道中执行。
                 // 如果这里在 UI 线程同步 close，同一 handle 可能被并发访问，导致 SDK 内部段错误。
                 const SdkDeviceHandle handleToClose = sdkMainCameraHandle;
-                postToCamThread([handleToClose]() {
+                runOnMainCamThreadSync([handleToClose]() {
                     SdkCommand cancelCmd;
                     cancelCmd.type = SdkCommandType::Custom;
                     cancelCmd.name = "CancelExposure";
@@ -8704,6 +8743,12 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             // 状态回到空闲
             glMainCameraStatu = "IDLE";
             ShootStatus = "IDLE";
+            sdkExposureIsROI = false;
+            sdkBurstActive = false;
+            sdkBurstCancelRequested = false;
+            sdkMainLiveReady = false;
+            sdkMainBurstModeReady = false;
+            sdkMainAppliedModeValid = false;
 
             const bool shouldNotifyGuiderDisconnected =
                 (systemdevicelist.system_devices.size() > 1 &&
@@ -8763,6 +8808,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         {
             Logger::Log("DisconnectDevice | PoleCamera is in SDK mode, closing pole camera handle ...",
                         LogLevel::INFO, DeviceType::MAIN);
+            sdkPoleCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
             QStringList sdkPoolNamesBeforeCleanup;
             for (const auto &id : g_sdkQhyCamIds)
                 appendDeleteCandidate(sdkPoolNamesBeforeCleanup, id);
@@ -8772,12 +8818,21 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
 
             if (sdkPoleScopeHandle != nullptr)
             {
-                SdkCommand cancelCmd;
-                cancelCmd.type = SdkCommandType::Custom;
-                cancelCmd.name = "CancelExposure";
-                cancelCmd.payload = std::any();
-                SdkManager::instance().callByHandle(sdkPoleScopeHandle, cancelCmd);
-                SdkManager::instance().closeByHandle(sdkPoleScopeHandle);
+                const SdkDeviceHandle handleToClose = sdkPoleScopeHandle;
+                auto cancelAndClose = [handleToClose]() {
+                    SdkCommand cancelCmd;
+                    cancelCmd.type = SdkCommandType::Custom;
+                    cancelCmd.name = "CancelExposure";
+                    cancelCmd.payload = std::any();
+                    SdkManager::instance().callByHandle(handleToClose, cancelCmd);
+                    SdkManager::instance().closeByHandle(handleToClose);
+                };
+
+                SdkSerialExecutor *poleExec = sdkPoleCameraExecutor();
+                if (poleExec && poleExec->isRunning())
+                    poleExec->postAndWait(std::function<void()>(cancelAndClose));
+                else
+                    cancelAndClose();
             }
 
             if (g_sdkPoleCameraPoolIndex >= 0 && g_sdkPoleCameraPoolIndex < g_sdkQhyCamHandles.size())
@@ -8855,6 +8910,7 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
         {
             Logger::Log("DisconnectDevice | Focuser is in SDK mode, closing serial handle ...",
                         LogLevel::INFO, DeviceType::FOCUSER);
+            sdkFocuserOpEpoch.fetch_add(1, std::memory_order_relaxed);
             const QString focuserPortBeforeClear = sdkFocuserPort;
 
             // 先停止焦点器移动（如果有的话），避免在关闭设备时还有异步任务在执行
@@ -8931,15 +8987,10 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
                 {
                     // 在 SDK 线程中关闭设备，避免主线程阻塞和死锁
                     // 这样可以确保关闭操作在同一个线程中执行，不会与正在执行的任务产生锁竞争
-                    sdkFocuserExec->post([handleSnap]() {
+                    sdkFocuserExec->postAndWait(std::function<void()>([handleSnap]() {
                         // 直接通过设备句柄关闭，无需指定驱动名称
                         SdkManager::instance().closeByHandle(handleSnap);
-                    });
-                    
-                    // 等待关闭完成（最多等待 1 秒）
-                    // 由于关闭操作在 SDK 线程中执行，我们只需要等待足够的时间让操作完成
-                    QThread::msleep(500);  // 等待 500ms，通常足够完成关闭操作
-                    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+                    }));
                 }
                 else
                 {
@@ -9282,6 +9333,7 @@ void MainWindow::stopGuiderLoopAndExposure(const QString &reason, bool emitStatu
 
     isGuiderLoopExp = false;
     guiderExposureInFlight = false;
+    sdkGuiderCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
     // Do not clear sdkGuiderFrameTaskInFlight here: a queued GetSingleFrame may
     // still be inside the vendor SDK. It will clear the flag when it really exits.
 
