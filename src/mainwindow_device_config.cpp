@@ -559,6 +559,8 @@ uint32_t MainWindow::clearCheckDeviceExist(QString drivername, bool &isExist)
 void MainWindow::disconnectIndiServer(MyClient *client)
 {
     Logger::Log("disconnectIndiServer start ...", LogLevel::INFO, DeviceType::MAIN);
+    indiClientGeneration.fetch_add(1);
+
     // 防御性检查：客户端指针为空则直接返回，避免段错误
     if (client == nullptr)
     {
@@ -610,6 +612,14 @@ void MainWindow::disconnectIndiServer(MyClient *client)
 
     Tools::stopIndiDriverAll(drivers_list);
     ConnectDriverList.clear();
+
+    client->setImageReceivedCallback(ImageReceivedCallback{});
+    client->setMessageReceivedCallback(MessageReceivedCallback{});
+    dpMount = nullptr;
+    dpGuider = nullptr;
+    dpPoleScope = nullptr;
+    dpMainCamera = nullptr;
+    dpFocuser = nullptr;
 
     client->ClearDevices();
     client->disconnectServer();
@@ -1567,27 +1577,12 @@ void MainWindow::loadSDKVersionAndUSBSerialPath()
     {
         QString sdkVersion = "null";
 
-        // SDK 模式：不要走 INDI 的 dpMainCamera（很可能为空），直接通过 SDK Driver 获取
+        // SDK 模式：不要在页面刷新查询中触碰 QHYCCD 全局 SDK API。
+        // 连接流程已单独发送 getSDKVersion；这里保留 null，避免非关键 UI 信息导致进程崩溃。
         if (isMainCameraSDK() && sdkMainCameraHandle != nullptr)
         {
-            SdkCommand verCmd;
-            verCmd.type = SdkCommandType::Custom;
-            verCmd.name = "GetSdkVersion";
-            verCmd.payload = std::any();
-            // 直接通过设备句柄调用，无需指定驱动名称
-            SdkResult verRes = SdkManager::instance().callByHandle(sdkMainCameraHandle, verCmd);
-            if (verRes.success)
-            {
-                try
-                {
-                    std::string version = std::any_cast<std::string>(verRes.payload);
-                    sdkVersion = QString::fromStdString(version);
-                }
-                catch (const std::bad_any_cast &)
-                {
-                    Logger::Log("LoadSDKVersionAndUSBSerialPath | bad_any_cast for SDK version payload", LogLevel::WARNING, DeviceType::MAIN);
-                }
-            }
+            Logger::Log("LoadSDKVersionAndUSBSerialPath | MainCamera uses SDK mode, skip GetSdkVersion in refresh query",
+                        LogLevel::DEBUG, DeviceType::MAIN);
         }
         else
         {

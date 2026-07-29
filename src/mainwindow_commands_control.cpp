@@ -39,16 +39,30 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
 
         if (isGuiderSDK)
         {
-            SdkCommand setOffsetCmd;
-            setOffsetCmd.type = SdkCommandType::Custom;
-            setOffsetCmd.name = "SetOffset";
-            setOffsetCmd.payload = guiderCameraOffset;
-            SdkResult res = SdkManager::instance().callByHandle(sdkGuiderHandle, setOffsetCmd);
-            if (!res.success) {
-                Logger::Log("SetGuiderOffset | SDK SetOffset failed: " + res.message, LogLevel::ERROR, DeviceType::GUIDER);
-            } else {
-                glGuiderOffsetValue = static_cast<int>(guiderCameraOffset);
-                Logger::Log("SetGuiderOffset | SDK SetOffset success", LogLevel::INFO, DeviceType::GUIDER);
+            const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+            const double offsetSnap = guiderCameraOffset;
+            SdkSerialExecutor *guiderExec = sdkGuiderCameraExecutor();
+            if (!guiderExec || !guiderExec->isRunning())
+            {
+                Logger::Log("SetGuiderOffset | sdkGuiderCamExec is not running", LogLevel::ERROR, DeviceType::GUIDER);
+            }
+            else
+            {
+                guiderExec->post([this, handleSnap, offsetSnap]() {
+                    SdkCommand setOffsetCmd;
+                    setOffsetCmd.type = SdkCommandType::Custom;
+                    setOffsetCmd.name = "SetOffset";
+                    setOffsetCmd.payload = offsetSnap;
+                    SdkResult res = SdkManager::instance().callByHandle(handleSnap, setOffsetCmd);
+                    QMetaObject::invokeMethod(this, [this, handleSnap, offsetSnap, res]() {
+                        if (!res.success) {
+                            Logger::Log("SetGuiderOffset | SDK SetOffset failed: " + res.message, LogLevel::ERROR, DeviceType::GUIDER);
+                        } else if (sdkGuiderHandle == handleSnap) {
+                            glGuiderOffsetValue = static_cast<int>(offsetSnap);
+                            Logger::Log("SetGuiderOffset | SDK SetOffset success", LogLevel::INFO, DeviceType::GUIDER);
+                        }
+                    }, Qt::QueuedConnection);
+                });
             }
         }
         else if (dpGuider != NULL)
@@ -313,16 +327,30 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
 
         if (isGuiderSDK)
         {
-            SdkCommand setGainCmd;
-            setGainCmd.type = SdkCommandType::Custom;
-            setGainCmd.name = "SetGain";
-            setGainCmd.payload = guiderCameraGain;
-            SdkResult res = SdkManager::instance().callByHandle(sdkGuiderHandle, setGainCmd);
-            if (!res.success) {
-                Logger::Log("SetGuiderGain | SDK SetGain failed: " + res.message, LogLevel::ERROR, DeviceType::GUIDER);
-            } else {
-                glGuiderGainValue = static_cast<int>(guiderCameraGain);
-                Logger::Log("SetGuiderGain | SDK SetGain success", LogLevel::INFO, DeviceType::GUIDER);
+            const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+            const double gainSnap = guiderCameraGain;
+            SdkSerialExecutor *guiderExec = sdkGuiderCameraExecutor();
+            if (!guiderExec || !guiderExec->isRunning())
+            {
+                Logger::Log("SetGuiderGain | sdkGuiderCamExec is not running", LogLevel::ERROR, DeviceType::GUIDER);
+            }
+            else
+            {
+                guiderExec->post([this, handleSnap, gainSnap]() {
+                    SdkCommand setGainCmd;
+                    setGainCmd.type = SdkCommandType::Custom;
+                    setGainCmd.name = "SetGain";
+                    setGainCmd.payload = gainSnap;
+                    SdkResult res = SdkManager::instance().callByHandle(handleSnap, setGainCmd);
+                    QMetaObject::invokeMethod(this, [this, handleSnap, gainSnap, res]() {
+                        if (!res.success) {
+                            Logger::Log("SetGuiderGain | SDK SetGain failed: " + res.message, LogLevel::ERROR, DeviceType::GUIDER);
+                        } else if (sdkGuiderHandle == handleSnap) {
+                            glGuiderGainValue = static_cast<int>(gainSnap);
+                            Logger::Log("SetGuiderGain | SDK SetGain success", LogLevel::INFO, DeviceType::GUIDER);
+                        }
+                    }, Qt::QueuedConnection);
+                });
             }
         }
         else if (dpGuider != NULL)

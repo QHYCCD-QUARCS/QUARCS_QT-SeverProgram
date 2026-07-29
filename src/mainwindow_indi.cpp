@@ -46,16 +46,31 @@ void MainWindow::handleIndiServerError()
 void MainWindow::initINDIClient()
 {
     Logger::Log("initINDIClient ...", LogLevel::INFO, DeviceType::MAIN);
+    const uint64_t clientGeneration = indiClientGeneration.fetch_add(1) + 1;
     indi_Client = new MyClient();
     indi_Client->setServer("localhost", 7624);
     indi_Client->setConnectionTimeout(3, 0);
     Logger::Log("setConnectionTimeout is 3 seconds!", LogLevel::INFO, DeviceType::MAIN);
     indi_Client->setImageReceivedCallback(
-        [this](const std::string &filename, const std::string &devname)
+        [this, clientGeneration](const std::string &filename, const std::string &devname)
         {
+            if (clientGeneration != indiClientGeneration.load())
+            {
+                Logger::Log("indi_client | image callback ignored from stale INDI client generation",
+                            LogLevel::DEBUG, DeviceType::CAMERA);
+                return;
+            }
+
             if (dpGuider != NULL && dpGuider->getDeviceName() == devname)
             {
                 guiderExposureInFlight = false;
+                if (!isGuiderLoopExp && !polarGuiderSingleCapturePending)
+                {
+                    Logger::Log("indi_client | image callback | ignored stale guider frame while guider loop is stopped",
+                                LogLevel::DEBUG, DeviceType::GUIDER);
+                    return;
+                }
+
                 const QString fitsPath = QString::fromStdString(filename);
 
                 if (guiderCore)
@@ -332,8 +347,11 @@ void MainWindow::initINDIClient()
     Logger::Log("indi_Client->setImageReceivedCallback finish!", LogLevel::INFO, DeviceType::MAIN);
 
     indi_Client->setMessageReceivedCallback(
-        [this](const std::string &message)
+        [this, clientGeneration](const std::string &message)
         {
+            if (clientGeneration != indiClientGeneration.load())
+                return;
+
             QString messageStr = QString::fromStdString(message.c_str());
 
             std::regex timestampRegex(R"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}: )");

@@ -8521,12 +8521,21 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
             // 尝试取消曝光
             if (sdkGuiderHandle != nullptr)
             {
-                SdkCommand cancelCmd;
-                cancelCmd.type = SdkCommandType::Custom;
-                cancelCmd.name = "CancelExposure";
-                cancelCmd.payload = std::any();
-                SdkManager::instance().callByHandle(sdkGuiderHandle, cancelCmd);
-                SdkManager::instance().closeByHandle(sdkGuiderHandle);
+                const SdkDeviceHandle handleToClose = sdkGuiderHandle;
+                auto cancelAndClose = [handleToClose]() {
+                    SdkCommand cancelCmd;
+                    cancelCmd.type = SdkCommandType::Custom;
+                    cancelCmd.name = "CancelExposure";
+                    cancelCmd.payload = std::any();
+                    SdkManager::instance().callByHandle(handleToClose, cancelCmd);
+                    SdkManager::instance().closeByHandle(handleToClose);
+                };
+
+                SdkSerialExecutor *guiderExec = sdkGuiderCameraExecutor();
+                if (guiderExec && guiderExec->isRunning())
+                    guiderExec->postAndWait(std::function<void()>(cancelAndClose));
+                else
+                    cancelAndClose();
             }
 
             // 解绑池引用（若有）
@@ -9273,7 +9282,8 @@ void MainWindow::stopGuiderLoopAndExposure(const QString &reason, bool emitStatu
 
     isGuiderLoopExp = false;
     guiderExposureInFlight = false;
-    sdkGuiderFrameTaskInFlight = false;
+    // Do not clear sdkGuiderFrameTaskInFlight here: a queued GetSingleFrame may
+    // still be inside the vendor SDK. It will clear the flag when it really exits.
 
     if (guiderLoopTimer)
         guiderLoopTimer->stop();
@@ -9290,15 +9300,35 @@ void MainWindow::stopGuiderLoopAndExposure(const QString &reason, bool emitStatu
 
     if (sdkGuiderHandle != nullptr)
     {
-        SdkCommand cancelCmd;
-        cancelCmd.type = SdkCommandType::Custom;
-        cancelCmd.name = "CancelExposure";
-        cancelCmd.payload = std::any();
-        SdkResult cancelRes = SdkManager::instance().callByHandle(sdkGuiderHandle, cancelCmd);
-        if (!cancelRes.success)
+        const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+        SdkSerialExecutor *guiderExec = sdkGuiderCameraExecutor();
+        if (guiderExec && guiderExec->isRunning())
         {
-            Logger::Log("stopGuiderLoopAndExposure | SDK CancelExposure failed: " + cancelRes.message,
-                        LogLevel::WARNING, DeviceType::GUIDER);
+            guiderExec->post([handleSnap]() {
+                SdkCommand cancelCmd;
+                cancelCmd.type = SdkCommandType::Custom;
+                cancelCmd.name = "CancelExposure";
+                cancelCmd.payload = std::any();
+                SdkResult cancelRes = SdkManager::instance().callByHandle(handleSnap, cancelCmd);
+                if (!cancelRes.success)
+                {
+                    Logger::Log("stopGuiderLoopAndExposure | SDK CancelExposure failed: " + cancelRes.message,
+                                LogLevel::WARNING, DeviceType::GUIDER);
+                }
+            });
+        }
+        else
+        {
+            SdkCommand cancelCmd;
+            cancelCmd.type = SdkCommandType::Custom;
+            cancelCmd.name = "CancelExposure";
+            cancelCmd.payload = std::any();
+            SdkResult cancelRes = SdkManager::instance().callByHandle(handleSnap, cancelCmd);
+            if (!cancelRes.success)
+            {
+                Logger::Log("stopGuiderLoopAndExposure | SDK CancelExposure failed: " + cancelRes.message,
+                            LogLevel::WARNING, DeviceType::GUIDER);
+            }
         }
     }
     else if (indi_Client != nullptr && dpGuider != NULL)

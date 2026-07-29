@@ -74,11 +74,11 @@ void MainWindow::onGuiderLoopTimeout()
             return;
 
         guiderExposureInFlight = true;
-        const double expSec = std::max(1, guiderExpMs) / 1000.0;
         const int expMs = std::max(1, guiderExpMs);
+        const double expSec = expMs / 1000.0;
+        const SdkDeviceHandle handleSnap = sdkGuiderHandle;
 
-        // 0) 对齐主相机 SDK：曝光前确保分辨率/ROI 为有效全分辨率，否则某些机型会出现 GetSingleFrame 卡死/返回无效帧
-        {
+        guiderExec->post([this, handleSnap, expMs, expSec]() {
             QElapsedTimer loopPerf;
             loopPerf.start();
             qint64 loopLastMs = 0;
@@ -91,12 +91,23 @@ void MainWindow::onGuiderLoopTimeout()
                 loopLastMs = nowMs;
             };
 
+            auto failOnMain = [this](const std::string& message, int retryMs) {
+                QMetaObject::invokeMethod(this, [this, message, retryMs]() {
+                    Logger::Log(message, LogLevel::ERROR, DeviceType::GUIDER);
+                    guiderExposureInFlight = false;
+                    if (isGuiderLoopExp && guiderLoopTimer)
+                        guiderLoopTimer->start(retryMs);
+                }, Qt::QueuedConnection);
+            };
+
+            // 0) 对齐主相机 SDK：曝光前确保分辨率/ROI 为有效全分辨率，否则某些机型会出现 GetSingleFrame 卡死/返回无效帧。
+            // QHYCCD SDK 对同一 handle 不保证线程安全；导星相机调用必须留在 sdkGuiderCamExec 串行队列里。
             // 尝试取消上一帧可能残留的曝光/读出（避免连续触发时卡死）
             SdkCommand cancelCmd;
             cancelCmd.type = SdkCommandType::Custom;
             cancelCmd.name = "CancelExposure";
             cancelCmd.payload = std::any();
-            SdkResult cancelRes = SdkManager::instance().callByHandle(sdkGuiderHandle, cancelCmd);
+            SdkResult cancelRes = SdkManager::instance().callByHandle(handleSnap, cancelCmd);
             Logger::Log("GuiderPerf | GuiderLoop(SDK) | CancelExposure success=" +
                             std::to_string(cancelRes.success ? 1 : 0) +
                             " msg=" + cancelRes.message,
@@ -110,7 +121,7 @@ void MainWindow::onGuiderLoopTimeout()
                 effCmd.type = SdkCommandType::Custom;
                 effCmd.name = "GetEffectiveArea";
                 effCmd.payload = std::any();
-                SdkResult effRes = SdkManager::instance().callByHandle(sdkGuiderHandle, effCmd);
+                SdkResult effRes = SdkManager::instance().callByHandle(handleSnap, effCmd);
                 Logger::Log("GuiderPerf | GuiderLoop(SDK) | GetEffectiveArea success=" +
                                 std::to_string(effRes.success ? 1 : 0) +
                                 " msg=" + effRes.message,
@@ -136,7 +147,7 @@ void MainWindow::onGuiderLoopTimeout()
                 chipCmd.type = SdkCommandType::Custom;
                 chipCmd.name = "GetChipInfo";
                 chipCmd.payload = std::any();
-                SdkResult chipRes = SdkManager::instance().callByHandle(sdkGuiderHandle, chipCmd);
+                SdkResult chipRes = SdkManager::instance().callByHandle(handleSnap, chipCmd);
                 Logger::Log("GuiderPerf | GuiderLoop(SDK) | GetChipInfo fallback success=" +
                                 std::to_string(chipRes.success ? 1 : 0) +
                                 " msg=" + chipRes.message,
@@ -166,7 +177,7 @@ void MainWindow::onGuiderLoopTimeout()
                 setResCmd.type = SdkCommandType::Custom;
                 setResCmd.name = "SetResolution";
                 setResCmd.payload = fullRoi;
-                SdkResult setResRes = SdkManager::instance().callByHandle(sdkGuiderHandle, setResCmd);
+                SdkResult setResRes = SdkManager::instance().callByHandle(handleSnap, setResCmd);
                 Logger::Log("GuiderPerf | GuiderLoop(SDK) | SetResolution success=" +
                                 std::to_string(setResRes.success ? 1 : 0) +
                                 " roi=" + std::to_string(fullRoi.startX) + "," + std::to_string(fullRoi.startY) +
@@ -186,17 +197,15 @@ void MainWindow::onGuiderLoopTimeout()
                             LogLevel::WARNING, DeviceType::GUIDER);
                 logLoopStage("set_resolution_skipped");
             }
-        }
 
-        // 1) SetExposure（us）
-        {
+            // 1) SetExposure（us）
             QElapsedTimer setExpPerf;
             setExpPerf.start();
             SdkCommand setExpCmd;
             setExpCmd.type = SdkCommandType::Custom;
             setExpCmd.name = "SetExposure";
             setExpCmd.payload = expSec * 1000000.0;
-            SdkResult setRes = SdkManager::instance().callByHandle(sdkGuiderHandle, setExpCmd);
+            SdkResult setRes = SdkManager::instance().callByHandle(handleSnap, setExpCmd);
             Logger::Log("GuiderPerf | GuiderLoop(SDK) | SetExposure success=" +
                             std::to_string(setRes.success ? 1 : 0) +
                             " costMs=" + std::to_string(setExpPerf.elapsed()) +
@@ -205,19 +214,18 @@ void MainWindow::onGuiderLoopTimeout()
                         LogLevel::INFO, DeviceType::GUIDER);
             if (!setRes.success)
             {
-                Logger::Log("GuiderLoop(SDK) | SetExposure failed: " + setRes.message, LogLevel::ERROR, DeviceType::GUIDER);
+                failOnMain("GuiderLoop(SDK) | SetExposure failed: " + setRes.message, 200);
+                return;
             }
-        }
 
-        // 2) StartSingleExposure
-        {
+            // 2) StartSingleExposure
             QElapsedTimer startExpPerf;
             startExpPerf.start();
             SdkCommand startExpCmd;
             startExpCmd.type = SdkCommandType::Custom;
             startExpCmd.name = "StartSingleExposure";
             startExpCmd.payload = std::any();
-            SdkResult startRes = SdkManager::instance().callByHandle(sdkGuiderHandle, startExpCmd);
+            SdkResult startRes = SdkManager::instance().callByHandle(handleSnap, startExpCmd);
             Logger::Log("GuiderPerf | GuiderLoop(SDK) | StartSingleExposure success=" +
                             std::to_string(startRes.success ? 1 : 0) +
                             " costMs=" + std::to_string(startExpPerf.elapsed()) +
@@ -225,24 +233,29 @@ void MainWindow::onGuiderLoopTimeout()
                         LogLevel::INFO, DeviceType::GUIDER);
             if (!startRes.success)
             {
-                Logger::Log("GuiderLoop(SDK) | StartSingleExposure failed: " + startRes.message, LogLevel::ERROR, DeviceType::GUIDER);
-                guiderExposureInFlight = false;
-                if (isGuiderLoopExp && guiderLoopTimer)
-                    guiderLoopTimer->start(200);
+                failOnMain("GuiderLoop(SDK) | StartSingleExposure failed: " + startRes.message, 200);
                 return;
             }
-        }
 
-        // 3) Poll GetSingleFrame via timer (main thread)
-        sdkGuiderExposureStartTime = QDateTime::currentMSecsSinceEpoch();
-        sdkGuiderExposureExpectedDuration = expMs;
-        if (sdkGuiderExposureTimer)
-        {
-            sdkGuiderExposureTimer->start(expMs);
-            Logger::Log("GuiderPerf | GuiderLoop(SDK) | exposure timer started delayMs=" +
-                            std::to_string(expMs),
-                        LogLevel::INFO, DeviceType::GUIDER);
-        }
+            QMetaObject::invokeMethod(this, [this, handleSnap, expMs]() {
+                if (!isGuiderLoopExp || sdkGuiderHandle != handleSnap)
+                {
+                    guiderExposureInFlight = false;
+                    return;
+                }
+
+                // 3) Poll GetSingleFrame via timer (main thread)
+                sdkGuiderExposureStartTime = QDateTime::currentMSecsSinceEpoch();
+                sdkGuiderExposureExpectedDuration = expMs;
+                if (sdkGuiderExposureTimer)
+                {
+                    sdkGuiderExposureTimer->start(expMs);
+                    Logger::Log("GuiderPerf | GuiderLoop(SDK) | exposure timer started delayMs=" +
+                                    std::to_string(expMs),
+                                LogLevel::INFO, DeviceType::GUIDER);
+                }
+            }, Qt::QueuedConnection);
+        });
         return;
     }
 
@@ -714,6 +727,13 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
         return;
     if (!QFile::exists(sourceFitsPath))
         return;
+    const bool indiGuiderConnected = (dpGuider != nullptr && dpGuider->isConnected());
+    if (!isGuiderLoopExp && !indiGuiderConnected && sdkGuiderHandle == nullptr)
+    {
+        Logger::Log("PersistGuidingFits | ignored stale guider frame after disconnect",
+                    LogLevel::DEBUG, DeviceType::GUIDER);
+        return;
+    }
 
     // 按需求：导星循环曝光只需更新 /dev/shm/guiding.fits（不再额外复制到 CaptureImage/<date>/guiding.fits）
     const QString guidingShmPath = QStringLiteral("/dev/shm/guiding.fits");
@@ -817,6 +837,13 @@ void MainWindow::PersistGuidingPreviewFromFrame(const QString& sourceFitsPath, c
 {
     if (sourceFitsPath.isEmpty() || image16.empty())
         return;
+    const bool indiGuiderConnected = (dpGuider != nullptr && dpGuider->isConnected());
+    if (!isGuiderLoopExp && !indiGuiderConnected && sdkGuiderHandle == nullptr)
+    {
+        Logger::Log("PersistGuidingPreviewFromFrame | ignored stale guider frame after disconnect",
+                    LogLevel::DEBUG, DeviceType::GUIDER);
+        return;
+    }
 
     const QString guidingShmPath = QStringLiteral("/dev/shm/guiding.fits");
     if (sourceFitsPath != guidingShmPath && QFile::exists(sourceFitsPath))

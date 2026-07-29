@@ -994,6 +994,7 @@ private:
     // 导星循环曝光定时器（singleShot：收到一帧后再触发下一帧，避免重入）
     QTimer *guiderLoopTimer = nullptr;
     bool guiderExposureInFlight = false;
+    std::atomic_uint64_t indiClientGeneration{0};
     // 用于像素尺度换算（arcsec/px）的导星相机/镜筒参数缓存。
     double guiderPixelSizeUm = 0.0;
     double guiderFocalLengthMm = 0.0;
