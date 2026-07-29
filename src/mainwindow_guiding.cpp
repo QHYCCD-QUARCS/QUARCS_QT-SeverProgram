@@ -77,8 +77,17 @@ void MainWindow::onGuiderLoopTimeout()
         const int expMs = std::max(1, guiderExpMs);
         const double expSec = expMs / 1000.0;
         const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+        const uint64_t epochSnap = sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed);
 
-        guiderExec->post([this, handleSnap, expMs, expSec]() {
+        guiderExec->post([this, handleSnap, epochSnap, expMs, expSec]() {
+            if (epochSnap != sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed))
+            {
+                QMetaObject::invokeMethod(this, [this]() {
+                    guiderExposureInFlight = false;
+                }, Qt::QueuedConnection);
+                return;
+            }
+
             QElapsedTimer loopPerf;
             loopPerf.start();
             qint64 loopLastMs = 0;
@@ -237,8 +246,9 @@ void MainWindow::onGuiderLoopTimeout()
                 return;
             }
 
-            QMetaObject::invokeMethod(this, [this, handleSnap, expMs]() {
-                if (!isGuiderLoopExp || sdkGuiderHandle != handleSnap)
+            QMetaObject::invokeMethod(this, [this, handleSnap, epochSnap, expMs]() {
+                if (!isGuiderLoopExp || sdkGuiderHandle != handleSnap ||
+                    epochSnap != sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed))
                 {
                     guiderExposureInFlight = false;
                     return;
@@ -341,8 +351,18 @@ void MainWindow::startGuiderSingleCapture(int exposureMs)
         guiderExposureInFlight = true;
         const double expSec = expMs / 1000.0;
         const SdkDeviceHandle handleSnap = sdkGuiderHandle;
+        const uint64_t epochSnap = sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed);
 
-        guiderExec->post([this, handleSnap, expMs, expSec]() {
+        guiderExec->post([this, handleSnap, epochSnap, expMs, expSec]() {
+            if (epochSnap != sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed))
+            {
+                QMetaObject::invokeMethod(this, [this]() {
+                    polarGuiderSingleCapturePending = false;
+                    guiderExposureInFlight = false;
+                }, Qt::QueuedConnection);
+                return;
+            }
+
             auto failOnMain = [this](const std::string &message) {
                 QMetaObject::invokeMethod(this, [this, message]() {
                     Logger::Log(message, LogLevel::ERROR, DeviceType::GUIDER);
@@ -436,7 +456,14 @@ void MainWindow::startGuiderSingleCapture(int exposureMs)
                 return;
             }
 
-            QMetaObject::invokeMethod(this, [this, expMs]() {
+            QMetaObject::invokeMethod(this, [this, handleSnap, epochSnap, expMs]() {
+                if ((!polarGuiderSingleCapturePending && !isGuiderLoopExp) ||
+                    sdkGuiderHandle != handleSnap ||
+                    epochSnap != sdkGuiderCameraOpEpoch.load(std::memory_order_relaxed))
+                {
+                    guiderExposureInFlight = false;
+                    return;
+                }
                 sdkGuiderExposureStartTime = QDateTime::currentMSecsSinceEpoch();
                 sdkGuiderExposureExpectedDuration = expMs;
                 if (sdkGuiderExposureTimer)

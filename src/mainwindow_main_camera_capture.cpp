@@ -87,16 +87,32 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
 
     const int expMsSnap = Exp_ms;
     const int framesSnap = frames;
+    const uint64_t epochSnap = sdkMainCameraOpEpoch.load(std::memory_order_relaxed);
 
-    mainExec->post([this, expMsSnap, framesSnap]() mutable {
+    mainExec->post([this, expMsSnap, framesSnap, epochSnap]() mutable {
+        if (epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+        {
+            QMetaObject::invokeMethod(this, [this]() {
+                sdkBurstActive = false;
+                sdkBurstCancelRequested = false;
+                glMainCameraStatu = "IDLE";
+                ShootStatus = "IDLE";
+            }, Qt::QueuedConnection);
+            return;
+        }
+
         QString failReason;
         bool cancelled = false;
         std::shared_ptr<SdkFrameData> outFrame = std::make_shared<SdkFrameData>();
 
-        auto waitMainCameraReady = [this](int timeoutMs, SdkDeviceInfo& outDev) -> bool {
+        auto isStale = [this, epochSnap]() -> bool {
+            return epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed);
+        };
+
+        auto waitMainCameraReady = [this, isStale](int timeoutMs, SdkDeviceInfo& outDev) -> bool {
             const auto t0 = std::chrono::steady_clock::now();
             while (true) {
-                if (sdkBurstCancelRequested.load())
+                if (sdkBurstCancelRequested.load() || isStale())
                     return false;
                 outDev = SdkManager::instance().getDevice("MainCamera");
                 if (outDev.handle != nullptr && outDev.state == SdkDeviceState::Open)
@@ -111,7 +127,7 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
 
         auto callMain = [&](const char* name, const std::any& payload) -> SdkResult {
             SdkDeviceInfo dev;
-            if (!waitMainCameraReady(8000, dev)) {
+            if (isStale() || !waitMainCameraReady(8000, dev)) {
                 SdkResult r;
                 r.success = false;
                 r.errorCode = SdkErrorCode::DeviceNotFound;
@@ -185,7 +201,7 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
 
         while (okFrames < framesSnap)
         {
-            if (sdkBurstCancelRequested.load()) {
+            if (sdkBurstCancelRequested.load() || isStale()) {
                 cancelled = true;
                 break;
             }
@@ -274,12 +290,15 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
             okFrames++;
         }
 
-        (void)callMain("SetBurstIDLE", std::any());
+        if (!isStale())
+            (void)callMain("SetBurstIDLE", std::any());
 
         if (cancelled) {
-            QMetaObject::invokeMethod(this, [this]() {
+            QMetaObject::invokeMethod(this, [this, epochSnap]() {
                 sdkBurstActive = false;
                 sdkBurstCancelRequested = false;
+                if (epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                    return;
                 glMainCameraStatu = "IDLE";
                 ShootStatus = "IDLE";
                 emit wsThread->sendMessageToClient("CameraInExposuring:False");
@@ -289,9 +308,11 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
 
         if (okFrames < framesSnap || accum.empty() || width <= 0 || height <= 0) {
             failReason = QStringLiteral("Burst 获取图像失败（未获得足够有效帧）");
-            QMetaObject::invokeMethod(this, [this, failReason]() {
+            QMetaObject::invokeMethod(this, [this, failReason, epochSnap]() {
                 sdkBurstActive = false;
                 sdkBurstCancelRequested = false;
+                if (epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+                    return;
                 emit wsThread->sendMessageToClient("ExposureFailed:" + failReason);
                 emit wsThread->sendMessageToClient("CameraInExposuring:False");
                 glMainCameraStatu = "IDLE";
@@ -309,11 +330,12 @@ void MainWindow::SDK_BurstCapture(int Exp_ms, int frames)
             outFrame->pixels[p] = static_cast<uint16_t>(accum[p] / static_cast<uint32_t>(okFrames));
         }
 
-        QMetaObject::invokeMethod(this, [this, outFrame]() {
+        QMetaObject::invokeMethod(this, [this, outFrame, epochSnap]() {
             sdkBurstActive = false;
             sdkBurstCancelRequested = false;
 
-            if (sdkMainCameraHandle == nullptr) {
+            if (epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed) ||
+                sdkMainCameraHandle == nullptr) {
                 glMainCameraStatu = "IDLE";
                 ShootStatus = "IDLE";
                 emit wsThread->sendMessageToClient("CameraInExposuring:False");
@@ -917,11 +939,20 @@ void MainWindow::onSdkExposureTimerTimeout()
     }
 
     const SdkDeviceHandle handleSnap = sdkMainCameraHandle;
+    const uint64_t epochSnap = sdkMainCameraOpEpoch.load(std::memory_order_relaxed);
     const qint64 startSnap = sdkExposureStartTime;
     const int expectedSnap = sdkExposureExpectedDuration;
     const bool isRoiSnap = sdkExposureIsROI;
 
-    mainExec->post([this, handleSnap, startSnap, expectedSnap, isRoiSnap]() {
+    mainExec->post([this, handleSnap, epochSnap, startSnap, expectedSnap, isRoiSnap]() {
+        if (epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed))
+        {
+            QMetaObject::invokeMethod(this, [this]() {
+                sdkFrameTaskInFlight = false;
+            }, Qt::QueuedConnection);
+            return;
+        }
+
         const qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
         const qint64 elapsed = currentTime - startSnap;
 
@@ -938,8 +969,12 @@ void MainWindow::onSdkExposureTimerTimeout()
 
             QMetaObject::invokeMethod(
                 this,
-                [this, cancelRes, isRoiSnap, elapsed, expected, maxWaitMs]() {
+                [this, cancelRes, isRoiSnap, elapsed, expected, maxWaitMs, epochSnap]() {
                     sdkFrameTaskInFlight = false;
+
+                    if (epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed) ||
+                        sdkMainCameraHandle == nullptr)
+                        return;
 
                     Logger::Log("onSdkExposureTimerTimeout | TIMEOUT waiting frame (elapsed=" +
                                     std::to_string(elapsed) + "ms, expected=" + std::to_string(expected) +
@@ -980,10 +1015,11 @@ void MainWindow::onSdkExposureTimerTimeout()
 
         QMetaObject::invokeMethod(
             this,
-            [this, frameRes, isRoiSnap, expected]() mutable {
+            [this, frameRes, isRoiSnap, expected, epochSnap]() mutable {
                 sdkFrameTaskInFlight = false;
 
-                if (sdkMainCameraHandle == nullptr)
+                if (epochSnap != sdkMainCameraOpEpoch.load(std::memory_order_relaxed) ||
+                    sdkMainCameraHandle == nullptr)
                     return;
 
                 const qint64 now = QDateTime::currentMSecsSinceEpoch();
