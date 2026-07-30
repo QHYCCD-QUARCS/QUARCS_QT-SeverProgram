@@ -1,5 +1,59 @@
 #include "mainwindow_command_support.h"
 
+void MainWindow::sendCurrentCFWPosition()
+{
+    if (wsThread == nullptr)
+        return;
+
+    if (isFilterOnCamera)
+    {
+        if (isMainCameraSDK())
+        {
+            if (sdkMainCameraHandle == nullptr)
+                return;
+
+            int pos0 = -1;
+            std::string err;
+            if (sdkGetCfwPosition0(sdkMainCameraHandle, pos0, &err) && pos0 >= 0)
+            {
+                const int pos1 = toUiCfwPos1(pos0);
+                emit wsThread->sendMessageToClient("CFWPosition:" + QString::number(pos1));
+                Logger::Log("sendCurrentCFWPosition | SDK current position=" + std::to_string(pos1),
+                            LogLevel::INFO, DeviceType::CFW);
+            }
+            else
+            {
+                Logger::Log("sendCurrentCFWPosition | SDK get position failed: " + err,
+                            LogLevel::WARNING, DeviceType::CFW);
+            }
+            return;
+        }
+
+        if (indi_Client != nullptr && dpMainCamera != nullptr && dpMainCamera->isConnected())
+        {
+            int pos = -1, min = 0, max = 0;
+            if (indi_Client->getCFWPosition(dpMainCamera, pos, min, max) == QHYCCD_SUCCESS && pos > 0)
+            {
+                emit wsThread->sendMessageToClient("CFWPosition:" + QString::number(pos));
+                Logger::Log("sendCurrentCFWPosition | INDI on-camera current position=" + std::to_string(pos),
+                            LogLevel::INFO, DeviceType::CFW);
+            }
+        }
+        return;
+    }
+
+    if (indi_Client != nullptr && dpCFW != nullptr && dpCFW->isConnected())
+    {
+        int pos = -1, min = 0, max = 0;
+        if (indi_Client->getCFWPosition(dpCFW, pos, min, max) == QHYCCD_SUCCESS && pos > 0)
+        {
+            emit wsThread->sendMessageToClient("CFWPosition:" + QString::number(pos));
+            Logger::Log("sendCurrentCFWPosition | INDI external current position=" + std::to_string(pos),
+                        LogLevel::INFO, DeviceType::CFW);
+        }
+    }
+}
+
 bool MainWindow::handleCaptureCommand(const QString &message, const QStringList &parts)
 {
     const QString command = parts.isEmpty() ? message.trimmed() : parts[0].trimmed();
@@ -365,6 +419,7 @@ bool MainWindow::handleCaptureCommand(const QString &message, const QStringList 
     else if (message == "getCFWList")
     {
         Logger::Log("get CFWList ...", LogLevel::DEBUG, DeviceType::CFW);
+        sendCurrentCFWPosition();
         if (isFilterOnCamera)
         {
             // CFW 在相机上：INDI 用 slotName；SDK 用 cameraId 派生的稳定 key

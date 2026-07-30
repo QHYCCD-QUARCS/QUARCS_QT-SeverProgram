@@ -3472,6 +3472,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
                             {
                                 Logger::Log("AfterDeviceConnect | SDK CFW current position=" + std::to_string(toUiCfwPos1(cur0)),
                                            LogLevel::INFO, DeviceType::CFW);
+                                sendCurrentCFWPosition();
                             }
 
                             // 若已有缓存名称列表，则直接推送一次（与外置 CFW 行为保持一致）
@@ -4179,6 +4180,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
             Logger::Log("CFW Position - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Current: " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
             emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+            sendCurrentCFWPosition();
         }
         Logger::Log("MainCamera connected successfully.", LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectSuccess:MainCamera:" + QString::fromUtf8(dpMainCamera->getDeviceName()) + ":" + QString::fromUtf8(dpMainCamera->getDriverExec()));
@@ -4417,6 +4419,7 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         indi_Client->getCFWPosition(dpCFW, pos, min, max);
         Logger::Log("CFW Position - Min: " + std::to_string(min) + ", Max: " + std::to_string(max) + ", Current: " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+        sendCurrentCFWPosition();
         if (Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())) != QString())
         {
             emit wsThread->sendMessageToClient("getCFWList:" + Tools::readCFWList(QString::fromUtf8(dpCFW->getDeviceName())));

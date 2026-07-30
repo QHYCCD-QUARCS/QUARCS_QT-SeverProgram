@@ -1096,6 +1096,7 @@ void MainWindow::getConnectedDevices()
                 indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
                 Logger::Log("getConnectedDevices | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
                 emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+                sendCurrentCFWPosition();
             }
 
             if (isCAAOnCamera && sdkCAAHandle != nullptr)
@@ -1408,6 +1409,7 @@ void MainWindow::loadBindDeviceTypeList()
                             indi_Client->getCFWPosition(dpMainCamera, pos, min, max);
                             Logger::Log("LoadBindDeviceTypeList | getCFWPosition: " + std::to_string(min) + ", " + std::to_string(max) + ", " + std::to_string(pos), LogLevel::INFO, DeviceType::MAIN);
                             emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(max));
+                            sendCurrentCFWPosition();
                         }
                     }
                     else
@@ -1434,6 +1436,7 @@ void MainWindow::loadBindDeviceTypeList()
                             if (sdkMainCfwSlotsCached > 0)
                             {
                                 emit wsThread->sendMessageToClient("CFWPositionMax:" + QString::number(sdkMainCfwSlotsCached));
+                                sendCurrentCFWPosition();
                             }
 
                             // 若已有缓存名称列表，则直接推送一次，避免刷新后列表为空

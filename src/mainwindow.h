@@ -2043,6 +2043,11 @@ public:
     void SendDebugToVueClient(const QString &msg);
 
     /**
+     * @brief 向前端同步当前滤镜轮位置
+     */
+    void sendCurrentCFWPosition();
+
+    /**
      * @brief 根据部分字符串识别设备类型
      * @param typeStr 类型片段
      * @return 设备类型枚举
