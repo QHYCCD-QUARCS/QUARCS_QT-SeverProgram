@@ -493,6 +493,40 @@ void MainWindow::indi_Device_Confirm(QString DeviceName, QString DriverName)
 
     systemdevicelist.system_devices[deviceCode].DriverIndiName = DriverName;
     systemdevicelist.system_devices[deviceCode].DeviceIndiGroup = drivers_list.selectedGrounp;
+
+    const QString role = systemdevicelist.system_devices[deviceCode].Description;
+    const bool isCameraRole =
+        (role == "MainCamera" || role == "Guider" || role == "PoleCamera");
+    if (isCameraRole && !DeviceName.trimmed().isEmpty())
+    {
+        const int cameraRoleIndexes[] = {20, 1, 2};
+        for (int idx : cameraRoleIndexes)
+        {
+            if (idx == deviceCode || idx < 0 || idx >= systemdevicelist.system_devices.size())
+                continue;
+            auto &other = systemdevicelist.system_devices[idx];
+            if (other.DeviceIndiName.trimmed() != DeviceName.trimmed())
+                continue;
+
+            Logger::Log("indi_Device_Confirm | Clear duplicate camera role binding. device=" +
+                            DeviceName.toStdString() +
+                            " oldRole=" + other.Description.toStdString() +
+                            " newRole=" + role.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+            other.DeviceIndiName.clear();
+            other.DeviceIndiGroup = -1;
+            other.isConnect = false;
+            other.isBind = false;
+            other.dp = nullptr;
+            if (idx == 20)
+                dpMainCamera = nullptr;
+            else if (idx == 1)
+                dpGuider = nullptr;
+            else if (idx == 2)
+                dpPoleScope = nullptr;
+        }
+    }
+
     systemdevicelist.system_devices[deviceCode].DeviceIndiName = DeviceName;
 
     Logger::Log("system device(" + DeviceName.toStdString() + ") successfully selected", LogLevel::INFO, DeviceType::MAIN);

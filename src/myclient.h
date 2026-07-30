@@ -89,6 +89,7 @@ class MyClient : public INDI::BaseClient
         uint32_t setCCDUploadModeToLacal(INDI::BaseDevice *dp);
 
         uint32_t setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefix);
+        uint32_t setCCDForceBlob(INDI::BaseDevice *dp, bool enable);
 
         //Telescope API
         uint32_t getTelescopeInfo(INDI::BaseDevice *dp,double &telescope_aperture,double & telescope_focal,double & guider_aperature, double &guider_focal);
@@ -276,6 +277,5 @@ class MyClient : public INDI::BaseClient
 
 
 #endif // MYCLIENT_H
-
 
 

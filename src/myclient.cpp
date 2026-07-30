@@ -1206,6 +1206,33 @@ uint32_t MyClient::setCCDUpload(INDI::BaseDevice *dp, QString Dir, QString Prefi
     return QHYCCD_SUCCESS;
 }
 
+uint32_t MyClient::setCCDForceBlob(INDI::BaseDevice *dp, bool enable)
+{
+    if (!dp)
+        return QHYCCD_ERROR;
+
+    INDI::PropertySwitch forceBlob = dp->getProperty("CCD_FORCE_BLOB");
+    if (!forceBlob.isValid())
+    {
+        Logger::Log("indi_client | setCCDForceBlob | CCD_FORCE_BLOB property not found; skip",
+                    LogLevel::DEBUG, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
+    auto sendSwitch = [this](const INDI::PropertySwitch &p)
+    { this->sendNewProperty(p); };
+
+    if (!setSwitchOneOf(dp, "CCD_FORCE_BLOB", {enable ? "on" : "off"}, sendSwitch))
+    {
+        Logger::Log("indi_client | setCCDForceBlob | unable to set CCD_FORCE_BLOB to " +
+                        std::string(enable ? "on" : "off"),
+                    LogLevel::WARNING, DeviceType::CAMERA);
+        return QHYCCD_ERROR;
+    }
+
+    return QHYCCD_SUCCESS;
+}
+
 uint32_t MyClient::StartWatch(INDI::BaseDevice *dp)
 {
 

@@ -61,7 +61,13 @@ void MainWindow::initINDIClient()
                 return;
             }
 
-            if (dpGuider != NULL && dpGuider->getDeviceName() == devname)
+            const bool matchesMainCamera =
+                (dpMainCamera != NULL && dpMainCamera->getDeviceName() == devname);
+            const bool mainCaptureInFlight =
+                matchesMainCamera &&
+                (glMainCameraStatu == "Exposuring" || ShootStatus == "Exposuring");
+
+            if (dpGuider != NULL && dpGuider->getDeviceName() == devname && !mainCaptureInFlight)
             {
                 guiderExposureInFlight = false;
                 if (!isGuiderLoopExp && !polarGuiderSingleCapturePending)
@@ -192,6 +198,7 @@ void MainWindow::initINDIClient()
 
                         Logger::Log("saveFitsAsJPG", LogLevel::DEBUG, DeviceType::MAIN);
                     }
+                    return;
                 }
             }
 

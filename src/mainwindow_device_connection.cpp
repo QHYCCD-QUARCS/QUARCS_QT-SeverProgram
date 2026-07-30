@@ -2416,6 +2416,30 @@ void MainWindow::BindingDevice(QString DeviceType, int DeviceIndex)
             refreshBindUi();
             return;
         }
+
+        const QString selectedDeviceName = QString::fromUtf8(device->getDeviceName()).trimmed();
+        for (const QString &role : swappableCameraRoles)
+        {
+            if (role == DeviceType)
+                continue;
+            const int idx = roleSystemIndex(role);
+            if (idx < 0 || systemdevicelist.system_devices.size() <= idx)
+                continue;
+            auto &other = systemdevicelist.system_devices[idx];
+            if (selectedDeviceName.isEmpty() || other.DeviceIndiName.trimmed() != selectedDeviceName)
+                continue;
+
+            Logger::Log("BindingDevice | Clear stale duplicate INDI camera binding. device=" +
+                            selectedDeviceName.toStdString() +
+                            " oldRole=" + role.toStdString() +
+                            " newRole=" + DeviceType.toStdString(),
+                        LogLevel::WARNING, DeviceType::MAIN);
+            setRoleDevicePtr(role, nullptr);
+            other.isConnect = false;
+            other.isBind = false;
+            other.DeviceIndiName.clear();
+            other.dp = nullptr;
+        }
     }
     
     if (DeviceType == "Guider")
@@ -3984,8 +4008,9 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         systemdevicelist.system_devices[20].DeviceIndiName = QString::fromUtf8(dpMainCamera->getDeviceName());
         systemdevicelist.system_devices[20].isBind = true;
 
-        indi_Client->setBLOBMode(B_ALSO, dpMainCamera->getDeviceName(), nullptr);
-        indi_Client->enableDirectBlobAccess(dpMainCamera->getDeviceName(), nullptr);
+        // 主相机显示链路只使用 CCD_FILE_PATH 指向的本地 FITS 文件。
+        // 不订阅 BLOB，避免曝光完成后通过 INDI/XML 传输整张大图导致明显卡顿。
+        indi_Client->setBLOBMode(B_NEVER, dpMainCamera->getDeviceName(), nullptr);
 
         QString SDKVERSION;
         indi_Client->getCCDSDKVersion(dpMainCamera, SDKVERSION);
@@ -4039,6 +4064,8 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         emit wsThread->sendMessageToClient("MainCameraCFASource:INDI");
         indi_Client->setCCDUploadModeToLacal(dpMainCamera);
         indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
+        indi_Client->setCCDForceBlob(dpMainCamera, false);
+        indi_Client->setBLOBMode(B_NEVER, dpMainCamera->getDeviceName(), nullptr);
 
         // 计算需要的binning以达到548像素以下
         int requiredBinning = 1;
