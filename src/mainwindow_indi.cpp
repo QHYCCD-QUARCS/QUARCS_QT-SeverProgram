@@ -56,8 +56,10 @@ void MainWindow::initINDIClient()
         {
             if (clientGeneration != indiClientGeneration.load())
             {
-                Logger::Log("indi_client | image callback ignored from stale INDI client generation",
-                            LogLevel::DEBUG, DeviceType::CAMERA);
+                Logger::Log("indi_client | image callback ignored from stale INDI client generation callback=" +
+                                std::to_string(clientGeneration) +
+                                " current=" + std::to_string(indiClientGeneration.load()),
+                            LogLevel::WARNING, DeviceType::CAMERA);
                 return;
             }
 

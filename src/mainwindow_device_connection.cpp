@@ -972,6 +972,9 @@ void MainWindow::ConnectAllDeviceOnce()
     
     disconnectIndiServer(indi_Client);
     Tools::stopIndiDriverAll(drivers_list);
+    initINDIClient();
+    Logger::Log("ConnectAllDeviceOnce | INDI client reinitialized after cleanup",
+                LogLevel::INFO, DeviceType::MAIN);
 
     // ===================== 检查并确保 indiserver 已就绪 =====================
     // 在启动驱动前，确保 indiserver 进程运行且 FIFO 可用
