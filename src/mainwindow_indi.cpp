@@ -104,6 +104,8 @@ void MainWindow::initINDIClient()
             {
                 if (dpMainCamera->getDeviceName() == devname)
                 {
+                    Logger::Log("indi_client | image callback | MainCamera FITS received: " + filename,
+                                LogLevel::INFO, DeviceType::CAMERA);
                     lastMainCaptureFitsPath = QString::fromStdString(filename);
                     glMainCameraStatu = "Displaying";
                     ShootStatus = "Completed";

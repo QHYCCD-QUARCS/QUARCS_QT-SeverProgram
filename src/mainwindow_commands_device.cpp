@@ -187,8 +187,33 @@ bool MainWindow::handleSystemCommand(const QString &message, const QStringList &
 
         disconnectIndiServer(indi_Client);
         Logger::Log("disconnectIndiServer ...", LogLevel::DEBUG, DeviceType::MAIN);
-        // ClearSystemDeviceList();
-        // Logger::Log("ClearSystemDeviceList ...", LogLevel::DEBUG, DeviceType::MAIN);
+        auto resetDeviceRuntimeEntry = [this](int index) {
+            if (index < 0 || index >= systemdevicelist.system_devices.size())
+                return;
+
+            auto &device = systemdevicelist.system_devices[index];
+            device.isConnect = false;
+            device.isBind = false;
+            device.DeviceIndiGroup = -1;
+            device.dp = NULL;
+        };
+
+        resetDeviceRuntimeEntry(0);   // Mount
+        resetDeviceRuntimeEntry(1);   // Guider
+        resetDeviceRuntimeEntry(2);   // PoleCamera
+        resetDeviceRuntimeEntry(20);  // MainCamera
+        resetDeviceRuntimeEntry(21);  // CFW
+        resetDeviceRuntimeEntry(22);  // Focuser
+        resetDeviceRuntimeEntry(24);  // Rotator/CAA
+
+        glMainCameraStatu = "IDLE";
+        ShootStatus = "IDLE";
+        glIsFocusingLooping = false;
+        isFocusLoopShooting = false;
+        guiderExposureInFlight = false;
+        polarGuiderSingleCapturePending = false;
+        Tools::saveSystemDeviceList(systemdevicelist);
+        Logger::Log("disconnectAllDevice | device runtime states cleared", LogLevel::INFO, DeviceType::MAIN);
         clearConnectedDevices();
         Logger::Log("clearConnectedDevices ...", LogLevel::DEBUG, DeviceType::MAIN);
         // 重启indi服务器

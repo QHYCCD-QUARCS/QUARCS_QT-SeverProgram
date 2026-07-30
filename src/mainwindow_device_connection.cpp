@@ -1609,12 +1609,50 @@ void MainWindow::continueConnectAllDeviceOnce()
     bool EachDeviceOne = true;
     bool hasPendingAllocation = false;
 
-    // 对齐 SDK 相机池思路：INDI CCD 连接后只把候选池上报给前端，
-    // 由设备分配 UI 完成角色指派；不在后端按数量/型号替用户自动选择。
     if (SelectedCameras.size() >= 1 || ConnectedCCDList.size() >= 1)
     {
         EachDeviceOne = false;
         QSet<int> boundCcdIndexes;
+
+        const auto bindSavedIndiCameraRole = [&](const QString &role, int systemIndex) {
+            if (systemIndex < 0 || systemIndex >= systemdevicelist.system_devices.size())
+                return;
+
+            const int deviceIndex = findConnectedIndexBySavedName(
+                ConnectedCCDList,
+                savedDeviceNameByDescription(role),
+                boundCcdIndexes);
+            if (deviceIndex < 0)
+                return;
+
+            INDI::BaseDevice *device = indi_Client->GetDeviceFromList(deviceIndex);
+            if (device == nullptr)
+                return;
+
+            if (role == "MainCamera")
+                dpMainCamera = device;
+            else if (role == "Guider")
+                dpGuider = device;
+            else if (role == "PoleCamera")
+                dpPoleScope = device;
+            else
+                return;
+
+            boundCcdIndexes.insert(deviceIndex);
+            systemdevicelist.system_devices[systemIndex].isConnect = true;
+            systemdevicelist.system_devices[systemIndex].isBind = true;
+            systemdevicelist.system_devices[systemIndex].DeviceIndiName = QString::fromUtf8(device->getDeviceName());
+            AfterDeviceConnect(device);
+
+            Logger::Log("continueConnectAllDeviceOnce | INDI " + role.toStdString() +
+                            " auto-bound by saved name: " +
+                            QString::fromUtf8(device->getDeviceName()).toStdString(),
+                        LogLevel::INFO, DeviceType::MAIN);
+        };
+
+        bindSavedIndiCameraRole("MainCamera", 20);
+        bindSavedIndiCameraRole("Guider", 1);
+        bindSavedIndiCameraRole("PoleCamera", 2);
 
         for (int i = 0; i < ConnectedCCDList.size(); i++)
         {
@@ -4018,10 +4056,14 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         Logger::Log("MainCamera SDK version: " + SDKVERSION.toStdString(), LogLevel::INFO, DeviceType::MAIN);
 
 
-        int maxX, maxY;
-        double pixelsize, pixelsizX, pixelsizY;
-        int bitDepth;
-
+        int maxX = 0, maxY = 0;
+        double pixelsize = 0.0, pixelsizX = 0.0, pixelsizY = 0.0;
+        int bitDepth = 16;
+        if (indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth) != QHYCCD_SUCCESS)
+        {
+            Logger::Log("AfterDeviceConnect | getCCDBasicInfo failed; continue with frame info fallback",
+                        LogLevel::WARNING, DeviceType::CAMERA);
+        }
 
         Logger::Log("CCD Basic Info - MaxX: " + std::to_string(maxX) + ", MaxY: " + std::to_string(maxY) + ", PixelSize: " + std::to_string(pixelsize), LogLevel::INFO, DeviceType::MAIN);
         if (bitDepth != 16)
@@ -4030,7 +4072,6 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
             // indi_Client->setCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, 16);
         }
 
-        // indi_Client->getCCDBasicInfo(dpMainCamera, maxX, maxY, pixelsize, pixelsizX, pixelsizY, bitDepth);
         if (bitDepth != 16)
         {
             Logger::Log("Failed to set the camera bit depth to 16-bit.", LogLevel::WARNING, DeviceType::CAMERA);
@@ -4062,9 +4103,40 @@ void MainWindow::AfterDeviceConnect(INDI::BaseDevice *dp)
         Logger::Log("CCD CFA Info - OffsetX: " + std::to_string(offsetX) + ", OffsetY: " + std::to_string(offsetY) + ", CFA: " + MainCameraCFA.toStdString(), LogLevel::INFO, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("MainCameraCFA:" + (MainCameraCFA.isEmpty() ? QStringLiteral("null") : MainCameraCFA));
         emit wsThread->sendMessageToClient("MainCameraCFASource:INDI");
-        indi_Client->setCCDUploadModeToLacal(dpMainCamera);
-        indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator");
-        indi_Client->setCCDForceBlob(dpMainCamera, false);
+
+        auto configureMainCameraUpload = [this]() -> bool {
+            bool ok = true;
+            if (indi_Client->setCCDUploadModeToLacal(dpMainCamera) != QHYCCD_SUCCESS)
+            {
+                Logger::Log("AfterDeviceConnect | setCCDUploadModeToLacal failed for MainCamera",
+                            LogLevel::WARNING, DeviceType::CAMERA);
+                ok = false;
+            }
+            if (indi_Client->setCCDUpload(dpMainCamera, "/dev/shm", "ccd_simulator") != QHYCCD_SUCCESS)
+            {
+                Logger::Log("AfterDeviceConnect | setCCDUpload failed for MainCamera",
+                            LogLevel::WARNING, DeviceType::CAMERA);
+                ok = false;
+            }
+            if (indi_Client->setCCDForceBlob(dpMainCamera, false) != QHYCCD_SUCCESS)
+            {
+                Logger::Log("AfterDeviceConnect | setCCDForceBlob(false) failed for MainCamera",
+                            LogLevel::WARNING, DeviceType::CAMERA);
+                ok = false;
+            }
+            indi_Client->setBLOBMode(B_NEVER, dpMainCamera->getDeviceName(), nullptr);
+            return ok;
+        };
+
+        if (!configureMainCameraUpload())
+        {
+            QThread::msleep(500);
+            if (!configureMainCameraUpload())
+            {
+                Logger::Log("AfterDeviceConnect | MainCamera upload configuration still incomplete after retry; CCD_FILE_PATH callback may be missing",
+                            LogLevel::WARNING, DeviceType::CAMERA);
+            }
+        }
         indi_Client->setBLOBMode(B_NEVER, dpMainCamera->getDeviceName(), nullptr);
 
         // 计算需要的binning以达到548像素以下
