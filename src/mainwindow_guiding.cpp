@@ -913,10 +913,7 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
             }
         }
 
-        cv::Mat guiderPreviewBgr;
-        cv::cvtColor(img8, guiderPreviewBgr, cv::COLOR_GRAY2BGR);
-
-        saveGuiderImageAsJPG(guiderPreviewBgr);
+        saveGuiderImageAsJPG(img8);
     }
 }
 
@@ -1023,10 +1020,7 @@ void MainWindow::PersistGuidingPreviewFromFrame(const QString& sourceFitsPath, c
         }
     }
 
-    cv::Mat guiderPreviewBgr;
-    cv::cvtColor(img8, guiderPreviewBgr, cv::COLOR_GRAY2BGR);
-
-    saveGuiderImageAsJPG(guiderPreviewBgr);
+    saveGuiderImageAsJPG(img8);
 }
 
 void MainWindow::clearGuiderDebugAnnotations(bool refreshPreview)
