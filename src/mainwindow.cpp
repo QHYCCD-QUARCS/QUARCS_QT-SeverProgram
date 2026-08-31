@@ -756,6 +756,18 @@ void MainWindow::onMessageReceived(const QString &message)
     QString trimmedMessage = message.trimmed();
     qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
 
+    if (trimmedMessage.startsWith(QLatin1String("Client ")) &&
+        trimmedMessage.contains(QLatin1String(" connected from ")))
+    {
+        replayConnectAllDeviceCompleteIfNeeded(trimmedMessage);
+        return;
+    }
+    if (trimmedMessage.startsWith(QLatin1String("Client ")) &&
+        trimmedMessage.contains(QLatin1String(" disconnected")))
+    {
+        return;
+    }
+
     if (!lastCommandMessage.isEmpty() && lastCommandMessage == trimmedMessage && lastCommandTime > 0)
     {
         qint64 timeDiff = currentTime - lastCommandTime;
@@ -787,6 +799,29 @@ void MainWindow::onMessageReceived(const QString &message)
     }
 
     Logger::Log("Unknown message: " + message.toStdString(), LogLevel::WARNING, DeviceType::MAIN);
+}
+
+void MainWindow::markConnectAllDeviceInProgress()
+{
+    connectAllDeviceCompleteForReplay = false;
+}
+
+void MainWindow::sendConnectAllDeviceComplete(const QString &reason)
+{
+    connectAllDeviceCompleteForReplay = true;
+    emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+    Logger::Log("ConnectAllDeviceComplete sent | reason=" + reason.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
+}
+
+void MainWindow::replayConnectAllDeviceCompleteIfNeeded(const QString &reason)
+{
+    if (!connectAllDeviceCompleteForReplay)
+        return;
+
+    emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+    Logger::Log("ConnectAllDeviceComplete replayed for new client | reason=" + reason.toStdString(),
+                LogLevel::INFO, DeviceType::MAIN);
 }
 
 DeviceType MainWindow::getDeviceTypeFromPartialString(const std::string &typeStr)

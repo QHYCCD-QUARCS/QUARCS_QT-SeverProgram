@@ -2159,6 +2159,11 @@ private:
     bool handleScheduleCommand(const QString &message, const QStringList &parts);
     bool handleFileAndStorageCommand(const QString &message, const QStringList &parts);
     bool handleSystemCommand(const QString &message, const QStringList &parts);
+    void markConnectAllDeviceInProgress();
+    void sendConnectAllDeviceComplete(const QString &reason);
+    void replayConnectAllDeviceCompleteIfNeeded(const QString &reason);
+
+    bool connectAllDeviceCompleteForReplay = false;
 
 /**********************  线程/定时器（通用）  **********************/
 public:

@@ -24,6 +24,7 @@ bool indiDriverNamesEquivalent(const QString &lhs, const QString &rhs)
 void MainWindow::ConnectAllDeviceOnce()
 {
     Logger::Log("Connecting all devices once.", LogLevel::INFO, DeviceType::MAIN);
+    markConnectAllDeviceInProgress();
     
     // 防御性检查：确保 indi_Client 已经初始化
     if (indi_Client == nullptr)
@@ -31,7 +32,7 @@ void MainWindow::ConnectAllDeviceOnce()
         Logger::Log("ConnectAllDeviceOnce | indi_Client is nullptr", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
         // 发送完成消息，通知前端关闭进度条
-        emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+        sendConnectAllDeviceComplete("indi_Client is nullptr");
         return;
     }
 
@@ -67,7 +68,7 @@ void MainWindow::ConnectAllDeviceOnce()
         Logger::Log("No driver in system device list.", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:No driver in system device list.");
         // 发送完成消息，通知前端关闭进度条
-        emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+        sendConnectAllDeviceComplete("no driver in system device list");
         return;
     }
     // NumberOfTimesConnectDevice = 0;
@@ -885,7 +886,7 @@ void MainWindow::ConnectAllDeviceOnce()
             emit wsThread->sendMessageToClient("ConnectFailed:SDK connection failed");
         }
         // 无论成功还是失败，都需要发送完成消息，通知前端关闭进度条
-        emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+        sendConnectAllDeviceComplete("SDK-only connection completed");
         Logger::Log("ConnectAllDeviceOnce | SDK-only connection completed (success: " + 
                     std::string(sdkMainConnectedNow || sdkFocuserConnectedNow ? "true" : "false") + ")", 
                     LogLevel::INFO, DeviceType::MAIN);
@@ -1117,7 +1118,7 @@ void MainWindow::ConnectAllDeviceOnce()
         Logger::Log("ConnectAllDeviceOnce | indi_Client became nullptr before server check", LogLevel::ERROR, DeviceType::MAIN);
         emit wsThread->sendMessageToClient("ConnectFailed:ClientDisconnected");
         // 发送完成消息，通知前端关闭进度条
-        emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+        sendConnectAllDeviceComplete("indi_Client became nullptr before server check");
         return;
     }
 
@@ -1140,7 +1141,7 @@ void MainWindow::ConnectAllDeviceOnce()
             timer->deleteLater();
             emit wsThread->sendMessageToClient("ConnectFailed:ClientNotInitialized");
             // 发送完成消息，通知前端关闭进度条
-            emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+            sendConnectAllDeviceComplete("indi_Client is nullptr in timer callback");
             return;
         }
 
@@ -1166,7 +1167,7 @@ void MainWindow::continueConnectAllDeviceOnce()
         Tools::stopIndiDriverAll(drivers_list);
         ConnectDriverList.clear();
         // 发送完成消息，通知前端关闭进度条
-        emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+        sendConnectAllDeviceComplete("continueConnectAllDeviceOnce indi_Client is nullptr");
         return;
     }
 
@@ -1193,7 +1194,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             Tools::stopIndiDriverAll(drivers_list);
             ConnectDriverList.clear();
             // 发送全部连接完成消息，通知前端可以关闭进度条
-            emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+            sendConnectAllDeviceComplete("SDK connected with no INDI devices");
             Logger::Log("continueConnectAllDeviceOnce | All devices connection process completed (SDK only, no INDI)", LogLevel::INFO, DeviceType::MAIN);
             return;
         } else {
@@ -1202,7 +1203,7 @@ void MainWindow::continueConnectAllDeviceOnce()
             Tools::stopIndiDriverAll(drivers_list);
             ConnectDriverList.clear();
             // 发送完成消息，通知前端关闭进度条
-            emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+            sendConnectAllDeviceComplete("driver started but no device found");
             return;
         }
     }
@@ -1563,7 +1564,7 @@ void MainWindow::continueConnectAllDeviceOnce()
         Tools::stopIndiDriverAll(drivers_list);
         ConnectDriverList.clear();
         // 发送完成消息，通知前端关闭进度条
-        emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+        sendConnectAllDeviceComplete("no device connected");
         return;
     }
     
@@ -1574,7 +1575,7 @@ void MainWindow::continueConnectAllDeviceOnce()
         Tools::stopIndiDriverAll(drivers_list);
         ConnectDriverList.clear();
         // 发送全部连接完成消息，通知前端可以关闭进度条
-        emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+        sendConnectAllDeviceComplete("only SDK devices connected");
         Logger::Log("continueConnectAllDeviceOnce | All devices connection process completed (SDK only)", LogLevel::INFO, DeviceType::MAIN);
         return;
     }
@@ -1877,7 +1878,7 @@ void MainWindow::continueConnectAllDeviceOnce()
     }
     
     // 发送全部连接完成消息，通知前端可以关闭进度条
-    emit wsThread->sendMessageToClient("ConnectAllDeviceComplete");
+    sendConnectAllDeviceComplete("continueConnectAllDeviceOnce completed");
     Logger::Log("continueConnectAllDeviceOnce | All devices connection process completed", LogLevel::INFO, DeviceType::MAIN);
 }
 
