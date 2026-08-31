@@ -1,5 +1,50 @@
 #include "mainwindow_command_support.h"
 
+namespace
+{
+constexpr int kGuiderPreviewJpegQuality = 45;
+constexpr int kGuiderPreviewMaxWidth = 960;
+
+cv::Mat sdkFrameDataToMatView(const SdkFrameData& frame)
+{
+    if (frame.width <= 0 || frame.height <= 0)
+        return {};
+
+    const size_t pixelCount = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
+
+    if (!frame.pixels.empty())
+    {
+        if (frame.pixels.size() < pixelCount)
+            return {};
+        return cv::Mat(frame.height, frame.width, CV_16UC1,
+                       const_cast<uint16_t*>(frame.pixels.data()));
+    }
+
+    if (!frame.rawBuffer || frame.rawBytes == 0 || frame.channels != 1)
+        return {};
+
+    if (frame.bpp == 16)
+    {
+        const size_t needBytes = pixelCount * sizeof(uint16_t);
+        if (frame.rawBytes < needBytes || frame.rawBuffer->size() < needBytes)
+            return {};
+        return cv::Mat(frame.height, frame.width, CV_16UC1,
+                       const_cast<unsigned char*>(frame.rawBuffer->data()));
+    }
+
+    if (frame.bpp == 8)
+    {
+        const size_t needBytes = pixelCount * sizeof(uint8_t);
+        if (frame.rawBytes < needBytes || frame.rawBuffer->size() < needBytes)
+            return {};
+        return cv::Mat(frame.height, frame.width, CV_8UC1,
+                       const_cast<unsigned char*>(frame.rawBuffer->data()));
+    }
+
+    return {};
+}
+}
+
 void MainWindow::onGuiderLoopTimeout()
 {
     if (!isGuiderLoopExp)
@@ -505,9 +550,15 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     };
 
     constexpr int kKeepRecentGuiderImages = 12;
-    constexpr int kGuiderPreviewMaxWidth = 1920;
 
     cv::Mat preview = Image;
+    if (!preview.empty() && preview.channels() == 3)
+    {
+        cv::Mat gray;
+        cv::cvtColor(preview, gray, cv::COLOR_BGR2GRAY);
+        preview = gray;
+    }
+
     int downsampleLevel = 0;
     while (!preview.empty() && preview.cols > kGuiderPreviewMaxWidth)
     {
@@ -535,7 +586,11 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     // 保存新的图像带有唯一ID的文件名
     std::string fileName = "GuiderImage_" + uniqueId.toStdString() + ".jpg";
     std::string filePath = vueDirectoryPath + fileName;
-    bool saved = cv::imwrite(filePath, preview);
+    std::vector<int> jpegParams = {
+        cv::IMWRITE_JPEG_QUALITY, kGuiderPreviewJpegQuality,
+        cv::IMWRITE_JPEG_OPTIMIZE, 1
+    };
+    bool saved = cv::imwrite(filePath, preview, jpegParams);
     Logger::Log("Attempted to save new guider image.", LogLevel::DEBUG, DeviceType::GUIDER);
     logPerfStage("write_preview_jpg");
 
@@ -650,6 +705,11 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
     {
         emit wsThread->sendMessageToClient(QString("GuideSize:%1:%2").arg(preview.cols).arg(preview.rows));
         emit wsThread->sendMessageToClient("SaveGuiderImageSuccess:" + QString::fromStdString(fileName));
+        Logger::Log("saveGuiderImageAsJPG | saved compressed guider preview: " +
+                        std::to_string(preview.cols) + "x" + std::to_string(preview.rows) +
+                        " quality=" + std::to_string(kGuiderPreviewJpegQuality) +
+                        " file=" + filePath,
+                    LogLevel::INFO, DeviceType::GUIDER);
         Logger::Log("Guider image saved successfully and client notified.", LogLevel::DEBUG, DeviceType::GUIDER);
         logPerfStage("notify_client");
     }
@@ -858,6 +918,19 @@ void MainWindow::PersistGuidingFits(const QString& sourceFitsPath)
 
         saveGuiderImageAsJPG(guiderPreviewBgr);
     }
+}
+
+void MainWindow::PersistGuidingPreviewFromSdkFrame(const SdkFrameData& frame)
+{
+    cv::Mat img = sdkFrameDataToMatView(frame);
+    if (img.empty())
+    {
+        Logger::Log("PersistGuidingPreviewFromSdkFrame | unsupported or empty SDK frame",
+                    LogLevel::WARNING, DeviceType::GUIDER);
+        return;
+    }
+
+    PersistGuidingPreviewFromFrame(QStringLiteral("/dev/shm/guiding.fits"), img);
 }
 
 void MainWindow::PersistGuidingPreviewFromFrame(const QString& sourceFitsPath, const cv::Mat& image16)

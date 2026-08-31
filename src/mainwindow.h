@@ -1026,6 +1026,7 @@ private Q_SLOTS:
     void onGuiderLoopTimeout();
     void PersistGuidingFits(const QString& sourceFitsPath);
     void PersistGuidingPreviewFromFrame(const QString& sourceFitsPath, const cv::Mat& image16);
+    void PersistGuidingPreviewFromSdkFrame(const SdkFrameData& frame);
     void clearGuiderDebugAnnotations(bool refreshPreview = false);
 
 public:

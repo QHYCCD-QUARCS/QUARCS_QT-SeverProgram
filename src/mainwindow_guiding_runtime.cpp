@@ -717,6 +717,17 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                                     " mainTotalMs=" + std::to_string(mainPerf.elapsed()),
                                 LogLevel::INFO, DeviceType::GUIDER);
 
+                    if (!poleCapture)
+                    {
+                        QElapsedTimer previewPerf;
+                        previewPerf.start();
+                        PersistGuidingPreviewFromSdkFrame(frame);
+                        Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | PersistGuidingPreviewFromSdkFrame costMs=" +
+                                        std::to_string(previewPerf.elapsed()) +
+                                        " mainTotalMs=" + std::to_string(mainPerf.elapsed()),
+                                    LogLevel::INFO, DeviceType::GUIDER);
+                    }
+
                     if (polarGuiderSingleCapturePending)
                     {
                         notifyPolarAlignmentCaptureReady(captureRole, sdkGuiderFitsPath);
