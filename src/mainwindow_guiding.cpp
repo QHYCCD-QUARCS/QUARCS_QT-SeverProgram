@@ -3,7 +3,6 @@
 namespace
 {
 constexpr int kGuiderPreviewJpegQuality = 45;
-constexpr int kGuiderPreviewMaxWidth = 960;
 
 cv::Mat sdkFrameDataToMatView(const SdkFrameData& frame)
 {
@@ -559,24 +558,7 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
         preview = gray;
     }
 
-    int downsampleLevel = 0;
-    while (!preview.empty() && preview.cols > kGuiderPreviewMaxWidth)
-    {
-        cv::Mat downsampled;
-        cv::resize(preview, downsampled, cv::Size(), 0.5, 0.5, cv::INTER_AREA);
-        preview = downsampled;
-        ++downsampleLevel;
-    }
-    logPerfStage("preview_downsample");
-
-    if (downsampleLevel > 0)
-    {
-        Logger::Log("saveGuiderImageAsJPG | preview downsampled for transport: " +
-                        std::to_string(Image.cols) + "x" + std::to_string(Image.rows) + " -> " +
-                        std::to_string(preview.cols) + "x" + std::to_string(preview.rows) +
-                        " (2x2 level=" + std::to_string(downsampleLevel) + ")",
-                    LogLevel::INFO, DeviceType::GUIDER);
-    }
+    logPerfStage("prepare_grayscale_preview");
 
     // 生成唯一ID
     QString uniqueId = QUuid::createUuid().toString();
