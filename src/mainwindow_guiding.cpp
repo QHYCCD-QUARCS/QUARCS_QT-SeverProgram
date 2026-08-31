@@ -664,6 +664,23 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
                 items.push_back(std::move(info));
             }
 
+            const auto now = fs::file_time_type::clock::now();
+            const auto futureSkewTolerance = std::chrono::minutes(1);
+            items.erase(std::remove_if(items.begin(), items.end(), [&](const EntryInfo& item) {
+                if (!item.timeOk || item.t <= now + futureSkewTolerance)
+                    return false;
+
+                std::error_code ec;
+                fs::remove(item.path, ec);
+                if (!ec)
+                {
+                    Logger::Log("Deleted future-dated guider image file: " + item.path.string(),
+                                LogLevel::WARNING, DeviceType::GUIDER);
+                    return true;
+                }
+                return false;
+            }), items.end());
+
             std::sort(items.begin(), items.end(), [](const EntryInfo& a, const EntryInfo& b) {
                 if (a.timeOk != b.timeOk)
                     return a.timeOk;

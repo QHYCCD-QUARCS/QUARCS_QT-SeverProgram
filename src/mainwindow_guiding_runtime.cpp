@@ -54,7 +54,16 @@ void MainWindow::initializeBuiltInGuiderRuntime()
         if (guiderLoopTimer)
             guiderLoopTimer->start(0);
     });
-    connect(guiderCore, &GuiderCore::requestPersistGuidingFits, this, &MainWindow::PersistGuidingFits);
+    connect(guiderCore, &GuiderCore::requestPersistGuidingFits, this, [this](const QString& sourceFitsPath) {
+        if (isGuiderCameraSDK() && sdkGuiderHandle != nullptr)
+        {
+            Logger::Log("BuiltInGuider | skip duplicate JPG persist for SDK guider frame: " +
+                            sourceFitsPath.toStdString(),
+                        LogLevel::DEBUG, DeviceType::GUIDER);
+            return;
+        }
+        PersistGuidingFits(sourceFitsPath);
+    });
     connect(guiderCore, &GuiderCore::requestPersistGuidingFitsAnnotated, this,
             [this](const QString& sourceFitsPath, const cv::Mat& image16, int imageW, int imageH,
                    const QVector<QPointF>& dedupCandidates,
@@ -74,6 +83,12 @@ void MainWindow::initializeBuiltInGuiderRuntime()
                         " candidates=" + std::to_string(candidates.size()) +
                         " selected=" + std::to_string((selected.x() != 0.0 || selected.y() != 0.0) ? 1 : 0),
                     LogLevel::INFO, DeviceType::GUIDER);
+        if (isGuiderCameraSDK() && sdkGuiderHandle != nullptr)
+        {
+            Logger::Log("BuiltInGuider | skip duplicate annotated JPG persist for SDK guider frame",
+                        LogLevel::DEBUG, DeviceType::GUIDER);
+            return;
+        }
         PersistGuidingPreviewFromFrame(sourceFitsPath, image16);
     }, Qt::BlockingQueuedConnection);
     connect(guiderCore, &GuiderCore::requestPulse, this, [this](const guiding::PulseCommand& cmd) {
