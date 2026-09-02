@@ -881,6 +881,7 @@ bool MainWindow::handleFocuserCommand(const QString &message, const QStringList 
             command == QLatin1String("getFocuserMoveState") ||
             command == QLatin1String("focusMoveStop") ||
             command == QLatin1String("ManualFocuserCalibrationMode") ||
+            command == QLatin1String("RestoreFocuserLimits") ||
             command == QLatin1String("SyncFocuserStep") ||
             command == QLatin1String("StepsPerClick") ||
             command == QLatin1String("MinLimit") ||
@@ -986,6 +987,54 @@ bool MainWindow::handleFocuserCommand(const QString &message, const QStringList 
         }
         Logger::Log("ManualFocuserCalibrationMode:" + std::string(focuserManualCalibrationMode ? "true" : "false"),
                     LogLevel::INFO, DeviceType::FOCUSER);
+    }
+    else if (parts.size() == 3 && parts[0].trimmed() == "RestoreFocuserLimits")
+    {
+        bool minOk = false;
+        bool maxOk = false;
+        const int restoredMin = parts[1].trimmed().toInt(&minOk);
+        const int restoredMax = parts[2].trimmed().toInt(&maxOk);
+        if (!minOk || !maxOk)
+        {
+            Logger::Log("RestoreFocuserLimits rejected: invalid numeric payload",
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:电调边界复位参数无效。");
+            return;
+        }
+
+        if (restoredMin != -1 && restoredMax != -1 && restoredMin >= restoredMax)
+        {
+            Logger::Log("RestoreFocuserLimits rejected: min must be less than max when both are known. min=" +
+                            std::to_string(restoredMin) + ", max=" + std::to_string(restoredMax),
+                        LogLevel::WARNING, DeviceType::FOCUSER);
+            emit wsThread->sendMessageToClient("focusMoveFailed:电调边界复位范围无效。");
+            return;
+        }
+
+        if (restoredMin != -1 || restoredMax != -1)
+        {
+            int absoluteMin = -100000, absoluteMax = 100000;
+            getFocuserAbsoluteRange(absoluteMin, absoluteMax);
+            if ((restoredMin != -1 && (restoredMin < absoluteMin || restoredMin > absoluteMax)) ||
+                (restoredMax != -1 && (restoredMax < absoluteMin || restoredMax > absoluteMax)))
+            {
+                Logger::Log("RestoreFocuserLimits rejected: out of physical range. value=[" +
+                                std::to_string(restoredMin) + ", " + std::to_string(restoredMax) +
+                                "], range=[" + std::to_string(absoluteMin) + ", " + std::to_string(absoluteMax) + "]",
+                            LogLevel::WARNING, DeviceType::FOCUSER);
+                emit wsThread->sendMessageToClient("focusMoveFailed:电调边界复位超出物理范围。");
+                return;
+            }
+        }
+
+        focuserMinPosition = restoredMin;
+        focuserMaxPosition = restoredMax;
+        Tools::saveParameter("Focuser", "focuserMinPosition", QString::number(focuserMinPosition));
+        Tools::saveParameter("Focuser", "focuserMaxPosition", QString::number(focuserMaxPosition));
+        Logger::Log("RestoreFocuserLimits accepted: min=" + std::to_string(focuserMinPosition) +
+                        ", max=" + std::to_string(focuserMaxPosition),
+                    LogLevel::INFO, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
     }
     else if (parts.size() == 2 && parts[0].trimmed() == "SyncFocuserStep")
     {
@@ -1152,7 +1201,8 @@ bool MainWindow::handleFocuserCommand(const QString &message, const QStringList 
                 bool limitsValid = true;
                 std::string warningMsg;
                 
-                if (newMinPosition < ABSOLUTE_MIN_LIMIT || newMinPosition > ABSOLUTE_MAX_LIMIT)
+                if (newMinPosition != -1 &&
+                    (newMinPosition < ABSOLUTE_MIN_LIMIT || newMinPosition > ABSOLUTE_MAX_LIMIT))
                 {
                     limitsValid = false;
                     warningMsg += "New Min Limit (" + std::to_string(newMinPosition) + 
@@ -1160,7 +1210,8 @@ bool MainWindow::handleFocuserCommand(const QString &message, const QStringList 
                                  ", " + std::to_string(ABSOLUTE_MAX_LIMIT) + "]. ";
                 }
                 
-                if (newMaxPosition < ABSOLUTE_MIN_LIMIT || newMaxPosition > ABSOLUTE_MAX_LIMIT)
+                if (newMaxPosition != -1 &&
+                    (newMaxPosition < ABSOLUTE_MIN_LIMIT || newMaxPosition > ABSOLUTE_MAX_LIMIT))
                 {
                     limitsValid = false;
                     warningMsg += "New Max Limit (" + std::to_string(newMaxPosition) + 
@@ -1169,7 +1220,7 @@ bool MainWindow::handleFocuserCommand(const QString &message, const QStringList 
                 }
                 
                 // 验证Min < Max
-                if (newMinPosition >= newMaxPosition)
+                if (newMinPosition != -1 && newMaxPosition != -1 && newMinPosition >= newMaxPosition)
                 {
                     limitsValid = false;
                     warningMsg += "New Min Limit (" + std::to_string(newMinPosition) + 

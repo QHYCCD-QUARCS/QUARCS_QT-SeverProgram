@@ -1552,6 +1552,27 @@ void MainWindow::focusSetTravelRange()
         }
     }
 
+    if (focuserMinPosition == -1)
+    {
+        Logger::Log("focusSetTravelRange rejected: min position is unknown, refusing to save [-1, max]",
+                    LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:左边界未知，请先设置左边界后再结束校准。");
+        emit wsThread->sendMessageToClient(
+            "FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
+        return;
+    }
+
+    if (stablePosition <= focuserMinPosition)
+    {
+        Logger::Log("focusSetTravelRange rejected: max must be greater than min. min=" +
+                        std::to_string(focuserMinPosition) + ", max=" + std::to_string(stablePosition),
+                    LogLevel::WARNING, DeviceType::FOCUSER);
+        emit wsThread->sendMessageToClient("focusMoveFailed:右边界必须大于左边界，请重新设置。");
+        emit wsThread->sendMessageToClient(
+            "FocuserLimit:" + QString::number(focuserMinPosition) + ":" + QString::number(focuserMaxPosition));
+        return;
+    }
+
     focuserMaxPosition = stablePosition;
 
     emit wsThread->sendMessageToClient("focusSetTravelRangeSuccess");
@@ -1572,16 +1593,12 @@ void MainWindow::focusSetTravelRange()
 void MainWindow::getFocuserParameters()
 {
     QMap<QString, QString> parameters = Tools::readParameters("Focuser");
-    if (parameters.contains("focuserMaxPosition") && parameters.contains("focuserMinPosition"))
-    {
-        focuserMaxPosition = parameters["focuserMaxPosition"].toInt();
-        focuserMinPosition = parameters["focuserMinPosition"].toInt();
-    }
-    else
-    {
-        focuserMaxPosition = -1;
-        focuserMinPosition = -1;
-    }
+    focuserMinPosition = parameters.contains("focuserMinPosition")
+        ? parameters["focuserMinPosition"].toInt()
+        : -1;
+    focuserMaxPosition = parameters.contains("focuserMaxPosition")
+        ? parameters["focuserMaxPosition"].toInt()
+        : -1;
     Logger::Log("Focuser Max Position: " + std::to_string(focuserMaxPosition) + ", Min Position: " + std::to_string(focuserMinPosition), LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("Focuser Current Position: " + std::to_string(CurrentPosition), LogLevel::INFO, DeviceType::MAIN);
 
