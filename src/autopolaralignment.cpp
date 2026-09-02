@@ -8,6 +8,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QTextStream>
 #include <QJsonArray>
@@ -56,6 +57,52 @@ inline double wrapTo2Pi(double a){
     double t = std::fmod(a, 2.0*M_PI);
     if (t < 0) t += 2.0*M_PI;
     return t;
+}
+
+QString resolveAstrometryExecutable(const QString& program)
+{
+    QStringList candidates;
+    const QByteArray astrometryBin = qgetenv("QUARCS_ASTROMETRY_BIN");
+    if (!astrometryBin.isEmpty())
+        candidates << QDir(QString::fromLocal8Bit(astrometryBin)).filePath(program);
+
+    candidates << QDir(QStringLiteral("/usr/local/astrometry/bin")).filePath(program)
+               << QDir(QStringLiteral("/usr/local/bin")).filePath(program)
+               << QDir(QStringLiteral("/usr/bin")).filePath(program);
+
+    const QString pathEnv = QString::fromLocal8Bit(qgetenv("PATH"));
+    for (const QString& dir : pathEnv.split(QLatin1Char(':'), Qt::SkipEmptyParts))
+        candidates << QDir(dir).filePath(program);
+
+    QStringList checked;
+    for (const QString& candidate : candidates) {
+        if (checked.contains(candidate))
+            continue;
+        checked << candidate;
+
+        const QFileInfo info(candidate);
+        if (info.exists() && info.isFile() && info.isExecutable())
+            return info.absoluteFilePath();
+    }
+
+    Logger::Log("Astrometry executable not found, fallback to PATH lookup: " + program.toStdString(),
+                LogLevel::WARNING,
+                DeviceType::MAIN);
+    return program;
+}
+
+void applyAstrometryEnvironment(QProcess& process, const QString& programPath)
+{
+    QFileInfo info(programPath);
+    if (!info.isAbsolute())
+        return;
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString binDir = info.absolutePath();
+    const QString currentPath = env.value(QStringLiteral("PATH"));
+    if (!currentPath.split(QLatin1Char(':'), Qt::SkipEmptyParts).contains(binDir))
+        env.insert(QStringLiteral("PATH"), binDir + QLatin1Char(':') + currentPath);
+    process.setProcessEnvironment(env);
 }
 
 // RA[deg], DEC[deg] -> 单位向量
@@ -1701,12 +1748,14 @@ bool PolarAlignment::extractStarsWithImage2xy(const QString& fitsPath) const
     args << "-O"
          << "-o" << axyPath
          << fitsPath;
+    const QString image2xyProgram = resolveAstrometryExecutable(QStringLiteral("image2xy"));
+    applyAstrometryEnvironment(proc, image2xyProgram);
 
-    Logger::Log("PolarAlignment: 执行image2xy提星: image2xy " + args.join(" ").toStdString(),
+    Logger::Log("PolarAlignment: 执行image2xy提星: " + image2xyProgram.toStdString() + " " + args.join(" ").toStdString(),
                 LogLevel::INFO, DeviceType::MAIN);
-    proc.start("image2xy", args);
+    proc.start(image2xyProgram, args);
     if (!proc.waitForStarted(3000)) {
-        Logger::Log("PolarAlignment: image2xy启动失败", LogLevel::ERROR, DeviceType::MAIN);
+        Logger::Log("PolarAlignment: image2xy启动失败: " + proc.errorString().toStdString(), LogLevel::ERROR, DeviceType::MAIN);
         return false;
     }
     if (!proc.waitForFinished(15000)) {
