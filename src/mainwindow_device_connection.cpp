@@ -7940,7 +7940,15 @@ void MainWindow::ConnectDriver(QString DriverName, QString DriverType)
                     }
                     else
                     {
-                        Logger::Log("ConnectDriver | Device(" + std::string(indi_Client->GetDeviceFromList(i)->getDeviceName()) + ") is not disconnected", LogLevel::WARNING, DeviceType::MAIN);
+                        const QString staleDeviceName = QString::fromUtf8(indi_Client->GetDeviceNameFromList(i).c_str());
+                        Logger::Log("ConnectDriver | Device(" + staleDeviceName.toStdString() + ") is not disconnected, force stop driver: " + DriverName.toStdString(),
+                                    LogLevel::WARNING, DeviceType::MAIN);
+                        Tools::stopIndiDriver(DriverName);
+                        ConnectDriverList.removeAll(DriverName);
+                        emit wsThread->sendMessageToClient("deleteDeviceAllocationList:" + staleDeviceName);
+                        emit wsThread->sendMessageToClient("ConnectDriverFailed:" + DriverType + ":Previous device could not disconnect; driver was force stopped.");
+                        indi_Client->RemoveDevice(staleDeviceName.toStdString());
+                        return;
                     }
 
                     time = 0;
@@ -9138,6 +9146,21 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     QString disconnectdriverName;
     QVector<QString> NeedDisconnectDeviceNameList;
 
+    if (DeviceType == "MainCamera" && systemdevicelist.system_devices.size() > 20)
+        disconnectdriverName = systemdevicelist.system_devices[20].DriverIndiName;
+    else if (DeviceType == "Guider" && systemdevicelist.system_devices.size() > 1)
+        disconnectdriverName = systemdevicelist.system_devices[1].DriverIndiName;
+    else if (DeviceType == "PoleCamera" && systemdevicelist.system_devices.size() > 2)
+        disconnectdriverName = systemdevicelist.system_devices[2].DriverIndiName;
+    else if (DeviceType == "Mount" && systemdevicelist.system_devices.size() > 0)
+        disconnectdriverName = systemdevicelist.system_devices[0].DriverIndiName;
+    else if (DeviceType == "Focuser" && systemdevicelist.system_devices.size() > 22)
+        disconnectdriverName = systemdevicelist.system_devices[22].DriverIndiName;
+    else if (DeviceType == "CFW" && systemdevicelist.system_devices.size() > 21)
+        disconnectdriverName = systemdevicelist.system_devices[21].DriverIndiName;
+    else if (isRotatorDriverType(DeviceType) && systemdevicelist.system_devices.size() > 24)
+        disconnectdriverName = systemdevicelist.system_devices[24].DriverIndiName;
+
     // INDI 模式断开（若 client 为空则跳过）
     if (client != nullptr)
     {
@@ -9206,8 +9229,18 @@ void MainWindow::DisconnectDevice(MyClient *client, QString DeviceName, QString 
     }
     if (!disconnectsuccess)
     {
-        Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() + ") failed.", LogLevel::WARNING, DeviceType::MAIN);
-        emit wsThread->sendMessageToClient("DisconnectDriverFail:" + DeviceType);
+        Logger::Log("DisconnectDevice | Disconnect " + DeviceType.toStdString() + " Device(" + DeviceName.toStdString() +
+                        ") failed, force stop driver: " + disconnectdriverName.toStdString(),
+                    LogLevel::WARNING, DeviceType::MAIN);
+        if (!disconnectdriverName.isEmpty())
+        {
+            Tools::stopIndiDriver(disconnectdriverName);
+            ConnectDriverList.removeAll(disconnectdriverName);
+        }
+        if (client != nullptr)
+            client->RemoveDevice(DeviceName.toStdString());
+        if (wsThread != nullptr)
+            emit wsThread->sendMessageToClient("DisconnectDriverSuccess:" + DeviceType);
     }
 
     if (DeviceType == "MainCamera")
