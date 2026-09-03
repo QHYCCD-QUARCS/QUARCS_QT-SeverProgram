@@ -657,6 +657,16 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
                 emit this->wsThread->sendMessageToClient(logMsg);
             });
 
+    connect(polarAlignment, &PolarAlignment::guidanceSolveStatsChanged,
+            [this](int successCount, int totalCount)
+            {
+                QString logMsg = QString("PolarAlignmentGuidanceSolveStats:%1:%2")
+                                     .arg(successCount)
+                                     .arg(totalCount);
+                Logger::Log(logMsg.toStdString(), LogLevel::INFO, DeviceType::MAIN);
+                emit this->wsThread->sendMessageToClient(logMsg);
+            });
+
     Logger::Log("initPolarAlignment | PolarAlignment initialized successfully, role=" +
                     std::string(polarRoleName(role)) +
                     ", focal=" + std::to_string(selectedFocalLength) +

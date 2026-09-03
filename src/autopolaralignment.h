@@ -361,6 +361,7 @@ public:
      * @brief 清空调整指导数据容器
      */
     void clearAdjustmentGuideData();
+    void emitGuidanceSolveStats();
     
     /**
      * @brief 保存并发送调整指导数据（智能管理：最多3个校准点+1个解析数据）
@@ -462,6 +463,7 @@ signals:
      * @param starCount 识别的星点数量（仅在CHECKING_STARS步骤时有效，-1表示未检测）
      */
     void guidanceAdjustmentStepProgress(GuidanceAdjustmentStep step, QString message, int starCount = -1);
+    void guidanceSolveStatsChanged(int successCount, int totalCount);
 
     void polarImageGuidanceDataV2(QString payloadJson);
     void polarImageGuidanceFrame(qint64 frameId,
@@ -1180,6 +1182,9 @@ private:
     // 解析模式状态
     int lastSolveMode;                 // 上一次解析使用的模式（0=全局，1=视场，2=视场+RA/DEC）
     int consecutiveMode2SolveFailures; // 在模式2下连续解析失败次数
+    int guidanceAdjustmentAttemptCount = 0; // 本次极轴校准调整阶段尝试次数
+    int guidanceSolveSuccessCount = 0;  // 本次极轴校准调整阶段解析成功次数
+    int guidanceSolveTotalCount = 0;    // 本次极轴校准调整阶段解析总次数
 
     // 调整指导数据容器
     QVector<AdjustmentGuideData> adjustmentGuideDataHistory; // 调整指导数据历史记录

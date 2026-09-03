@@ -438,6 +438,9 @@ bool PolarAlignment::startPolarAlignment()
     solveFailureCount = 0;
     lastSolveMode = 1;
     consecutiveMode2SolveFailures = 0;
+    guidanceAdjustmentAttemptCount = 0;
+    guidanceSolveSuccessCount = 0;
+    guidanceSolveTotalCount = 0;
     firstCaptureAvoidanceCount = 0;
     secondCaptureAvoidanceCount = 0;
     thirdCaptureAvoidanceCount = 0;
@@ -461,6 +464,7 @@ bool PolarAlignment::startPolarAlignment()
     
     Logger::Log("PolarAlignment: 校准开始，目标点已归零", LogLevel::INFO, DeviceType::MAIN);
     Logger::Log("PolarAlignment: 开始自动极轴校准流程", LogLevel::INFO, DeviceType::MAIN);
+    emitGuidanceSolveStats();
     emit stateChanged(currentState, "开始自动极轴校准...",0);
     // emit statusUpdated("开始自动极轴校准...");
     // emit progressUpdated(0);
@@ -1796,8 +1800,8 @@ bool PolarAlignment::extractStarsWithImage2xy(const QString& fitsPath) const
 
 bool PolarAlignment::performGuidanceAdjustmentStep()
 {
-    static int adjustmentAttempts = 0;
-    adjustmentAttempts++;
+    guidanceAdjustmentAttemptCount++;
+    const int adjustmentAttempts = guidanceAdjustmentAttemptCount;
 
     Logger::Log("PolarAlignment: 开始第 " + std::to_string(adjustmentAttempts) + " 次调整尝试",
                 LogLevel::INFO, DeviceType::MAIN);
@@ -1831,6 +1835,9 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
   
     
     // 3. 星点数量足够，继续解析图像
+    guidanceSolveTotalCount++;
+    emitGuidanceSolveStats();
+
     // guide_fast: 仅首次 full-solve，后续依赖锁星跟踪；异常/重锚时再触发 full-solve
     // trajectory_full: 每帧 full-solve（interval=1）
     const bool periodicFullSolveEnabled = guidanceFullSolveIntervalFrames > 0;
@@ -2124,6 +2131,9 @@ bool PolarAlignment::performGuidanceAdjustmentStep()
         cachedFakePolarRA, cachedFakePolarDEC,
         realPolarRA, realPolarDEC
     );
+
+    guidanceSolveSuccessCount++;
+    emitGuidanceSolveStats();
 
     // 6. 发送完成信号，等待用户调整
     emit guidanceAdjustmentStepProgress(GuidanceAdjustmentStep::WAITING_USER, "等待用户调整...", -1);
@@ -4198,6 +4208,16 @@ void PolarAlignment::clearAdjustmentGuideData()
 {
     Logger::Log("PolarAlignment: 清空调整指导数据容器", LogLevel::INFO, DeviceType::MAIN);
     adjustmentGuideDataHistory.clear();
+}
+
+void PolarAlignment::emitGuidanceSolveStats()
+{
+    Logger::Log("PolarAlignmentGuidanceSolveStats:" +
+                    std::to_string(guidanceSolveSuccessCount) + ":" +
+                    std::to_string(guidanceSolveTotalCount),
+                LogLevel::INFO,
+                DeviceType::MAIN);
+    emit guidanceSolveStatsChanged(guidanceSolveSuccessCount, guidanceSolveTotalCount);
 }
 
 void PolarAlignment::saveAndEmitAdjustmentGuideData(double ra, double dec,
