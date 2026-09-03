@@ -1050,8 +1050,7 @@ public:
     bool isFocusMoveDone = false;  // 是否移动完成
     int focuserMaxPosition = -1;   // 行程上限
     int focuserMinPosition = -1;   // 行程下限
-    bool focuserManualCalibrationMode = false; // 手动校准模式（校准中允许动态扩展边界）
-    int focuserCalibrationExpandedDir = 0;     // 上次扩边方向：1=向内边界，-1=向外边界，0=无
+    bool focuserManualCalibrationMode = false; // 手动校准模式（校准中左右移动不受已保存/驱动范围限制）
     bool focuserIndiNeedResyncTarget = false;
     int focuserIndiStallCount = 0;
     int focuserIndiLastPollPos = 0;
@@ -1096,7 +1095,6 @@ public:
      * @brief 检查电调移动命令是否正常
      */
     void CheckFocuserMoveOrder();
-    bool maybeExpandFocuserLimitForCalibration(bool isInward, int currentPosition);
     void getFocuserAbsoluteRange(int &absoluteMin, int &absoluteMax) const;
 
 

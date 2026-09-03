@@ -980,10 +980,12 @@ bool MainWindow::handleFocuserCommand(const QString &message, const QStringList 
     else if (parts.size() == 2 && parts[0].trimmed() == "ManualFocuserCalibrationMode")
     {
         const QString mode = parts[1].trimmed().toLower();
+        const bool wasCalibrationMode = focuserManualCalibrationMode;
         focuserManualCalibrationMode = (mode == "1" || mode == "true" || mode == "on");
-        if (!focuserManualCalibrationMode)
+        if (wasCalibrationMode && !focuserManualCalibrationMode)
         {
-            focuserCalibrationExpandedDir = 0;
+            // Do not let an unrestricted calibration move continue after normal limits are restored.
+            FocuserControlStop(false, true);
         }
         Logger::Log("ManualFocuserCalibrationMode:" + std::string(focuserManualCalibrationMode ? "true" : "false"),
                     LogLevel::INFO, DeviceType::FOCUSER);

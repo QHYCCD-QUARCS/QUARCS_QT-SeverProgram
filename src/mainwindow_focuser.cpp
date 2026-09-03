@@ -16,40 +16,6 @@ void MainWindow::getFocuserAbsoluteRange(int &absoluteMin, int &absoluteMax) con
     }
 }
 
-bool MainWindow::maybeExpandFocuserLimitForCalibration(bool isInward, int currentPosition)
-{
-    if (!focuserManualCalibrationMode)
-    {
-        return false;
-    }
-
-    int absoluteMin = -100000;
-    int absoluteMax = 100000;
-    getFocuserAbsoluteRange(absoluteMin, absoluteMax);
-
-    const bool reachedPhysicalLimit = isInward ? (currentPosition <= absoluteMin) : (currentPosition >= absoluteMax);
-    if (!reachedPhysicalLimit)
-    {
-        emit wsThread->sendMessageToClient("FocusMoveToLimit:Not at focuser physical limit yet. Calibration move stopped.");
-        return false;
-    }
-
-    const int desiredDir = isInward ? 1 : -1;
-    if (focuserCalibrationExpandedDir != 0 && focuserCalibrationExpandedDir != desiredDir)
-    {
-        emit wsThread->sendMessageToClient(
-            "FocusMoveToLimit:Reached physical limit again immediately after reverse direction during calibration. Movement stopped, please check mechanics.");
-        return false;
-    }
-
-    focuserCalibrationExpandedDir = desiredDir;
-    emit wsThread->sendMessageToClient(
-        QString("FocusMoveToLimit:Reached focuser physical %1 limit (%2). Movement stopped.")
-            .arg(isInward ? "inner" : "outer")
-            .arg(isInward ? absoluteMin : absoluteMax));
-    return false;
-}
-
 void MainWindow::HandleFocuserMovementDataPeriodically()
 {
     Logger::Log("HandleFocuserMovementDataPeriodically | Entry, isFocusMoveDone: " + std::to_string(isFocusMoveDone), LogLevel::DEBUG, DeviceType::FOCUSER);
@@ -90,17 +56,14 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
 
         const SdkDeviceHandle handleSnap = sdkFocuserHandle;
         const bool isInwardSnap = this->currentDirection;
+        const bool calibrationModeSnap = this->focuserManualCalibrationMode;
         const int targetSnap = this->TargetPosition;
-        int minSnap = this->focuserMinPosition;
-        int maxSnap = this->focuserMaxPosition;
-        if (focuserManualCalibrationMode)
-        {
-            getFocuserAbsoluteRange(minSnap, maxSnap);
-        }
+        const int minSnap = this->focuserMinPosition;
+        const int maxSnap = this->focuserMaxPosition;
         const int startPosSnap = this->startPosition;
         const uint64_t epochSnap = sdkFocuserOpEpoch.load(std::memory_order_relaxed);
 
-        sdkFocuserExec->post([this, handleSnap, isInwardSnap, targetSnap, minSnap, maxSnap, startPosSnap, epochSnap]() {
+        sdkFocuserExec->post([this, handleSnap, isInwardSnap, calibrationModeSnap, targetSnap, minSnap, maxSnap, startPosSnap, epochSnap]() {
             bool ok = false;
             int curPos = INT_MIN;
             std::string err;
@@ -142,7 +105,6 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
             int newTarget = targetSnap;
             int steps = 0;
             bool limitReached = false;
-            std::string limitMsg;
 
             const bool isFirstSegment = (targetSnap == startPosSnap);
             if (ok && (curPos == targetSnap || isFirstSegment))
@@ -160,40 +122,46 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
 
                 if (isInwardSnap)
                 {
-                    steps = curPos - minSnap;
-                    if (steps > 60000)
+                    if (calibrationModeSnap)
                     {
                         steps = 60000;
                         newTarget = curPos - steps;
                     }
                     else
                     {
-                        newTarget = minSnap;
-                    }
-                    if (steps <= 0)
-                    {
-                        maybeExpandFocuserLimitForCalibration(true, curPos);
-                        limitReached = true;
-                        limitMsg.clear();
+                        steps = curPos - minSnap;
+                        if (steps > 60000)
+                        {
+                            steps = 60000;
+                            newTarget = curPos - steps;
+                        }
+                        else
+                        {
+                            newTarget = minSnap;
+                        }
+                        limitReached = (steps <= 0);
                     }
                 }
                 else
                 {
-                    steps = maxSnap - curPos;
-                    if (steps > 60000)
+                    if (calibrationModeSnap)
                     {
                         steps = 60000;
                         newTarget = curPos + steps;
                     }
                     else
                     {
-                        newTarget = maxSnap;
-                    }
-                    if (steps <= 0)
-                    {
-                        maybeExpandFocuserLimitForCalibration(false, curPos);
-                        limitReached = true;
-                        limitMsg.clear();
+                        steps = maxSnap - curPos;
+                        if (steps > 60000)
+                        {
+                            steps = 60000;
+                            newTarget = curPos + steps;
+                        }
+                        else
+                        {
+                            newTarget = maxSnap;
+                        }
+                        limitReached = (steps <= 0);
                     }
                 }
 
@@ -228,7 +196,7 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
 
             QMetaObject::invokeMethod(
                 this,
-                [this, ok, curPos, err, issuedMove, newTarget, isInwardSnap, steps, limitReached, limitMsg]() {
+                [this, ok, curPos, err, issuedMove, newTarget, isInwardSnap, steps, limitReached]() {
                     sdkFocuserPeriodicTaskInFlight = false;
 
                     if (sdkFocuserHandle == nullptr)
@@ -255,10 +223,6 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
 
                     if (limitReached)
                     {
-                        if (wsThread != nullptr && !limitMsg.empty())
-                        {
-                            emit wsThread->sendMessageToClient(QString::fromStdString(limitMsg));
-                        }
                         return;
                     }
 
@@ -323,31 +287,22 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
                     ", isInward: " + std::to_string(isInward),
                 LogLevel::DEBUG, DeviceType::FOCUSER);
 
-    int moveMin = focuserMinPosition;
-    int moveMax = focuserMaxPosition;
-    if (focuserManualCalibrationMode)
-    {
-        getFocuserAbsoluteRange(moveMin, moveMax);
-    }
-
     if (isInward)
     {
         if (CurrentPosition == TargetPosition)
         {
-            int steps = CurrentPosition - moveMin;
-            if (steps > kIndiFocuserRelMoveChunkMax)
+            int steps = kIndiFocuserRelMoveChunkMax;
+            if (focuserManualCalibrationMode)
             {
-                steps = kIndiFocuserRelMoveChunkMax;
                 TargetPosition = CurrentPosition - steps;
             }
             else
             {
-                TargetPosition = moveMin;
-            }
-            if (steps <= 0)
-            {
-                maybeExpandFocuserLimitForCalibration(true, CurrentPosition);
-                return;
+                steps = std::min(std::max(0, CurrentPosition - focuserMinPosition),
+                                 kIndiFocuserRelMoveChunkMax);
+                TargetPosition = CurrentPosition - steps;
+                if (steps <= 0)
+                    return;
             }
             Logger::Log("HandleFocuserMovementDataPeriodically | INDI move inward, steps: " + std::to_string(steps), LogLevel::DEBUG, DeviceType::FOCUSER);
             indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
@@ -362,20 +317,18 @@ void MainWindow::HandleFocuserMovementDataPeriodically()
     {
         if (TargetPosition == CurrentPosition)
         {
-            int steps = moveMax - CurrentPosition;
-            if (steps > kIndiFocuserRelMoveChunkMax)
+            int steps = kIndiFocuserRelMoveChunkMax;
+            if (focuserManualCalibrationMode)
             {
-                steps = kIndiFocuserRelMoveChunkMax;
                 TargetPosition = CurrentPosition + steps;
             }
             else
             {
-                TargetPosition = moveMax;
-            }
-            if (steps <= 0)
-            {
-                maybeExpandFocuserLimitForCalibration(false, CurrentPosition);
-                return;
+                steps = std::min(std::max(0, focuserMaxPosition - CurrentPosition),
+                                 kIndiFocuserRelMoveChunkMax);
+                TargetPosition = CurrentPosition + steps;
+                if (steps <= 0)
+                    return;
             }
             Logger::Log("HandleFocuserMovementDataPeriodically | INDI move outward, steps: " + std::to_string(steps), LogLevel::DEBUG, DeviceType::FOCUSER);
             indi_Client->setFocuserMoveDiretion(dpFocuser, isInward);
@@ -719,16 +672,6 @@ void MainWindow::FocuserControlMoveStep(bool isInward, int steps)
             TargetPosition = focuserMinPosition;
         }
         steps = std::abs(TargetPosition - CurrentPosition);
-        if (steps <= 0 && !isInward)
-        {
-            maybeExpandFocuserLimitForCalibration(false, CurrentPosition);
-            return;
-        }
-        else if (steps <= 0 && isInward)
-        {
-            maybeExpandFocuserLimitForCalibration(true, CurrentPosition);
-            return;
-        }
         if (steps <= 0)
         {
             return;
