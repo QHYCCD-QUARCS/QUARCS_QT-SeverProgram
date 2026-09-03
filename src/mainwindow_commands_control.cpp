@@ -155,6 +155,13 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
         emit wsThread->sendMessageToClient(QString("GuiderLoopExpStatus:%1").arg(loopOn ? "true" : "false"));
         if (!guiderStatus.isEmpty())
             emit wsThread->sendMessageToClient("GuiderStatus:" + guiderStatus);
+        if (guiderLastPublishedPreviewWidth > 0 && guiderLastPublishedPreviewHeight > 0)
+        {
+            emit wsThread->sendMessageToClient(
+                QString("GuideSize:%1:%2")
+                    .arg(guiderLastPublishedPreviewWidth)
+                    .arg(guiderLastPublishedPreviewHeight));
+        }
         publishGuiderErrorUnit(true, false);
         publishGuiderSearchBoxMode(false);
         

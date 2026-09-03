@@ -47,10 +47,14 @@ void MainWindow::initializeBuiltInGuiderRuntime()
 #endif
     connect(guiderCore, &GuiderCore::requestExposure, this, [this](int exposureMs) {
         guiderExpMs = std::max(1, exposureMs);
+        const bool wasLooping = isGuiderLoopExp;
         isGuiderLoopExp = true;
         guiderExposureInFlight = false;
-        emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
-        emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+        if (!wasLooping)
+        {
+            emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
+            emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+        }
         if (guiderLoopTimer)
             guiderLoopTimer->start(0);
     });
@@ -118,23 +122,11 @@ void MainWindow::initializeBuiltInGuiderRuntime()
             QString::number(static_cast<int>(std::lround(y))) + ":" +
             QString::number(searchHalfSizePx));
         emit wsThread->sendMessageToClient(
-            "GuiderSelectedStar:" +
-            QString::number(x, 'f', 2) + ":" +
-            QString::number(y, 'f', 2) + ":" +
-            QString::number(snr, 'f', 2) + ":" +
-            QString::number(hfd, 'f', 2));
-        emit wsThread->sendMessageToClient(
             "GuiderStarSelected:x=" +
             QString::number(x, 'f', 2) + ":y=" +
             QString::number(y, 'f', 2) + ":snr=" +
             QString::number(snr, 'f', 2) + ":hfd=" +
             QString::number(hfd, 'f', 2));
-        emit wsThread->sendMessageToClient(
-            QStringLiteral("SendDebugMessage|Info|导星选星成功：X=%1 Y=%2 SNR=%3 HFD=%4")
-                .arg(x, 0, 'f', 2)
-                .arg(y, 0, 'f', 2)
-                .arg(snr, 0, 'f', 2)
-                .arg(hfd, 0, 'f', 2));
     });
     connect(guiderCore, &GuiderCore::debugStarCandidatesChanged, this,
             [this](int imageW, int imageH, const QVector<QPointF>& dedupCandidates,
@@ -155,56 +147,8 @@ void MainWindow::initializeBuiltInGuiderRuntime()
                         " selected=" + std::to_string((selected.x() != 0.0 || selected.y() != 0.0) ? 1 : 0),
                     LogLevel::INFO, DeviceType::GUIDER);
 
-        emit wsThread->sendMessageToClient("ClearGuiderDebugCandidates");
-
-        const int safeImageW = std::max(1, imageW);
-        const int safeImageH = std::max(1, imageH);
-        const int maxCandidatesToSend = 48;
-        for (int i = 0; i < dedupCandidates.size() && i < maxCandidatesToSend; ++i)
-        {
-            const auto& pt = dedupCandidates[i];
-            emit wsThread->sendMessageToClient(
-                "GuiderDebugDedupCandidatePosition:" + QString::number(safeImageW) + ":" +
-                QString::number(safeImageH) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.y()))));
-        }
-
-        for (int i = 0; i < snrCandidates.size() && i < maxCandidatesToSend; ++i)
-        {
-            const auto& pt = snrCandidates[i];
-            emit wsThread->sendMessageToClient(
-                "GuiderDebugSnrCandidatePosition:" + QString::number(safeImageW) + ":" +
-                QString::number(safeImageH) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.y()))));
-        }
-
-        for (int i = 0; i < candidates.size() && i < maxCandidatesToSend; ++i)
-        {
-            const auto& pt = candidates[i];
-            const QString label = (i < candidateLabels.size()) ? candidateLabels[i] : QString();
-            emit wsThread->sendMessageToClient(
-                "GuiderDebugCandidatePosition:" + QString::number(safeImageW) + ":" +
-                QString::number(safeImageH) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.y()))));
-            emit wsThread->sendMessageToClient(
-                "GuiderDebugFinalCandidatePosition:" + QString::number(safeImageW) + ":" +
-                QString::number(safeImageH) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.x()))) + ":" +
-                QString::number(static_cast<int>(std::lround(pt.y()))) + ":" +
-                label);
-        }
-
-        if (selected.x() != 0.0 || selected.y() != 0.0)
-        {
-            emit wsThread->sendMessageToClient(
-                "GuiderDebugSelectedCandidatePosition:" + QString::number(safeImageW) + ":" +
-                QString::number(safeImageH) + ":" +
-                QString::number(static_cast<int>(std::lround(selected.x()))) + ":" +
-                QString::number(static_cast<int>(std::lround(selected.y()))));
-        }
+        // 候选星集合只用于后端生成带标注的预览图，不再逐点发送到前端。
+        // 单帧最多会产生上百条调试消息，而前端正常导星仅需要锁星框与质心位置。
     });
     connect(guiderCore, &GuiderCore::guideStarCentroidChanged, this, [this](const QPointF& centroidPx) {
         const int searchHalfSizePx = std::max(4, guiderParamsCache.guideSearchHalfSizePx);
@@ -212,7 +156,6 @@ void MainWindow::initializeBuiltInGuiderRuntime()
         guiderGuideStarCentroidValid = true;
         glPHD_CurrentImageSizeX = std::max(1, glPHD_CurrentImageSizeX);
         glPHD_CurrentImageSizeY = std::max(1, glPHD_CurrentImageSizeY);
-        emit wsThread->sendMessageToClient("PHD2StarBoxView:true");
         emit wsThread->sendMessageToClient(
             "PHD2StarBoxPosition:" + QString::number(glPHD_CurrentImageSizeX) + ":" +
             QString::number(glPHD_CurrentImageSizeY) + ":" +
@@ -257,9 +200,6 @@ void MainWindow::initializeBuiltInGuiderRuntime()
             "AddLineChartData:" + QString::number(guiderChartSampleIndex++) + ":" +
             QString::number(raErr, 'f', 6) + ":" +
             QString::number(decErr, 'f', 6));
-        emit wsThread->sendMessageToClient(
-            "AddScatterChartData:" + QString::number(raErr, 'f', 6) + ":" +
-            QString::number(-decErr, 'f', 6));
     });
     connect(guiderCore, &GuiderCore::guidePulseIssued, this,
             [this](const guiding::PulseCommand& cmd, double raErrPx, double decErrPx) {
@@ -314,17 +254,14 @@ void MainWindow::initializeBuiltInGuiderRuntime()
         case guiding::State::Selecting:
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             emit wsThread->sendMessageToClient("GuiderStatus:InSelecting");
-            emit wsThread->sendMessageToClient("SendDebugMessage|Info|导星正在自动选星，请稍候");
             break;
         case guiding::State::Calibrating:
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             emit wsThread->sendMessageToClient("GuiderStatus:InCalibration");
-            emit wsThread->sendMessageToClient("SendDebugMessage|Info|导星已锁定星点，正在校准");
             break;
         case guiding::State::Guiding:
             emit wsThread->sendMessageToClient("GuiderSwitchStatus:true");
             emit wsThread->sendMessageToClient("GuiderStatus:InGuiding");
-            emit wsThread->sendMessageToClient("SendDebugMessage|Info|导星已进入闭环导星");
             break;
         case guiding::State::Idle:
         case guiding::State::Looping:
@@ -337,30 +274,28 @@ void MainWindow::initializeBuiltInGuiderRuntime()
     });
     connect(guiderCore, &GuiderCore::infoMessage, this, [this](const QString& msg) {
         Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::INFO, DeviceType::GUIDER);
-        emit wsThread->sendMessageToClient("GuiderCoreInfo:" + msg);
+        const bool isRoutineGuidingTelemetry =
+            guiderCoreStateCache == guiding::State::Guiding &&
+            (msg.startsWith(QStringLiteral("RMS[")) ||
+             msg.startsWith(QStringLiteral("导星中")) ||
+             msg.startsWith(QStringLiteral("PulseEffect:")));
+        if (!isRoutineGuidingTelemetry)
+            emit wsThread->sendMessageToClient("GuiderCoreInfo:" + msg);
         if (msg.contains(QStringLiteral("选星成功")))
         {
             emit wsThread->sendMessageToClient("GuiderStatus:StarSelected");
-            emit wsThread->sendMessageToClient("SendDebugMessage|Info|" + msg);
         }
         else if (msg.contains(QStringLiteral("自动选星进行中")) ||
                  msg.contains(QStringLiteral("等待下一帧")) ||
                  msg.contains(QStringLiteral("候选星点")))
         {
             emit wsThread->sendMessageToClient("GuiderStatus:SelectingProgress");
-            emit wsThread->sendMessageToClient("SendDebugMessage|Info|" + msg);
-        }
-        else if (msg.contains(QStringLiteral("进入校准阶段")) ||
-                 msg.contains(QStringLiteral("校准完成")))
-        {
-            emit wsThread->sendMessageToClient("SendDebugMessage|Info|" + msg);
         }
     });
     connect(guiderCore, &GuiderCore::errorOccurred, this, [this](const QString& msg) {
         Logger::Log("BuiltInGuider | " + msg.toStdString(), LogLevel::WARNING, DeviceType::GUIDER);
         emit wsThread->sendMessageToClient("GuiderCoreError:" + msg);
         emit wsThread->sendMessageToClient("ErrorMessage:导星错误 - " + msg);
-        emit wsThread->sendMessageToClient("SendDebugMessage|Warning|导星错误：" + msg);
         if (msg.contains(QStringLiteral("LostStar"), Qt::CaseInsensitive) ||
             msg.contains(QStringLiteral("丢星"), Qt::CaseInsensitive))
         {

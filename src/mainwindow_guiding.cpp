@@ -727,7 +727,13 @@ void MainWindow::saveGuiderImageAsJPG(cv::Mat Image)
 
     if (saved)
     {
-        emit wsThread->sendMessageToClient(QString("GuideSize:%1:%2").arg(preview.cols).arg(preview.rows));
+        if (guiderLastPublishedPreviewWidth != preview.cols ||
+            guiderLastPublishedPreviewHeight != preview.rows)
+        {
+            guiderLastPublishedPreviewWidth = preview.cols;
+            guiderLastPublishedPreviewHeight = preview.rows;
+            emit wsThread->sendMessageToClient(QString("GuideSize:%1:%2").arg(preview.cols).arg(preview.rows));
+        }
         emit wsThread->sendMessageToClient("SaveGuiderImageSuccess:" + QString::fromStdString(fileName));
         Logger::Log("saveGuiderImageAsJPG | saved compressed guider preview: " +
                         std::to_string(preview.cols) + "x" + std::to_string(preview.rows) +

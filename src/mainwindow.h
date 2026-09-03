@@ -1011,6 +1011,8 @@ private:
     // 导星 UI 叠加层缓存（供前端复用既有 PHD2Box/Cross/MultiStar 协议）。
     int glPHD_CurrentImageSizeX = 0;
     int glPHD_CurrentImageSizeY = 0;
+    int guiderLastPublishedPreviewWidth = 0;
+    int guiderLastPublishedPreviewHeight = 0;
     bool guiderMultiStarSecondaryPtsPending = false;
     bool guiderPhaseGuiding = false;
     bool guiderDirectionDetectActive = false;
