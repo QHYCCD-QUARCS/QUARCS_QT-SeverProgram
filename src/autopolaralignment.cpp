@@ -2389,7 +2389,7 @@ void PolarAlignment::updateSolveModeStatistics(bool solveSucceeded)
 
 bool PolarAlignment::solveImage(const QString& imageFile)
 {
-    constexpr int kPolarSolveTimeoutMs = 2000;
+    constexpr int kPolarSolveTimeoutMs = 5000;
     constexpr int kInitialThreePointSolveTimeoutMs = 20000;
     const bool isInitialThreePointSolve =
         currentState == PolarAlignmentState::FIRST_CAPTURE ||
