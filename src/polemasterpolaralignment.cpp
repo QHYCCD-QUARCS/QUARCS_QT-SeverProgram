@@ -505,14 +505,22 @@ bool PoleMasterPolarAlignment::isRunning() const
     return running;
 }
 
-void PoleMasterPolarAlignment::setCaptureEnd(bool isEnd)
+void PoleMasterPolarAlignment::setCaptureEnd(bool isEnd, quint64 captureId)
 {
+    if (captureId != 0 && captureId != activeCaptureRequestId)
+        return;
+    if (isEnd && captureId != 0 && !capturePathAcceptedForRequest)
+        return;
     captureEnded = isEnd;
 }
 
-void PoleMasterPolarAlignment::setCapturedImagePath(const QString &fitsPath)
+bool PoleMasterPolarAlignment::setCapturedImagePath(const QString &fitsPath, quint64 captureId)
 {
+    if (captureId != 0 && captureId != activeCaptureRequestId)
+        return false;
     latestCapturePathFromHost = fitsPath.trimmed();
+    capturePathAcceptedForRequest = !latestCapturePathFromHost.isEmpty();
+    return capturePathAcceptedForRequest;
 }
 
 void PoleMasterPolarAlignment::onStateTimerTimeout()
@@ -797,6 +805,8 @@ bool PoleMasterPolarAlignment::captureImage(int exposureMs)
     captureEnded = false;
     latestCapturePathFromHost.clear();
     lastCapturedImage.clear();
+    capturePathAcceptedForRequest = false;
+    activeCaptureRequestId = ++captureRequestSequence;
 
     Logger::Log("PoleMasterPolarAlignment: request capture exposureMs=" + std::to_string(std::max(1, exposureMs)),
                 LogLevel::INFO,
@@ -804,7 +814,7 @@ bool PoleMasterPolarAlignment::captureImage(int exposureMs)
 
     // Route both INDI and SDK captures through MainWindow so the existing
     // PoleCamera callback/pending flag remains the single capture-complete path.
-    emit requestCaptureForRole("PoleCamera", std::max(1, exposureMs));
+    emit requestCaptureForRole("PoleCamera", std::max(1, exposureMs), activeCaptureRequestId);
     Logger::Log("PoleMasterPolarAlignment: capture dispatch done mode=real exposureMs=" +
                     std::to_string(std::max(1, exposureMs)) +
                     " dispatchMs=" + std::to_string(stageTimer.elapsed()),

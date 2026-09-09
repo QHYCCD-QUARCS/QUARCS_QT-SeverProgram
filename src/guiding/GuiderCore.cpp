@@ -1435,6 +1435,10 @@ void GuiderCore::onNewFrame(const QString& fitsPath)
             if (step.hasPulse)
             {
                 // 关键：脉冲与下一次曝光必须分离（否则星点在曝光内拖影，质心会偏）
+                Logger::Log("BuiltInGuider | requestPulse emit | dir=" +
+                                std::to_string(static_cast<int>(step.pulse.dir)) +
+                                " durationMs=" + std::to_string(step.pulse.durationMs),
+                            LogLevel::INFO, DeviceType::GUIDER);
                 emit requestPulse(step.pulse);
                 nextExposureDelayMs = std::max(nextExposureDelayMs,
                                                std::max(0, step.pulse.durationMs) + std::max(0, m_params.settleMsAfterPulse));

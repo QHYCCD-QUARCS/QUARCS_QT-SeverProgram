@@ -998,6 +998,8 @@ private:
     // 导星循环曝光定时器（singleShot：收到一帧后再触发下一帧，避免重入）
     QTimer *guiderLoopTimer = nullptr;
     bool guiderExposureInFlight = false;
+    // GuiderCore 可能在当前相机帧仍处于读出阶段时请求下一帧；延后到当前帧完成，避免重入。
+    bool guiderExposureRequestPending = false;
     std::atomic_uint64_t indiClientGeneration{0};
     // 用于像素尺度换算（arcsec/px）的导星相机/镜筒参数缓存。
     double guiderPixelSizeUm = 0.0;
@@ -2134,13 +2136,22 @@ private slots:
 private:
     PolarAlignmentCameraRole currentPolarAlignmentCameraRole = PolarAlignmentCameraRole::MainCamera;
     bool polarGuiderSingleCapturePending = false;
+    quint64 activePolarCaptureRequestId = 0;
+    qint64 activePolarCaptureStartedAtMs = 0;
+    QString activePolarCaptureBaselinePath;
+    qint64 activePolarCaptureBaselineModifiedAtMs = -1;
+    qint64 activePolarCaptureBaselineSize = -1;
+    QString lastPolarMainCapturePath;
+    QString lastPolarGuiderCapturePath;
+    QString lastPolarPoleCapturePath;
 
     bool isGuiderCameraSDK() const;
     bool isGuiderCameraConnected() const;
     bool isPoleCameraSDK() const;
     bool isPoleCameraConnected() const;
     int getMainCameraFocalLengthFromConfigAndMigrateIfNeeded();
-    void notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role, const QString &fitsPath);
+    void armPolarCaptureRequest(PolarAlignmentCameraRole role, quint64 captureId);
+    bool notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role, const QString &fitsPath);
     void startGuiderSingleCapture(int exposureMs);
     void startPoleCameraSingleCapture(int exposureMs);
     static PolarAlignmentCameraRole parsePolarAlignmentCameraRole(const QString &roleText);

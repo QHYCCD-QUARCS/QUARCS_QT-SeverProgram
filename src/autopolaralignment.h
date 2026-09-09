@@ -291,8 +291,8 @@ public:
      * @brief 设置拍摄结束状态
      * @param isEnd 是否结束
      */
-    void setCaptureEnd(bool isEnd);
-    void setCapturedImagePath(const QString &fitsPath);
+    void setCaptureEnd(bool isEnd, quint64 captureId = 0);
+    bool setCapturedImagePath(const QString &fitsPath, quint64 captureId = 0);
     
     // ==================== 状态查询函数 ====================
     
@@ -479,7 +479,7 @@ signals:
      * - INDI 模式下 PolarAlignment 也可以直接调用 indiServer->takeExposure；
      * - SDK 模式下拍摄设备 INDI 指针可能为空，此时通过该信号让 MainWindow 调用统一入口拍摄。
      */
-    void requestCaptureForRole(QString cameraRole, int exposureTimeMs);
+    void requestCaptureForRole(QString cameraRole, int exposureTimeMs, quint64 captureId);
 
 private slots:
     /**
@@ -1166,6 +1166,9 @@ private:
     bool isSolveEnd;             // 解析是否结束
     QString lastCapturedImage;   // 最后拍摄的图像文件
     QString latestCapturePathFromHost; // 主线程回传的本次真实 FITS 路径
+    quint64 captureRequestSequence = 0;
+    quint64 activeCaptureRequestId = 0;
+    bool capturePathAcceptedForRequest = false;
     
     // 失败计数
     int captureFailureCount;     // 拍摄失败计数

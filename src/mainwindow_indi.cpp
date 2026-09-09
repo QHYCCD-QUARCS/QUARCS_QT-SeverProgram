@@ -108,6 +108,15 @@ void MainWindow::initINDIClient()
                 {
                     Logger::Log("indi_client | image callback | MainCamera FITS received: " + filename,
                                 LogLevel::INFO, DeviceType::CAMERA);
+                    if (polarAlignment != nullptr &&
+                        polarAlignment->isRunning() &&
+                        currentPolarAlignmentCameraRole == PolarAlignmentCameraRole::MainCamera)
+                    {
+                        notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::MainCamera,
+                                                         QString::fromStdString(filename));
+                        return;
+                    }
+
                     lastMainCaptureFitsPath = QString::fromStdString(filename);
                     glMainCameraStatu = "Displaying";
                     ShootStatus = "Completed";
@@ -177,15 +186,6 @@ void MainWindow::initINDIClient()
                         emitCaptureTrace(QStringLiteral("backend_exposure_completed"), currentCaptureTraceStartedAtMs,
                                          QStringLiteral("source=fits_callback"));
                         Logger::Log("ExposureCompleted", LogLevel::INFO, DeviceType::CAMERA);
-                        if (polarAlignment != nullptr)
-                        {
-                            if (polarAlignment->isRunning())
-                            {
-                                notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::MainCamera,
-                                                                 QString::fromStdString(filename));
-                                return;
-                            }
-                        }
                         saveFitsAsPNG(QString::fromStdString(filename), true);
 
                         // 如果自动保存开启，自动保存图像
@@ -217,8 +217,8 @@ void MainWindow::initINDIClient()
                     const QString fitsPath = QString::fromStdString(filename);
                     if (polarGuiderSingleCapturePending)
                     {
-                        notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::Guider, fitsPath);
-                        polarGuiderSingleCapturePending = false;
+                        if (notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::Guider, fitsPath))
+                            polarGuiderSingleCapturePending = false;
                     }
 
                     // 1) 预览：从 FITS 读取单通道并拉伸为 8-bit，复用原有 saveGuiderImageAsJPG 的前端协议
@@ -348,8 +348,8 @@ void MainWindow::initINDIClient()
                     const QString fitsPath = QString::fromStdString(filename);
                     if (polarGuiderSingleCapturePending)
                     {
-                        notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::PoleCamera, fitsPath);
-                        polarGuiderSingleCapturePending = false;
+                        if (notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole::PoleCamera, fitsPath))
+                            polarGuiderSingleCapturePending = false;
                     }
                     guiderExposureInFlight = false;
                 }

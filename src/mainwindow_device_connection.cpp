@@ -2584,6 +2584,7 @@ void MainWindow::UnBindingDevice(QString DeviceType)
         emit wsThread->sendMessageToClient("GuiderSwitchStatus:false");
         isGuiderLoopExp = false;
         guiderExposureInFlight = false;
+        guiderExposureRequestPending = false;
         if (guiderLoopTimer)
             guiderLoopTimer->stop();
         if (sdkGuiderExposureTimer)
@@ -9472,6 +9473,7 @@ void MainWindow::stopGuiderLoopAndExposure(const QString &reason, bool emitStatu
 
     isGuiderLoopExp = false;
     guiderExposureInFlight = false;
+    guiderExposureRequestPending = false;
     sdkGuiderCameraOpEpoch.fetch_add(1, std::memory_order_relaxed);
     // Do not clear sdkGuiderFrameTaskInFlight here: a queued GetSingleFrame may
     // still be inside the vendor SDK. It will clear the flag when it really exits.

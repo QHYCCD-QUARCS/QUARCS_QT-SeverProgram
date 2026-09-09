@@ -2253,31 +2253,14 @@ bool PolarAlignment::captureImage(int exposureTime)
     isCaptureEnd = false;
     lastCapturedImage.clear();
     latestCapturePathFromHost.clear();
+    capturePathAcceptedForRequest = false;
+    activeCaptureRequestId = ++captureRequestSequence;
 
-    // INDI 模式：直接通过 INDI 下发曝光
-    if (!useSdkCaptureSource && dpCaptureCamera) {
-        uint32_t ret = indiServer->resetCCDFrameInfo(dpCaptureCamera);
-        if (ret != QHYCCD_SUCCESS)
-        {
-            Logger::Log("PolarAlignment::captureImage | indi resetCCDFrameInfo | failed", LogLevel::WARNING, DeviceType::CAMERA);
-        }
-        
-        Logger::Log("PolarAlignment: 开始调用 INDI takeExposure", LogLevel::INFO, DeviceType::MAIN);
-        ret = indiServer->takeExposure(dpCaptureCamera, exposureTime / 1000.0);
-        if (ret == QHYCCD_SUCCESS) {
-            Logger::Log("PolarAlignment: INDI 拍摄命令发送成功，等待回调", LogLevel::INFO, DeviceType::MAIN);
-            return true;
-        } else {
-            Logger::Log("PolarAlignment: INDI 拍摄失败，错误代码: " + std::to_string(ret), LogLevel::ERROR, DeviceType::MAIN);
-            return false;
-        }
-    }
-
-    // SDK 模式：由 MainWindow 统一入口 INDI_Capture() 执行（内部已兼容 SDK/INDI）
+    // INDI 和 SDK 都由 MainWindow 统一入口触发，确保 capture ID 能贯穿拍摄和回调。
     Logger::Log("PolarAlignment: 触发 requestCaptureForRole(统一拍摄入口) 进行拍摄，角色=" +
                     captureCameraRole.toStdString(),
                 LogLevel::INFO, DeviceType::MAIN);
-    emit requestCaptureForRole(captureCameraRole, exposureTime);
+    emit requestCaptureForRole(captureCameraRole, exposureTime, activeCaptureRequestId);
     return true;
 }
 
@@ -2549,15 +2532,23 @@ bool PolarAlignment::moveTelescopeToAbsolutePosition(double ra, double dec)
     return true;
 }
 
-void PolarAlignment::setCaptureEnd(bool isEnd)
+void PolarAlignment::setCaptureEnd(bool isEnd, quint64 captureId)
 {
+    if (captureId != 0 && captureId != activeCaptureRequestId)
+        return;
+    if (isEnd && captureId != 0 && !capturePathAcceptedForRequest)
+        return;
     Logger::Log("PolarAlignment: 设置拍摄完成标志: " + std::to_string(isEnd), LogLevel::INFO, DeviceType::MAIN);
     isCaptureEnd = isEnd;
 }
 
-void PolarAlignment::setCapturedImagePath(const QString &fitsPath)
+bool PolarAlignment::setCapturedImagePath(const QString &fitsPath, quint64 captureId)
 {
+    if (captureId != 0 && captureId != activeCaptureRequestId)
+        return false;
     latestCapturePathFromHost = fitsPath.trimmed();
+    capturePathAcceptedForRequest = !latestCapturePathFromHost.isEmpty();
+    return capturePathAcceptedForRequest;
 }
 
 

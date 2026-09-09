@@ -262,6 +262,7 @@ bool MainWindow::handleGuiderCommand(const QString &message, const QStringList &
             }
             isGuiderLoopExp = false;
             guiderExposureInFlight = false;
+            guiderExposureRequestPending = false;
             if (guiderLoopTimer)
                 guiderLoopTimer->stop();
 

@@ -52,14 +52,78 @@ MainWindow::PolarAlignmentCameraRole MainWindow::parsePolarAlignmentCameraRole(c
     return PolarAlignmentCameraRole::MainCamera;
 }
 
-void MainWindow::notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role, const QString &fitsPath)
+void MainWindow::armPolarCaptureRequest(PolarAlignmentCameraRole role, quint64 captureId)
+{
+    activePolarCaptureRequestId = captureId;
+    activePolarCaptureStartedAtMs = QDateTime::currentMSecsSinceEpoch();
+    activePolarCaptureBaselinePath.clear();
+    activePolarCaptureBaselineModifiedAtMs = -1;
+    activePolarCaptureBaselineSize = -1;
+
+    if (role == PolarAlignmentCameraRole::MainCamera)
+        activePolarCaptureBaselinePath = lastPolarMainCapturePath;
+    else if (role == PolarAlignmentCameraRole::Guider)
+        activePolarCaptureBaselinePath = lastPolarGuiderCapturePath;
+    else
+        activePolarCaptureBaselinePath = lastPolarPoleCapturePath;
+
+    // SDK 通路使用固定共享 FITS 路径；INDI 通路则优先使用上一帧回调返回的路径。
+    if (activePolarCaptureBaselinePath.isEmpty())
+    {
+        if (role == PolarAlignmentCameraRole::MainCamera)
+            activePolarCaptureBaselinePath = QStringLiteral("/dev/shm/ccd_simulator.fits");
+        else if (role == PolarAlignmentCameraRole::Guider)
+            activePolarCaptureBaselinePath = QStringLiteral("/dev/shm/guiding.fits");
+        else
+            activePolarCaptureBaselinePath = QStringLiteral("/dev/shm/polecamera.fits");
+    }
+
+    const QFileInfo baselineInfo(activePolarCaptureBaselinePath);
+    if (baselineInfo.exists() && baselineInfo.isFile())
+    {
+        activePolarCaptureBaselineModifiedAtMs = baselineInfo.lastModified().toMSecsSinceEpoch();
+        activePolarCaptureBaselineSize = baselineInfo.size();
+    }
+}
+
+bool MainWindow::notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role, const QString &fitsPath)
 {
     if (role != currentPolarAlignmentCameraRole)
-        return;
+        return false;
 
     const QString normalizedPath = fitsPath.trimmed();
     if (normalizedPath.isEmpty())
-        return;
+        return false;
+
+    const QFileInfo captureInfo(normalizedPath);
+    const qint64 modifiedAtMs = captureInfo.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = captureInfo.size();
+    const bool sameAsBaseline =
+        !activePolarCaptureBaselinePath.isEmpty() &&
+        QFileInfo(activePolarCaptureBaselinePath).absoluteFilePath() == captureInfo.absoluteFilePath();
+    const bool baselineChanged =
+        modifiedAtMs != activePolarCaptureBaselineModifiedAtMs ||
+        fileSize != activePolarCaptureBaselineSize;
+    if (activePolarCaptureRequestId == 0 ||
+        !captureInfo.exists() ||
+        !captureInfo.isFile() ||
+        !captureInfo.lastModified().isValid() ||
+        modifiedAtMs < activePolarCaptureStartedAtMs ||
+        (sameAsBaseline && activePolarCaptureBaselineModifiedAtMs >= 0 && !baselineChanged))
+    {
+        Logger::Log("PolarAlignment capture rejected as stale | role=" +
+                        std::string(polarRoleName(role)) +
+                        " | captureId=" + std::to_string(activePolarCaptureRequestId) +
+                        " | path=" + normalizedPath.toStdString() +
+                        " | modifiedAtMs=" + std::to_string(modifiedAtMs) +
+                        " | size=" + std::to_string(fileSize) +
+                        " | baselineModifiedAtMs=" + std::to_string(activePolarCaptureBaselineModifiedAtMs) +
+                        " | baselineSize=" + std::to_string(activePolarCaptureBaselineSize) +
+                        " | startedAtMs=" + std::to_string(activePolarCaptureStartedAtMs),
+                    LogLevel::WARNING,
+                    DeviceType::MAIN);
+        return false;
+    }
 
     if (role == PolarAlignmentCameraRole::PoleCamera && wsThread != nullptr)
     {
@@ -68,23 +132,34 @@ void MainWindow::notifyPolarAlignmentCaptureReady(PolarAlignmentCameraRole role,
 
     if (polarAlignment != nullptr && polarAlignment->isRunning())
     {
-        polarAlignment->setCapturedImagePath(normalizedPath);
-        polarAlignment->setCaptureEnd(true);
+        if (!polarAlignment->setCapturedImagePath(normalizedPath, activePolarCaptureRequestId))
+            return false;
+        polarAlignment->setCaptureEnd(true, activePolarCaptureRequestId);
     }
     else if (poleMasterPolarAlignment != nullptr && poleMasterPolarAlignment->isRunning())
     {
-        poleMasterPolarAlignment->setCapturedImagePath(normalizedPath);
-        poleMasterPolarAlignment->setCaptureEnd(true);
+        if (!poleMasterPolarAlignment->setCapturedImagePath(normalizedPath, activePolarCaptureRequestId))
+            return false;
+        poleMasterPolarAlignment->setCaptureEnd(true, activePolarCaptureRequestId);
     }
     else
     {
-        return;
+        return false;
     }
 
     Logger::Log("PolarAlignment capture ready | role=" +
                     std::string(polarRoleName(role)) +
+                    " | captureId=" + std::to_string(activePolarCaptureRequestId) +
                     " | fits=" + normalizedPath.toStdString(),
                 LogLevel::INFO, DeviceType::MAIN);
+
+    if (role == PolarAlignmentCameraRole::MainCamera)
+        lastPolarMainCapturePath = normalizedPath;
+    else if (role == PolarAlignmentCameraRole::Guider)
+        lastPolarGuiderCapturePath = normalizedPath;
+    else
+        lastPolarPoleCapturePath = normalizedPath;
+    return true;
 }
 
 void MainWindow::savePoleMasterPreviewAsJPG(const QString &fitsPath)
@@ -523,6 +598,8 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
 
     currentPolarAlignmentCameraRole = role;
     polarGuiderSingleCapturePending = false;
+    activePolarCaptureRequestId = 0;
+    activePolarCaptureStartedAtMs = 0;
 
     polarAlignment = new PolarAlignment(indi_Client, dpMount, captureDevice, useSdkCaptureSource, captureRoleName);
     if (polarAlignment == nullptr)
@@ -533,9 +610,10 @@ bool MainWindow::initPolarAlignment(PolarAlignmentCameraRole role)
     }
 
     QObject::connect(polarAlignment, &PolarAlignment::requestCaptureForRole,
-                     this, [this](const QString &cameraRole, int exposureMs)
+                     this, [this](const QString &cameraRole, int exposureMs, quint64 captureId)
                      {
                          const PolarAlignmentCameraRole requestedRole = parsePolarAlignmentCameraRole(cameraRole);
+                         armPolarCaptureRequest(requestedRole, captureId);
                          if (requestedRole == PolarAlignmentCameraRole::Guider)
                          {
                              this->startGuiderSingleCapture(exposureMs);
@@ -772,6 +850,8 @@ bool MainWindow::initPoleMasterPolarAlignment()
 
     currentPolarAlignmentCameraRole = PolarAlignmentCameraRole::PoleCamera;
     polarGuiderSingleCapturePending = false;
+    activePolarCaptureRequestId = 0;
+    activePolarCaptureStartedAtMs = 0;
     poleMasterPolarAlignment = new PoleMasterPolarAlignment(indi_Client,
                                                             dpMount,
                                                             dpPoleScope,
@@ -786,8 +866,9 @@ bool MainWindow::initPoleMasterPolarAlignment()
     }
 
     connect(poleMasterPolarAlignment, &PoleMasterPolarAlignment::requestCaptureForRole,
-            this, [this](const QString &, int exposureMs)
+            this, [this](const QString &, int exposureMs, quint64 captureId)
             {
+                armPolarCaptureRequest(PolarAlignmentCameraRole::PoleCamera, captureId);
                 this->startPoleCameraSingleCapture(exposureMs);
             },
             Qt::QueuedConnection);

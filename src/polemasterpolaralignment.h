@@ -75,8 +75,8 @@ public:
     void stop();
     bool isRunning() const;
 
-    void setCaptureEnd(bool isEnd);
-    void setCapturedImagePath(const QString &fitsPath);
+    void setCaptureEnd(bool isEnd, quint64 captureId = 0);
+    bool setCapturedImagePath(const QString &fitsPath, quint64 captureId = 0);
 
 signals:
     void stateChanged(PoleMasterAlignmentState state, QString message, int progress, bool running);
@@ -91,7 +91,7 @@ signals:
                    QString frameId,
                    QString hint);
     void frameData(QString fileName, int imageW, int imageH, QString frameId);
-    void requestCaptureForRole(QString cameraRole, int exposureTimeMs);
+    void requestCaptureForRole(QString cameraRole, int exposureTimeMs, quint64 captureId);
     void overlayData(QString jsonPayload);
 
 private slots:
@@ -180,6 +180,9 @@ private:
     bool captureEnded = false;
     QString latestCapturePathFromHost;
     QString lastCapturedImage;
+    quint64 captureRequestSequence = 0;
+    quint64 activeCaptureRequestId = 0;
+    bool capturePathAcceptedForRequest = false;
     QVector<SolveFrame> calibrationFrames;
     SolveFrame guidingAnchorFrame;
     bool hasGuidingAnchorFrame = false;

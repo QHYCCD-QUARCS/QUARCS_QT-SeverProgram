@@ -12,6 +12,8 @@ void MainWindow::initializeBuiltInGuiderRuntime()
     qRegisterMetaType<QVector<QPointF>>("QVector<QPointF>");
     qRegisterMetaType<QVector<QString>>("QVector<QString>");
     qRegisterMetaType<QPointF>("QPointF");
+    qRegisterMetaType<guiding::PulseCommand>("guiding::PulseCommand");
+    qRegisterMetaType<guiding::CalibrationResult>("guiding::CalibrationResult");
     guiderCore = new GuiderCore();
     guiderParamsCache = guiderCore->params();
     {
@@ -49,11 +51,21 @@ void MainWindow::initializeBuiltInGuiderRuntime()
         guiderExpMs = std::max(1, exposureMs);
         const bool wasLooping = isGuiderLoopExp;
         isGuiderLoopExp = true;
-        guiderExposureInFlight = false;
         if (!wasLooping)
         {
             emit wsThread->sendMessageToClient("GuiderLoopExpStatus:true");
             emit wsThread->sendMessageToClient("GuiderUpdateStatus:1");
+        }
+
+        // requestExposure can arrive while the previous SDK exposure/readout is still active.
+        // Do not clear guiderExposureInFlight here: that used to start a second exposure and
+        // let the following frame arrive before the guide pulse had taken effect.
+        if (guiderExposureInFlight || sdkGuiderFrameTaskInFlight.load())
+        {
+            guiderExposureRequestPending = true;
+            Logger::Log("BuiltInGuider | requestExposure deferred: previous exposure/readout still in flight",
+                        LogLevel::DEBUG, DeviceType::GUIDER);
+            return;
         }
         if (guiderLoopTimer)
             guiderLoopTimer->start(0);
@@ -96,8 +108,12 @@ void MainWindow::initializeBuiltInGuiderRuntime()
         PersistGuidingPreviewFromFrame(sourceFitsPath, image16);
     }, Qt::BlockingQueuedConnection);
     connect(guiderCore, &GuiderCore::requestPulse, this, [this](const guiding::PulseCommand& cmd) {
+        Logger::Log("BuiltInGuider | requestPulse received in MainWindow | dir=" +
+                        std::to_string(static_cast<int>(cmd.dir)) +
+                        " durationMs=" + std::to_string(cmd.durationMs),
+                    LogLevel::INFO, DeviceType::GUIDER);
         ControlGuideEx(static_cast<int>(cmd.dir), cmd.durationMs, QStringLiteral("BuiltInGuider"));
-    });
+    }, Qt::QueuedConnection);
     connect(guiderCore, &GuiderCore::lockPositionChanged, this, [this](const QPointF& lockPosPx) {
         guiderLockPosPx = lockPosPx;
         guiderLockPosValid = true;
@@ -236,6 +252,7 @@ void MainWindow::initializeBuiltInGuiderRuntime()
             guiderGuideStarCentroidValid = false;
             isGuiderLoopExp = false;
             guiderExposureInFlight = false;
+            guiderExposureRequestPending = false;
             if (guiderLoopTimer)
                 guiderLoopTimer->stop();
             if (sdkGuiderExposureTimer)
@@ -680,8 +697,8 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
 
                     if (polarGuiderSingleCapturePending)
                     {
-                        notifyPolarAlignmentCaptureReady(captureRole, sdkGuiderFitsPath);
-                        polarGuiderSingleCapturePending = false;
+                        if (notifyPolarAlignmentCaptureReady(captureRole, sdkGuiderFitsPath))
+                            polarGuiderSingleCapturePending = false;
                     }
 
                     if (!poleCapture && guiderCore)
@@ -708,7 +725,21 @@ void MainWindow::onSdkGuiderExposureTimerTimeout()
                 }
 
                 guiderExposureInFlight = false;
-                if (isGuiderLoopExp && guiderLoopTimer)
+
+                if (guiderExposureRequestPending && isGuiderLoopExp && guiderLoopTimer)
+                {
+                    guiderExposureRequestPending = false;
+                    guiderLoopTimer->start(0);
+                    Logger::Log("BuiltInGuider | deferred exposure request released after frame completion",
+                                LogLevel::DEBUG, DeviceType::GUIDER);
+                }
+
+                // GuiderCore owns the exposure schedule.  In particular, after a
+                // calibration/guide pulse it schedules the next frame only after
+                // pulse duration + settle time.  Starting the timer here would
+                // bypass that delay in SDK mode and overlap timed guide pulses.
+                // Keep the 1 ms fallback only for the legacy path without a core.
+                if (!guiderCore && isGuiderLoopExp && guiderLoopTimer)
                     guiderLoopTimer->start(1);
                 Logger::Log("GuiderPerf | onSdkGuiderExposureTimerTimeout | success path done mainTotalMs=" +
                                 std::to_string(mainPerf.elapsed()),
